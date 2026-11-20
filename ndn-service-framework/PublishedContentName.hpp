@@ -86,6 +86,7 @@ struct PublishedContentName {
   std::string useId;
   std::string artifactEntry;
   ArtifactPartition partition;
+  std::optional<std::uint64_t> pageNumber;
   /** Canonical JSON of the partition, sorted keys; empty when the partition is absent. */
   std::string partitionJson() const;
 

@@ -191,6 +191,60 @@ BOOST_AUTO_TEST_CASE(SemanticCoordinatesRoundTripAndClosedValidation)
   BOOST_CHECK(PublishedContentName::decode(legacyWire).encode() == legacyWire);
 }
 
+BOOST_AUTO_TEST_CASE(PartitionAndPageRoundTripThroughTheWire)
+{
+  PublishedContentName value;
+  value.kind = ContentDataKind::ArtifactFile;
+  value.semanticRole = ContentSemanticRole::ArtifactManifest;
+  value.label = "manifest";
+  value.modelName = "qwen3";
+  value.modelIdentity = std::string(64, 'a');
+  value.modelFamily = "qwen3";
+  value.modelSize = "0.6b";
+  value.quantization = "int4";
+  value.sourceRevisionLabel = "r3";
+  value.profileLabel = "kv-0-4-ffn-0-1536";
+  value.artifactEntry = "mlp-13";
+  value.partition.kind = ArtifactPartitionKind::Hybrid;
+  value.partition.layerBegin = 0;
+  value.partition.layerEnd = 14;
+  value.partition.tensorDegree = 2;
+  const auto wire = value.encode();
+  const auto restored = PublishedContentName::decode(wire);
+  BOOST_CHECK_EQUAL(restored.artifactEntry, "mlp-13");
+  BOOST_CHECK(restored.partition.kind == ArtifactPartitionKind::Hybrid);
+  BOOST_CHECK_EQUAL(restored.partition.layerEnd, 14U);
+  BOOST_CHECK_EQUAL(restored.partition.tensorDegree, 2U);
+  BOOST_CHECK_EQUAL(restored.partitionJson(), value.partitionJson());
+  BOOST_CHECK_EQUAL(restored.objectIdentity(), value.objectIdentity());
+
+  // A reordered or edited partition object is not canonical.
+  auto tampered = value;
+  tampered.partition.rank = 1;
+  BOOST_CHECK(tampered.encode() != wire);
+
+  // A manifest page names its business manifest stem plus the page number.
+  PublishedContentName page;
+  page.kind = ContentDataKind::ModelFile;
+  page.semanticRole = ContentSemanticRole::ManifestPage;
+  page.modelName = "qwen3";
+  page.modelIdentity = std::string(64, 'a');
+  page.modelFamily = "qwen3";
+  page.modelSize = "0.6b";
+  page.quantization = "int4";
+  page.sourceRevisionLabel = "r3";
+  page.pageNumber = 4;
+  const auto pageStem = page.semanticStem(ndn::Name("/lab/preparer"));
+  BOOST_CHECK(pageStem[-2] == ndn::name::Component("page"));
+  BOOST_CHECK(pageStem[-1] == makeNamingDecimalComponent(4));
+  const auto pageWire = page.encode();
+  BOOST_REQUIRE(PublishedContentName::decode(pageWire).pageNumber.has_value());
+  BOOST_CHECK_EQUAL(*PublishedContentName::decode(pageWire).pageNumber, 4U);
+  auto missingPage = page;
+  missingPage.pageNumber.reset();
+  BOOST_CHECK_THROW(missingPage.encode(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(ArtifactStemNamesTheActualPartition)
 {
   const ndn::Name producer("/lab/preparer");

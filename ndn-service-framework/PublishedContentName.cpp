@@ -60,8 +60,10 @@ bool roleAllowed(ContentDataKind kind, ContentSemanticRole role)
     case ContentSemanticRole::TokenizerObject: return kind == ContentDataKind::Tokenizer;
     case ContentSemanticRole::MaterialBundle:
     case ContentSemanticRole::MaterialManifest:
-    case ContentSemanticRole::ManifestPage:
       return kind == ContentDataKind::Material;
+    case ContentSemanticRole::ManifestPage:
+      // A page belongs to whichever business manifest owns the stem: model or material.
+      return kind == ContentDataKind::Material || kind == ContentDataKind::ModelFile;
     case ContentSemanticRole::ArtifactFileObject:
     case ContentSemanticRole::ArtifactManifest:
       return kind == ContentDataKind::ArtifactFile;
@@ -83,8 +85,25 @@ void requireCoordinate(const std::string& value, const char* field)
     throw std::invalid_argument(std::string("invalid semantic coordinate: ") + field);
 }
 
+bool roleNeedsLabel(ContentSemanticRole role)
+{
+  switch (role) {
+    case ContentSemanticRole::FixedAssignment:
+    case ContentSemanticRole::WeightsObject:
+    case ContentSemanticRole::TokenizerObject:
+    case ContentSemanticRole::ArtifactFileObject:
+    case ContentSemanticRole::SemanticInput:
+    case ContentSemanticRole::BlobObject:
+      return true;
+    default:
+      return false;
+  }
+}
+
 void validateSemanticCoordinates(const PublishedContentName& value)
 {
+  if (roleNeedsLabel(value.semanticRole) && value.label.empty())
+    throw std::invalid_argument("semantic role requires a label");
   if (!roleAllowed(value.kind, value.semanticRole))
     throw std::invalid_argument("semantic role does not belong to this content kind");
   const bool model = isModelCoordinateKind(value.kind);
@@ -101,6 +120,8 @@ void validateSemanticCoordinates(const PublishedContentName& value)
   }
   if (value.bundleIndex.has_value() != (value.semanticRole == ContentSemanticRole::MaterialBundle))
     throw std::invalid_argument("bundle index belongs only to a physical material bundle");
+  if (value.pageNumber.has_value() != (value.semanticRole == ContentSemanticRole::ManifestPage))
+    throw std::invalid_argument("page number belongs only to a manifest page");
   const bool artifact = value.semanticRole == ContentSemanticRole::ArtifactFileObject ||
     value.semanticRole == ContentSemanticRole::ArtifactManifest;
   if (!artifact && !value.profileLabel.empty())
@@ -126,7 +147,9 @@ struct IdentityParts {
 
 IdentityParts parts(const PublishedContentName& value)
 {
-  makeNamingLabelComponent(value.label); // Reject invalid full labels, not just their prefix.
+  // A label is validated when present; the roles that name an object with it require one below.
+  if (!value.label.empty())
+    makeNamingLabelComponent(value.label);
   IdentityParts result{"NDNSF-DI", "model", "", "{}"};
   bool model = true;
   switch (value.kind) {
@@ -155,10 +178,18 @@ IdentityParts parts(const PublishedContentName& value)
     makeNamingLabelComponent(value.modelName);
     makeNamingDigestComponent(value.modelIdentity);
     if (!value.inputKind.empty()) throw std::invalid_argument("model has input kind");
-    if (value.kind == ContentDataKind::ArtifactFile) {
+    const bool structured = value.hasSemanticCoordinates() &&
+      (value.semanticRole == ContentSemanticRole::ArtifactFileObject ||
+       value.semanticRole == ContentSemanticRole::ArtifactManifest);
+    if (value.kind == ContentDataKind::ArtifactFile && !structured) {
       if (!atom(value.artifactKind) || !atom(value.coordinate))
         throw std::invalid_argument("invalid artifact kind/coordinate");
       makeNamingDigestComponent(value.profileIdentity);
+    }
+    else if (value.kind == ContentDataKind::ArtifactFile) {
+      // The partition coordinates replace the legacy single-component kind/coordinate pair.
+      if (!value.artifactKind.empty() || !value.coordinate.empty() || !value.profileIdentity.empty())
+        throw std::invalid_argument("legacy artifact fields on a partitioned artifact");
     }
     else if (!value.artifactKind.empty() || !value.coordinate.empty() || !value.profileIdentity.empty()) {
       throw std::invalid_argument("unexpected artifact identity");
@@ -265,6 +296,46 @@ void validatePartition(const ArtifactPartition& partition)
 }
 
 } // namespace
+
+ArtifactPartition
+parsePartitionJson(const std::string& json)
+{
+  // The partition JSON is a closed, sorted-key object produced by partitionJson(); this reader accepts only
+  // that shape and rebuilds the fields, so a hand-written or reordered object is rejected by the canonical
+  // re-encode check afterwards.
+  ArtifactPartition partition;
+  const auto value = [&json](const std::string& key) -> std::string {
+    const std::string prefix = "\"" + key + "\":\"";
+    const auto at = json.find(prefix);
+    if (at == std::string::npos)
+      throw std::invalid_argument("partition json is missing " + key);
+    const auto begin = at + prefix.size();
+    const auto end = json.find('"', begin);
+    if (end == std::string::npos)
+      throw std::invalid_argument("partition json has an unterminated " + key);
+    return json.substr(begin, end - begin);
+  };
+  if (json.empty() || json.front() != '{' || json.back() != '}')
+    throw std::invalid_argument("partition json is not an object");
+  partition.kind = parsePartitionName(value("kind"));
+  partition.componentId = value("componentId");
+  partition.graphSide = value("side");
+  const auto number = [&](const std::string& key) -> std::uint64_t {
+    const auto text = value(key);
+    std::size_t consumed = 0;
+    const auto parsed = std::stoull(text, &consumed);
+    if (consumed != text.size() || (!text.empty() && text[0] == '+'))
+      throw std::invalid_argument("partition json has a non-canonical number");
+    return parsed;
+  };
+  partition.cutPrefixNodes = number("cut");
+  partition.tensorDegree = number("degree");
+  partition.layerBegin = number("layerBegin");
+  partition.layerEnd = number("layerEnd");
+  partition.rank = number("rank");
+  partition.stageIndex = number("stage");
+  return partition;
+}
 
 std::string
 PublishedContentName::partitionJson() const
@@ -434,7 +505,16 @@ PublishedContentName::semanticStem(const ndn::Name& producer) const
       break;
     }
     case ContentSemanticRole::ManifestPage:
-      throw std::invalid_argument("manifest page coordinates are not built yet");
+      // <ManifestStem>/page/<PageNumber>; the stem is the business manifest's prefix without `/rep/<R>`.
+      require(pageNumber.has_value(), "a page number");
+      if (kind == ContentDataKind::Material) {
+        push("NDNSF-DI"); push("material"); pushPath(); push("manifest");
+      }
+      else {
+        push("NDNSF-DI"); push("model"); pushPath(); push("manifest");
+      }
+      push("page"); pushComponent(makeNamingDecimalComponent(*pageNumber));
+      break;
     case ContentSemanticRole::None:
       throw std::invalid_argument("semantic stem requires an explicit semantic role");
   }
@@ -476,7 +556,8 @@ PublishedContentName::hasSemanticCoordinates() const
 {
   return semanticRole != ContentSemanticRole::None || !modelFamily.empty() || !modelSize.empty() ||
     !quantization.empty() || !sourceRevisionLabel.empty() || bundleIndex.has_value() ||
-    !profileLabel.empty() || !useId.empty();
+    !profileLabel.empty() || !useId.empty() || !artifactEntry.empty() ||
+    partition.kind != ArtifactPartitionKind::None || pageNumber.has_value();
 }
 
 ndn::Name PublishedContentName::contentPrefix(const ndn::Name& producer,
@@ -532,6 +613,13 @@ PublishedContentName::encode() const
     body.push_back(ndn::makeStringBlock(157, useId));
     if (bundleIndex)
       body.push_back(ndn::makeNonNegativeIntegerBlock(159, *bundleIndex));
+    if (!artifactEntry.empty())
+      body.push_back(ndn::makeStringBlock(161, artifactEntry));
+    const auto partition = partitionJson();
+    if (!partition.empty())
+      body.push_back(ndn::makeStringBlock(163, partition));
+    if (pageNumber)
+      body.push_back(ndn::makeNonNegativeIntegerBlock(165, *pageNumber));
   }
   body.encode();
   if (body.size() > ndn::MAX_NDN_PACKET_SIZE)
@@ -562,11 +650,15 @@ PublishedContentName PublishedContentName::decode(const std::vector<uint8_t>& wi
     for (size_t i = 0; i < extendedTypes.size(); ++i)
       if (fields[8 + i].type() != extendedTypes[i])
         throw std::invalid_argument("invalid semantic coordinate field order");
-    const bool hasBundle = fields.size() == 16;
-    if (fields.size() != 15 && !hasBundle)
-      throw std::invalid_argument("invalid semantic coordinate field count");
-    if (hasBundle && fields[15].type() != 159)
-      throw std::invalid_argument("invalid bundle index field");
+    // 145,147,149,151,153,155,157 then optional 159 bundle, 161 entry, 163 partition, 165 page,
+    // each in that order; anything else is a malformed record.
+    std::size_t index = 15;
+    for (const uint64_t type : {159, 161, 163, 165}) {
+      if (index < fields.size() && fields[index].type() == type)
+        ++index;
+    }
+    if (index != fields.size())
+      throw std::invalid_argument("invalid semantic coordinate tail");
   }
   const auto kindValue = ndn::readNonNegativeInteger(fields[0]);
   if (kindValue > 8) throw std::invalid_argument("unknown semantic metadata kind");
@@ -593,8 +685,25 @@ PublishedContentName PublishedContentName::decode(const std::vector<uint8_t>& wi
     result.profileLabel.assign(reinterpret_cast<const char*>(profile.value()), profile.value_size());
     const auto& use = fields[14];
     result.useId.assign(reinterpret_cast<const char*>(use.value()), use.value_size());
-    if (fields.size() == 16)
-      result.bundleIndex = ndn::readNonNegativeInteger(fields[15]);
+    std::size_t tail = 15;
+    if (tail < fields.size() && fields[tail].type() == 159) {
+      result.bundleIndex = ndn::readNonNegativeInteger(fields[tail]);
+      ++tail;
+    }
+    if (tail < fields.size() && fields[tail].type() == 161) {
+      result.artifactEntry.assign(reinterpret_cast<const char*>(fields[tail].value()),
+                                  fields[tail].value_size());
+      ++tail;
+    }
+    if (tail < fields.size() && fields[tail].type() == 163) {
+      result.partition = parsePartitionJson(
+        std::string(reinterpret_cast<const char*>(fields[tail].value()), fields[tail].value_size()));
+      ++tail;
+    }
+    if (tail < fields.size() && fields[tail].type() == 165) {
+      result.pageNumber = ndn::readNonNegativeInteger(fields[tail]);
+      ++tail;
+    }
   }
   if (result.encode() != wire) throw std::invalid_argument("noncanonical semantic metadata");
   return result;
