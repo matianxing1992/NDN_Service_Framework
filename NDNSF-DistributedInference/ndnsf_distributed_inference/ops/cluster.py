@@ -690,7 +690,11 @@ def _cancelled(root, state):
 def _nfd_config(socket, port):
     if any(char in str(socket) for char in ('"', '\\', '\n', '\r')):
         raise ClusterError('NFD socket contains unsupported configuration characters')
-    return (f'general {{}}\nlog {{ default_level NONE }}\n'
+    # Diagnostic only: the generated configuration logs nothing, which makes "the forwarder never saw it"
+    # indistinguishable from "the forwarder does not log". Set NDNSF_NFD_DEBUG=1 to record Interests.
+    import os as _os
+    level = 'DEBUG' if _os.environ.get('NDNSF_NFD_DEBUG') == '1' else 'NONE'
+    return (f'general {{}}\nlog {{ default_level {level} }}\n'
             f'tables {{ cs_max_packets 0 }}\n'
             f'face_system {{ unix {{ path "{socket}" }} '
             f'tcp {{ listen yes port {port} enable_v4 yes enable_v6 no }} '

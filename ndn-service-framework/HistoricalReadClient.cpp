@@ -103,8 +103,11 @@ fetchSegmentedData(ndn::Face& face, const ndn::Name& root, const ndn::security::
     if (!data) {
       if (index == 0)
         return std::nullopt;
-      // Anything but an expected end is a truncated object, not a short one.
-      return std::nullopt;
+      // A miss is truncation only when the last segment is known: producers that publish a single segment
+      // without a FinalBlockId end the object simply by not answering.
+      if (finalSegment)
+        return std::nullopt;
+      break;
     }
     if (const auto named = data->getName().get(-1); named != segment.get(-1))
       return std::nullopt;
