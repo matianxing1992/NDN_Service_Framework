@@ -204,21 +204,25 @@ NativeSourcePartitionStrategy::enumerateImpl(
     };
     candidate.sourceTransformByRole[m_profile.roles[1]] = rankTransform(0, half);
     candidate.sourceTransformByRole[m_profile.roles[2]] = rankTransform(half, m_profile.inputChannels);
-    if (boundaryIndex + 1 < graph.topologicalOrder.size()) {
-      const auto& nextId = graph.topologicalOrder[boundaryIndex + 1];
-      const auto next = std::find_if(graph.nodes.begin(), graph.nodes.end(),
-        [&] (const auto& node) { return node.id == nextId; });
-      if (next != graph.nodes.end() && next->opType == "Add")
-      {
-        NativeOnnxSourceTransformV1 bias;
-        bias.kind = "add-conv-bias";
-        bias.sourceConv = m_profile.boundaryNode;
-        bias.node = nextId;
-        bias.bias = m_profile.convBiasInitializer;
-        bias.output = m_profile.convOutputTensor;
-        bias.validate();
-        candidate.sourceTransformByRole[m_profile.roles[3]] = bias.canonicalJson();
+    if (!m_profile.convBiasInitializer.empty()) {
+      // A fused Conv bias has no explicit Add in the source graph; the suffix
+      // still has to apply it exactly once. Bind the transform either way and
+      // let lowering decide whether the source already spells the Add out.
+      std::string biasNode = m_profile.boundaryNode;
+      if (boundaryIndex + 1 < graph.topologicalOrder.size()) {
+        const auto& nextId = graph.topologicalOrder[boundaryIndex + 1];
+        const auto next = std::find_if(graph.nodes.begin(), graph.nodes.end(),
+          [&] (const auto& node) { return node.id == nextId; });
+        if (next != graph.nodes.end() && next->opType == "Add") biasNode = nextId;
       }
+      NativeOnnxSourceTransformV1 bias;
+      bias.kind = "add-conv-bias";
+      bias.sourceConv = m_profile.boundaryNode;
+      bias.node = biasNode;
+      bias.bias = m_profile.convBiasInitializer;
+      bias.output = m_profile.convOutputTensor;
+      bias.validate();
+      candidate.sourceTransformByRole[m_profile.roles[3]] = bias.canonicalJson();
     }
     candidate.executionPlan.stageLayout = {
       {m_profile.roles[0] + "/stage", nativePlanningDigest("source-prefix|" + graph.graphDigest),

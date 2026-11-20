@@ -2245,7 +2245,7 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
   hybridProfile.convWeightInitializer = "w";
   hybridProfile.convOutputTensor = "conv_out";
   hybridProfile.convBiasInitializer = "b_conv";
-  NativeSourcePartitionStrategy hybrid(std::move(hybridProfile));
+  NativeSourcePartitionStrategy hybrid(hybridProfile);
   auto candidates = hybrid.enumerate(sourceModel, sourceGraph, {});
   BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
   const auto& candidate = candidates.front();
@@ -2286,6 +2286,22 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
   BOOST_CHECK_THROW(NativeSourcePartitionStrategy({NativeSourcePartitionMode::HYBRID, "conv",
     {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 1, "input-channel",
     {1, 1, 4, 4}, {1, 1, 4, 4}, "float32", ""}), std::invalid_argument);
+
+  // A fused Conv bias has no following Add in the source graph; the suffix
+  // transform must still be emitted so the bias is applied exactly once.
+  {
+    auto fusedGraph = sourceGraph;
+    fusedGraph.nodes[3].opType = "Relu";
+    auto fusedProfile = hybridProfile;
+    fusedProfile.convBiasBytes = 128;
+    NativeSourcePartitionStrategy fused(std::move(fusedProfile));
+    const auto plans = fused.enumerate(sourceModel, fusedGraph, {});
+    BOOST_REQUIRE_EQUAL(plans.size(), 1U);
+    BOOST_REQUIRE(plans.front().sourceTransformByRole.count("Suffix") == 1);
+    const auto transform = nativeParseJson(plans.front().sourceTransformByRole.at("Suffix"));
+    BOOST_CHECK_EQUAL(transform.at("kind").get<std::string>(), "add-conv-bias");
+    BOOST_CHECK_EQUAL(transform.at("sourceConv").get<std::string>(), "conv");
+  }
 }
 
 BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
