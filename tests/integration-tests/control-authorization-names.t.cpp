@@ -52,6 +52,9 @@ struct InvocationNamesOracle {
     uint64_t ticket = 0;
     int attempt = 1;
     for (const auto& entry : runtime.m_policyStatusFetchInFlight) {
+      // A null entry cannot be a live fetch; skipping it keeps the oracle from dereferencing one.
+      if (!entry.second)
+        continue;
       if (entry.second->query && entry.second->query->getName() == query.getName()) {
         ticket = entry.second->ticket;
         attempt = entry.second->attempts;

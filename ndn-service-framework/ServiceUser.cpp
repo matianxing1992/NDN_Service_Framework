@@ -15516,7 +15516,9 @@ namespace ndn_service_framework
     std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
     const auto key = serviceName.toUri();
     const auto found = m_policyStatusFetchInFlight.find(key);
-    if (found == m_policyStatusFetchInFlight.end() || found->second->ticket != ticket) return;
+    if (found == m_policyStatusFetchInFlight.end() || !found->second ||
+        found->second->ticket != ticket)
+      return;
     found->second->pending.cancel();
     found->second->retry.cancel();
     m_policyStatusFetchInFlight.erase(found);
@@ -15533,7 +15535,8 @@ namespace ndn_service_framework
     if (!parameters || ticket == 0) return std::nullopt;
     std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
     const auto found = m_policyStatusFetchInFlight.find(parameters->service.toUri());
-    if (found == m_policyStatusFetchInFlight.end() || found->second->ticket != ticket ||
+    if (found == m_policyStatusFetchInFlight.end() || !found->second ||
+        found->second->ticket != ticket ||
         !found->second->query || found->second->query->getName() != interest.getName()) {
       return std::nullopt;
     }
