@@ -191,6 +191,67 @@ BOOST_AUTO_TEST_CASE(SemanticCoordinatesRoundTripAndClosedValidation)
   BOOST_CHECK(PublishedContentName::decode(legacyWire).encode() == legacyWire);
 }
 
+BOOST_AUTO_TEST_CASE(SemanticStemFollowsTheN4Rows)
+{
+  const ndn::Name producer("/lab/preparer");
+  const std::string rep(64, 'a');
+  PublishedContentName value;
+  value.modelName = "qwen3";
+  value.modelFamily = "qwen3";
+  value.modelSize = "0.6b";
+  value.quantization = "int4";
+  value.sourceRevisionLabel = "r3";
+  const auto stem = [&](ContentDataKind kind, ContentSemanticRole role) {
+    value.kind = kind;
+    value.semanticRole = role;
+    return value.semanticStem(producer);
+  };
+  BOOST_CHECK(stem(ContentDataKind::ModelFile, ContentSemanticRole::SourceGraph) ==
+              ndn::Name(producer).append("NDNSF-DI").append("model")
+                .append("qwen3").append("0.6b").append("int4").append("revision").append("r3")
+                .append("source").append("graph"));
+  BOOST_CHECK(stem(ContentDataKind::ModelFile, ContentSemanticRole::ModelManifest) ==
+              ndn::Name(producer).append("NDNSF-DI").append("model")
+                .append("qwen3").append("0.6b").append("int4").append("revision").append("r3")
+                .append("manifest"));
+
+  value.bundleIndex = 12;
+  BOOST_CHECK(stem(ContentDataKind::Material, ContentSemanticRole::MaterialBundle) ==
+              ndn::Name(producer).append("NDNSF-DI").append("material")
+                .append("qwen3").append("0.6b").append("int4").append("revision").append("r3")
+                .append("bundle").append(makeNamingDecimalComponent(12)));
+  value.bundleIndex.reset();
+
+  value.useId = "use7";
+  BOOST_CHECK(stem(ContentDataKind::Assignment, ContentSemanticRole::StoredCapsule) ==
+              ndn::Name(producer).append("NDNSF-DI").append("key-capsule")
+                .append("qwen3").append("0.6b").append("int4").append("revision").append("r3")
+                .append("source").append("stored").append("use")
+                .append(makeNamingLabelComponent("use7")));
+  BOOST_CHECK(stem(ContentDataKind::Assignment, ContentSemanticRole::AuthorizationManifest) ==
+              ndn::Name(producer).append("NDNSF-DI").append("authorization")
+                .append("qwen3").append("0.6b").append("int4").append("revision").append("r3")
+                .append("use").append(makeNamingLabelComponent("use7")));
+
+  // The representation tail is one 32-byte Generic component, not an implicit digest.
+  value.kind = ContentDataKind::ModelFile;
+  value.semanticRole = ContentSemanticRole::SourceGraph;
+  value.useId.clear();  // the use id belongs to the capsule rows only
+  const auto prefix = value.representationPrefix(producer, rep);
+  BOOST_REQUIRE(prefix.size() >= 2);
+  BOOST_CHECK_EQUAL(prefix[-2].toUri(), std::string("rep"));
+  BOOST_CHECK_EQUAL(prefix[-1].value_size(), 32U);
+  BOOST_CHECK(!prefix[-1].isImplicitSha256Digest());
+  BOOST_CHECK(prefix[-1].type() == ndn::tlv::GenericNameComponent);
+
+  // A short digest is not a representation identity.
+  BOOST_CHECK_THROW(value.representationPrefix(producer, std::string(63, 'a')), std::invalid_argument);
+  // An instance without a role has no N4 stem yet.
+  PublishedContentName legacy;
+  legacy.label = "payload";
+  BOOST_CHECK_THROW(legacy.semanticStem(producer), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(CapsuleRoleRequiresCurrentUseAndModelPath)
 {
   PublishedContentName value;

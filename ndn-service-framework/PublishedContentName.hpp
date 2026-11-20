@@ -63,6 +63,12 @@ struct PublishedContentName {
   std::string useId;
 
   std::string objectIdentity() const;
+  /** N4 `<ObjectPrefix>` without the `/rep/<RepresentationId>` tail. Throws when the instance carries no
+   * semantic role, because the legacy shape is then still the only defined name. */
+  ndn::Name semanticStem(const ndn::Name& producer) const;
+  /** N4 `<ObjectPrefix>` including the representation tail. */
+  ndn::Name representationPrefix(const ndn::Name& producer,
+                                 const std::string& representationId) const;
   /** N2 `<ModelPath>` components: family, size, quantization, "revision", label. */
   std::vector<std::string> modelPathComponents() const;
   /** True when any N4 coordinate field is set, i.e. the extended wire layout applies. */

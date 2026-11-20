@@ -5,6 +5,7 @@
 #include <array>
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -212,6 +213,109 @@ PublishedContentName::objectIdentity() const
     fields.push_back({12, 2, raw(useId)});
   }
   return computeNamingDigest("ndnsf-naming/semantic-object", fields);
+}
+
+ndn::Name
+PublishedContentName::semanticStem(const ndn::Name& producer) const
+{
+  if (semanticRole == ContentSemanticRole::None)
+    throw std::invalid_argument("semantic stem requires an explicit semantic role");
+  validateSemanticCoordinates(*this);
+  const auto require = [this](bool condition, const char* field) {
+    if (!condition)
+      throw std::invalid_argument(std::string("semantic role requires ") + field);
+  };
+  ndn::Name name(producer);
+  const auto push = [&name](const std::string& value) {
+    name.append(ndn::name::Component(value));
+  };
+  const auto pushComponent = [&name](const ndn::name::Component& component) {
+    name.append(component);
+  };
+  const auto pushPath = [&] {
+    for (const auto& component : modelPathComponents())
+      push(component);
+  };
+  switch (semanticRole) {
+    case ContentSemanticRole::SourceGraph:
+      push("NDNSF-DI"); push("model"); pushPath(); push("source"); push("graph");
+      break;
+    case ContentSemanticRole::Initializers:
+      push("NDNSF-DI"); push("model"); pushPath(); push("source"); push("initializers");
+      break;
+    case ContentSemanticRole::PreparedMetadata:
+      push("NDNSF-DI"); push("model"); pushPath(); push("metadata");
+      break;
+    case ContentSemanticRole::ModelManifest:
+      push("NDNSF-DI"); push("model"); pushPath(); push("manifest");
+      break;
+    case ContentSemanticRole::WeightsObject:
+      push("NDNSF-DI"); push("model"); pushPath(); push("source"); push("weights");
+      pushComponent(makeNamingLabelComponent(label));
+      break;
+    case ContentSemanticRole::TokenizerObject:
+      push("NDNSF-DI"); push("model"); pushPath(); push("tokenizer");
+      pushComponent(makeNamingLabelComponent(label));
+      break;
+    case ContentSemanticRole::AssemblyReceipt:
+      push("NDNSF-DI"); push("receipt"); pushPath(); push("assembly");
+      break;
+    case ContentSemanticRole::MaterialBundle:
+      require(bundleIndex.has_value(), "a bundle number");
+      push("NDNSF-DI"); push("material"); pushPath(); push("bundle");
+      pushComponent(makeNamingDecimalComponent(*bundleIndex));
+      break;
+    case ContentSemanticRole::MaterialManifest:
+      push("NDNSF-DI"); push("material"); pushPath(); push("manifest");
+      break;
+    case ContentSemanticRole::AuthorizationManifest:
+      push("NDNSF-DI"); push("authorization"); pushPath(); push("use");
+      pushComponent(makeNamingLabelComponent(useId));
+      break;
+    case ContentSemanticRole::FixedAssignment:
+      push("NDNSF-DI"); push("assignment"); pushPath(); push("role");
+      pushComponent(makeNamingLabelComponent(label));
+      break;
+    case ContentSemanticRole::CanonicalCapsule:
+      push("NDNSF-DI"); push("key-capsule"); pushPath(); push("source"); push("canonical");
+      push("use"); pushComponent(makeNamingLabelComponent(useId));
+      break;
+    case ContentSemanticRole::StoredCapsule:
+      push("NDNSF-DI"); push("key-capsule"); pushPath(); push("source"); push("stored");
+      push("use"); pushComponent(makeNamingLabelComponent(useId));
+      break;
+    case ContentSemanticRole::SemanticInput:
+      require(!inputKind.empty(), "an input kind");
+      push("NDNSF-DI"); push("input"); push(inputKind); pushComponent(makeNamingLabelComponent(label));
+      break;
+    case ContentSemanticRole::BlobObject:
+      push("NDNSF"); push("blob"); pushComponent(makeNamingLabelComponent(label));
+      break;
+    case ContentSemanticRole::ArtifactFileObject:
+    case ContentSemanticRole::ArtifactManifest:
+    case ContentSemanticRole::ManifestPage:
+      throw std::invalid_argument("artifact partition coordinates are not built yet");
+    case ContentSemanticRole::None:
+      throw std::invalid_argument("semantic stem requires an explicit semantic role");
+  }
+  checkNamingNameSize(name);
+  return name;
+}
+
+ndn::Name
+PublishedContentName::representationPrefix(const ndn::Name& producer,
+                                          const std::string& representationId) const
+{
+  auto name = semanticStem(producer);
+  // One 32-byte representation component; not an ImplicitSha256DigestComponent.
+  name.append(ndn::name::Component("rep"));
+  auto component = makeNamingDigestComponent(representationId);
+  if (component.value_size() != 32)
+    throw std::invalid_argument("representation identity must be one sha256 digest");
+  name.append(component);
+  checkNamingNameSize(ndn::Name(name).append("DATA").appendSegment(
+    std::numeric_limits<std::uint64_t>::max()));
+  return name;
 }
 
 std::vector<std::string>
