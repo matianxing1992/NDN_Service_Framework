@@ -432,11 +432,19 @@ ServiceController::initializeControllerGeneration()
         NDN_LOG_ERROR("Controller file key ring is unusable: " << error.what());
         return false;
       }
+      // Only this domain's key may seal the ABE secrets. An empty ring, or a ring that carries other domains'
+      // keys but not this one, used to fall back to `entries.front()` - an invalid read when empty, and a
+      // cross-domain seal otherwise (the deployment's ring also holds the archive key).
       const auto chosen = std::find_if(entries.begin(), entries.end(),
         [] (const FileKeyRingEntry& entry) { return entry.keyId == "controller-abe"; });
-      const auto& entry = chosen != entries.end() ? *chosen : entries.front();
-      m_generationStore->setSecretSeal(entry.key, entry.keyId);
-      NDN_LOG_INFO("Controller ABE secrets: sealed with file key id=" << entry.keyId);
+      if (chosen == entries.end()) {
+        NDN_LOG_WARN("NDNSF_CONTROLLER_KEY_RING_NO_DOMAIN_KEY entries=" << entries.size()
+                     << " domain=controller-abe; ABE secrets stay in the store's own sealing");
+      }
+      else {
+        m_generationStore->setSecretSeal(chosen->key, chosen->keyId);
+        NDN_LOG_INFO("Controller ABE secrets: sealed with file key id=" << chosen->keyId);
+      }
     }
     else {
       NDN_LOG_WARN("Controller ABE secrets: no NDNSF_FILE_KEYRING, restore material stays readable");
