@@ -15922,8 +15922,10 @@ BOOST_AUTO_TEST_CASE(ProviderAcceptsATensorParallelPreparedSpec)
   BOOST_CHECK_EQUAL(*withoutChild, "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH");
   assembly.adapterId = "qwen";
   retargeted.metadata["tensorParallelChildBackend"] = assembly.backend;
-  BOOST_CHECK_MESSAGE(!validateNativePreparedRunnerSpec(projection, retargeted).has_value(),
-    "a sharded spec with an entry table was still refused");
+  const auto accepted = validateNativePreparedRunnerSpec(projection, retargeted);
+  BOOST_CHECK_MESSAGE(!accepted.has_value(),
+    "a sharded spec with an entry table was still refused: " +
+    (accepted ? *accepted : std::string()));
 }
 
 BOOST_AUTO_TEST_CASE(AssemblerTablesSurviveTheArtifactFileValidation)
