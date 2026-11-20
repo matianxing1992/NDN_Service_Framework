@@ -245,12 +245,27 @@ NativeSourcePartitionStrategy::enumerateImpl(
       result.producerSlotId = producerSlot;
       return result;
     };
+    const std::string sourceInput = graph.modelInputs.empty() ? "input"
+      : graph.modelInputs.front().name;
+    const std::string sourceOutput = graph.modelOutputs.empty() ? "output"
+      : graph.modelOutputs.front().name;
+    const std::string activation = m_profile.convInputTensor;
+    const std::string partial = m_profile.convOutputTensor;
+    if (activation == sourceInput || activation == partial || partial == sourceOutput)
+      throw std::invalid_argument(
+        "hybrid source partition reuses a graph boundary tensor as an internal port");
+    const std::string prefixStep = m_profile.roles[0] + "/RUN";
+    const std::string sumStep = m_profile.roles[1] + "/SUM";
     NativeExecutionStepSpec prefix;
-    prefix.stepId = m_profile.roles[0] + "/RUN";
+    prefix.stepId = prefixStep;
     prefix.unitId = m_profile.roles[0];
     prefix.operation = "CALL_SUBGRAPH";
     prefix.artifactEntry = m_profile.roles[0] + "/artifact";
-    prefix.outputSlots.push_back(slot("prefix-out", m_profile.activationShape,
+    // The ingress reads the request's own named tensor; internal handoffs keep
+    // the actual ONNX tensor names so a runner port binding is never a guess.
+    prefix.inputSlots.push_back(slot(sourceInput, m_profile.activationShape,
+                                     "EPOCH_INPUT", "", ""));
+    prefix.outputSlots.push_back(slot(activation, m_profile.activationShape,
                                       "LOCAL_STEP", "", ""));
     candidate.executionPlan.steps.push_back(std::move(prefix));
     for (const auto& rank : {m_profile.roles[1], m_profile.roles[2]}) {
@@ -259,20 +274,20 @@ NativeSourcePartitionStrategy::enumerateImpl(
       step.unitId = rank;
       step.operation = "CALL_SUBGRAPH";
       step.artifactEntry = rank + "/artifact";
-      step.inputSlots.push_back(slot("activation", m_profile.activationShape, "REMOTE_STEP",
-                                     m_profile.roles[0] + "/RUN", "prefix-out"));
-      step.outputSlots.push_back(slot("partial", m_profile.partialShape,
+      step.inputSlots.push_back(slot(activation, m_profile.activationShape, "REMOTE_STEP",
+                                     prefixStep, activation));
+      step.outputSlots.push_back(slot(partial, m_profile.partialShape,
                                       "LOCAL_STEP", "", ""));
       candidate.executionPlan.steps.push_back(std::move(step));
     }
     NativeExecutionStepSpec sum;
-    sum.stepId = m_profile.roles[1] + "/SUM";
+    sum.stepId = sumStep;
     sum.unitId = m_profile.roles[1];
     sum.operation = "SUM";
     sum.inputSlots.push_back(slot("rank0", m_profile.partialShape, "LOCAL_STEP",
-                                  m_profile.roles[1] + "/RUN", "partial"));
+                                  m_profile.roles[1] + "/RUN", partial));
     sum.inputSlots.push_back(slot("rank1", m_profile.partialShape, "REMOTE_STEP",
-                                  m_profile.roles[2] + "/RUN", "partial"));
+                                  m_profile.roles[2] + "/RUN", partial));
     sum.outputSlots.push_back(slot("sum", m_profile.partialShape, "LOCAL_STEP", "", ""));
     candidate.executionPlan.steps.push_back(std::move(sum));
     NativeExecutionStepSpec suffix;
@@ -281,8 +296,8 @@ NativeSourcePartitionStrategy::enumerateImpl(
     suffix.operation = "CALL_SUBGRAPH";
     suffix.artifactEntry = m_profile.roles[3] + "/artifact";
     suffix.inputSlots.push_back(slot("sum", m_profile.partialShape, "REMOTE_STEP",
-                                     m_profile.roles[1] + "/SUM", "sum"));
-    suffix.outputSlots.push_back(slot("result", m_profile.partialShape,
+                                     sumStep, "sum"));
+    suffix.outputSlots.push_back(slot(sourceOutput, m_profile.partialShape,
                                       "LOCAL_STEP", "", ""));
     candidate.executionPlan.steps.push_back(std::move(suffix));
   }
@@ -306,6 +321,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
     if (!contains(graph.legalCutEdges, edge.id))
       throw std::invalid_argument("source candidate crosses an illegal tensor edge");
     candidate.crossPartitionTensors.push_back(edge.id);
+    if (m_profile.mode == NativeSourcePartitionMode::HYBRID) continue;
     for (const auto& consumerRole : consumerRoles) {
       NativeDependencySpec dependency;
       dependency.producers = {producerRole};
@@ -345,10 +361,12 @@ NativeSourcePartitionStrategy::enumerateImpl(
     for (const auto& rank : {m_profile.roles[1], m_profile.roles[2]})
       candidate.executionPlan.dependencies.push_back(dependency(
         "prefix-to-" + rank, m_profile.roles[0], rank,
-        m_profile.roles[0] + "/RUN", "prefix-out", rank + "/RUN", "activation"));
+        m_profile.roles[0] + "/RUN", m_profile.convInputTensor, rank + "/RUN",
+        m_profile.convInputTensor));
     candidate.executionPlan.dependencies.push_back(dependency(
       "rank1-to-sum", m_profile.roles[2], m_profile.roles[1],
-      m_profile.roles[2] + "/RUN", "partial", m_profile.roles[1] + "/SUM", "rank1"));
+      m_profile.roles[2] + "/RUN", m_profile.convOutputTensor,
+      m_profile.roles[1] + "/SUM", "rank1"));
     candidate.executionPlan.dependencies.push_back(dependency(
       "sum-to-suffix", m_profile.roles[1], m_profile.roles[3],
       m_profile.roles[1] + "/SUM", "sum", m_profile.roles[3] + "/RUN", "sum"));

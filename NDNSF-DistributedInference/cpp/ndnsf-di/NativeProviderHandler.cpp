@@ -1700,7 +1700,13 @@ finalResponsePayloadForRole(const RoleSpec& roleSpec, const ProviderRoleResult& 
   if (found != result.outputsByScope.end()) {
     return found->second.payload;
   }
-  if (sealedTerminalOwner) return std::nullopt;
+  // A sealed terminal owner that carries a step template binds its result to
+  // the unconsumed output slot the template declared. Only a step-less sealed
+  // owner must publish the literal final-response scope.
+  if (sealedTerminalOwner &&
+      (roleSpec.steps == nullptr || roleSpec.steps->empty())) {
+    return std::nullopt;
+  }
   // A step-carrying role has no final-response edge; its terminal value is keyed by
   // the slot the template declared (logits for a sharded head).
   if (roleSpec.steps != nullptr && !roleSpec.steps->empty()) {

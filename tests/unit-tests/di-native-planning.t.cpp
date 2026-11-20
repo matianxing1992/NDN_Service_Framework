@@ -2241,9 +2241,9 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
   NativeSourcePartitionProfile hybridProfile{NativeSourcePartitionMode::HYBRID, "conv",
     {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 16, "input-channel",
     {1, 16, 4, 4}, {1, 32, 4, 4}, "float32", ""};
-  hybridProfile.convInputTensor = "input";
+  hybridProfile.convInputTensor = "scaled";
   hybridProfile.convWeightInitializer = "w";
-  hybridProfile.convOutputTensor = "conv-out";
+  hybridProfile.convOutputTensor = "conv_out";
   hybridProfile.convBiasInitializer = "b_conv";
   NativeSourcePartitionStrategy hybrid(std::move(hybridProfile));
   auto candidates = hybrid.enumerate(sourceModel, sourceGraph, {});
