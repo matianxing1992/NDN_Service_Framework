@@ -708,7 +708,7 @@ class RuntimeFixture
 {
 public:
   explicit RuntimeFixture(bool streaming = false, bool qwenStreaming = false,
-                          std::size_t maxPayloadBytes = 32)
+                          std::size_t maxPayloadBytes = 32, bool onnxHybrid = false)
     : root(std::filesystem::temp_directory_path() /
            ("di-prepared-request-" + std::to_string(::getpid()) + "-" +
             std::to_string(++sequence)))
@@ -796,6 +796,53 @@ public:
         {"node_mapping", {{"embedding", {0}}, {"layer-00", {1}},
           {"layer-01", {2}}, {"final-norm-head", {3, 4, 5, 6, 7, 8, 9}}}},
         {"state_inputs", stateInputs}, {"state_outputs", stateOutputs}};
+    }
+    else if (onnxHybrid) {
+      std::ifstream sourceFile(
+        ndnsf::test::testFixturePath("spec261/conv-bypass.onnx").string(), std::ios::binary);
+      if (!sourceFile.good()) throw std::runtime_error("missing Conv fixture");
+      source.modelBytes.assign(std::istreambuf_iterator<char>(sourceFile), {});
+      const auto control = NativeAssemblyControl{
+        std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {},
+        1 << 22, 1 << 22};
+      descriptor = fixture::completeModel({
+        "ConvBypass", nativePlanningDigest("conv-bypass-content"),
+        nativePlanningDigest("conv-bypass-semantics"), nativePlanningDigest("placeholder"),
+        "onnx", "float32", "fixture", "1"});
+      const auto inspected = inspectNativeOnnxSourceGraph(source, descriptor, control);
+      descriptor.graphDigest = inspected.graph.graphDigest;
+      const auto identity = canonicalOnnxSourceIdentity(source, control);
+      const std::string boundary = inspected.graph.topologicalOrder.at(1);
+      catalog = {
+        {"schema", "ndnsf-di-native-request-catalog-v1"},
+        {"model", nativeParseJson(descriptor.canonicalJson())},
+        {"source", {{"file", "model.onnx"}, {"data_name", "/fixture/conv/source"},
+          {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+          {"model_manifest_digest", nativePlanningDigest("conv-bypass-manifest")},
+          {"canonical_graph_digest", identity.graphDigest}}},
+        {"recipe", {{"artifact_profile_digest", nativePlanningDigest("fixture-profile")},
+          {"assembler_descriptor_digest", nativePlanningDigest("fixture-assembler-v1")},
+          {"backend_abi", "fixture-abi"}, {"precision", "float32"},
+          {"quantization", "none"}, {"layout", "NCHW"}, {"padding", "none"},
+          {"protection_epoch", "epoch-1"}, {"max_source_bytes", 1 << 22},
+          {"max_assembled_bytes", 1 << 22}, {"max_nodes", 64}}},
+        {"publication", {{"artifact_root", "/fixture/conv/artifacts"}}},
+        {"input_format", "OPAQUE"}, {"max_payload_bytes", maxPayloadBytes},
+        {"splitter", {{"kind", "ONNX_SOURCE"}, {"selection_mode", "hybrid"},
+          {"roles", {"Prefix", "Rank0", "Rank1", "Suffix"}},
+          {"boundary_node", boundary}, {"input_ingress_role", "Prefix"},
+          {"result_egress_role", "Suffix"}, {"postprocessing", NativeJson::object()},
+          {"input_channels", 16}, {"conv_input_axis", "input-channel"},
+          {"activation_shape", {1, 16, 8, 8}}, {"partial_shape", {1, 32, 8, 8}},
+          {"activation_dtype", "float32"},
+          {"conv_input_tensor", "scaled"}, {"conv_weight_initializer", "w_conv"},
+          {"conv_bias_initializer", "b_conv"}, {"conv_output_tensor", "conv_out"},
+          {"conv_weight_bytes", 18432}, {"conv_bias_bytes", 128},
+          {"conv_pads", {1, 1, 1, 1}}, {"conv_strides", {1, 1}},
+          {"conv_dilations", {1, 1}}}}, 
+        {"node_mapping", NativeJson::object()},
+        {"state_inputs", NativeJson::object()}, {"state_outputs", NativeJson::object()}
+      };
     }
     else {
       std::ifstream oracleFile(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
@@ -2050,6 +2097,27 @@ BOOST_AUTO_TEST_CASE(VerifiedStreamingDefaultsMaterializeWithoutExplicitOptions)
   handle.cancel();
   BOOST_CHECK(handle.status() == RequestStatus::Cancelled ||
               handle.status() == RequestStatus::Failed);
+  runtime->close();
+  BOOST_CHECK(drainWithInProcessPump(binding, runtime, testDrainTimeout()));
+}
+
+BOOST_AUTO_TEST_CASE(OnnxSourceHybridPreparesThroughRuntime)
+{
+  // The generic source planner must reach Runtime preparation with a real
+  // four-role hybrid candidate: prefix, two channel ranks and suffix.
+  RuntimeFixture fixture(false, false, 4096, true);
+  InProcessRuntimeBinding binding;
+  auto runtime = Runtime::open(runtimeConfig(fixture));
+  binding = bindInProcessRuntime(fixture, runtime);
+  auto prepared = prepareWithInProcessPump(runtime, *binding.environment);
+  const auto package = ndnsf::di::DiPreparedModelTestAccess::package(prepared);
+  BOOST_REQUIRE(package);
+  BOOST_REQUIRE(package->catalog.splitter);
+  const auto candidates = package->catalog.splitter->enumerate(
+    package->catalog.model.descriptor, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  BOOST_CHECK_EQUAL(candidates.front().executionPlan.roles.size(), 4U);
+  BOOST_CHECK_EQUAL(candidates.front().sourceTransformByRole.size(), 3U);
   runtime->close();
   BOOST_CHECK(drainWithInProcessPump(binding, runtime, testDrainTimeout()));
 }
