@@ -21,6 +21,8 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--build', type=Path, default=Path(os.environ.get("SPEC185_BUILD_DIR", ROOT / "build")))
 parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
+parser.add_argument('--restart-provider2', action='store_true',
+                    help='stop and restart the second Provider before a second request')
 parser.add_argument('--revoke', action='store_true',
                     help='revoke the Provider identity from the real Controller before the request')
 args=parser.parse_args()
@@ -177,12 +179,16 @@ try:
  c=launch(controller_command,penv(run_root/'controller-store'),'controller');children.append(c); b.wait_marker(c,run_root/'controller.log','ServiceController started...',30)
  a=launch([str(AUTHORITY),'--config',str(run_root/'authority/authority.json')],penv(run_root/'authority-store'),'authority');children.append(a); b.wait_marker(a,run_root/'authority.log','NATIVE_GRANT_AUTHORITY_READY',30)
  providers=[('/example/hello/provider','Prefix,Rank0','provider',offerpriv),('/example/hello/provider2','Rank1,Suffix','provider2',offer2priv)]
- for identity,roles,tag,offerkey in providers:
+ def start_provider(identity,roles,tag,offerkey):
   pe=penv(run_root/(tag+'-store'))
   shutil.copy2(offerkey,run_root/(tag+'/offer-private.pem'))
   pm=[str(PROVIDER),'--plan',str(run_root/'provider/plan.json'),'--manifest',str(run_root/(tag+'/manifest.json')),'--service','/Inference/NativeUnary','--provider',identity,'--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(run_root/(tag+'/trust-schema.conf')),'--roles',roles,'--workers','4','--handler-threads','4','--serve','--run-for-ms','120000','--artifact-cache-dir',str(run_root/(tag+'/cache')),'--selection-offer-key-file',str(run_root/(tag+'/offer-private.pem')),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
   pe['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY']=str(run_root/(tag+'/authority-public.pem'));pe['SPEC181_PROVIDER_RECIPIENT_KEY_MAP']=str(run_root/(tag+'/recipient-key-map.json'));pe['NDNSF_DI_WORKER_BINARY']=str(WORKER)
   ps=launch(pm,pe,tag);children.append(ps); b.wait_marker(ps,run_root/(tag+'.log'),'NDNSF_DI_NATIVE_PROVIDER_READY',60)
+  return ps
+ running={}
+ for identity,roles,tag,offerkey in providers:
+  running[tag]=start_provider(identity,roles,tag,offerkey)
  re=penv(run_root/'requester-store'); re.update({'NDNSF_DI_WORKER_BINARY':str(WORKER)})
  if args.revoke:
   # Establish the independent pre-revocation success first.  The later
@@ -216,9 +222,22 @@ try:
   b.stop(rq)
   raise RuntimeError('requester did not finish within 120s')
  print('requester rc',rq.returncode)
- print('ROOT',run_root)
  if rq.returncode != 0:
   raise SystemExit(rq.returncode)
+ if args.restart_provider2:
+  b.stop(running['provider2'])
+  time.sleep(1.0)
+  running['provider2']=start_provider('/example/hello/provider2','Rank1,Suffix','provider2',offer2priv)
+  rq2=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output-restarted.bin')],re,'requester-restarted');children.append(rq2)
+  try:
+   rq2.wait(timeout=120)
+  except subprocess.TimeoutExpired:
+   b.stop(rq2)
+   raise RuntimeError('restarted-provider requester did not finish within 120s')
+  print('requester after restart rc',rq2.returncode)
+  if rq2.returncode != 0:
+   raise SystemExit(rq2.returncode)
+ print('ROOT',run_root)
  # This script owns process startup, scheduled revocation and cleanup only.
  # Business success/failure, grant identity and Provider execution are
  # asserted by the C++ parent selector from these retained logs.  Keeping the
