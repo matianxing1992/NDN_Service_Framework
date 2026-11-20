@@ -6307,6 +6307,25 @@ namespace ndn_service_framework
         }
     }
 
+    namespace {
+      /** True when this status withdraws the given provider, either directly or by withdrawing the whole service. */
+      bool controllerChangeAffectsProvider(const PolicyStatusData& status,
+                                           const ndn::Name& provider, const ndn::Name& service)
+      {
+        for (const auto& revocation : status.getRevocations()) {
+          if (revocation.kind == RevocationKind::SERVICE_AUTHORIZATION &&
+              revocation.serviceName == service) {
+            if (revocation.targetIdentity == provider)
+              return true;
+            // A withdrawal without a target identity names the service itself.
+            if (revocation.targetIdentity.empty())
+              return true;
+          }
+        }
+        return false;
+      }
+    } // namespace
+
     void ServiceUser::invalidateControllerScopedCaches(
         const ndn::Name& serviceName,
         const ControllerVersion& version,
@@ -6324,6 +6343,14 @@ namespace ndn_service_framework
             std::vector<std::shared_ptr<StreamedInvocationSharedState>> affected;
             for (auto it = m_streamStates.begin(); it != m_streamStates.end();) {
                 if (it->second->serviceName != serviceName) {
+                    ++it;
+                    continue;
+                }
+                // A change that revokes one provider must not end another provider's stream: the caller would see a
+                // failure for an execution that was never withdrawn. An unscoped stream has no provider to compare
+                // and stays conservative.
+                if (!it->second->providerName.empty() && status != nullptr &&
+                    !controllerChangeAffectsProvider(*status, it->second->providerName, serviceName)) {
                     ++it;
                     continue;
                 }
@@ -10247,6 +10274,7 @@ namespace ndn_service_framework
         auto state = std::make_shared<StreamedInvocationSharedState>();
         state->requestId = requestId;
         state->serviceName = serviceName;
+        state->providerName = targetProvider;
         state->status = StreamedInvocationStatus::Requesting;
         state->onEvent = std::move(onEvent);
         state->onComplete = std::move(onComplete);
