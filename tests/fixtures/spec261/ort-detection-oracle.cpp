@@ -152,19 +152,34 @@ main(int argc, char** argv)
   const auto size = info.GetElementCount();
 
   const auto expected = readNpy(predictions);
+  // Shape equality is part of the ABI: two tensors with the same element count
+  // but a different layout would otherwise compare as equal element-wise.
+  if (expected.shape.size() != shapeValue.size() ||
+      !std::equal(expected.shape.begin(), expected.shape.end(), shapeValue.begin()))
+    throw std::runtime_error("prediction shape differs from the frozen fixture");
   if (expected.values.size() != size)
     throw std::runtime_error("prediction row count differs from the frozen fixture");
   double maxAbsolute = 0.0;
   std::size_t failing = 0;
+  std::size_t nonFinite = 0;
   for (std::size_t i = 0; i < size; ++i) {
     const double actual = values[i];
     const double reference = expected.values[i];
+    if (!std::isfinite(actual) || !std::isfinite(reference)) {
+      ++nonFinite;
+      continue;
+    }
     const double difference = std::abs(actual - reference);
     maxAbsolute = std::max(maxAbsolute, difference);
     if (difference > 1e-4 + 1e-4 * std::abs(reference)) ++failing;
   }
+  if (nonFinite != 0) {
+    std::cout << "SPEC261_CPP_ORT_ORACLE non_finite=" << nonFinite << std::endl;
+    return 3;
+  }
   std::cout << "SPEC261_CPP_ORT_ORACLE graph=" << graph << " elements=" << size
-            << " max_abs_error=" << maxAbsolute << " failing=" << failing << " shape=";
+            << " max_abs_error=" << maxAbsolute << " failing=" << failing
+            << " finite=1 shape=";
   for (std::size_t i = 0; i < shapeValue.size(); ++i)
     std::cout << (i ? "x" : "") << shapeValue[i];
   std::cout << std::endl;

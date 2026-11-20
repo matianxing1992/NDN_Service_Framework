@@ -3706,7 +3706,19 @@ prepareNativeCanonicalOnnxRole(
         workerRecipe.graphDigest = roleIdentity.graphDigest;
         workerRecipe.canonicalInitializerDigest = roleIdentity.initializerDigest;
         workerRecipe.nodeIndices.clear();
-        for (std::size_t index = 0; index < canonicalSource.materializedNodeIndices.size(); ++index)
+        std::size_t workerNodeCount = canonicalSource.materializedNodeIndices.size();
+        if (!projection.assemblyContract().sourceTransformV1.empty()) {
+          // The derived graph adds lowering nodes (Slice and/or bias Add), so the
+          // dense worker coverage must describe the graph it will actually run,
+          // not the original selection length.
+          onnx::ModelProto derived;
+          if (!derived.ParseFromArray(canonicalSource.modelBytes.data(),
+                                      static_cast<int>(canonicalSource.modelBytes.size())) ||
+              derived.graph().node_size() <= 0)
+            throw std::runtime_error("DI_CANONICAL_TRANSFORM_OUTPUT_INVALID");
+          workerNodeCount = static_cast<std::size_t>(derived.graph().node_size());
+        }
+        for (std::size_t index = 0; index < workerNodeCount; ++index)
           workerRecipe.nodeIndices.push_back(index);
         if (workerRecipe.roleKind != "COMPONENT_SET")
           workerRecipe.layerEnd = workerRecipe.nodeIndices.size();
