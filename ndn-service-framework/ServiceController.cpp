@@ -1252,9 +1252,18 @@ ServiceController::getPolicyStatus(const ndn::Name& serviceName) const
 {
   if (!m_generationReady || !m_controllerVersion.isValid() || serviceName.empty())
     throw std::runtime_error("Controller policy status is not ready");
+  // The persisted version may name an epoch whose key material does not exist yet. Composing a status from it
+  // would pair that epoch with the previous generation's parameters, so the composition itself refuses - every
+  // caller sees the same answer, not just the ones that come through the serving handlers.
+  // While a rotation is pending, the persisted version names an epoch whose key material does not exist yet.
+  // Compose the status from the material actually in hand instead of that epoch: clients then see the last
+  // committed state, which is consistent, rather than a new epoch paired with the previous generation's
+  // parameters.
+  const auto statusVersion = (m_abeRotationPending && m_abeMaterialVersion.isValid())
+    ? m_abeMaterialVersion : m_controllerVersion;
   PolicyStatusData status;
   status.setServiceName(serviceName);
-  status.setControllerVersion(m_controllerVersion);
+  status.setControllerVersion(statusVersion);
   status.setValidity(m_policyValidFromMs, m_policyValidUntilMs);
   status.setPolicyDigest(sha256FileDigest(m_configFilePath));
   status.setAbePublicParametersName(m_abePublicParametersName);
@@ -2491,13 +2500,6 @@ ServiceController::onPolicyStatusInterest(const ndn::InterestFilter&,
                                           const ndn::Interest& interest)
 {
   if (!hasGenerationWriter() || !admitControlQuery(interest, "POLICY-STATUS")) return;
-  // A pending rotation means the persisted epoch has moved but its key material has not. Serving a status here
-  // would let a client combine the new epoch with the retired generation's parameters - the exact mixed state
-  // this fence exists to prevent. Fail closed until the rotation commits.
-  if (m_abeRotationPending) {
-    NDN_LOG_WARN("NDNSF_POLICY_STATUS_WITHHELD reason=abe-rotation-pending");
-    return;
-  }
   const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
   if (!query || !query->subject.empty() || query->service.empty()) return;
   const auto serviceName = query->service;
