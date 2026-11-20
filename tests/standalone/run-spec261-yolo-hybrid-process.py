@@ -22,6 +22,8 @@ parser.add_argument('--build', type=Path, default=Path(os.environ.get("SPEC185_B
 parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--boundary', default='onnx-node-3')
+parser.add_argument('--turns', type=int, default=1,
+                    help='repeat the request in the same Provider process for cold/warm checks')
 parser.add_argument('--variant', choices=['26n', '11n'], default='26n')
 parser.add_argument('--cache', type=Path, default=None,
                     help='directory holding the exported model, weights, input and oracle')
@@ -189,16 +191,20 @@ try:
   revoke_wait_seconds=max(30, int(revoke_after_ms / 1000) + 30)
   b.wait_marker(c,run_root/'controller.log','NDNSF_REVOCATION_APPLIED success=1',revoke_wait_seconds)
  # requester direct first
- rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output.bin')],re,'requester');children.append(rq)
- try:
-  rq.wait(timeout=120)
- except subprocess.TimeoutExpired:
-  b.stop(rq)
-  raise RuntimeError('requester did not finish within 120s')
- print('requester rc',rq.returncode)
+ for turn in range(args.turns):
+  rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),
+             '--input',str(run_root/'requester/input.bin'),
+             '--output',str(run_root/f'requester/output-{turn}.bin')],re,f'requester-{turn}')
+  children.append(rq)
+  try:
+   rq.wait(timeout=120)
+  except subprocess.TimeoutExpired:
+   b.stop(rq)
+   raise RuntimeError(f'requester turn {turn} did not finish within 120s')
+  print('requester turn',turn,'rc',rq.returncode)
+  if rq.returncode != 0:
+   raise SystemExit(rq.returncode)
  print('ROOT',run_root)
- if rq.returncode != 0:
-  raise SystemExit(rq.returncode)
  # This script owns process startup, scheduled revocation and cleanup only.
  # Business success/failure, grant identity and Provider execution are
  # asserted by the C++ parent selector from these retained logs.  Keeping the
