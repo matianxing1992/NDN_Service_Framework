@@ -1870,6 +1870,8 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift
   const auto identity = canonicalOnnxSourceIdentity(source, control);
   const NativeJson configuration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
+    // Spec182 compares against the historical YOLO route on purpose.
+    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/source"},
       {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
@@ -1958,6 +1960,8 @@ BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
   const auto identity = canonicalOnnxSourceIdentity(source, control);
   const NativeJson catalogConfiguration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
+    // Spec182 compares against the historical YOLO route on purpose.
+    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/source"},
       {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
@@ -2321,6 +2325,8 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
   const auto identity = canonicalOnnxSourceIdentity(source, control);
   const NativeJson configuration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
+    // Spec182 compares against the historical YOLO route on purpose.
+    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/source"},
       {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
@@ -2392,6 +2398,8 @@ BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
   const auto boundary = inspected.graph.topologicalOrder.at(1);
   const NativeJson configuration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
+    // Spec182 compares against the historical YOLO route on purpose.
+    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/conv"},
       {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
@@ -2811,15 +2819,21 @@ BOOST_AUTO_TEST_CASE(RequestCatalogRejectsRetiredLegacyYolo)
     {"input_format", "JSON"}, {"max_payload_bytes", 32},
     {"splitter", {{"kind", "YOLO"}}}
   };
-  // The legacy route stays available for the migration comparison.
-  NativeJson legacy = configuration;
-  BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(legacy), source, control),
-                    std::exception);
-  configuration["legacy_yolo_retired"] = true;
+  // Retired by default.
   BOOST_CHECK_EXCEPTION(
     NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control),
     std::runtime_error, [] (const std::runtime_error& error) {
       return std::string(error.what()).find("DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED") == 0;
+    });
+  // A historical comparison run may opt back in; it then fails on its own
+  // missing components rather than on the retirement gate.
+  NativeJson legacy = configuration;
+  legacy["legacy_yolo_retired"] = false;
+  BOOST_CHECK_EXCEPTION(
+    NativeRequestCatalog::load(nativeCanonicalJson(legacy), source, control),
+    std::exception, [] (const std::exception& error) {
+      return std::string(error.what()).find("DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED") ==
+        std::string::npos;
     });
 }
 
