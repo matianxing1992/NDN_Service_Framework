@@ -2968,6 +2968,22 @@ BOOST_AUTO_TEST_CASE(SharedTpPlanningUsesSignedAckAndReopensFixedSelections)
   }
   BOOST_REQUIRE_EQUAL(published.size(), 6U);
   BOOST_REQUIRE_EQUAL(fetched.size(), published.size());
+  // Every published and fetched tensor name was admitted through the N5 schema, so the shape is asserted here:
+  // the projection carries a phase, a step, a layer interval and a port for each of these endpoints.
+  for (const auto& name : published) {
+    const ndn::Name object(name);
+    const auto index = [&object](const std::string& marker) {
+      for (std::size_t position = 0; position + 1 < object.size(); ++position)
+        if (object[position] == ndn::name::Component(marker))
+          return position;
+      return object.size();
+    };
+    BOOST_CHECK_LT(index("phase"), object.size());
+    // The published name is the object prefix, so its last two components are `rep` and the identity.
+    BOOST_REQUIRE_GE(object.size(), 2U);
+    BOOST_CHECK(object[-2] == ndn::name::Component("rep"));
+    BOOST_CHECK_EQUAL(object[-1].value_size(), 32U);
+  }
   for (const auto& name : published) BOOST_CHECK_EQUAL(fetched.at(name), 2U);
   BOOST_CHECK_EQUAL(sums.load(), 4U);
   for (const auto& work : statistics) {
