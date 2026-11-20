@@ -6314,6 +6314,25 @@ namespace ndn_service_framework
     }
 
     namespace {
+      /** True when this status withdraws this user's signing certificate, which ends its streams like an identity
+       *  revocation does - the certificate is what the Provider authenticates, and it is no longer admitted. */
+      bool controllerChangeRevokesCertificate(const PolicyStatusData& status,
+                                              const ndn::security::Certificate& certificate)
+      {
+        if (certificate.getName().empty())
+          return false;
+        // Same digest the Controller uses for revocation targets: hash the canonical encoded certificate block.
+        const auto wire = certificate.wireEncode();
+        ndn::util::Sha256 sha;
+        sha << std::string(reinterpret_cast<const char*>(wire.data()), wire.size());
+        const auto digest = "sha256:" + sha.toString();
+        for (const auto& revocation : status.getRevocations()) {
+          if (!revocation.certificateDigest.empty() && revocation.certificateDigest == digest)
+            return true;
+        }
+        return false;
+      }
+
       /** True when this status withdraws the identity itself, which ends every stream it was admitted for. */
       bool controllerChangeRevokesIdentity(const PolicyStatusData& status, const ndn::Name& identity)
       {
@@ -6368,6 +6387,7 @@ namespace ndn_service_framework
                 // and stays conservative.
                 if (!it->second->providerName.empty() && status != nullptr &&
                     !controllerChangeRevokesIdentity(*status, identity) &&
+                    !controllerChangeRevokesCertificate(*status, signingCert) &&
                     !controllerChangeAffectsProvider(*status, it->second->providerName, serviceName)) {
                     ++it;
                     continue;
