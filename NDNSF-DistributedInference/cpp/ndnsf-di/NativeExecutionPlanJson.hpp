@@ -300,6 +300,9 @@ private:
   std::shared_ptr<const NativeFixedExecutionTemplateV1> m_template;
 };
 
+ndn_service_framework::PublishedContentName nativeCapsuleContentName(
+  const NativeSelectionProjectionV3& projection, const NativeFixedRoleAssignmentV1& fixed, bool stored);
+
 /** Publication metadata from an already validated fixed role/model owner.
  * Used only on a source cache miss; never infers a model from a file name. */
 ndn_service_framework::PublishedContentName nativeFixedRoleSourceContentName(

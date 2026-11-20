@@ -3696,6 +3696,49 @@ ndn_service_framework::PublishedContentName nativeFixedRoleSourceContentName(
   return content;
 }
 
+std::string
+nativeCapsuleUseId(const NativeSelectionProjectionV3& projection,
+                   const NativeFixedRoleAssignmentV1& fixed, const bool stored)
+{
+  // `<UseId>` is a public label for the current use, recomputable from the admitted context and carrying no key
+  // material. It is a full lowercase sha256 hex, so it is stable for one use and differs between canonical and
+  // stored tables.
+  const auto identity = fixed.roleOwner()->modelManifestDigest;
+  if (identity.size() != 71 || identity.compare(0, 7, "sha256:") != 0)
+    throw std::invalid_argument("capsule table lacks verified model identity");
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"attempt", projection.attempt},
+    {"modelIdentity", identity},
+    {"provider", projection.provider},
+    {"requestId", projection.requestId},
+    {"schema", "ndnsf-di-capsule-use-v1"},
+    {"source", stored ? "stored" : "canonical"}}));
+}
+
+ndn_service_framework::PublishedContentName
+nativeCapsuleContentName(const NativeSelectionProjectionV3& projection,
+                         const NativeFixedRoleAssignmentV1& fixed, const bool stored)
+{
+  if (!fixed.matchesExecutionTemplate(projection))
+    throw std::invalid_argument("capsule table metadata differs from its execution owner");
+  ndn_service_framework::PublishedContentName content;
+  content.kind = ndn_service_framework::ContentDataKind::Assignment;
+  content.semanticRole = stored ? ndn_service_framework::ContentSemanticRole::StoredCapsule
+                                : ndn_service_framework::ContentSemanticRole::CanonicalCapsule;
+  content.modelName = projection.plan.modelName;
+  const auto& modelIdentity = fixed.roleOwner()->modelManifestDigest;
+  content.modelIdentity = modelIdentity.substr(7);
+  const auto facts = nativeModelPathFacts(projection.plan.modelName, std::string(),
+    projection.plan.modelFamily, std::string());
+  content.modelFamily = facts.family;
+  content.modelSize = facts.size;
+  content.quantization = facts.quantization;
+  content.sourceRevisionLabel = facts.revisionLabel;
+  content.useId = nativeCapsuleUseId(projection, fixed, stored);
+  content.encode();
+  return content;
+}
+
 namespace {
 NativeJson
 makeSelectionInvocationValue(

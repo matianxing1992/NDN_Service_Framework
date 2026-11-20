@@ -487,7 +487,7 @@ nativePublishModelObjectKeys(const std::shared_ptr<ndn_service_framework::Servic
   request.serviceName = ndn::Name(service);
   request.requestId = ndn::Name(projection.requestId);
   ndn_service_framework::LargeDataPublishOptions options;
-  options.contentName = nativeFixedRoleSourceContentName(projection, fixed);
+  options.contentName = nativeCapsuleContentName(projection, fixed, false);
   NativeWorkScope publish(control.workStatistics, "model-object-key-publication",
                            NativeWorkKind::UNCLASSIFIED);
   auto result = user->publishEncryptedLargeDataFromWorker(request,
@@ -582,7 +582,7 @@ nativePublishStoredModelObjectKeys(
   request.serviceName = ndn::Name(service);
   request.requestId = ndn::Name(projection.requestId);
   ndn_service_framework::LargeDataPublishOptions options;
-  options.contentName = nativeFixedRoleSourceContentName(projection, fixed);
+  options.contentName = nativeCapsuleContentName(projection, fixed, true);
   NativeWorkScope publish(control.workStatistics, "stored-model-object-key-table-publication",
                           NativeWorkKind::UNCLASSIFIED);
   auto result = user->publishEncryptedLargeDataFromWorker(request,
