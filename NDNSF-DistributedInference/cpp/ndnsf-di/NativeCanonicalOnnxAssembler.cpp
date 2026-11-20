@@ -3261,6 +3261,15 @@ prepareNativeCanonicalOnnxRole(
         selectedIds.insert(found->chunkPayloadIds.begin(), found->chunkPayloadIds.end());
         selectedDependencies.insert(found->dependencies.begin(), found->dependencies.end());
       }
+      // A transformed suffix applies a Conv bias that no selected node lists as
+      // an input; the admitted transform names it, so its payload belongs to
+      // this role's selected material closure.
+      if (!projection.assemblyContract().sourceTransformV1.empty()) {
+        const auto transform = NativeOnnxSourceTransformV1::parse(
+          projection.assemblyContract().sourceTransformV1);
+        if (transform.kind == "add-conv-bias")
+          selectedDependencies.insert(transform.bias);
+      }
       for (const auto& dependency : selectedDependencies) {
         const auto found = std::find_if(materialManifest->references.begin(),
           materialManifest->references.end(), [&] (const auto& reference) {

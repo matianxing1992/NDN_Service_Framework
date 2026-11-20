@@ -2363,7 +2363,8 @@ def build(bld):
                      'run-spec182-native-unary-process.py',
                      'run-spec182-native-stream-process.py',
                      'run-spec261-source-full-process.py',
-                     'run-spec261-source-component-process.py', 'di_native_fixture.py']
+                     'run-spec261-source-component-process.py',
+                     'run-spec261-source-hybrid-process.py', 'di_native_fixture.py']
                     if 'di' in bld.env.NDNSF_COMPONENTS else [])
     bld.env.NDNSF_TEST_DRIVER_FILES = driver_names
     if driver_names:
