@@ -2244,6 +2244,25 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
   BOOST_CHECK(std::any_of(candidate.executionPlan.steps.begin(), candidate.executionPlan.steps.end(),
     [] (const auto& step) { return step.operation == "SUM"; }));
   BOOST_CHECK_NO_THROW(candidate.validate(sourceGraph));
+
+  // The two rank shards must describe contiguous, disjoint halves of the
+  // admitted Conv input-channel axis; a gap, overlap or wrong extent would
+  // change the reduction result while still looking like a TP plan.
+  const auto rank0 = nativeParseJson(candidate.tensorIdentityByRole.at("Rank0").tensorShardV1);
+  const auto rank1 = nativeParseJson(candidate.tensorIdentityByRole.at("Rank1").tensorShardV1);
+  const auto axis0 = rank0.at("axes").at(0);
+  const auto axis1 = rank1.at("axes").at(0);
+  BOOST_CHECK_EQUAL(axis0.at("axis").get<std::string>(), "input-channel");
+  BOOST_CHECK_EQUAL(axis0.at("begin").get<std::int64_t>(), 0);
+  BOOST_CHECK_EQUAL(axis0.at("end").get<std::int64_t>(), 8);
+  BOOST_CHECK_EQUAL(axis1.at("begin").get<std::int64_t>(), 8);
+  BOOST_CHECK_EQUAL(axis1.at("end").get<std::int64_t>(), 16);
+  BOOST_CHECK_EQUAL(axis1.at("extent").get<std::int64_t>(), 16);
+  BOOST_CHECK_EQUAL(rank0.at("stage_layout_digest"), rank1.at("stage_layout_digest"));
+
+  BOOST_CHECK_THROW(NativeSourcePartitionStrategy({NativeSourcePartitionMode::HYBRID, "conv",
+    {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 1, "input-channel",
+    {1, 1, 4, 4}, {1, 1, 4, 4}, "float32", ""}), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
