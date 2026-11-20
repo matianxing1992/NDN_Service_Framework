@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "ndn-service-framework/common.hpp"
 
 #include <boost/asio/post.hpp>
@@ -357,8 +358,10 @@ BOOST_AUTO_TEST_CASE(SvsGroupAcceptsRootSignedActorsButRejectsOtherRoles)
   const auto otherCert = signActor(other);
 
   const auto schema = fixture.isolation.directory() / "svs-trust.conf";
-  const auto source = std::filesystem::path(NDNSF_TEST_SOURCE_DIR) / "examples/trust-schema.conf";
-  std::filesystem::copy_file(source, schema);
+  // The tracked fixture is byte-identical to the example schema, so the case reads its input from the
+  // fixture root (which an installed run also delivers) instead of from the source tree.
+  std::filesystem::copy_file(
+    ndnsf::test::testFixturePath("native-process-trust-schema.conf"), schema);
   ndn::io::save(rootCert, (fixture.isolation.directory() / "root.cert").string());
   auto validator = std::make_shared<MessageValidator>(schema.string(), std::nullopt,
                                                      &fixture.face);

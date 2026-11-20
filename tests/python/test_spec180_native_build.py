@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -851,10 +852,26 @@ def capture_setup(local, monkeypatch):
 
     monkeypatch.setattr(subprocess, "check_output", pkg_config)
     monkeypatch.setenv("NDNSF_LIBRARY_DIR", "/usr/local/lib")
+    # The install contract requires a global library root, but the case does not need the host's actual
+    # libraries: it needs controlled bytes whose digests it computes itself. Serving synthetic bytes for
+    # those two paths keeps the same digest comparison and removes the dependency on what this developer
+    # machine happens to have installed.
+    synthetic = {name: b"synthetic native library: " + name.encode()
+                 for name in native.GLOBAL_NATIVE_LIBRARIES}
+    read_bytes = Path.read_bytes
+    exists = Path.exists
+    monkeypatch.setattr(
+        Path, "read_bytes",
+        lambda path: synthetic[path.name] if str(path).startswith("/usr/local/lib/")
+        and path.name in synthetic else read_bytes(path))
+    monkeypatch.setattr(
+        Path, "exists",
+        lambda path: True if str(path).startswith("/usr/local/lib/") and path.name in synthetic
+        else exists(path))
     monkeypatch.setenv(
         "NDNSF_GLOBAL_NATIVE_DIGESTS",
         json.dumps({
-            name: native.digest("/usr/local/lib/" + name)
+            name: hashlib.sha256(synthetic[name]).hexdigest()
             for name in native.GLOBAL_NATIVE_LIBRARIES
         }, sort_keys=True),
     )
