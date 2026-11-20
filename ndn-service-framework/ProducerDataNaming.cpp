@@ -109,9 +109,15 @@ ndn::name::Component makeNamingLabelComponent(const std::string& value)
         (bytes[i] == 0xc2 && i + 1 < bytes.size() && bytes[i + 1] >= 0x80 && bytes[i + 1] <= 0x9f))
       throw std::invalid_argument("semantic label contains control character");
   }
-  size_t length = std::min<size_t>(64, bytes.size());
-  while (length < bytes.size() && (bytes[length] & 0xc0) == 0x80) --length;
-  return ndn::name::Component("name=" + value.substr(0, length));
+  if (bytes.size() <= 64)
+    return ndn::name::Component("name=" + value);
+  // A label longer than the public bound keeps its readable prefix AND commits to the whole value, so two labels
+  // that share a prefix can never collide; truncating alone would silently give them the same identity.
+  size_t length = 64;
+  while (length > 0 && (bytes[length] & 0xc0) == 0x80) --length;
+  const auto digest = computeNamingDigest("ndnsf-naming/label",
+    {{1, 5, bytes}});
+  return ndn::name::Component("name=" + value.substr(0, length) + "~" + digest.substr(0, 16));
 }
 
 bool matchesNamingLabelComponent(const ndn::name::Component& component,

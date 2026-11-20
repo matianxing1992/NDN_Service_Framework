@@ -96,7 +96,19 @@ BOOST_AUTO_TEST_CASE(LongLabelIdentityAndCategoryIsolation)
   const auto firstIdentity = value.objectIdentity();
   value.label = std::string(64, 'a') + "-second";
   const auto second = value.contentPrefix(ndn::Name("/producer"), std::string(64, 'b'));
-  BOOST_CHECK(first[3] == second[3]); // Same visible shortened label.
+  // A label longer than the 64-byte public bound keeps its readable prefix AND commits to the whole value, so two
+  // labels that share a prefix are distinct components instead of silently colliding (audit AUD-72c8ff5b item 3).
+  BOOST_CHECK(first[3] != second[3]);
+  const std::string firstLabel(
+    reinterpret_cast<const char*>(first[3].value()), first[3].value_size());
+  const std::string secondLabel(
+    reinterpret_cast<const char*>(second[3].value()), second[3].value_size());
+  BOOST_CHECK_LT(firstLabel.size(), secondLabel.size() + 32);
+  BOOST_CHECK_LT(firstLabel.size(), std::string(64, 'a').size() + 32);
+  BOOST_CHECK(firstLabel.rfind("name=" + std::string(64, 'a'), 0) == 0);
+  BOOST_CHECK(firstLabel.find('~') != std::string::npos);
+  BOOST_CHECK(secondLabel.find('~') != std::string::npos);
+  BOOST_CHECK(firstLabel != secondLabel);
   BOOST_CHECK(firstIdentity != value.objectIdentity());
   BOOST_CHECK(first != second);
   value.kind = ContentDataKind::Material;
