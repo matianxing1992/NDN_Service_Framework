@@ -24,6 +24,16 @@ stringField(std::uint16_t tag, std::uint8_t kind, const std::string& value)
 }
 
 ndn_service_framework::NamingDigestField
+uint64Field(std::uint16_t tag, std::uint64_t value)
+{
+  ndn_service_framework::NamingDigestField field{tag, 3, {}};
+  field.value.reserve(8);
+  for (std::size_t index = 8; index-- > 0;)
+    field.value.push_back(static_cast<std::uint8_t>(value >> (8 * index)));
+  return field;
+}
+
+ndn_service_framework::NamingDigestField
 digestField(std::uint16_t tag, const std::string& lowerHex)
 {
   const auto component = ndn_service_framework::makeNamingDigestComponent(lowerHex);
@@ -35,11 +45,20 @@ std::string
 computeTensorExecutionObjectDigest(const NativeTensorEndpointV3& endpoint)
 {
   detail::validateTensorEndpointForNaming(endpoint);
-  return ndn_service_framework::computeNamingDigest("ndnsf-naming/tensor-object", {
+  auto fields = std::vector<ndn_service_framework::NamingDigestField>{
     stringField(1, 2, endpoint.tensorDigest), stringField(2, 2, endpoint.layoutDigest),
     stringField(3, 2, endpoint.targetLayoutDigest), stringField(4, 2, endpoint.manifestDigest),
     stringField(5, 2, endpoint.securityProfile),
-    stringField(6, 5, nativeCanonicalJson(NativeJson(endpoint.bundleTensorNames)))});
+    stringField(6, 5, nativeCanonicalJson(NativeJson(endpoint.bundleTensorNames)))};
+  if (!endpoint.namingPhase.empty()) {
+    // The N5 coordinates are source-side execution facts, so they belong to the object commitment.
+    fields.push_back(stringField(7, 2, endpoint.namingPhase));
+    fields.push_back(stringField(8, 2, endpoint.namingStepId));
+    fields.push_back(uint64Field(9, endpoint.namingLayerBegin));
+    fields.push_back(uint64Field(10, endpoint.namingLayerEnd));
+    fields.push_back(stringField(11, 2, endpoint.namingPortId));
+  }
+  return ndn_service_framework::computeNamingDigest("ndnsf-naming/tensor-object", fields);
 }
 
 std::string
@@ -54,6 +73,35 @@ tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
   const auto index = input ? 0 : stride == 0 ? endpoint.round : endpoint.round % stride;
   auto name = ndn_service_framework::makeProducerDataPrefix(
     ndn::Name(endpoint.producerNamespace), "NDNSF-DI", "tensor");
+  if (!endpoint.namingPhase.empty()) {
+    // N5 fixed schema. The packed operation index remains bound in the step/metadata and in the object
+    // commitment above; it is not a separate name component.
+    const auto label = [](const std::string& value) {
+      return ndn::name::Component(value);
+    };
+    name.append("request").append(label(endpoint.requestId));
+    name.append("attempt").append(ndn_service_framework::makeNamingDecimalComponent(endpoint.attempt));
+    name.append("round").append(ndn_service_framework::makeNamingDecimalComponent(round));
+    name.append("phase").append(endpoint.namingPhase);
+    name.append("role").append(label(endpoint.producerRole));
+    name.append("step").append(label(endpoint.namingStepId));
+    name.append("layers");
+    if (endpoint.namingLayerEnd == 0) {
+      name.append("none").append("none");
+    }
+    else {
+      name.append(ndn_service_framework::makeNamingDecimalComponent(endpoint.namingLayerBegin));
+      name.append(ndn_service_framework::makeNamingDecimalComponent(endpoint.namingLayerEnd));
+    }
+    name.append("op").append(ndn::name::Component(ndn::tlv::GenericNameComponent,
+      endpoint.operation.begin(), endpoint.operation.end()));
+    name.append("rank").append(ndn_service_framework::makeNamingDecimalComponent(endpoint.producerRank));
+    name.append("batch").append(ndn_service_framework::makeNamingDecimalComponent(endpoint.microbatch));
+    name.append("port").append(label(endpoint.namingPortId));
+    name.append("rep").append(ndn_service_framework::makeNamingDigestComponent(key));
+    ndn_service_framework::checkNamingNameSize(name);
+    return name.toUri(ndn::name::UriFormat::CANONICAL);
+  }
   name.append("REQUEST").append(ndn_service_framework::makeNamingLabelComponent(
     ndn::Name(endpoint.requestId).toUri(ndn::name::UriFormat::CANONICAL)));
   name.append("ATTEMPT").append(ndn_service_framework::makeNamingDecimalComponent(endpoint.attempt));

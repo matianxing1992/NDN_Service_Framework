@@ -6143,4 +6143,94 @@ BOOST_AUTO_TEST_CASE(Spec194V4HonorsPreferredProviderAndDeviceReservations)
   BOOST_CHECK_NE(proposal.roles[0].deviceSet.front(), proposal.roles[1].deviceSet.front());
   BOOST_CHECK_NO_THROW(validateNativeRolePlacement(proposal, roles, input.offers, 200));
 }
+BOOST_AUTO_TEST_CASE(TensorObjectNameUsesTheN5SchemaWhenCoordinatesAreSet)
+{
+  NativeTensorEndpointV3 endpoint;
+  endpoint.producerNamespace = "/lab/provider";
+  endpoint.requester = "/lab/user";
+  endpoint.requestId = "/lab/request/7";
+  endpoint.attempt = 1;
+  endpoint.planDigest = "sha256:" + std::string(64, 'e');
+  endpoint.groupId = "group";
+  endpoint.groupEpoch = "epoch";
+  endpoint.consumerRole = "region";
+  endpoint.consumerRoles = {"region"};
+  endpoint.noProgressDeadlineMs = 1000;
+  endpoint.hardDeadlineMs = 2000;
+  endpoint.operation = "TENSOR_PARTIAL";
+  endpoint.round = 3;
+  endpoint.namingOperationStride = 2;
+  endpoint.sourceKind = "ROLE";
+  endpoint.producerRole = "mlp-13";
+  endpoint.producerRank = 1;
+  endpoint.microbatch = 0;
+  endpoint.tensorId = "partial";
+  endpoint.tensorDigest = "sha256:" + std::string(64, 'a');
+  endpoint.layoutDigest = "sha256:" + std::string(64, 'b');
+  endpoint.targetLayoutDigest = "sha256:" + std::string(64, 'c');
+  endpoint.manifestDigest = "sha256:" + std::string(64, 'd');
+  endpoint.securityProfile = "profile";
+  endpoint.segmentCount = 1;
+  const auto sealEndpoint = [](NativeTensorEndpointV3& value) {
+    auto identity = nativeEndpointJson(value);
+    identity.erase("endpoint_digest");
+    identity.erase("consumer_role");
+    value.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+  };
+  sealEndpoint(endpoint);
+
+  // An endpoint without coordinates keeps the legacy schema.
+  const auto legacy = ndn::Name(tensorObjectNamePrefix(endpoint));
+  BOOST_CHECK(legacy[-18] == ndn::name::Component("REQUEST"));
+
+  endpoint.namingPhase = "continuation";
+  endpoint.namingStepId = "mlp-13";
+  endpoint.namingLayerBegin = 14;
+  endpoint.namingLayerEnd = 28;
+  endpoint.namingPortId = "partial";
+  sealEndpoint(endpoint);
+  const auto name = ndn::Name(tensorObjectNamePrefix(endpoint));
+  const auto uri = name.toUri(ndn::name::UriFormat::CANONICAL);
+  BOOST_TEST_MESSAGE("N5 NAME " << uri);
+  const auto expectedPrefix = ndn::Name("/lab/provider/NDNSF-DI/tensor/request").append(
+    ndn::name::Component(endpoint.requestId));
+  BOOST_CHECK(expectedPrefix.isPrefixOf(name));
+  const auto at = [&name](const std::string& marker) {
+    for (std::size_t index = 0; index + 1 < name.size(); ++index)
+      if (name[index] == ndn::name::Component(marker))
+        return name[index + 1];
+    return ndn::name::Component();
+  };
+  BOOST_CHECK(at("phase") == ndn::name::Component("continuation"));
+  BOOST_CHECK(at("round") == ndn_service_framework::makeNamingDecimalComponent(1));  // round 3 with stride 2 -> epoch 1
+  BOOST_CHECK(at("step") == ndn::name::Component("mlp-13"));
+  BOOST_CHECK(at("port") == ndn::name::Component("partial"));
+  BOOST_CHECK_EQUAL(name[-2].toUri(), std::string("rep"));
+  BOOST_CHECK_EQUAL(name[-1].value_size(), 32U);
+
+  // A declared layer interval must be non-empty and the phase must be one of the three values.
+  // A role with no declared layer interval uses the explicit `none/none` coordinates.
+  auto noLayers = endpoint;
+  noLayers.namingLayerEnd = 0;
+  sealEndpoint(noLayers);
+  const auto noneName = ndn::Name(tensorObjectNamePrefix(noLayers));
+  const auto layersAt = [&noneName] {
+    for (std::size_t index = 0; index + 2 < noneName.size(); ++index)
+      if (noneName[index] == ndn::name::Component("layers"))
+        return index;
+    return noneName.size();
+  }();
+  BOOST_REQUIRE_LT(layersAt + 2, noneName.size());
+  BOOST_CHECK(noneName[layersAt + 1] == ndn::name::Component("none"));
+  BOOST_CHECK(noneName[layersAt + 2] == ndn::name::Component("none"));
+  auto badPhase = endpoint;
+  badPhase.namingPhase = "decode";
+  sealEndpoint(badPhase);
+  BOOST_CHECK_THROW(tensorObjectNamePrefix(badPhase), std::invalid_argument);
+  auto badPort = endpoint;
+  badPort.namingPortId = "partial/x";
+  sealEndpoint(badPort);
+  BOOST_CHECK_THROW(tensorObjectNamePrefix(badPort), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

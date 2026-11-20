@@ -273,6 +273,15 @@ NativeJson jsonValue(const NativeTensorEndpointV3& value)
   result["security_profile"] = value.securityProfile;
   result["no_progress_deadline_ms"] = value.noProgressDeadlineMs;
   result["hard_deadline_ms"] = value.hardDeadlineMs;
+  // The N5 coordinates are appended only when set, so an endpoint produced before this row keeps the same
+  // canonical JSON and therefore the same endpoint digest.
+  if (!value.namingPhase.empty()) {
+    result["naming_phase"] = value.namingPhase;
+    result["naming_step_id"] = value.namingStepId;
+    result["naming_layer_begin"] = value.namingLayerBegin;
+    result["naming_layer_end"] = value.namingLayerEnd;
+    result["naming_port_id"] = value.namingPortId;
+  }
   result["endpoint_digest"] = value.endpointDigest;
   return result;
 }
@@ -880,6 +889,11 @@ tensorEndpointFromV3Json(const boost::property_tree::ptree& node)
   endpoint.round = node.get<std::uint64_t>("round", 0);
   endpoint.dependencyId = node.get<std::string>("dependency_id", "");
   endpoint.namingOperationStride = node.get<std::uint64_t>("naming_operation_stride");
+  endpoint.namingPhase = node.get<std::string>("naming_phase", "");
+  endpoint.namingStepId = node.get<std::string>("naming_step_id", "");
+  endpoint.namingLayerBegin = node.get<std::uint64_t>("naming_layer_begin", 0);
+  endpoint.namingLayerEnd = node.get<std::uint64_t>("naming_layer_end", 0);
+  endpoint.namingPortId = node.get<std::string>("naming_port_id", "");
   endpoint.sourceKind = node.get<std::string>("source_kind", "");
   endpoint.producerRole = node.get<std::string>("producer_role", "");
   endpoint.producerRank = node.get<std::uint64_t>("producer_rank", 0);
@@ -1365,6 +1379,24 @@ segmentNamingFromJson(const boost::property_tree::ptree& dependency,
 void detail::validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpoint)
 {
   validateNativeTensorEndpointV3(endpoint);
+  if (!endpoint.namingPhase.empty()) {
+    // N5 coordinates: a phase is one of the three pre-decidable values, a declared layer interval must be
+    // non-empty and half-open, and the step and port identifiers must be single bounded atoms.
+    if (endpoint.namingPhase != "prefill" && endpoint.namingPhase != "continuation" &&
+        endpoint.namingPhase != "execute")
+      throw std::invalid_argument("tensor naming phase is not one of the declared values");
+    const auto atom = [](const std::string& value) {
+      return !value.empty() && value.size() <= 64 &&
+        std::all_of(value.begin(), value.end(), [](unsigned char c) {
+          return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                 (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_';
+        });
+    };
+    if (!atom(endpoint.namingStepId) || !atom(endpoint.namingPortId))
+      throw std::invalid_argument("tensor naming step or port is not an atom");
+    if (endpoint.namingLayerEnd != 0 && endpoint.namingLayerBegin >= endpoint.namingLayerEnd)
+      throw std::invalid_argument("tensor naming layer interval must be non-empty");
+  }
   auto identity = jsonValue(endpoint);
   identity.erase("endpoint_digest");
   identity.erase("consumer_role");
