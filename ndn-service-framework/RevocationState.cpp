@@ -57,29 +57,28 @@ sameVersionGuards(const PolicyStatusData& candidate, const PolicyStatusData& cur
          candidate.getAbePublicParametersDigest() == current.getAbePublicParametersDigest();
 }
 
-/** True when `current`'s revocations are all present in `candidate`, i.e. the candidate only adds withdrawals. */
+/** True when `current`'s revocations are all present in `candidate`, i.e. the candidate only adds withdrawals.
+ *  Compared field by field rather than by encoded wire: revocations reach this point from decoded statuses whose
+ *  encoding is not guaranteed to be reproducible. */
 bool
 revocationsSuperset(const PolicyStatusData& candidate, const PolicyStatusData& current)
 {
-  std::set<std::string> have;
-  for (const auto& target : candidate.getRevocations()) {
-    try {
-      const auto wire = target.wireEncode();
-      have.insert(std::string(wire.begin(), wire.end()));
+  const auto sameTarget = [] (const RevocationTarget& left, const RevocationTarget& right) {
+    return left.kind == right.kind && left.targetIdentity == right.targetIdentity &&
+           left.serviceName == right.serviceName &&
+           sameCertificateDigest(left.certificateDigest, right.certificateDigest) &&
+           left.authorizationAttribute == right.authorizationAttribute;
+  };
+  for (const auto& existing : current.getRevocations()) {
+    bool found = false;
+    for (const auto& incoming : candidate.getRevocations()) {
+      if (sameTarget(existing, incoming)) {
+        found = true;
+        break;
+      }
     }
-    catch (const std::exception&) {
+    if (!found)
       return false;
-    }
-  }
-  for (const auto& target : current.getRevocations()) {
-    try {
-      const auto wire = target.wireEncode();
-      if (have.count(std::string(wire.begin(), wire.end())) == 0)
-        return false;
-    }
-    catch (const std::exception&) {
-      return false;
-    }
   }
   return true;
 }
