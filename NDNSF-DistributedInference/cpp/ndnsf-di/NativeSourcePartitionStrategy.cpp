@@ -314,7 +314,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
     for (const auto& crossing : crossings) {
       if (crossing.producerRole != m_profile.roles[0] ||
           crossing.consumerRole != m_profile.roles[3] ||
-          crossing.edge->id == partial || crossing.edge->id == activation ||
+          crossing.edge->id == partial ||
           crossing.edge->producer == m_profile.boundaryNode)
         continue;
       if (!std::any_of(prefix.outputSlots.begin(), prefix.outputSlots.end(),
@@ -566,7 +566,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
       const bool fromRank = producer->second == m_profile.roles[1] ||
                             producer->second == m_profile.roles[2];
       if (producer->second != m_profile.roles[0] && !fromRank) continue;
-      if (edge.id == m_profile.convOutputTensor || edge.id == m_profile.convInputTensor ||
+      if (edge.id == m_profile.convOutputTensor ||
           edge.producer == m_profile.boundaryNode)
         continue;
       const bool toSuffix = std::any_of(edge.consumers.begin(), edge.consumers.end(),

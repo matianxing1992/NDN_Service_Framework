@@ -128,3 +128,4 @@ tests/container/**/actual/
 # Spec 261 keeps its small Conv cut fixture under version control.
 !tests/fixtures/spec261/conv-bypass.onnx
 !tests/fixtures/spec261/conv-single.onnx
+!tests/fixtures/spec261/conv-bypass2.onnx
