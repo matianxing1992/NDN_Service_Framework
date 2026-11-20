@@ -1,4 +1,6 @@
 #include "tests/unit-tests/native-protected-kv-fixture.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/private-buffer-wiper.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -66,6 +68,22 @@ struct RecipientFixture : Fixture
 };
 }
 
+namespace {
+ndn::Name reference_producer_root(const NativeProtectedKvCheckpointReferenceV1& reference)
+{
+  NativeKvPacketNamingContext context;
+  context.conversationId = "conv-1";
+  context.epoch = 1;
+  context.roleId = "decoder";
+  context.stateLayoutLabel = std::string(64, 'a');
+  return ndn::Name(reference.producerPrefix).append("NDNSF-DI").append("checkpoint")
+    .append("conversation").append(context.conversationId).append("epoch").append("1")
+    .append("role").append(context.roleId).append("state").append(context.stateLayoutLabel)
+    .append("rep").append(ndn_service_framework::makeNamingDigestComponent(std::string(64, 'b')))
+    .append("MANIFEST");
+}
+}
+
 BOOST_AUTO_TEST_SUITE(Spec221ProtectedKvCheckpoint)
 
 BOOST_AUTO_TEST_CASE(OwnerUnwrapPortAuthenticatesBeforePublishingPlaintext)
@@ -98,6 +116,49 @@ BOOST_AUTO_TEST_CASE(OwnerUnwrapPortAuthenticatesBeforePublishingPlaintext)
   BOOST_CHECK_THROW(nativeRecoverProtectedPortableKvCheckpoint(fixture.cipher, fixture.restored,
     recommitted, unwrap, fixture.limits), std::exception);
   BOOST_CHECK_EQUAL(read(fixture.restored), previous);
+}
+
+BOOST_AUTO_TEST_CASE(RecipientCapsuleBindsTheAuthorizedPacketRoot)
+{
+  RecipientFixture fixture;
+  fixture.binding.packetRoot = reference_producer_root(fixture.reference);
+  const auto capsule = fixture.wrap();
+  const auto rootAad = capsule.getField("aadDigest");
+  BOOST_REQUIRE(!rootAad.empty());
+
+  // A capsule sealed for another packet set under the same encrypted bytes carries a different AAD commitment.
+  auto otherRoot = fixture.binding;
+  otherRoot.packetRoot = ndn::Name(fixture.binding.packetRoot).getPrefix(-2).append("rep")
+    .append(ndn_service_framework::makeNamingDigestComponent(std::string(64, 'e')))
+    .append("MANIFEST");
+  const auto otherCapsule = nativeWrapProtectedKvKeyForRecipient(fixture.reference,
+    fixture.certificate, fixture.ownerKeys, fixture.recipient.getPublicKey(), otherRoot,
+    [&] { fixture.current(); });
+  BOOST_CHECK(otherCapsule.getField("aadDigest") != rootAad);
+  BOOST_CHECK(otherCapsule.getField("ciphertext") != capsule.getField("ciphertext"));
+
+  // A root that is not the authorized packet-set shape is refused before wrapping.
+  auto invalidRoot = fixture.binding;
+  invalidRoot.packetRoot = ndn::Name("/elsewhere/not-a-manifest");
+  BOOST_CHECK_THROW(nativeWrapProtectedKvKeyForRecipient(fixture.reference, fixture.certificate,
+    fixture.ownerKeys, fixture.recipient.getPublicKey(), invalidRoot, [&] { fixture.current(); }),
+    std::exception);
+  auto foreignRoot = fixture.binding;
+  foreignRoot.packetRoot = ndn::Name("/foreign/NDNSF-DI/checkpoint/conversation/c/epoch/1/role/r")
+    .append("state").append(std::string(64, 'a')).append("rep")
+    .append(ndn_service_framework::makeNamingDigestComponent(std::string(64, 'b')))
+    .append("MANIFEST");
+  BOOST_CHECK_THROW(nativeWrapProtectedKvKeyForRecipient(fixture.reference, fixture.certificate,
+    fixture.ownerKeys, fixture.recipient.getPublicKey(), foreignRoot, [&] { fixture.current(); }),
+    std::exception);
+
+  // Without a root the pre-row AAD is reused byte for byte.
+  auto legacy = fixture.binding;
+  legacy.packetRoot = ndn::Name{};
+  const auto legacyCapsule = nativeWrapProtectedKvKeyForRecipient(fixture.reference,
+    fixture.certificate, fixture.ownerKeys, fixture.recipient.getPublicKey(), legacy,
+    [&] { fixture.current(); });
+  BOOST_CHECK(legacyCapsule.getField("aadDigest") != rootAad);
 }
 
 BOOST_AUTO_TEST_CASE(CiphertextLoaderChecksHeaderBoundsAndActualLoadedDigest)

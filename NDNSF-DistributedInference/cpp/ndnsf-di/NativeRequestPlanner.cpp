@@ -2247,9 +2247,15 @@ NativePlannedRequest planNativeRequestImpl(
         const auto expires = std::min({wireDeadlineMs, core.expiresAtMs,
           conversationTurn->parent.retentionDeadlineMs, grant->expiresAtMs,
           recipientKeys->offer(provider).observation().expiresAtMs});
-        const auto binding = nativeKvRestoreRecipientBinding(projected,
+        auto binding = nativeKvRestoreRecipientBinding(projected,
           ndn::Name(runtime.requesterIdentity), ndn::Name(runtime.contract.serviceName),
           key.certificateName, key.publicKeyDigest, expires, epochMs());
+        // The authorized packet root joins the capsule's AAD whenever the record carries one, so a capsule cannot be
+        // rebound to a different packet set that shares the underlying checkpoint bytes.
+        if (saved.rootName.size() >= 4 &&
+            saved.rootName[-1] == ndn::name::Component("MANIFEST") &&
+            saved.rootName[-3] == ndn::name::Component("rep"))
+          binding.packetRoot = saved.rootName;
         const auto capsule = runtime.kvOwnerKeys->wrap(saved.protection,
           ndn::Buffer(key.publicKey.begin(), key.publicKey.end()), binding, control.deadline, current);
         current();

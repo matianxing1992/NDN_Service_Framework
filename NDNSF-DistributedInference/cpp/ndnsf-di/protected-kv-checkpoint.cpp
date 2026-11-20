@@ -297,6 +297,14 @@ recipientAssociatedData(const NativeProtectedKvCheckpointReferenceV1& reference,
     !binding.authorizationBinding.empty() && binding.authorizationBinding.size() <= 4096 &&
     !binding.roleName.empty() && binding.roleName.size() <= 4096 &&
     binding.attemptEpoch >= 1 && binding.attemptEpoch <= 2 && binding.expiresAtMs > 0);
+  if (!binding.packetRoot.empty()) {
+    // A root that is bound must name the authorized packet set: `<Producer>/.../rep/<identity>/MANIFEST`.
+    require(ndn::Name(binding.packetRoot).size() >= 4 &&
+      binding.packetRoot[-1] == ndn::name::Component("MANIFEST") &&
+      binding.packetRoot[-3] == ndn::name::Component("rep") &&
+      binding.packetRoot[-2].value_size() == 32 &&
+      reference.producerPrefix.isPrefixOf(binding.packetRoot));
+  }
   const auto core = ndn_service_framework::recipientAssignmentAssociatedData(
     binding.requesterIdentity, binding.recipientIdentity, binding.serviceName, binding.requestId,
     binding.authorizationBinding, binding.planDigest);
@@ -308,7 +316,10 @@ recipientAssociatedData(const NativeProtectedKvCheckpointReferenceV1& reference,
     {"wireDigest", reference.wireDigest}, {"wireBytes", reference.wireBytes},
     {"checkpointIdentityDigest", reference.checkpointIdentityDigest},
     {"ownerCertificateDigest", reference.ownerCertificateDigest},
-    {"keyEnvelopeDigest", digest(reinterpret_cast<const std::uint8_t*>(reference.keyEnvelope.data()), reference.keyEnvelope.size())}});
+    {"keyEnvelopeDigest", digest(reinterpret_cast<const std::uint8_t*>(reference.keyEnvelope.data()), reference.keyEnvelope.size())},
+    // Appended only when bound, so a pre-row capsule keeps the exact AAD it was sealed with.
+    {"packetRoot", binding.packetRoot.empty() ? std::string{} :
+      binding.packetRoot.toUri(ndn::name::UriFormat::CANONICAL)}});
 }
 
 void

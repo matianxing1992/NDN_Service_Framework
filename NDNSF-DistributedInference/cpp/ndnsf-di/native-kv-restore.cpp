@@ -102,6 +102,12 @@ nativeReadKvRestore(const NativeJson& value, const NativeSelectionProjectionV3& 
     ndn::Name(value.at("recipientCertificateName").get<std::string>()),
     value.at("recipientPublicKeyDigest").get<std::string>(),
     value.at("expiresAtMs").get<std::uint64_t>(), nowMs);
+  // Bind the authorized packet root into the recipient binding when the record carries one, so the capsule's AAD
+  // covers the packet set as well as the underlying encrypted checkpoint bytes.
+  if (result.saved.rootName.size() >= 4 &&
+      result.saved.rootName[-1] == ndn::name::Component("MANIFEST") &&
+      result.saved.rootName[-3] == ndn::name::Component("rep"))
+    result.recipient.packetRoot = result.saved.rootName;
   const auto& receipt = result.saved.receipt;
   const auto& parent = *projection.conversationStateReference;
   require(result.saved.protection.ownerIdentity == requester &&

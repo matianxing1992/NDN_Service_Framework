@@ -41,6 +41,10 @@ struct NativeProtectedKvRecipientBindingV1
   std::string authorizationBinding, planDigest, roleName, recipientPublicKeyDigest;
   std::uint64_t attemptEpoch = 1;
   std::uint64_t expiresAtMs = 0;
+  // The authorized packet root this capsule's key protects. Empty keeps the pre-row binding, whose AAD covers only
+  // the underlying encrypted checkpoint reference; a non-empty root joins the AAD, so a capsule cannot be rebound from
+  // one packet set to another that happens to share the same checkpoint bytes.
+  ndn::Name packetRoot;
 };
 
 // Representation/binding validation only; grants and execution remain external.
