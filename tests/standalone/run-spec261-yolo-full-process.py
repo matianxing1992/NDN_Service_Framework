@@ -22,6 +22,8 @@ parser.add_argument('--build', type=Path, default=Path(os.environ.get("SPEC185_B
 parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--variant', choices=['26n', '11n'], default='26n')
+parser.add_argument('--case', action='append', default=[],
+                    help='case directory under the model assets (repeatable)')
 parser.add_argument('--cache', type=Path, default=None,
                     help='directory holding the exported model, weights, input and oracle')
 parser.add_argument('--revoke', action='store_true',
@@ -101,7 +103,7 @@ reqpriv,reqpub=edkey(0,run_root/'requester'); authpriv,authpub=edkey(0,run_root/
 registry={"schemaVersion":1,"status":"CONFIGURED","artifactPolicyAuthority":{"publicKeyAlgorithm":"ed25519","signatureAlgorithm":"ed25519","grantSchema":"ndnsf-di-key-grant-v1","authorityId":"/example/hello/authority","keyId":"model-key","publicKeyPath":"provider/authority-public.pem","publicKeySha256":"sha256:"+hashlib.sha256(authpub.read_bytes()).hexdigest(),"acceptedModelFamilies":[YOLO[variant]["name"]],"protectionEpochs":["epoch-1"]}}
 (run_root/'provider/trust-root-registry-v1.json').write_text(json.dumps(registry)); shutil.copy2(authpub,run_root/'provider/authority-public.pem'); (run_root/'provider/recipient-private.pem').write_bytes(recippriv.read_bytes()); (run_root/'provider/recipient-private.pem').chmod(0o600); (run_root/'provider/recipient-key-map.json').write_text(json.dumps({'/example/hello/provider':str(run_root/'provider/recipient-private.pem')}))
 # authority config
-ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":120000,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":{"/example/hello/provider":"../provider/public.pem"},"publication_sources":{package:{"model_name":model["model_name"],"model_content_digest":model["content_digest"],"canonical_source_digest":src_digest,"initializer_object_digest":YOLO[variant]["initializer"],"artifact_profile_digest":profile}}}}
+ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":120000+20000*len(args.case),"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":{"/example/hello/provider":"../provider/public.pem"},"publication_sources":{package:{"model_name":model["model_name"],"model_content_digest":model["content_digest"],"canonical_source_digest":src_digest,"initializer_object_digest":YOLO[variant]["initializer"],"artifact_profile_digest":profile}}}}
 (run_root/'authority/authority.json').write_text(json.dumps(ac))
 # requester files
 (run_root/'requester/requester-private.pem').write_bytes(reqpriv.read_bytes());(run_root/'requester/requester-private.pem').chmod(0o600); shutil.copy2(authpub,run_root/'requester/authority-public.pem'); shutil.copy2(offerpub,run_root/'requester/offer-public.pem'); (run_root/'requester/trust-schema.conf').write_text(fixture_schema); (run_root/'requester/model.onnx').write_bytes(src); (run_root/'requester/model.weights').write_bytes(weights); (run_root/'requester/catalog.json').write_text(json.dumps(catalog));
@@ -144,13 +146,17 @@ try:
  revoke_after_ms=60000
  if args.revoke:
   controller_command += ['--revoke-after-ms',str(revoke_after_ms),'--revoke-kind','identity','--revoke-identity','/example/hello/provider']
- controller_command += ['--run-for-ms','120000']
+ controller_command += ['--run-for-ms',str(120000+20000*len(args.case))]
  controller_started_at=time.monotonic()
  c=launch(controller_command,penv(run_root/'controller-store'),'controller');children.append(c); b.wait_marker(c,run_root/'controller.log','ServiceController started...',30)
  a=launch([str(AUTHORITY),'--config',str(run_root/'authority/authority.json')],penv(run_root/'authority-store'),'authority');children.append(a); b.wait_marker(a,run_root/'authority.log','NATIVE_GRANT_AUTHORITY_READY',30)
  pe=penv(run_root/'provider-store')
  shutil.copy2(offerpriv,run_root/'provider/offer-private.pem')
- pm=[str(PROVIDER),'--plan',str(run_root/'provider/plan.json'),'--manifest',str(run_root/'provider/manifest.json'),'--service','/Inference/NativeUnary','--provider','/example/hello/provider','--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(run_root/'provider/trust-schema.conf'),'--roles','FullModel','--serve','--run-for-ms','120000','--artifact-cache-dir',str(run_root/'provider/cache'),'--selection-offer-key-file',str(run_root/'provider/offer-private.pem'),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
+ pm=[str(PROVIDER),'--plan',str(run_root/'provider/plan.json'),'--manifest',str(run_root/'provider/manifest.json'),'--service','/Inference/NativeUnary','--provider','/example/hello/provider','--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(run_root/'provider/trust-schema.conf'),'--roles','FullModel','--serve','--run-for-ms',str(120000+20000*len(args.case)),'--artifact-cache-dir',str(run_root/'provider/cache'),'--selection-offer-key-file',str(run_root/'provider/offer-private.pem'),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
+ if args.case:
+  # Each authenticated request keeps one resident per role and each
+  # resident holds its role template.
+  pm += ['--artifact-cache-entries','64']
  pe['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY']=str(run_root/'provider/authority-public.pem');pe['SPEC181_PROVIDER_RECIPIENT_KEY_MAP']=str(run_root/'provider/recipient-key-map.json');pe['NDNSF_DI_WORKER_BINARY']=str(WORKER)
  p=launch(pm,pe,'provider');children.append(p); b.wait_marker(p,run_root/'provider.log','NDNSF_DI_NATIVE_PROVIDER_READY',45)
  re=penv(run_root/'requester-store'); re.update({'NDNSF_DI_WORKER_BINARY':str(WORKER)})
@@ -178,6 +184,38 @@ try:
   # startup/transport margin instead of a shorter fixed timeout.
   revoke_wait_seconds=max(30, int(revoke_after_ms / 1000) + 30)
   b.wait_marker(c,run_root/'controller.log','NDNSF_REVOCATION_APPLIED success=1',revoke_wait_seconds)
+ if args.case:
+  failures=[]
+  for name in args.case:
+   case_dir=YOLO[variant]['dir']/'cases'/name
+   if not (case_dir/'input.f32').is_file() or not (case_dir/'oracle.json').is_file():
+    raise RuntimeError('SPEC261_CASE_MISSING: '+str(case_dir))
+   raw=(case_dir/'input.f32').read_bytes()
+   values=json.loads((case_dir/'oracle.json').read_text())['float32']
+   dims=[1,3,640,640]
+   hdr=b'NDITB001'+struct.pack('<I',1)+struct.pack('<I',6)+b'images'+struct.pack('<I',1)+struct.pack('<I',len(dims))
+   for d in dims: hdr+=struct.pack('<q',d)
+   hdr+=struct.pack('<Q',len(raw))
+   input_path=run_root/'requester'/('input-'+name+'.bin')
+   input_path.write_bytes(hdr+raw)
+   cfg=json.loads((run_root/'requester/config.json').read_text())
+   cfg['oracle']={'tensor':YOLO[variant]['output'],'float32':values,'tolerance':1e-4,
+     'row_width':6,'detections':True,'coordinate_tolerance':0.01,'score_tolerance':1e-4,'iou_floor':0.999}
+   config_path=run_root/'requester'/('config-'+name+'.json')
+   config_path.write_text(json.dumps(cfg))
+   rqc=launch([str(REQUESTER),'--config',str(config_path),'--input',str(input_path),
+               '--output',str(run_root/'requester'/('output-'+name+'.bin'))],re,'requester-'+name)
+   children.append(rqc)
+   try:
+    rqc.wait(timeout=180)
+   except subprocess.TimeoutExpired:
+    b.stop(rqc)
+    failures.append(name+':timeout')
+    continue
+   print('requester case',name,'rc',rqc.returncode)
+   if rqc.returncode: failures.append(name)
+  print('ROOT',run_root)
+  raise SystemExit(1 if failures else 0)
  # requester direct first
  rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output.bin')],re,'requester');children.append(rq)
  try:
