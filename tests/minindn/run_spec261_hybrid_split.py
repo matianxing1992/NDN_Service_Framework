@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
+from urllib.parse import unquote
 import json
 import os
 from pathlib import Path
@@ -40,7 +41,11 @@ ACTOR_PREFIXES = {
 
 
 def digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    checksum = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            checksum.update(chunk)
+    return checksum.hexdigest()
 
 
 def check_ffn_handoffs(run_root: Path, requester_log: str, warm: bool,
@@ -181,6 +186,261 @@ def check_block_handoffs(run_root: Path, requester_log: str, warm: bool) -> dict
     return check_ffn_handoffs(run_root, requester_log, warm, edges)
 
 
+def check_invocation_wire(requester_log: str, session: str, roles) -> dict:
+    marker = f"NDNSF_DI_INVOCATION_WIRE requestId={session} "
+    sizes = {}
+    for line in requester_log.splitlines():
+        if marker not in line:
+            continue
+        fields = dict(field.split("=", 1) for field in line.split(marker, 1)[1].split())
+        role = fields.pop("role")
+        if role in sizes or fields.pop("version") != "2":
+            raise RuntimeError(f"{role} lacks a unique v2 invocation measurement")
+        sizes[role] = {name: int(value) for name, value in fields.items()}
+        compact = sizes[role]["wire_bytes"]
+        expanded = sizes[role]["expanded_endpoint_wire_bytes"]
+        if not 0 < min(compact, expanded) or max(compact, expanded) > (4 << 20):
+            raise RuntimeError(f"{role} invocation exceeds the native reader bound")
+    if set(sizes) != set(roles):
+        raise RuntimeError(f"invocation measurements missing for {set(roles) - sizes.keys()}")
+    return sizes
+
+
+def check_wan_fixed_role_templates(run_root: Path) -> dict:
+    root = run_root / "requester" / "encrypted-repo" / "manifests"
+    prefix = "/8=example/8=hello/8=user/8=NDNSF-DI/8=assignment/"
+    roles = {"Prefix": [], "Rank0": [], "Rank1": [], "Suffix": []}
+    for path in root.glob("*.json"):
+        manifest = json.loads(path.read_text())
+        name = manifest.get("dataPrefix", "")
+        if not name.startswith(prefix):
+            continue
+        role = unquote(name.split("/8=role/8=name%3D", 1)[1].split("/", 1)[0])
+        plaintext = manifest["plaintextSize"]
+        if (role not in roles or manifest["lifecycleState"] != "COMMITTED" or
+                manifest["objectType"] != "original-packet-set" or
+                not 0 < plaintext <= (4 << 20)):
+            raise RuntimeError(f"invalid stored fixed-role source for {role}")
+        roles[role].append({
+            "digest": manifest["contentDigest"], "plaintextBytes": plaintext,
+            "originalPacketSetBytes": manifest["size"], "segments": manifest["segmentCount"],
+        })
+    if {role: len(items) for role, items in roles.items()} != {
+            "Prefix": 2, "Rank0": 1, "Rank1": 1, "Suffix": 1}:
+        raise RuntimeError("fixed-role Repo inventory differs from one full and one hybrid publication")
+    return {role: sorted(rows, key=lambda item: item["digest"]) for role, rows in roles.items()}
+
+
+def check_wan_artifacts(run_root: Path, owners: dict, selection: str) -> dict:
+    selected = json.loads(selection.split(" manifestJson=", 1)[1])
+    manifest_digest = selection.split(" manifestDigest=", 1)[1].split()[0]
+    source_digest = selected["metadata"]["canonicalSourceDigest"]
+    source_sidecar_digest = selected["metadata"]["canonicalInitializerObjectDigest"]
+    prefix_cache = run_root / owners["Prefix"] / "cache" / "assembled" / "Prefix"
+    full_manifests = []
+    for path in prefix_cache.glob("*/manifest.json"):
+        manifest = json.loads(path.read_text())
+        if manifest["artifactCoordinate"] == "/graph/full/entry/region/profile/whole":
+            full_manifests.append((path.parent, manifest))
+    if len(full_manifests) != 1:
+        raise RuntimeError("Wan lacks a unique uncut reference artifact")
+    full_dir, full = full_manifests[0]
+    if (full["nodeCount"] != 3006 or full["canonicalSourceDigest"] != source_digest or
+            full["assembledModelDigest"] != "sha256:" + digest(full_dir / "model.onnx") or
+            full["externalInitializerDigest"] != source_sidecar_digest):
+        raise RuntimeError("Wan uncut artifact differs from the hybrid source")
+    # The assembly contract identifies the initializer inventory. Its digest
+    # differs from the serialized sidecar's file digest.
+    initializer_digest = full["canonicalInitializerDigest"]
+    artifacts = {}
+    for role, node in owners.items():
+        paths = (run_root / node / "cache" / "assembled" / role).glob("*/manifest.json")
+        matches = []
+        for path in paths:
+            manifest = json.loads(path.read_text())
+            if manifest["modelManifestDigest"] == manifest_digest:
+                matches.append((path, manifest))
+        if len(matches) != 1:
+            raise RuntimeError(f"{role} lacks a unique artifact for the cold Selection")
+        path, manifest = matches[0]
+        if (manifest["role"] != role or manifest["signer"] != f"/example/hello/{node}" or
+                manifest["canonicalSourceDigest"] != source_digest or
+                manifest["canonicalInitializerDigest"] != initializer_digest or
+                not (path.parent / "manifest.signature").stat().st_size):
+            raise RuntimeError(f"{role} artifact differs from its Selection")
+        artifacts[role] = {"recipeDigest": manifest["recipeDigest"],
+                           "artifactManifestSha256": digest(path)}
+        if role in ("Prefix", "Suffix"):
+            expected_nodes = {"Prefix": 2697, "Suffix": 111}
+            graph = path.parent / "model.onnx"
+            initializer = path.parent / "model.onnx.data"
+            if (manifest["roleKind"] != "COMPONENT_SET" or
+                    int(manifest["nodeCount"]) != expected_nodes[role] or
+                    graph.stat().st_size != manifest["assembledModelBytes"] or
+                    "sha256:" + digest(graph) != manifest["assembledModelDigest"] or
+                    initializer.stat().st_size != manifest["externalInitializerBytes"] or
+                    "sha256:" + digest(initializer) != manifest["externalInitializerDigest"]):
+                raise RuntimeError(f"{role} assembled graph differs from the frozen source cut")
+            artifacts[role]["nodes"] = expected_nodes[role]
+            artifacts[role]["graphBytes"] = manifest["assembledModelBytes"]
+            artifacts[role]["initializerBytes"] = manifest["externalInitializerBytes"]
+            continue
+        begin = 0 if role == "Rank0" else 6
+        shard = json.loads(manifest["tensorShardV1"])
+        expected_axis = {"axis": "attention-head", "begin": begin, "end": begin + 6, "extent": 12}
+        entries = json.loads(manifest["sourceEntryFiles"])
+        count = 33 if role == "Rank0" else 32
+        if (manifest["roleKind"] != "TENSOR_RANK" or shard["axes"] != [expected_axis] or
+                [entry["entryId"] for entry in entries] !=
+                [f"{role}/artifact/{index}" for index in range(count)]):
+            raise RuntimeError(f"{role} entry inventory or attention head range differs")
+        for index, entry in enumerate(entries):
+            directory = path.parent / f"entry-{index}" if index else path.parent
+            graph = directory / "model.onnx"
+            initializer = directory / "model.onnx.data"
+            if (graph.stat().st_size != entry["graphBytes"] or
+                    "sha256:" + digest(graph) != entry["graphDigest"]):
+                raise RuntimeError(f"{role} artifact entry {index} differs from its manifest")
+            if entry["initializerBytes"]:
+                if (initializer.stat().st_size != entry["initializerBytes"] or
+                        "sha256:" + digest(initializer) != entry["initializerDigest"]):
+                    raise RuntimeError(f"{role} artifact entry {index} initializer differs")
+            elif initializer.exists():
+                raise RuntimeError(f"{role} artifact entry {index} has an undeclared initializer")
+        artifacts[role].update(headRange=expected_axis, entryCount=count,
+                               graphBytes=sum(entry["graphBytes"] for entry in entries),
+                               initializerBytes=sum(entry["initializerBytes"] for entry in entries),
+                               stageLayoutDigest=shard["stage_layout_digest"])
+    if artifacts["Rank0"]["stageLayoutDigest"] != artifacts["Rank1"]["stageLayoutDigest"]:
+        raise RuntimeError("Wan rank artifacts disagree on the stage layout")
+    return artifacts
+
+
+def check_wan_handoffs(run_root: Path, requester_log: str, warm: bool) -> dict:
+    selection = "NDNSF_DI_NATIVE_SELECTION_COMMITTED requestId="
+    selections = [line for line in requester_log.splitlines() if selection in line]
+    if len(selections) != 1 or "NATIVE_NUMERICAL_ORACLE_PASS tensor=flow values=4096" not in requester_log:
+        raise RuntimeError("Wan requester lacks a unique sealed result")
+    session = selections[0].split(selection, 1)[1].split()[0]
+    plan = selections[0].split(" planDigest=", 1)[1].split()[0]
+    owners = {"Prefix": "provider", "Rank0": "provider",
+              "Rank1": "provider2", "Suffix": "provider2"}
+    matched = {}
+    cache = {}
+    terminal = []
+    completed = set()
+    onnx_ms = {role: [] for role in owners}
+    assembly_markers = {role: {} for role in owners}
+    timing = f"NDNSF_DI_ONNX_TIMING session={session} "
+    for node in ("provider", "provider2"):
+        with (run_root / f"{node}.log").open(errors="replace") as stream:
+            for line in stream:
+                if timing in line:
+                    fields = dict(item.split("=", 1) for item in line.split(timing, 1)[1].split())
+                    role = fields["role"]
+                    if owners.get(role) != node or fields["state_io_binding"] != "host":
+                        raise RuntimeError(f"{role} ORT call differs from the selected CPU role")
+                    elapsed = float(fields["run_ms"])
+                    if not 0 <= elapsed < float("inf"):
+                        raise RuntimeError(f"{role} ORT call has invalid timing")
+                    onnx_ms[role].append(elapsed)
+                if f" requestId={session} " in line:
+                    for phase in ("ASSEMBLY_CALL_BEGIN", "ASSEMBLY_CALL_DONE"):
+                        if f"phase={phase} " in line:
+                            role = line.split(" role=", 1)[1].split()[0]
+                            if owners.get(role) != node or phase in assembly_markers[role]:
+                                raise RuntimeError(f"{role} has an ambiguous assembly receipt")
+                            assembly_markers[role][phase] = float(line.split()[0])
+                    if "stage=EXECUTION_COMPLETED status=observed" in line:
+                        role = line.split(" role=", 1)[1].split()[0]
+                        if owners.get(role) != node or role in completed or f" planDigest={plan} " not in line:
+                            raise RuntimeError(f"{role} execution differs from its sealed plan")
+                        completed.add(role)
+                    if "stage=TERMINAL status=observed" in line:
+                        terminal.append((node, line.split(" role=", 1)[1].split()[0]))
+                    if "phase=CACHE_ACQUIRE_DONE" in line or "phase=RUNNER_REUSE_HIT" in line:
+                        role = line.split(" role=", 1)[1].split()[0]
+                        if owners.get(role) != node or role in cache:
+                            raise RuntimeError(f"{role} lacks a unique cache receipt from its Provider")
+                        cache[role] = line.split(" detail=", 1)[1].split()[0]
+                marker = "NDNSF_DI_DEPENDENCY_OBJECT "
+                if marker not in line or f" session={session} " not in line:
+                    continue
+                fields = dict(field.split("=", 1) for field in line.split(marker, 1)[1].split())
+                if fields.get("status") != "ok":
+                    continue
+                source, target = fields["producer"], fields["consumer"]
+                if source not in owners or target not in owners:
+                    continue
+                name = fields["planned_name"]
+                expected_owner = owners[source if fields["direction"] == "publish-exact-ndn" else target]
+                if node != expected_owner or not name.startswith(f"/8=example/8=hello/8={owners[source]}/"):
+                    raise RuntimeError("Wan tensor producer or consumer identity differs")
+                port = unquote(name.split("/8=port/8=", 1)[1].split("/", 1)[0])
+                key = (source, target, port, int(fields["encoded_payload_bytes"]))
+                value = matched.setdefault(name, (key, set()))
+                if value[0] != key:
+                    raise RuntimeError("Wan publication and decoded copy differ")
+                value[1].add(fields["direction"])
+    expected_calls = {"Prefix": 1, "Rank0": 33, "Rank1": 32, "Suffix": 1}
+    if completed != owners.keys() or {role: len(times) for role, times in onnx_ms.items()} != expected_calls:
+        raise RuntimeError("Wan Provider completions or ORT call counts differ from the sealed profile")
+    assembly_ms = {}
+    for role, markers in assembly_markers.items():
+        if not markers and warm:
+            continue
+        if set(markers) != {"ASSEMBLY_CALL_BEGIN", "ASSEMBLY_CALL_DONE"}:
+            raise RuntimeError(f"{role} lacks a complete assembly interval")
+        duration = markers["ASSEMBLY_CALL_DONE"] - markers["ASSEMBLY_CALL_BEGIN"]
+        if not 0 <= duration < float("inf"):
+            raise RuntimeError(f"{role} assembly interval has invalid timing")
+        assembly_ms[role] = round(1000 * duration, 3)
+    if len(matched) != 43 or any(directions != {"publish-exact-ndn", "fetch-exact-ndn"}
+                                   for _, directions in matched.values()):
+        raise RuntimeError(f"Wan protected handoffs incomplete: {len(matched)}")
+    expected_tp = set()
+    for block in (27, 28):
+        for attention in ("self", "cross"):
+            prefix = f"block-{block}/{attention}"
+            for name in ("norm-q/mean", "norm-k/mean", "o/projection"):
+                for pair in (("Rank0", "Rank1"), ("Rank1", "Rank0")):
+                    expected_tp.add((*pair, f"{prefix}/{name}"))
+        for pair in ((("Rank0", "Rank1"), ("Rank1", "Rank0")) if block == 27 else (("Rank1", "Rank0"),)):
+            expected_tp.add((*pair, f"block-{block}/down/projection"))
+    observed_tp = []
+    pp = 0
+    lp = 0
+    pp_ports = set()
+    for (source, target, port, size), _ in matched.values():
+        if source.startswith("Rank") and target.startswith("Rank"):
+            observed_tp.append((source, target, port, size))
+        elif owners[source] != owners[target]:
+            pp_ports.add((source, target, port))
+            pp += size
+        else:
+            lp += size
+    if (len(observed_tp) != len(expected_tp) or
+            {item[:3] for item in observed_tp} != expected_tp or
+            ("Prefix", "Rank1", "block-26/ffn/residual") not in pp_ports or
+            ("Rank0", "Suffix", "block-28/ffn/residual") not in pp_ports):
+        raise RuntimeError("Wan head, FFN or pipeline handoff inventory differs")
+    expected_cache = {"template-hit", "assembled-disk-hit", "live-runner"} if warm else {
+        "assembled-built"}
+    if terminal != [("provider2", "Suffix")] or set(cache) != set(owners) or not set(cache.values()) <= expected_cache:
+        raise RuntimeError(f"Wan terminal or prepared artifact mismatch: {terminal}, {cache}")
+    result = {"request": session, "middleCache": cache, "handoffs": len(matched),
+              "tpEncodedBytes": sum(item[3] for item in observed_tp),
+              "networkPpEncodedBytes": pp, "localPpEncodedBytes": lp,
+              "pipelinePorts": sorted(pp_ports), "reductions": sorted(observed_tp),
+              "assemblyWallMs": assembly_ms,
+              "onnxExecution": {role: {"calls": len(times), "runMs": round(sum(times), 3)}
+                                for role, times in onnx_ms.items()},
+              "invocationWire": check_invocation_wire(requester_log, session, owners)}
+    if not warm:
+        result["assembledArtifacts"] = check_wan_artifacts(run_root, owners, selections[0])
+    return result
+
+
 def check_ffn_cancellation(run_root: Path, blocks: bool) -> dict:
     session = (run_root / "cancelled-request.txt").read_text().strip()
     requester = (run_root / "requester-hybrid-cancel.log").read_text(errors="replace")
@@ -224,8 +484,9 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scratch-root", type=Path, required=True)
     parser.add_argument("--prefix", type=Path, default=Path("/usr/local"))
-    parser.add_argument("--variant", choices=["26n", "11n", "ffn", "attention-ffn"], default="26n")
+    parser.add_argument("--variant", choices=["26n", "11n", "ffn", "attention-ffn", "wan"], default="26n")
     parser.add_argument("--ffn-fixture", type=Path, help="output of prepare-ffn.py")
+    parser.add_argument("--wan-reference", type=Path, help="frozen input.bundle and mixed oracle.json")
     parser.add_argument("--ffn-cancel", action="store_true")
     parser.add_argument("--topology", type=Path, default=TOPOLOGY,
                         help="MiniNDN topology file (default: the maintained hybrid topology)")
@@ -234,8 +495,11 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--nfd-log-level", default="NONE", choices=("NONE", "WARN", "DEBUG"))
     args = parser.parse_args()
+    wan = args.variant == "wan"
     blocks = args.variant == "attention-ffn"
-    if (args.variant in ("ffn", "attention-ffn")) != (args.ffn_fixture is not None):
+    if wan != (args.wan_reference is not None) or (wan and args.ffn_cancel):
+        parser.error("--wan-reference selects the Wan inputs and excludes FFN fault injection")
+    if (args.variant in ("ffn", "attention-ffn", "wan")) != (args.ffn_fixture is not None):
         parser.error("the selected variant and --ffn-fixture disagree")
     if args.ffn_fixture and args.case:
         parser.error("--case selects YOLO samples")
@@ -276,7 +540,12 @@ def main() -> int:
         "phases": [],
         "forcedCleanup": False,
     }
-    if args.ffn_fixture:
+    if wan:
+        result["fixture"] = {name: digest(args.ffn_fixture / name)
+                             for name in ("model.onnx", "model.onnx.data", "source-anchors.json")}
+        result["inputs"] = {name: digest(args.wan_reference / name)
+                            for name in ("input.bundle", "oracle.json")}
+    elif args.ffn_fixture:
         files = ("model.onnx", "oracle.json") + (
             ("input.bundle", "source-anchors.json") if blocks else ("input.f32",))
         result["fixture"] = {name: digest(args.ffn_fixture / name) for name in files}
@@ -409,6 +678,7 @@ def main() -> int:
                 [sys.executable, str(DRIVER), "--no-local-nfd", "--variant", args.variant,
                  "--run-root", str(run_root)] +
                 (["--cache", str(args.ffn_fixture.resolve())] if args.ffn_fixture else []) +
+                (["--wan-reference", str(args.wan_reference.resolve())] if wan else []) +
                 (["--ffn-cancel"] if args.ffn_cancel else []) +
                 [item for case in args.case for item in ("--case", case)],
                 cwd=scratch, env=environment, stdout=stream,
@@ -456,9 +726,12 @@ def main() -> int:
                     expected_exits[int((run_root / "requester-hybrid-cancel.pid").read_text())] = 1
                 if actor_exits != expected_exits:
                     raise RuntimeError(f"unexpected FFN actor exit status: {actor_exits}")
-                check_handoffs = check_block_handoffs if blocks else check_ffn_handoffs
+                check_handoffs = check_wan_handoffs if wan else (
+                    check_block_handoffs if blocks else check_ffn_handoffs)
                 result["hybridHandoffs"] = [check_handoffs(run_root, log, warm)
                                             for log, warm in zip(texts[2:], (False, True))]
+                if wan:
+                    result["fixedRoleTemplates"] = check_wan_fixed_role_templates(run_root)
                 if len({trial["request"] for trial in result["hybridHandoffs"]}) != 2:
                     raise RuntimeError("cold and warm trials reused a request identity")
                 if args.ffn_cancel:

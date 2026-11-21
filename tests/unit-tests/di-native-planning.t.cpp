@@ -142,6 +142,27 @@ checkQwenPlannerMigration(NativeSplitCandidate& actual, const NativeJson& frozen
 
 BOOST_AUTO_TEST_SUITE(Spec182NativePlanning)
 
+BOOST_AUTO_TEST_CASE(ResultOracleChecksShapeAndRelativeTolerance)
+{
+  const std::vector<float> actual{0.0005F, 100.0625F};
+  NamedTensor tensor{"flow", TensorElementType::Float32, {1, 2}, {}};
+  const auto* bytes = reinterpret_cast<const std::uint8_t*>(actual.data());
+  tensor.payload.assign(bytes, bytes + actual.size() * sizeof(float));
+  Result result;
+  result.payload = encodeTensorBundle({tensor});
+  const std::vector<float> reference{0.0F, 100.0F};
+  BOOST_CHECK(result.matchesFloat32Tensor("flow", reference, {1, 2}, 0.001, 0.001));
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", reference, {2, 1}, 0.001, 0.001));
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", reference, {1, 2}, 0.0001, 0.001));
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", reference, {1, 2}, 0.001, -0.001));
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", reference, {1, 2}, 0.001, 0.0));
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", reference, 0.001));
+  BOOST_CHECK(result.matchesFloat32Tensor("flow", reference, 0.1));
+  auto nonFinite = reference;
+  nonFinite[1] = std::numeric_limits<float>::infinity();
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", nonFinite, {1, 2}, 0.001, 0.001));
+}
+
 BOOST_AUTO_TEST_CASE(SourceInitializerAnnotationsDoNotDisableShapeInference)
 {
   for (const std::string mode : {"missing", "scalar", "known", "unresolved",

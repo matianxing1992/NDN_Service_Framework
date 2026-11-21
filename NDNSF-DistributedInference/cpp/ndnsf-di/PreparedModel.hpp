@@ -135,6 +135,12 @@ struct Result
                             const std::vector<float>& expected,
                             double tolerance) const;
 
+  /** Check the exact shape and per-value absolute plus relative error. */
+  bool matchesFloat32Tensor(const std::string& tensorName,
+                            const std::vector<float>& expected,
+                            const std::vector<std::int64_t>& expectedShape,
+                            double absoluteTolerance, double relativeTolerance) const;
+
   /** Compare fixed-width rows as an unordered detection set.
    *
    * NMS emits near-tied detections whose row order may differ between two

@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -18,20 +19,63 @@ main(int argc, char** argv)
 {
   const bool catalogMode = (argc == 4 || argc == 5) && std::string(argv[1]) == "--catalog";
   const bool initializerMode = argc == 4 && std::string(argv[1]) == "--initializer";
-  const bool planningMode = (argc == 4 || argc == 5) && std::string(argv[1]) == "--planning";
+  const bool planningMode = (argc >= 4 && argc <= 6) && std::string(argv[1]) == "--planning";
+  const bool preflightMode = argc == 6 && std::string(argv[1]) == "--preflight";
   const bool convMode = (argc == 4 || argc == 5) && std::string(argv[1]) == "--conv";
-  if (argc != 2 && !catalogMode && !initializerMode && !planningMode && !convMode) {
+  if (argc != 2 && !catalogMode && !initializerMode && !planningMode && !convMode &&
+      !preflightMode) {
     std::cerr << "usage: native-source-inspect model.onnx | "
-                 "--catalog catalog.json model.onnx" << std::endl;
+                 "--catalog catalog.json model.onnx | "
+                 "--planning descriptor.json model.onnx [sidecar [sha256:...]] | "
+                 "--preflight catalog.json model.onnx sidecar sha256:..." << std::endl;
     return 2;
   }
   try {
-    const char* modelPath = (catalogMode || initializerMode || planningMode || convMode) ? argv[3] : argv[1];
+    const char* modelPath =
+      (catalogMode || initializerMode || planningMode || convMode || preflightMode) ? argv[3]
+                                                                                   : argv[1];
     std::ifstream input(modelPath, std::ios::binary);
     if (!input) throw std::runtime_error("cannot open the model file");
     const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(input), {}};
     ndnsf::di::NativeCanonicalSource source;
     source.modelBytes = bytes;
+    const auto rangeControl = ndnsf::di::NativeAssemblyControl{
+      std::chrono::steady_clock::now() + std::chrono::seconds(180), [] {}, 2ULL << 30, 2ULL << 30};
+    if (argc == 6) {
+      source.initializerRangeSource = ndnsf::di::openNativeCanonicalInitializerFile(
+        argv[4], std::filesystem::file_size(argv[4]), argv[5], rangeControl);
+    }
+    if (preflightMode) {
+      using namespace ndnsf::di;
+      std::ifstream catalogStream(argv[2]);
+      if (!catalogStream) throw std::runtime_error("cannot open preflight catalog");
+      const std::string wire{std::istreambuf_iterator<char>(catalogStream), {}};
+      const auto catalog = NativeRequestCatalog::load(wire, std::move(source), rangeControl);
+      const auto candidates = catalog.splitter->enumerate(catalog.model.descriptor,
+                                                          catalog.model.graph, {});
+      if (candidates.size() != 1)
+        throw std::invalid_argument("source preflight requires one exact catalog candidate");
+      const auto& candidate = candidates.front();
+      const NativeRequestControl request{"/fixture/preflight", 1, rangeControl.deadline, {}};
+      const auto roles = catalog.preparation->prepareRoles(catalog.model, candidate, request);
+      auto facts = NativeJson::array();
+      for (const auto& role : roles) {
+        auto& record = facts.emplace_back(NativeJson{
+          {"role", role.role}, {"nodes", role.nodeIndices.size()},
+          {"memory_mib", role.requiredDeviceMemoryMb}, {"entries", 0}});
+        if (!role.sourceTransformV1.empty()) {
+          const auto recipe = nativeParseJson(role.sourceTransformV1);
+          if (recipe.contains("entries")) record["entries"] = recipe.at("entries").size();
+        }
+      }
+      const auto peers = nativeDistinctProviderPairs(candidate);
+      std::cout << nativeCanonicalJson(NativeJson{
+        {"roles", std::move(facts)}, {"source_nodes", catalog.model.graph.nodes.size()},
+        {"steps", candidate.executionPlan.steps.size()},
+        {"dependencies", candidate.executionPlan.dependencies.size()}, {"peer_roles", peers}})
+        << std::endl;
+      return 0;
+    }
     if (convMode) {
       if (argc == 5) {
         std::ifstream weights(argv[4], std::ios::binary);
@@ -61,7 +105,7 @@ main(int argc, char** argv)
         std::string{std::istreambuf_iterator<char>(descriptorStream), {}});
       const auto declared = ndnsf::di::NativeModelDescriptor::fromCanonicalJson(
         ndnsf::di::nativeCanonicalJson(descriptorJson.at("model")));
-      const auto control = ndnsf::di::NativeAssemblyControl{
+      const auto control = argc == 6 ? rangeControl : ndnsf::di::NativeAssemblyControl{
         std::chrono::steady_clock::now() + std::chrono::seconds(60), [] {}, 1 << 28, 1 << 28};
       const auto graph = ndnsf::di::inspectNativeOnnxSourceGraph(source, declared, control);
       const auto identity = ndnsf::di::canonicalOnnxSourceIdentity(source, control);
@@ -71,8 +115,9 @@ main(int argc, char** argv)
         {"canonical_graph_digest", identity.graphDigest},
         {"initializer_digest", identity.initializerDigest},
         {"initializer_object_digest",
-          source.initializerBytes ? ndnsf::di::nativeCanonicalInitializerDigest(source, control)
-                                  : std::string{}}}) << std::endl;
+          (source.initializerBytes || source.initializerRangeSource)
+            ? ndnsf::di::nativeCanonicalInitializerDigest(source, control)
+            : std::string{}}}) << std::endl;
       return 0;
     }
     if (initializerMode) {
