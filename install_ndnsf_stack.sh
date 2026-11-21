@@ -2358,6 +2358,9 @@ install_common_system_packages() {
     if (( NDNSF_INSTALL_UAV )); then
       packages+=(libgtkmm-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev libjpeg-dev
                  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav)
+      if (( NDNSF_INSTALL_DI && ! NATIVE_ONLY )); then
+        packages+=(libopencv-dev python3-aiohttp)
+      fi
       for test_option in "${WAF_CONFIGURE_ARGS[@]}"; do
         if [[ "$test_option" == --with-tests ]]; then
           packages+=(xvfb xauth)
@@ -4008,7 +4011,13 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
     native_runtime_programs+=("$RUNTIME_PREFIX/bin/NDNSF_RepoPacketServer"
       "$RUNTIME_PREFIX/bin/DistributedRepoServer")
   fi
-  if (( NDNSF_INSTALL_UAV )) && [[ -f "$RUNTIME_PREFIX/bin/UavTrackingNode" ]]; then
+  if (( NDNSF_INSTALL_UAV )); then
+    for tracking_file in bin/UavTrackingNode lib/libndnsf-uav-tracking.so \
+      lib/pkgconfig/ndnsf-uav-tracking.pc include/ndnsf/uav/UavObservationSource.hpp; do
+      [[ -f "$RUNTIME_PREFIX/$tracking_file" ]] || {
+        echo "Installed tracking SDK file missing: $RUNTIME_PREFIX/$tracking_file" >&2; exit 1;
+      }
+    done
     native_runtime_targets+=("$RUNTIME_PREFIX/bin/UavTrackingNode")
   fi
   "$PYTHON_BIN" "$SOURCE_HELPER" check-runtime --lock "$LOCK_FILE" --name NAC-ABE \
@@ -4060,11 +4069,14 @@ pip_install "$ROOT/pythonWrapper" "$ROOT/NDNSF-DistributedRepo/pythonWrapper" \
   "${python_adapter_packages[@]}"
 
 echo "==> Running Python import smoke checks"
-run env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 "$PYTHON_BIN" -I - <<'PY'
+run env -u PYTHONPATH -u PYTHONHOME -u LD_LIBRARY_PATH PYTHONNOUSERSITE=1 \
+  "$PYTHON_BIN" -I - "$NDNSF_INSTALL_UAV" "$RUNTIME_LIBRARY_DIR" <<'PY'
 import ndnsf
 import py_repoclient
 import ndnsf_distributed_inference
 from pathlib import Path
+import subprocess
+import sys
 for module in (ndnsf, py_repoclient, ndnsf_distributed_inference):
     path = Path(module.__file__).resolve()
     assert str(path).startswith('/usr/local/'), (module.__name__, path)
@@ -4079,6 +4091,17 @@ manifest = py_repoclient.make_manifest(
 )
 assert manifest.sha256
 assert ndnsf_distributed_inference.GenericRepoClient is py_repoclient.RepoClient
+if sys.argv[1] == "1":
+    import aiohttp
+    from ndnsf import _ndnsf
+
+    loaded = subprocess.check_output(["/usr/bin/ldd", _ndnsf.__file__], text=True)
+    for library in ("libndnsf-uav-tracking.so", "libndn-service-framework.so.0.1.0"):
+        expected = (Path(sys.argv[2]) / library).resolve(strict=True)
+        paths = [Path(fields[2]).resolve() for fields in map(str.split, loaded.splitlines())
+                 if len(fields) >= 3 and fields[:2] == [library, "=>"]]
+        if paths != [expected]:
+            raise SystemExit(f"Installed ndnsf binding resolved {library} to {paths}, expected {expected}")
 print("NDNSF_STACK_INSTALL_SMOKE_OK")
 PY
 
