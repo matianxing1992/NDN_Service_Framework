@@ -2952,6 +2952,88 @@ checkConvFp32Error(const std::vector<float>& actual, const std::vector<ConvRefer
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceEntryProgramBindsOrderedCallsAndRank)
+{
+  NativeExecutionPlan plan;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.stageLayout = {{"middle", nativePlanningDigest("fixture-middle"), {"r0", "r1"}}};
+  const auto makeProgram = [&plan] (std::uint64_t rank) {
+    const std::string role = "r" + std::to_string(rank);
+    NativeOnnxSourceEntryProgramV1 program;
+    for (std::size_t block = 0; block < 2; ++block) {
+      const std::string tag = std::to_string(block);
+      NativeOnnxSourceEntryRecipeV1 entry;
+      auto& transform = entry.transform;
+      entry.entryId = role + "/ffn/" + tag;
+      transform.kind = "ffn-pair-partial";
+      transform.axis = "ffn-channel";
+      transform.node = "up-" + tag;
+      transform.downNode = "down-" + tag;
+      entry.sourceNodes = {transform.node, "gelu-" + tag, transform.downNode};
+      transform.weight = "up-weight-" + tag;
+      transform.downWeight = "down-weight-" + tag;
+      transform.input = "h" + tag;
+      transform.output = "h" + std::to_string(block + 1);
+      transform.extent = 7;
+      transform.begin = rank == 0 ? 0 : 4;
+      transform.end = rank == 0 ? 4 : 7;
+      NativeExecutionStepSpec call;
+      call.stepId = entry.entryId + "/call";
+      call.unitId = role;
+      call.operation = "CALL_SUBGRAPH";
+      call.artifactEntry = entry.entryId;
+      NativeStepSlotSpec port;
+      port.dtype = "float32";
+      port.shape = {std::int64_t{1}, std::int64_t{3}};
+      port.slotId = transform.input;
+      call.inputSlots.push_back(port);
+      port.slotId = transform.output;
+      call.outputSlots.push_back(port);
+      plan.steps.push_back(std::move(call));
+      program.entries.push_back(std::move(entry));
+    }
+    return program;
+  };
+  const auto left = makeProgram(0);
+  const auto right = makeProgram(1);
+  const auto wire = left.canonicalJson();
+  const auto parsed = NativeOnnxSourceEntryProgramV1::parse(wire);
+  BOOST_CHECK_EQUAL(parsed.canonicalJson(), wire);
+  BOOST_CHECK_NO_THROW(parsed.validateRank(plan, "r0", 0));
+  BOOST_CHECK_NO_THROW(right.validateRank(plan, "r1", 1));
+  BOOST_CHECK_THROW(parsed.validateRank(plan, "r0", 1), std::invalid_argument);
+  auto wrong = parsed;
+  std::swap(wrong.entries[0], wrong.entries[1]);
+  BOOST_CHECK_THROW(wrong.validateRank(plan, "r0", 0), std::invalid_argument);
+  wrong = parsed;
+  wrong.entries[1].transform.end = 3;
+  BOOST_CHECK_THROW(wrong.validateRank(plan, "r0", 0), std::invalid_argument);
+  wrong = parsed;
+  wrong.entries[1].sourceNodes[1] = wrong.entries[0].sourceNodes[1];
+  BOOST_CHECK_THROW(NativeOnnxSourceEntryProgramV1::parse(wrong.canonicalJson()),
+                    std::invalid_argument);
+  auto wrongPlan = plan;
+  wrongPlan.steps[1].inputSlots.front().shape[1] = std::string("unbound");
+  BOOST_CHECK_THROW(parsed.validateRank(wrongPlan, "r0", 0), std::invalid_argument);
+  wrongPlan.steps.erase(wrongPlan.steps.begin() + 1);
+  BOOST_CHECK_THROW(parsed.validateRank(wrongPlan, "r0", 0), std::invalid_argument);
+
+  NativeSplitCandidate candidate;
+  candidate.executionPlan = plan;
+  candidate.sourceTransformByRole = {{"r0", wire}, {"r1", right.canonicalJson()}};
+  const auto pairs = nativeDistinctProviderPairs(candidate);
+  BOOST_REQUIRE_EQUAL(pairs.size(), 1u);
+  BOOST_CHECK_EQUAL(pairs.front().first, "r0");
+  BOOST_CHECK_EQUAL(pairs.front().second, "r1");
+  const auto capabilities = nativePlanRequiredCapabilities(candidate);
+  BOOST_CHECK(std::find(capabilities.begin(), capabilities.end(),
+    NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1) != capabilities.end());
+  wrong = right;
+  wrong.entries[1].transform.downWeight = "foreign-weight";
+  candidate.sourceTransformByRole["r1"] = wrong.canonicalJson();
+  BOOST_CHECK_THROW(nativeDistinctProviderPairs(candidate), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformShardsBothFfnProjections)
 {
   onnx::ModelProto source;
@@ -3169,6 +3251,10 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformShardsBothFfnProjections)
   const auto requirements = nativePlanRequiredCapabilities(candidate);
   BOOST_CHECK(std::find(requirements.begin(), requirements.end(),
                         NATIVE_FFN_PAIR_CAPABILITY_V1) != requirements.end());
+  const auto pairs = nativeDistinctProviderPairs(candidate);
+  BOOST_REQUIRE_EQUAL(pairs.size(), 1U);
+  BOOST_CHECK_EQUAL(pairs.front().first, "Rank0");
+  BOOST_CHECK_EQUAL(pairs.front().second, "Rank1");
   const auto rank0 = NativeOnnxSourceTransformV1::parse(candidate.sourceTransformByRole.at("Rank0"));
   const auto rank1 = NativeOnnxSourceTransformV1::parse(candidate.sourceTransformByRole.at("Rank1"));
   BOOST_CHECK_EQUAL(rank0.end, 4U);
@@ -3192,6 +3278,178 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformShardsBothFfnProjections)
   auto wrongRank = *plannedRank;
   wrongRank.tensorParallelRank = 0;
   BOOST_CHECK_THROW(validateNativeAssembly(wrongRank), std::invalid_argument);
+
+  // Build a second source window with a different FFN width. The prefix result
+  // feeds both the middle stage and a real suffix bypass.
+  graph.mutable_initializer()->RemoveLast();
+  weight("scale", {3}, {0.5f, 1.25f, -0.75f});
+  graph.mutable_node(0)->set_op_type("Mul");
+  graph.mutable_node(0)->add_input("scale");
+  weight("W3", {4, 5}, std::vector<float>(20, 0.25f));
+  weight("W4", {5, 3}, std::vector<float>(15, -0.125f));
+  op("up-next", "MatMul", {"partial", "W3"}, "expanded-next");
+  op("activation-next", "Gelu", {"expanded-next"}, "activated-next");
+  op("down-next", "MatMul", {"activated-next", "W4"}, "next");
+  for (int i = 5; i + 1 < graph.node_size(); ++i)
+    graph.mutable_node()->SwapElements(i, i + 1);
+  auto* suffix = graph.mutable_node(graph.node_size() - 1);
+  suffix->set_input(0, "next");
+  suffix->set_input(1, "hidden");
+  graph.mutable_output(0)->mutable_type()->mutable_tensor_type()->mutable_shape()
+    ->mutable_dim(3)->set_dim_value(3);
+
+  const auto multiWire = source.SerializeAsString();
+  canonicalSource.modelBytes.assign(multiWire.begin(), multiWire.end());
+  const auto multiInspection = inspectNativeOnnxSourceGraph(canonicalSource, descriptor, control);
+  descriptor.graphDigest = multiInspection.graph.graphDigest;
+  auto multiConfig = configuration;
+  multiConfig["model"] = nativeParseJson(descriptor.canonicalJson());
+  multiConfig["source"]["digest"] = nativePlanningDigest(multiWire);
+  multiConfig["source"]["canonical_graph_digest"] = multiInspection.canonicalIdentity.graphDigest;
+  auto& split = multiConfig["splitter"];
+  split.erase("boundary_node");
+  split.erase("ffn_down_node");
+  split["ffn_windows"] = {{{"up_node", "onnx-node-1"}, {"down_node", "onnx-node-4"}},
+                           {{"up_node", "onnx-node-5"}, {"down_node", "onnx-node-7"}}};
+  const auto multi = NativeRequestCatalog::load(nativeCanonicalJson(multiConfig),
+                                                 canonicalSource, control);
+  const auto multiCandidates = multi.splitter->enumerate(multi.model.descriptor, multi.model.graph, {});
+  BOOST_REQUIRE_EQUAL(multiCandidates.size(), 1U);
+  const auto& composed = multiCandidates.front();
+  BOOST_REQUIRE_EQUAL(composed.executionPlan.stageLayout.size(), 3U);
+  BOOST_CHECK_EQUAL(composed.executionPlan.stageLayout.at(1).degree(), 2U);
+  BOOST_CHECK_EQUAL(composed.executionPlan.steps.size(), 9U);
+  BOOST_CHECK_EQUAL(composed.executionPlan.dependencies.size(), 7U);
+  BOOST_CHECK_EQUAL(*composed.requirementsByRole.at("Rank0").weightBytes, 212U);
+  BOOST_CHECK_EQUAL(*composed.requirementsByRole.at("Rank1").weightBytes, 152U);
+  const auto bypass = std::find_if(composed.executionPlan.dependencies.begin(),
+    composed.executionPlan.dependencies.end(), [] (const auto& edge) {
+      return edge.producerStepId == "Prefix/RUN" && edge.producerSlotId == "hidden" &&
+             edge.consumerStepId == "Suffix/RUN" && edge.consumerSlotId == "hidden";
+    });
+  BOOST_REQUIRE(bypass != composed.executionPlan.dependencies.end());
+  const auto nextCall = std::find_if(composed.executionPlan.steps.begin(),
+    composed.executionPlan.steps.end(), [] (const auto& step) {
+      return step.stepId == "Rank1/RUN/1";
+    });
+  BOOST_REQUIRE(nextCall != composed.executionPlan.steps.end());
+  BOOST_CHECK_EQUAL(nextCall->inputSlots.front().producerStepId, "Rank1/SUM/0");
+  const auto multiRoles = multi.preparation->prepareRoles(multi.model, composed, request);
+  BOOST_REQUIRE_EQUAL(multiRoles.size(), 4U);
+  const auto rejectsSourceProgram = [&] (auto candidate, const std::string& expected) {
+    candidate.candidateDigest = candidate.computedDigest();
+    BOOST_CHECK_EXCEPTION(multi.preparation->prepareRoles(multi.model, candidate, request),
+      std::invalid_argument, [&] (const auto& error) { return error.what() == expected; });
+  };
+  const auto bypassIndex = std::distance(composed.executionPlan.dependencies.begin(), bypass);
+  auto omitted = composed;
+  omitted.executionPlan.dependencies.erase(omitted.executionPlan.dependencies.begin() + bypassIndex);
+  auto& suffixInputs = omitted.executionPlan.steps.back().inputSlots;
+  suffixInputs.erase(std::remove_if(suffixInputs.begin(), suffixInputs.end(), [] (const auto& slot) {
+    return slot.slotId == "hidden";
+  }), suffixInputs.end());
+  rejectsSourceProgram(omitted, "source program outer CALL differs from its canonical frontier");
+  auto wrongLineage = composed;
+  auto& incoming = wrongLineage.executionPlan.steps.back().inputSlots;
+  auto input = std::find_if(incoming.begin(), incoming.end(), [] (const auto& slot) {
+    return slot.slotId == "hidden";
+  });
+  BOOST_REQUIRE(input != incoming.end());
+  input->producerStepId = "Rank0/SUM/1";
+  input->producerSlotId = "next";
+  auto& wrongBypass = wrongLineage.executionPlan.dependencies.at(bypassIndex);
+  wrongBypass.producers = {"Rank0"};
+  wrongBypass.producerStepId = input->producerStepId;
+  wrongBypass.producerSlotId = input->producerSlotId;
+  wrongBypass.tensors = {input->producerSlotId};
+  rejectsSourceProgram(wrongLineage, "source program outer CALL changes source tensor lineage");
+  auto wrongTerminal = composed;
+  wrongTerminal.resultEgressRole = "Rank0";
+  rejectsSourceProgram(wrongTerminal, "source program terminal owner does not produce the model output");
+  auto strippedRecipe = composed;
+  strippedRecipe.sourceTransformByRole.clear();
+  rejectsSourceProgram(strippedRecipe, "source program role is missing its entry recipe");
+  for (const auto& role : multiRoles) {
+    BOOST_TEST_CONTEXT(role.selectedRole) {
+      validateNativeAssembly(role);
+      if (role.selectedRole == "Rank0" || role.selectedRole == "Rank1") {
+        const auto expected = "program-" + nativePlanningDigest(role.sourceTransformV1).substr(7);
+        BOOST_CHECK(ndn::Name(role.artifactCoordinate)[-1] == ndn::name::Component(expected));
+      }
+    }
+  }
+
+  NativeCanonicalSource materials;
+  materials.materialManifest = deriveNativeCanonicalMaterialManifest(canonicalSource, control);
+  materials.materialPayloads = materials.materialManifest->payloads;
+  const std::vector<float> hidden{x[0] * 0.5f, x[1] * 1.25f, x[2] * -0.75f};
+  auto activation = hidden;
+  for (std::size_t index = 0; index < 2; ++index) {
+    std::vector<float> reduced;
+    for (const auto& role : multiRoles) {
+      if (role.sourceTransformV1.empty()) continue;
+      const auto program = NativeOnnxSourceEntryProgramV1::parse(role.sourceTransformV1);
+      const auto ordinals = program.bindSourceOrdinals(role.nodeIndices);
+      const auto& entry = program.entries.at(index);
+      const auto call = std::find_if(composed.executionPlan.steps.begin(),
+        composed.executionPlan.steps.end(), [&] (const auto& step) {
+          return step.unitId == role.selectedRole && step.artifactEntry == entry.entryId;
+        });
+      BOOST_REQUIRE(call != composed.executionPlan.steps.end());
+      const auto files = materializeNativeOnnxFfnEntrySource(materials, entry, ordinals.at(index),
+        *call, control, [] (const auto&) { BOOST_FAIL("fixture uses inline initializers"); });
+      onnx::ModelProto materialized;
+      BOOST_REQUIRE(materialized.ParseFromArray(files.modelBytes.data(), files.modelBytes.size()));
+      auto derived = lowerNativeMaterializedFfnEntry(std::move(materialized), entry.transform,
+                                                      ordinals.at(index));
+      const std::vector<std::int64_t> inShape{1, 1, 1, static_cast<std::int64_t>(activation.size())};
+      const std::vector<std::int64_t> outShape{1, 1, 1, index == 0 ? 4 : 3};
+      const auto partialResult = runOrt(derived, {{entry.transform.input, activation}},
+        {{entry.transform.input, inShape}}, entry.transform.output, outShape, ORT_DISABLE_ALL);
+      if (reduced.empty()) reduced.resize(partialResult.size());
+      BOOST_REQUIRE_EQUAL(partialResult.size(), reduced.size());
+      for (std::size_t i = 0; i < reduced.size(); ++i)
+        reduced[i] += partialResult[i];
+
+      if (index == 0) {
+        auto missing = materials;
+        missing.materialPayloads.erase(std::remove_if(missing.materialPayloads.begin(),
+          missing.materialPayloads.end(), [] (const auto& payload) {
+            return payload.payloadId == "node-1";
+          }), missing.materialPayloads.end());
+        BOOST_CHECK_EXCEPTION(materializeNativeOnnxFfnEntrySource(missing, entry, ordinals.at(index),
+          *call, control, {}), std::runtime_error, [] (const auto& error) {
+            return std::string(error.what()) == "DI_CANONICAL_FFN_ENTRY_MATERIAL_MISSING";
+          });
+        auto misplaced = role;
+        std::swap(misplaced.nodeIndices[0], misplaced.nodeIndices[1]);
+        BOOST_CHECK_THROW(validateNativeAssembly(misplaced), std::invalid_argument);
+      }
+    }
+    activation = std::move(reduced);
+  }
+  const auto fullMulti = runOrt(source, {{"x", x}}, {{"x", {1, 1, 1, 3}}}, "y", {1, 1, 1, 3},
+                                ORT_DISABLE_ALL);
+  BOOST_REQUIRE_EQUAL(activation.size(), fullMulti.size());
+  BOOST_REQUIRE_EQUAL(activation.size(), hidden.size());
+  for (std::size_t i = 0; i < activation.size(); ++i)
+    BOOST_CHECK_SMALL(activation[i] + hidden[i] - fullMulti[i], 1e-6f);
+
+  auto fullConfig = multiConfig;
+  fullConfig["splitter"] = {{"kind", "ONNX_SOURCE"}, {"mode", "full"}, {"roles", {"Prefix"}},
+    {"input_ingress_role", "Prefix"}, {"result_egress_role", "Prefix"}};
+  const auto fullCatalog = NativeRequestCatalog::load(nativeCanonicalJson(fullConfig),
+                                                        canonicalSource, control);
+  const auto dense = fullCatalog.splitter->enumerate(fullCatalog.model.descriptor,
+                                                     fullCatalog.model.graph, {});
+  BOOST_REQUIRE_EQUAL(dense.size(), 1U);
+  BOOST_CHECK_EQUAL(*dense.front().requirementsByRole.at("Prefix").weightBytes, 376U);
+  BOOST_CHECK_NO_THROW(fullCatalog.preparation->prepareRoles(fullCatalog.model, dense.front(),
+                                                            request));
+
+  std::swap(split["ffn_windows"][0], split["ffn_windows"][1]);
+  BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(multiConfig),
+                                              canonicalSource, control), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformPreservesExactConvAndResidual)

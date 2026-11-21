@@ -8,6 +8,11 @@
 namespace ndnsf::di {
 
 inline constexpr const char* NATIVE_FFN_PAIR_CAPABILITY_V1 = "onnx-source-ffn-pair-v1";
+inline constexpr const char* NATIVE_SOURCE_ENTRY_PROGRAM_V1 = "source_entry_program_v1";
+inline constexpr const char* NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1 =
+  "onnx-source-entry-program-v1";
+
+struct NativeExecutionPlan;
 
 /** Versioned lowering instruction carried by a transformed ONNX role recipe.
  *
@@ -40,6 +45,29 @@ struct NativeOnnxSourceTransformV1
   void validate() const;
   std::string canonicalJson() const;
   static NativeOnnxSourceTransformV1 parse(const std::string& wire);
+};
+
+/** One graph derivation under an ordered, role-local CALL entry. */
+struct NativeOnnxSourceEntryRecipeV1
+{
+  std::string entryId;
+  // Exact ordered node identities in the canonical graph, including intermediates.
+  std::vector<std::string> sourceNodes;
+  NativeOnnxSourceTransformV1 transform;
+};
+
+/** Bind every derived graph of a generic ONNX rank into its signed role recipe. */
+struct NativeOnnxSourceEntryProgramV1
+{
+  std::vector<NativeOnnxSourceEntryRecipeV1> entries;
+
+  void validate() const;
+  void validateRank(const NativeExecutionPlan& plan, const std::string& role,
+                    std::uint64_t rank) const;
+  std::vector<std::vector<std::uint64_t>>
+  bindSourceOrdinals(const std::vector<std::uint64_t>& roleOrdinals) const;
+  std::string canonicalJson() const;
+  static NativeOnnxSourceEntryProgramV1 parse(const std::string& wire);
 };
 
 /** Split an admitted Conv input-channel axis into contiguous rank ranges. */

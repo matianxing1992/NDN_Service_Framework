@@ -645,6 +645,22 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
     if (roles.count(role) == 0)
       throw std::invalid_argument("source transform names an undeclared role");
     const auto transform = nativeParseJson(wire);
+    if (transform.is_object() &&
+        transform.value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1) {
+      const auto program = NativeOnnxSourceEntryProgramV1::parse(wire);
+      const auto identity = tensorIdentityByRole.find(role);
+      if (identity == tensorIdentityByRole.end() || identity->second.degree != 2 ||
+          identity->second.tensorShardV1.empty())
+        throw std::invalid_argument("source entry program requires a two-rank shard identity");
+      program.validateRank(executionPlan, role, identity->second.rank);
+      std::vector<std::string> covered;
+      for (const auto& entry : program.entries)
+        covered.insert(covered.end(), entry.sourceNodes.begin(), entry.sourceNodes.end());
+      const auto region = roleNodeIdsByRole.find(role);
+      if (region == roleNodeIdsByRole.end() || covered != region->second)
+        throw std::invalid_argument("source entry program does not cover the ordered source region");
+      continue;
+    }
     if (!transform.is_object() ||
         transform.value("schema", std::string{}) != "source_transform_v1")
       throw std::invalid_argument("source transform schema is unsupported");
@@ -948,11 +964,65 @@ nativePlanRequiredCapabilities(const NativeSplitCandidate& candidate)
     required.emplace_back(NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1);
   if (std::any_of(candidate.sourceTransformByRole.begin(), candidate.sourceTransformByRole.end(),
                   [] (const auto& item) {
-                    return nativeParseJson(item.second).value("kind", std::string{}) ==
-                           "ffn-pair-partial";
+                    const auto transform = nativeParseJson(item.second);
+                    return transform.value("kind", std::string{}) == "ffn-pair-partial" ||
+                      transform.value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1;
                   }))
     required.emplace_back(NATIVE_FFN_PAIR_CAPABILITY_V1);
+  if (std::any_of(candidate.sourceTransformByRole.begin(), candidate.sourceTransformByRole.end(),
+                  [] (const auto& item) {
+                    return nativeParseJson(item.second).value("schema", std::string{}) ==
+                           NATIVE_SOURCE_ENTRY_PROGRAM_V1;
+                  }))
+    required.emplace_back(NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1);
   return required;
+}
+
+std::vector<std::pair<std::string, std::string>>
+nativeDistinctProviderPairs(const NativeSplitCandidate& candidate)
+{
+  std::set<std::string> unbound;
+  for (const auto& [id, transform] : candidate.sourceTransformByRole) {
+    const auto recipe = nativeParseJson(transform);
+    if (recipe.value("kind", std::string{}) == "ffn-pair-partial" ||
+        recipe.value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1)
+      unbound.insert(id);
+  }
+  std::vector<std::pair<std::string, std::string>> pairs;
+  for (const auto& stage : candidate.executionPlan.stageLayout) {
+    std::size_t bound = 0;
+    for (const auto& id : stage.unitRoleIds)
+      bound += unbound.erase(id);
+    if (bound == 0) continue;
+    if (stage.degree() != 2 || bound != 2)
+      throw std::invalid_argument("paired FFN source stage requires exactly two transformed ranks");
+    const auto& leftWire = candidate.sourceTransformByRole.at(stage.unitRoleIds[0]);
+    const auto& rightWire = candidate.sourceTransformByRole.at(stage.unitRoleIds[1]);
+    const auto isProgram = [] (const auto& wire) {
+      return nativeParseJson(wire).value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1;
+    };
+    if (isProgram(leftWire) != isProgram(rightWire))
+      throw std::invalid_argument("source stage mixes single-entry and multi-entry ranks");
+    if (isProgram(leftWire)) {
+      auto left = NativeOnnxSourceEntryProgramV1::parse(leftWire);
+      const auto right = NativeOnnxSourceEntryProgramV1::parse(rightWire);
+      if (left.entries.size() != right.entries.size())
+        throw std::invalid_argument("source peer programs carry different numbers of entries");
+      for (std::size_t index = 0; index < left.entries.size(); ++index) {
+        auto& a = left.entries[index];
+        const auto& b = right.entries[index];
+        a.transform.begin = b.transform.begin;
+        a.transform.end = b.transform.end;
+        if (a.sourceNodes != b.sourceNodes ||
+            a.transform.canonicalJson() != b.transform.canonicalJson())
+          throw std::invalid_argument("source peer programs carry different transformation facts");
+      }
+    }
+    pairs.emplace_back(stage.unitRoleIds[0], stage.unitRoleIds[1]);
+  }
+  if (!unbound.empty())
+    throw std::invalid_argument("paired FFN source role has no stage");
+  return pairs;
 }
 
 bool

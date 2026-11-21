@@ -12,6 +12,11 @@
 
 namespace ndnsf::di {
 
+struct NativeCanonicalSource;
+struct NativeCanonicalMaterializedFiles;
+struct NativeAssemblyControl;
+struct NativeExecutionStepSpec;
+
 /** Resolve one external initializer range when the role graph carries external data. */
 using NativeOnnxExternalReader =
   std::function<std::vector<std::uint8_t>(const std::string& location,
@@ -32,6 +37,21 @@ applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
                                const NativeOnnxSourceTransformV1& transform,
                                const NativeOnnxExternalReader& external = {},
                                const NativeOnnxExternalAppender& append = {});
+
+/** Lower a complete FFN entry after materialization in verified ordinal order. */
+onnx::ModelProto
+lowerNativeMaterializedFfnEntry(onnx::ModelProto source,
+                                const NativeOnnxSourceTransformV1& transform,
+                                const std::vector<std::uint64_t>& sourceOrdinals,
+                                const NativeOnnxExternalReader& external = {},
+                                const NativeOnnxExternalAppender& append = {});
+
+/** Rebuild only one entry's authenticated graph and initializer closure from a shared spool. */
+NativeCanonicalMaterializedFiles
+materializeNativeOnnxFfnEntrySource(const NativeCanonicalSource& source,
+  const NativeOnnxSourceEntryRecipeV1& entry, const std::vector<std::uint64_t>& sourceOrdinals,
+  const NativeExecutionStepSpec& call, const NativeAssemblyControl& control,
+  const NativeOnnxExternalAppender& append);
 
 } // namespace ndnsf::di
 

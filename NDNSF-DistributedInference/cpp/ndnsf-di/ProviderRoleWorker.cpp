@@ -128,6 +128,21 @@ timelineRequestId(const std::string& requestId, const std::string& sessionId)
   return requestId.empty() ? "/ndnsf-di/session/" + sessionId : requestId;
 }
 
+void
+startInputFetchTiming(const RoleSpec& role, const std::string& sessionId, InputFetchTiming& timing)
+{
+  timing.prefetchStartedAt = std::chrono::steady_clock::now();
+  logDiTimelineTrace(
+    "di-provider", "dependency_fetch_start", timelineRequestId(role.requestId, sessionId),
+    {{"sessionId", sessionId},
+     {"role", role.role},
+     {"scope", timing.scope},
+     {"inferenceEpoch", std::to_string(role.inferenceEpoch)},
+     {"providerBootId", role.candidateDecodeStateIdentity ?
+                          role.candidateDecodeStateIdentity->providerBootId : "none"},
+     {"attemptEpoch", std::to_string(role.attemptEpoch)}});
+}
+
 std::string
 stagePhaseForEdge(const DependencyEdge& edge)
 {
@@ -604,6 +619,8 @@ ProviderRoleWorker::executeAsyncImpl(
   std::vector<PendingInput> pendingInputs;
   pendingInputs.reserve(item.role.inputs.size());
   const auto* cancellable = dynamic_cast<const PromptCancellableDependencyIo*>(item.io.get());
+  const bool finiteStepProgram = item.role.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 &&
+                                 !item.role.generationLineage;
   try {
     for (const auto& edge : item.role.inputs) {
       InputFetchTiming timing;
@@ -613,17 +630,6 @@ ProviderRoleWorker::executeAsyncImpl(
       timing.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
       timing.expectedSegments = edge.expectedSegments;
       timing.expectedBytes = edge.expectedBytes;
-      timing.prefetchStartedAt = std::chrono::steady_clock::now();
-      logDiTimelineTrace(
-        "di-provider", "dependency_fetch_start",
-        timelineRequestId(item.role.requestId, item.sessionId),
-        {{"sessionId", item.sessionId},
-         {"role", item.role.role},
-         {"scope", edge.scope},
-         {"inferenceEpoch", std::to_string(item.role.inferenceEpoch)},
-         {"providerBootId", item.role.candidateDecodeStateIdentity ?
-                              item.role.candidateDecodeStateIdentity->providerBootId : "none"},
-         {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
       // A request-scoped epoch coordinator may have fetched and validated an
       // exact dependency before submitting this role.  Do not express a
       // second Interest for that same epoch; retaining the edge in the role
@@ -631,6 +637,7 @@ ProviderRoleWorker::executeAsyncImpl(
       // bundle is consumed directly.
       const auto existing = item.initialInputsByScope.find(edge.scope);
       if (existing != item.initialInputsByScope.end()) {
+        startInputFetchTiming(item.role, item.sessionId, timing);
         timing.preSatisfied = true;
         validateTensorBundleForEdge(edge, existing->second);
         timing.fetchCompletedAt = std::chrono::steady_clock::now();
@@ -650,17 +657,18 @@ ProviderRoleWorker::executeAsyncImpl(
            {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
         continue;
       }
-      // Start authenticated exact peer reads for this epoch without gating the role on them.
-      // Other step-bound transports retain demand-driven reads and their existing lifetimes.
-      const bool prefetchPeer = edge.operationKind == "TENSOR_PARTIAL" && edge.useNdnsfDataV1 &&
-        edge.declaredByV3 && !edge.manifestDataName.empty() && cancellable &&
-        cancellable->supportsPromptPrefetchCancellation(edge);
+      // Generation epochs overlap exact peer reads with compute. A finite V2 program can
+      // span many blocks, so only its consuming step starts a step-bound read.
+      const bool prefetchPeer = !finiteStepProgram && edge.operationKind == "TENSOR_PARTIAL" &&
+        edge.useNdnsfDataV1 && edge.declaredByV3 && !edge.manifestDataName.empty() &&
+        cancellable && cancellable->supportsPromptPrefetchCancellation(edge);
       if (item.role.steps && !item.role.steps->empty() && !edge.consumerStepId.empty() &&
           !prefetchPeer) {
         item.deferredInputsByScope.emplace(edge.scope, edge);
         item.inputTimings.push_back(std::move(timing));
         continue;
       }
+      startInputFetchTiming(item.role, item.sessionId, timing);
       pendingInputs.push_back(PendingInput{
         edge,
         item.io->prefetchInput(item.sessionId, edge),
@@ -1359,6 +1367,11 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
   result.runner = item.runner;
 
   const auto& steps = *item.role.steps;
+  const auto requestEdge = std::find_if(item.role.inputs.begin(), item.role.inputs.end(),
+    [&] (const auto& edge) {
+      return item.role.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 &&
+             !item.role.generationLineage && edge.operationKind == "APPLICATION_INPUT";
+    });
   // When each produced value stops being needed. A 28-layer unit produces two values per layer and
   // every one of them used to live in `produced` until the whole template finished, so a local
   // handoff retained every activation it had ever produced -- the opposite of what D5 and C10 ask
@@ -1437,6 +1450,11 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     // exists to remove.
     const auto startDeferred = [&](const auto& edge) {
       if (item.deferredInputsByScope.erase(edge.scope) == 0) return;
+      const auto timing = std::find_if(item.inputTimings.begin(), item.inputTimings.end(),
+        [&edge] (const auto& entry) { return entry.scope == edge.scope; });
+      if (timing == item.inputTimings.end())
+        throw std::logic_error("sealed step remote input has no timing record: " + edge.scope);
+      startInputFetchTiming(item.role, item.sessionId, *timing);
       auto started = item.io->prefetchInput(item.sessionId, edge);
       const auto inserted = item.pendingInputsByScope.emplace(
         edge.scope, std::shared_future<TensorBundle>(std::move(started)));
@@ -1511,35 +1529,38 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
           edge.consumerSlotId);
       }
     }
-    // EPOCH_INPUT slots are the request's own inputs. A request carries one bundle under
-    // its ingress scope, and the bundle names its tensors -- `input_ids` for a prompt --
-    // not one entry per step slot. So the slot is resolved by tensor name inside every
-    // admitted bundle first, and only then by scope, which is what a whole-role runner
-    // already does. Looking up the slot id as a scope found nothing, and the step then
-    // reported a missing input it had actually been given.
+    // Finite V2 network plans bind epoch inputs to a certified application
+    // endpoint. A similarly named peer value cannot supply a missing port there.
     for (const auto& slot : step.inputSlots) {
       if (slot.source != "EPOCH_INPUT") continue;
+      const auto bindInput = [&] (const TensorBundle& bundle) {
+        if (!isEncodedTensorBundle(bundle.payload)) {
+          return bundle.name == slot.slotId && inputs.emplace(slot.slotId, bundle).second;
+        }
+        auto tensors = decodeTensorBundle(bundle.payload, ctx.workStatistics);
+        try {
+          auto tensor = findTensor(std::move(tensors), slot.slotId);
+          return inputs.emplace(slot.slotId,
+            makeEncodedTensorBundle(slot.slotId, {std::move(tensor)})).second;
+        }
+        catch (const std::out_of_range&) {
+          return false;
+        }
+      };
+      if (requestEdge != item.role.inputs.end()) {
+        const auto requestInput = ctx.inputsByScope.find(requestEdge->scope);
+        if (requestInput == ctx.inputsByScope.end() || !bindInput(requestInput->second)) {
+          throw std::runtime_error("DI_INPUT_APPLICATION_PORT_MISSING: " + slot.slotId);
+        }
+        continue;
+      }
       if (const auto direct = ctx.inputsByScope.find(slot.slotId);
           direct != ctx.inputsByScope.end()) {
         inputs.emplace(slot.slotId, direct->second);
         continue;
       }
       for (const auto& admitted : ctx.inputsByScope) {
-        if (!isEncodedTensorBundle(admitted.second.payload)) {
-          if (admitted.second.name == slot.slotId)
-            inputs.emplace(slot.slotId, admitted.second);
-          continue;
-        }
-        auto tensors = decodeTensorBundle(admitted.second.payload,
-                                          ctx.workStatistics);
-        try {
-          auto tensor = findTensor(std::move(tensors), slot.slotId);
-          inputs.emplace(slot.slotId,
-                         makeEncodedTensorBundle(slot.slotId, {std::move(tensor)}));
-          break;
-        }
-        catch (const std::out_of_range&) {
-        }
+        if (bindInput(admitted.second)) break;
       }
     }
     if (step.operation == "SUM") {
@@ -1730,6 +1751,10 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         stripped = attachGenerationEpochLineage(stripped, lineage);
       }
       validateTensorBundleForEdge(edge, stripped, false);
+#ifdef NDNSF_DI_EXPERIMENT_FAULTS
+      NativeFaultInjection::instance().checkpoint(
+        NativeFaultPoint::BeforePublish, item.role.role, item.sessionId);
+#endif
       // Charge the transfer where it actually happens. The final pass skips this
       // edge, so leaving it out here would make the timing ledger claim the partial
       // was never sent.

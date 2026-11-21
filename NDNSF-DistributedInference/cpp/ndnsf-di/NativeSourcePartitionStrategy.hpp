@@ -17,6 +17,16 @@ enum class NativeSourcePartitionMode
   HYBRID,
 };
 
+/** Verified facts for one contiguous pair of FFN projections. */
+struct NativeSourceFfnWindow
+{
+  NativeOnnxSourceTransformV1 transform;
+  std::vector<std::string> nodes;
+  std::vector<std::int64_t> inputShape;
+  std::vector<std::int64_t> outputShape;
+  std::uint64_t weightBytes = 0;
+};
+
 /** Declarative mode and source boundary for a generic ONNX source plan. */
 struct NativeSourcePartitionProfile
 {
@@ -42,9 +52,9 @@ struct NativeSourcePartitionProfile
   std::vector<std::int64_t> convStrides;
   std::vector<std::int64_t> convDilations;
   std::optional<std::uint64_t> suffixWeightBytes;
-  std::optional<NativeOnnxSourceTransformV1> ffnPair;
+  std::map<std::string, std::uint64_t> denseWeightBytesByRole;
+  std::vector<NativeSourceFfnWindow> ffnWindows;
   std::optional<std::uint64_t> ffnPrefixWeightBytes;
-  std::uint64_t ffnPairWeightBytes = 0;
 };
 
 /**

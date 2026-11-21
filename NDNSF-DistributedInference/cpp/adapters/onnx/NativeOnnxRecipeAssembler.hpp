@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <map>
@@ -505,6 +506,13 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
 /** Parse an authenticated producer manifest without materializing payloads. */
 std::shared_ptr<NativeCanonicalSource::MaterialManifest>
 parseNativeCanonicalMaterialManifest(const std::vector<std::uint8_t>& bytes);
+
+/** Named payload closure of one admitted canonical node window. */
+std::set<std::string>
+selectNativeCanonicalMaterialPayloads(const NativeCanonicalSource::MaterialManifest& manifest,
+  const std::vector<std::uint64_t>& nodeIndices,
+  const std::vector<std::string>& extraInitializers,
+  const std::function<void()>& requireActive);
 
 /** Rebuild one selected role model from the template, selected nodes and
  * explicit shared initializer payloads.  No complete source/initializer is

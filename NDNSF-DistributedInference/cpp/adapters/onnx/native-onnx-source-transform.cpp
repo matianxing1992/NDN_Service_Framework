@@ -299,6 +299,79 @@ lowerFfnPair(onnx::ModelProto& model, const NativeOnnxSourceTransformV1& transfo
 
 } // namespace
 
+NativeCanonicalMaterializedFiles
+materializeNativeOnnxFfnEntrySource(const NativeCanonicalSource& source,
+  const NativeOnnxSourceEntryRecipeV1& entry, const std::vector<std::uint64_t>& sourceOrdinals,
+  const NativeExecutionStepSpec& call, const NativeAssemblyControl& control,
+  const NativeOnnxExternalAppender& append)
+{
+  control.requireActive();
+  entry.transform.validate();
+  if (!source.materialManifest || entry.transform.kind != "ffn-pair-partial" ||
+      call.operation != "CALL_SUBGRAPH" || !call.localStateSlots.empty() ||
+      call.artifactEntry != entry.entryId || call.inputSlots.size() != 1 ||
+      call.outputSlots.size() != 1 || entry.sourceNodes.size() != sourceOrdinals.size())
+    throw std::invalid_argument("paired FFN entry has no admitted material or CALL");
+  for (std::size_t index = 0; index < sourceOrdinals.size(); ++index) {
+    if (entry.sourceNodes[index] != "onnx-node-" + std::to_string(sourceOrdinals[index]))
+      throw std::invalid_argument("paired FFN entry ordinals differ from admitted nodes");
+  }
+  const auto port = [] (const NativeStepSlotSpec& slot, const std::string& expected) {
+    if (slot.slotId != expected)
+      throw std::invalid_argument("paired FFN CALL port differs from the source recipe");
+    return NativeAssemblyTensorContractV3{slot.slotId, slot.dtype, slot.shape};
+  };
+  const auto input = port(call.inputSlots.front(), entry.transform.input);
+  const auto output = port(call.outputSlots.front(), entry.transform.output);
+  auto selected = selectNativeCanonicalMaterialPayloads(*source.materialManifest, sourceOrdinals,
+    {}, control.requireActive);
+  NativeCanonicalSource entrySource;
+  entrySource.materialManifest = source.materialManifest;
+  std::uint64_t selectedBytes = 0;
+  for (const auto& payload : source.materialPayloads) {
+    control.requireActive();
+    if (selected.erase(payload.payloadId) == 0) continue;
+    const auto bytes = payload.byteSize();
+    if (bytes > control.maxAssembledBytes - selectedBytes)
+      throw std::runtime_error("DI_CANONICAL_FFN_ENTRY_MATERIAL_LIMIT");
+    selectedBytes += bytes;
+    // Provider payloads refer to authenticated ranges in the same spool.
+    // Releasing this entry leaves the next entry's range owner intact.
+    entrySource.materialPayloads.push_back(payload);
+  }
+  if (!selected.empty())
+    throw std::runtime_error("DI_CANONICAL_FFN_ENTRY_MATERIAL_MISSING");
+  return materializeNativeCanonicalModelFiles(entrySource, sourceOrdinals, {input}, {output},
+                                               control, append);
+}
+
+onnx::ModelProto
+lowerNativeMaterializedFfnEntry(onnx::ModelProto source,
+                                const NativeOnnxSourceTransformV1& transform,
+                                const std::vector<std::uint64_t>& sourceOrdinals,
+                                const NativeOnnxExternalReader& external,
+                                const NativeOnnxExternalAppender& append)
+{
+  transform.validate();
+  const auto expectedNodes = transform.bias.empty() ? 3U : 4U;
+  if (transform.kind != "ffn-pair-partial" || sourceOrdinals.size() != expectedNodes ||
+      static_cast<std::size_t>(source.graph().node_size()) != expectedNodes ||
+      transform.node != "onnx-node-" + std::to_string(sourceOrdinals.front()) ||
+      transform.downNode != "onnx-node-" + std::to_string(sourceOrdinals.back()))
+    throw std::invalid_argument("paired FFN projection ordinals differ from recipe");
+  for (std::size_t index = 1; index < sourceOrdinals.size(); ++index) {
+    if (sourceOrdinals[index] <= sourceOrdinals[index - 1] ||
+        sourceOrdinals[index] - sourceOrdinals[index - 1] != 1)
+      throw std::invalid_argument("paired FFN projection source window is not contiguous");
+  }
+  auto& graph = *source.mutable_graph();
+  graph.mutable_node(0)->set_name(transform.node);
+  graph.mutable_node(graph.node_size() - 1)->set_name(transform.downNode);
+  if (graph.name().empty()) graph.set_name("source-transform");
+  lowerFfnPair(source, transform, external, append);
+  return source;
+}
+
 onnx::ModelProto
 applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
                                const NativeOnnxSourceTransformV1& transform,

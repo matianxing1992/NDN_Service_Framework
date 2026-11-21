@@ -1444,7 +1444,27 @@ run(int argc, char** argv)
                   << " NATIVE_STREAM_EVENTS=" << observedEvents << '\n';
     }
     else {
-      result = handle.result();
+      while (true) {
+        if (interrupted) {
+          handle.cancel();
+          runtime->close();
+          if (!runtime->drain(std::chrono::seconds(6)))
+            throw std::runtime_error("NATIVE_REQUEST_CANCEL_DRAIN_TIMEOUT");
+          std::cout << "NATIVE_REQUEST_CANCEL_DRAINED request=" << handle.id() << std::endl;
+          throw std::runtime_error("NATIVE_REQUEST_INTERRUPTED");
+        }
+        try {
+          result = handle.result(std::chrono::milliseconds(100));
+          break;
+        }
+        catch (const DiError& error) {
+          if (error.code() != "LOCAL_WAIT_TIMEOUT") throw;
+          if (handle.status() != RequestStatus::Pending) {
+            result = handle.result(std::chrono::milliseconds(0));
+            break;
+          }
+        }
+      }
     }
     if (streaming && !terminalSeen)
       throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: terminal event missing");

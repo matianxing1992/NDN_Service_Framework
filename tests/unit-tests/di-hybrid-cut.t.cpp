@@ -4789,6 +4789,50 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
                                  expected.second.begin(), expected.second.end());
   }
   BOOST_CHECK_EQUAL(bus->publishedCount(), 0u);
+
+  // An unavailable first partial must leave every later exact read unissued.
+  auto finiteRole = roleSpecFor(plan, entry.unitId, "finite-steps", assignment, "");
+  std::vector<NativeExecutionStepSpec> finiteSteps{step};
+  for (const auto* id : {"first-sum", "later-sum"}) {
+    NativeExecutionStepSpec sum;
+    sum.stepId = id;
+    sum.unitId = entry.unitId;
+    sum.operation = "SUM";
+    sum.inputSlots = {slot("local", "LOCAL_STEP"), slot("peer", "REMOTE_STEP")};
+    sum.inputSlots.front().producerStepId = step.stepId;
+    sum.inputSlots.front().producerSlotId = "total";
+    sum.inputSlots.back().producerStepId = "peer-call";
+    sum.inputSlots.back().producerSlotId = "partial";
+    sum.outputSlots = {slot(std::string(id) + "-value", "LOCAL_STEP")};
+    finiteSteps.push_back(std::move(sum));
+
+    const std::string dataName = "/fixture/peer/" + std::string(id);
+    DependencyEdge partial{id, "peer-unit", entry.unitId, dataName};
+    partial.operationKind = "TENSOR_PARTIAL";
+    partial.useNdnsfDataV1 = true;
+    partial.declaredByV3 = true;
+    partial.manifestDataName = dataName + "/manifest";
+    partial.producerStepId = "peer-call";
+    partial.producerSlotId = "partial";
+    partial.consumerStepId = id;
+    partial.consumerSlotId = "peer";
+    finiteRole.inputs.push_back(std::move(partial));
+  }
+  finiteRole.steps =
+    std::make_shared<const std::vector<NativeExecutionStepSpec>>(std::move(finiteSteps));
+  auto stoppedBus = std::make_shared<tests::PartialBus>();
+  auto finiteIo = std::make_shared<tests::CancellableBusDependencyIo>(stoppedBus);
+  stoppedBus->cancel(std::make_exception_ptr(std::runtime_error("first partial unavailable")));
+  auto stopped = worker.executePreparedAsync("finite-steps", std::move(finiteRole), finiteIo,
+    [runner] { return runner; }, inputs);
+  BOOST_REQUIRE(stopped.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+  BOOST_CHECK_EXCEPTION(stopped.get(), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()).find("first partial unavailable") != std::string::npos;
+  });
+  BOOST_CHECK_EQUAL(finiteIo->prefetchCalls.load(), 1u);
+  BOOST_CHECK_EQUAL(finiteIo->publishCalls.load(), 0u);
+  runner->releaseSessionState("finite-steps");
+
   auto missing = inputs;
   missing.erase("right");
   auto rejected = worker.executePreparedAsync("missing-entry-input",
@@ -4798,6 +4842,26 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
   BOOST_CHECK_THROW(rejected.get(), std::exception);
   runner->releaseSessionState("generic-entry");
   runner->releaseSessionState("missing-entry-input");
+
+  auto certifiedRole = roleSpecFor(plan, entry.unitId, "foreign-application-input", assignment, "");
+  DependencyEdge requestEdge;
+  requestEdge.scope = "application-input";
+  requestEdge.operationKind = "APPLICATION_INPUT";
+  requestEdge.declaredByV3 = true;
+  requestEdge.maxSegments = 1;
+  certifiedRole.inputs.push_back(requestEdge);
+  auto certifiedInput = inputs.at("left");
+  certifiedInput.name = requestEdge.scope;
+  certifiedInput.expectedSegments = 1;
+  certifiedInput.expectedBytes = certifiedInput.payload.size();
+  auto rejectedScope = worker.executePreparedAsync("foreign-application-input",
+    std::move(certifiedRole), io, [runner] { return runner; },
+    {{requestEdge.scope, certifiedInput}, {"right", inputs.at("right")}});
+  BOOST_REQUIRE(rejectedScope.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+  BOOST_CHECK_EXCEPTION(rejectedScope.get(), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()) == "DI_INPUT_APPLICATION_PORT_MISSING: right";
+  });
+  runner->releaseSessionState("foreign-application-input");
 
   // The same arithmetic model now traverses real source admission, native cold assembly,
   // cache reconstruction and registry creation. Whole-region slots explicitly name source

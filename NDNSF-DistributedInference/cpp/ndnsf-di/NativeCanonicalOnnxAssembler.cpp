@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
@@ -16,6 +17,8 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
 
+#include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <openssl/crypto.h>
@@ -34,6 +37,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -673,6 +677,7 @@ writeSharedAssembledModel(const std::filesystem::path& cacheRoot,
 }
 
 constexpr const char* ASSEMBLED_FILE_SET_SCHEMA = "ndnsf-di-assembled-onnx-v2";
+constexpr const char* ASSEMBLED_SOURCE_PROGRAM_SCHEMA = "ndnsf-di-assembled-source-program-v1";
 
 std::string
 assembledFileSetDigest(const std::string& graphDigest, std::uint64_t graphBytes,
@@ -691,6 +696,16 @@ void
 bindAssembledFileSetMetadataImpl(Read&& read, NativeModelRunnerSpec& spec)
 {
   const auto schema = read("schema").value_or("");
+  if (schema == ASSEMBLED_SOURCE_PROGRAM_SCHEMA) {
+    for (const auto* key : {"assembledModelDigest", "sourceEntryFiles"}) {
+      const auto value = read(key).value_or("");
+      if (value.empty()) throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_METADATA_MISSING");
+      spec.metadata[key] = value;
+    }
+    return;
+  }
+  if (read("sourceEntryFiles"))
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_SCHEMA_MISMATCH");
   if (schema == "ndnsf-di-assembled-onnx-v1") {
     for (const auto* key : {"assembledFileSetDigest", "externalInitializerDigest",
                             "externalInitializerBytes", "assembledModelBytes"}) {
@@ -935,6 +950,44 @@ validateNativeAssembledArtifactFiles(const NativeModelRunnerSpec& spec,
   if (requireActive) requireActive();
   const auto graph = std::filesystem::path(spec.path);
   requireAssemblyDirectoryUnderCacheRoot(cacheRoot, graph);
+  if (const auto files = spec.metadata.find("sourceEntryFiles"); files != spec.metadata.end()) {
+    if (graph.filename() != "model.onnx" || spec.metadata.count("assembledArtifactSchema") != 0 ||
+        spec.metadata.count("tensorParallelEntries") != 0 ||
+        spec.metadata.count("assembledFileSetDigest") != 0)
+      throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_FILE_SET_INVALID");
+    const auto entries = decodeNativeSourceEntryFiles(files->second);
+    if (spec.metadata.at("assembledModelDigest") != entries.front().graphDigest)
+      throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_FIRST_MODEL_MISMATCH");
+    std::uint64_t total = 0;
+    const auto verifyFile = [&] (const std::filesystem::path& path, std::uint64_t bytes,
+                                  const std::string& digest) {
+      if (bytes > maxBytes - total)
+        throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_TOTAL_EXCEEDS_LIMIT");
+      if (requireActive) requireActive();
+      requireAssemblyDirectoryUnderCacheRoot(cacheRoot, path);
+      const auto status = std::filesystem::symlink_status(path);
+      if (!std::filesystem::is_regular_file(status) || std::filesystem::file_size(path) != bytes ||
+          (verifyContents && sha256File(path, bytes, requireActive) != digest))
+        throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_FILE_MISMATCH");
+      total += bytes;
+    };
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+      const auto& entry = entries[index];
+      const auto path = nativeSourceEntryGraphPath(graph.parent_path(), index);
+      if (std::filesystem::is_symlink(std::filesystem::symlink_status(path.parent_path())))
+        throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_DIRECTORY_INVALID");
+      verifyFile(path, entry.graphBytes, entry.graphDigest);
+      const auto initializer = path.parent_path() / "model.onnx.data";
+      if (entry.initializerBytes != 0) {
+        verifyFile(initializer, entry.initializerBytes, entry.initializerDigest);
+      }
+      else if (std::filesystem::symlink_status(initializer).type() !=
+               std::filesystem::file_type::not_found) {
+        throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_UNDECLARED_INITIALIZER");
+      }
+    }
+    return total;
+  }
   std::error_code error;
   const auto graphBytes = std::filesystem::file_size(graph, error);
   if (error || maxBytes == 0 || graphBytes == 0 || graphBytes > maxBytes ||
@@ -2121,8 +2174,12 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   const auto roleRoot = cacheRoot / (protectedRole ? "protected" : "assembled") / safeRole(
     projection.assemblyContract().selectedRole);
   const auto& assemblyRole = projection.assemblyContract();
+  const bool sourceProgram = !assemblyRole.sourceTransformV1.empty() &&
+    nativeParseJson(assemblyRole.sourceTransformV1).value("schema", std::string{}) ==
+      NATIVE_SOURCE_ENTRY_PROGRAM_V1;
   const bool verifyDerivedFfn = !assemblyRole.sourceTransformV1.empty() &&
-    NativeOnnxSourceTransformV1::parse(assemblyRole.sourceTransformV1).kind == "ffn-pair-partial";
+    (sourceProgram ||
+     NativeOnnxSourceTransformV1::parse(assemblyRole.sourceTransformV1).kind == "ffn-pair-partial");
   const auto plaintextLeaf = assembledCacheLeaf(assemblyRole, assemblyRole.recipeDigest.substr(7));
   const auto stablePlaintextDirectory = cacheRoot / "assembled" / safeRole(
     assemblyRole.selectedRole) / plaintextLeaf;
@@ -2239,16 +2296,32 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     if (!std::filesystem::is_regular_file(modelPath) ||
         !std::filesystem::is_regular_file(manifestPath))
       return std::nullopt;
-    if (protectedRole && !std::filesystem::is_regular_file(directory / "manifest.signature"))
+    if ((protectedRole || sourceProgram) &&
+        !std::filesystem::is_regular_file(directory / "manifest.signature"))
       return std::nullopt;
     requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, modelPath);
     requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, manifestPath);
     if (protectedRole && !persistentPlaintextArtifact &&
         std::filesystem::exists(ciphertextDigestPath))
       requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, ciphertextDigestPath);
-    const auto manifest = readJson(manifestPath);
+    const auto manifest = [&] {
+      if (!sourceProgram) return readJson(manifestPath);
+      const auto manifestBytes = readFile(manifestPath, MaxAssemblyMetadataBytes);
+      const auto signatureBytes = readFile(directory / "manifest.signature",
+                                            MaxAssemblyMetadataBytes + 65536);
+      const std::string text(manifestBytes.begin(), manifestBytes.end());
+      const std::string signature(signatureBytes.begin(), signatureBytes.end());
+      if (!options.verifyManifest || !options.verifyManifest(text, signature))
+        throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_MANIFEST_SIGNATURE_INVALID");
+      std::istringstream input(text);
+      boost::property_tree::ptree parsed;
+      boost::property_tree::read_json(input, parsed);
+      return parsed;
+    }();
     const auto assembledDigest = firstString(manifest, {"assembledModelDigest"});
-    if (firstString(manifest, {"recipeDigest"}) != cachedRecipeDigest ||
+    if (sourceProgram != (firstString(manifest, {"schema"}) == ASSEMBLED_SOURCE_PROGRAM_SCHEMA) ||
+        (sourceProgram && firstString(manifest, {"signer"}) != options.providerIdentity) ||
+        firstString(manifest, {"recipeDigest"}) != cachedRecipeDigest ||
         firstString(manifest, {"tensorShardV1"}) != assemblyRole.tensorShardV1 ||
         firstString(manifest, {"modelManifestDigest"}) != cachedManifestDigest ||
         firstString(manifest, {"artifactProfileDigest"}) != projection.assemblyContract().artifactProfileDigest ||
@@ -2392,7 +2465,8 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     // whole-role runner whose backend is the assembled one: the steps then executed against a
     // single ONNX graph, which is why a tensor-parallel INIT produced the ONNX runner's own
     // bundle instead of the step's declared slots.
-    if (!projection.plan.steps.empty() && !detail::bindNativeWholeRegionEntry(projection, spec)) {
+    if (!detail::bindNativeSourceProgramEntries(projection, spec) &&
+        !projection.plan.steps.empty() && !detail::bindNativeWholeRegionEntry(projection, spec)) {
       if (projection.assemblyContract().adapterId != "qwen")
         throw std::invalid_argument("step plan has no supported verified material entry contract");
       const auto& contract = projection.assemblyContract();
@@ -2691,6 +2765,38 @@ makeNativeAssemblyProgressReporter(
   };
 }
 
+bool
+bindNativeSourceProgramManifestAuthentication(const NativeSelectionProjectionV3& projection,
+  NativeCanonicalOnnxAssemblerOptions& options, ndn::KeyChain& keyChain,
+  const ndn::security::Certificate& providerCert)
+{
+  const auto& transform = projection.assemblyContract().sourceTransformV1;
+  if (transform.empty() || nativeParseJson(transform).value("schema", std::string{}) !=
+                            NATIVE_SOURCE_ENTRY_PROGRAM_V1)
+    return false;
+  const auto prefix = ndn::Name(projection.provider).append("DI-ASSEMBLY-MANIFEST");
+  options.signManifest = [&keyChain, providerCert, prefix] (const std::string& bytes) {
+    ndn::Data receipt(ndn::Name(prefix).append(nativePlanningDigest(bytes)));
+    receipt.setContent(ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()));
+    keyChain.sign(receipt, ndn::security::signingByCertificate(providerCert));
+    const auto& wire = receipt.wireEncode();
+    return std::string(reinterpret_cast<const char*>(wire.data()), wire.size());
+  };
+  options.verifyManifest = [providerCert, prefix] (const auto& bytes, const auto& signature) {
+    const ndn::Data receipt(ndn::Block(ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(signature.data()), signature.size())));
+    const auto& content = receipt.getContent();
+    return receipt.wireEncode().size() == signature.size() &&
+      receipt.getName() == ndn::Name(prefix).append(nativePlanningDigest(bytes)) &&
+      content.value_size() == bytes.size() &&
+      std::memcmp(content.value(), bytes.data(), bytes.size()) == 0 &&
+      ndn::security::verifySignature(receipt,
+        std::optional<ndn::security::Certificate>(providerCert));
+  };
+  return true;
+}
+
 NativeModelRunnerSpec
 prepareNativeCanonicalOnnxRole(
   const NativeCanonicalOnnxFetchers& configuredFetchers,
@@ -2709,6 +2815,15 @@ prepareNativeCanonicalOnnxRole(
   if (options.providerIdentity.empty() || !options.signManifest) {
     throw std::runtime_error("DI_PROVIDER_ASSEMBLY_SIGNER_MISSING");
   }
+  const auto& sourceRecipeWire = projection.assemblyContract().sourceTransformV1;
+  const bool isEntryProgram = !sourceRecipeWire.empty() &&
+    nativeParseJson(sourceRecipeWire).value("schema", std::string{}) ==
+      NATIVE_SOURCE_ENTRY_PROGRAM_V1;
+  if (isEntryProgram && !options.verifyManifest)
+    throw std::invalid_argument("DI_NATIVE_SOURCE_ENTRY_MANIFEST_VERIFIER_MISSING");
+  if (isEntryProgram && (projection.generationContract.enabled || projection.automaticShapeSeed))
+    throw std::invalid_argument("source program requires stateless file assembly");
+  if (isEntryProgram) validateNativeAssembly(projection.assemblyContract());
   if (options.workerLocation.path.empty()) {
     throw std::runtime_error("DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING");
   }
@@ -3063,6 +3178,8 @@ prepareNativeCanonicalOnnxRole(
       !materialReceiptDigest.empty() || materialReceiptBytes != 0;
     if (projection.automaticShapeSeed && !materialMetadataPresent)
       throw std::runtime_error("DI_AUTOMATIC_SOURCE_METADATA_MISSING");
+    if (isEntryProgram && !materialMetadataPresent)
+      throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_MATERIAL_MISSING");
     if (!materialMetadataPresent && sourceName.empty())
       throw std::runtime_error("DI_CANONICAL_SOURCE_NAME_MISSING");
 
@@ -3251,40 +3368,17 @@ prepareNativeCanonicalOnnxRole(
           throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
       }
 
-      std::set<std::string> selectedIds{materialManifest->templatePayloadId};
-      std::set<std::string> selectedDependencies;
-      for (const auto nodeIndex : projection.assemblyContract().nodeIndices) {
-        const auto logicalName = "node/" + std::to_string(nodeIndex);
-        const auto found = std::find_if(materialManifest->references.begin(),
-          materialManifest->references.end(), [&] (const auto& reference) {
-            return reference.kind == "graph-node" && reference.logicalName == logicalName;
-          });
-        if (found == materialManifest->references.end())
-          throw std::runtime_error("DI_CANONICAL_MATERIAL_NODE_MISSING");
-        selectedIds.insert(found->payloadId);
-        selectedIds.insert(found->chunkPayloadIds.begin(), found->chunkPayloadIds.end());
-        selectedDependencies.insert(found->dependencies.begin(), found->dependencies.end());
-      }
-      // A transformed suffix applies a Conv bias that no selected node lists as
-      // an input; the admitted transform names it, so its payload belongs to
-      // this role's selected material closure.
-      if (!projection.assemblyContract().sourceTransformV1.empty()) {
-        const auto transform = NativeOnnxSourceTransformV1::parse(
-          projection.assemblyContract().sourceTransformV1);
-        if (transform.kind == "add-conv-bias")
-          selectedDependencies.insert(transform.bias);
-      }
-      for (const auto& dependency : selectedDependencies) {
-        const auto found = std::find_if(materialManifest->references.begin(),
-          materialManifest->references.end(), [&] (const auto& reference) {
-            return reference.kind == "shared-initializer" &&
-                   reference.logicalName == dependency;
-          });
-        if (found == materialManifest->references.end())
-          throw std::runtime_error("DI_CANONICAL_MATERIAL_INITIALIZER_MISSING");
-        selectedIds.insert(found->payloadId);
-        selectedIds.insert(found->chunkPayloadIds.begin(), found->chunkPayloadIds.end());
-      }
+      // An injected Conv bias is the only material outside the original node closure.
+      std::vector<std::string> transformInitializers;
+      const auto& role = projection.assemblyContract();
+      const auto sourceTransform = role.sourceTransformV1.empty() || isEntryProgram
+        ? std::optional<NativeOnnxSourceTransformV1>{}
+        : NativeOnnxSourceTransformV1::parse(role.sourceTransformV1);
+      if (sourceTransform && sourceTransform->kind == "add-conv-bias")
+        transformInitializers.push_back(sourceTransform->bias);
+      const auto selectedIds = selectNativeCanonicalMaterialPayloads(*materialManifest,
+        projection.assemblyContract().nodeIndices, transformInitializers,
+        assemblyControl.requireActive);
       std::map<std::string, MaterialObjectReceipt> selectedObjects;
       for (const auto& payloadId : selectedIds) {
         const auto object = objects.find(payloadId);
@@ -3478,32 +3572,244 @@ prepareNativeCanonicalOnnxRole(
       canonicalSource.materializedGraphDigest = projection.assemblyContract().graphDigest;
       canonicalSource.materializedInitializerDigest =
         projection.assemblyContract().canonicalInitializerDigest;
+      if (isEntryProgram) {
+        const auto program = NativeOnnxSourceEntryProgramV1::parse(role.sourceTransformV1);
+        program.validateRank(projection.plan, role.selectedRole, role.tensorParallelRank);
+        const auto windows = program.bindSourceOrdinals(role.nodeIndices);
+        const auto outputRoot = rootPath / "source-program";
+        const auto makePrivateDirectory = [&] (const auto& directory) {
+          std::filesystem::create_directory(directory);
+          std::filesystem::permissions(directory, std::filesystem::perms::owner_all);
+        };
+        storeWhileAuthorized([&] { makePrivateDirectory(outputRoot); });
+        std::vector<NativeSourceEntryFiles> entries;
+        std::uint64_t outputBytes = 0;
+        for (std::size_t index = 0; index < program.entries.size(); ++index) {
+          assemblyControl.requireActive();
+          const auto& entry = program.entries[index];
+          const auto matched = std::find_if(projection.plan.steps.begin(), projection.plan.steps.end(),
+            [&] (const auto& step) {
+              return step.unitId == role.selectedRole && step.artifactEntry == entry.entryId;
+            });
+          if (matched == projection.plan.steps.end())
+            throw std::invalid_argument("source program entry lost its admitted CALL");
+          const auto graph = nativeSourceEntryGraphPath(outputRoot, index);
+          if (index != 0)
+            storeWhileAuthorized([&] { makePrivateDirectory(graph.parent_path()); });
+          const auto unslicedPath = rootPath / "program-original.data";
+          const auto sidecarPath = graph.parent_path() / "model.onnx.data";
+          int unslicedFd = -1;
+          int sidecarFd = -1;
+          BOOST_SCOPE_EXIT_ALL(&unslicedFd, &sidecarFd) {
+            if (unslicedFd >= 0) ::close(unslicedFd);
+            if (sidecarFd >= 0) ::close(sidecarFd);
+          };
+          const auto appendFile = [&] (int& fd, const auto& path, const auto& bytes) {
+            if (fd < 0) {
+              storeWhileAuthorized([&] {
+                fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                            S_IRUSR | S_IWUSR);
+                if (fd < 0)
+                  throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_FILE_CREATE_FAILED");
+              });
+            }
+            writeMaterial(fd, bytes.data(), bytes.size());
+          };
+          const auto closeFile = [] (int& fd) {
+            if (fd >= 0 && ::close(std::exchange(fd, -1)) != 0)
+              throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_FILE_CLOSE_FAILED");
+          };
+          auto raw = materializeNativeOnnxFfnEntrySource(canonicalSource, entry, windows[index],
+            *matched, assemblyControl, [&] (const auto& bytes) {
+              appendFile(unslicedFd, unslicedPath, bytes);
+            });
+          closeFile(unslicedFd);
+          auto sidecarControl = assemblyControl;
+          sidecarControl.maxSourceBytes = assemblyControl.maxAssembledBytes;
+          const auto original = raw.initializerBytes == 0
+            ? std::shared_ptr<const NativeCanonicalByteRangeSource>{}
+            : openNativeCanonicalInitializerFile(unslicedPath.string(), raw.initializerBytes,
+                                                 raw.initializerDigest, sidecarControl);
+          onnx::ModelProto model;
+          if (raw.modelBytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+              !model.ParseFromArray(raw.modelBytes.data(), static_cast<int>(raw.modelBytes.size())))
+            throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_MATERIALIZED_GRAPH_INVALID");
+          OPENSSL_cleanse(raw.modelBytes.data(), raw.modelBytes.size());
+          auto modelOut = lowerNativeMaterializedFfnEntry(std::move(model), entry.transform,
+            windows[index], [&] (const auto& location, auto offset, auto count) {
+              assemblyControl.requireActive();
+              if (location != "model.onnx.data" || !original)
+                throw std::runtime_error("DI_CANONICAL_FFN_SIDECAR_MISSING");
+              return original->read(offset, count);
+            }, [&] (const auto& bytes) {
+              if (bytes.size() > role.maxAssembledBytes - outputBytes)
+                throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_TOTAL_EXCEEDS_LIMIT");
+              appendFile(sidecarFd, sidecarPath, bytes);
+              outputBytes += bytes.size();
+            });
+          closeFile(sidecarFd);
+          if (original) {
+            storeWhileAuthorized([&] {
+              if (eraseProtectedSourceFile) eraseProtectedSourceFile(unslicedPath);
+              else std::filesystem::remove(unslicedPath);
+            });
+          }
+
+          NativeCanonicalSource derived;
+          auto& file = entries.emplace_back();
+          file.entryId = entry.entryId;
+          std::string wire;
+          if (!modelOut.SerializeToString(&wire) || wire.size() > role.maxAssembledBytes - outputBytes)
+            throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_GRAPH_LIMIT");
+          derived.modelBytes.assign(wire.begin(), wire.end());
+          OPENSSL_cleanse(wire.data(), wire.size());
+          if (std::filesystem::is_regular_file(sidecarPath)) {
+            file.initializerBytes = std::filesystem::file_size(sidecarPath);
+            file.initializerDigest = sha256File(sidecarPath, file.initializerBytes,
+                                                assemblyControl.requireActive);
+            derived.initializerRangeSource = openNativeCanonicalInitializerFile(sidecarPath.string(),
+              file.initializerBytes, file.initializerDigest, sidecarControl);
+          }
+          const auto identity = canonicalOnnxSourceIdentity(derived, assemblyControl);
+          auto recipe = role;
+          recipe.materializedRole = true;
+          recipe.roleKind = "COMPONENT_SET";
+          recipe.layerBegin = 0;
+          recipe.layerEnd = 0;
+          recipe.tensorParallelDegree = 0;
+          recipe.tensorParallelRank = 0;
+          recipe.tensorShardV1.clear();
+          recipe.sourceTransformV1.clear();
+          recipe.graphDigest = identity.graphDigest;
+          recipe.canonicalInitializerDigest = identity.initializerDigest;
+          recipe.nodeIndices.resize(static_cast<std::size_t>(modelOut.graph().node_size()));
+          for (std::size_t node = 0; node < recipe.nodeIndices.size(); ++node)
+            recipe.nodeIndices[node] = node;
+          const auto port = [] (const auto& slot) {
+            return NativeAssemblyTensorContractV3{slot.slotId, slot.dtype, slot.shape};
+          };
+          recipe.expectedInputs = {port(matched->inputSlots.front())};
+          recipe.expectedOutputs = {port(matched->outputSlots.front())};
+          recipe.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(recipe));
+          // The parent already authenticated the sidecar. Send only the graph to the worker.
+          derived.initializerRangeSource.reset();
+          storeWhileAuthorized([&] { writeFileAtomic(sourceFile, derived.modelBytes); });
+          OPENSSL_cleanse(derived.modelBytes.data(), derived.modelBytes.size());
+          std::vector<std::uint8_t>{}.swap(derived.modelBytes);
+          const auto prepared = runNativeOnnxAssemblyWorkerAt(options.workerLocation,
+            derived, recipe, assemblyControl, &derived, sourceFile);
+          file.graphBytes = prepared.modelBytes.size();
+          file.graphDigest = prepared.modelDigest;
+          if (file.graphBytes > role.maxAssembledBytes - outputBytes)
+            throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_TOTAL_EXCEEDS_LIMIT");
+          outputBytes += file.graphBytes;
+          storeWhileAuthorized([&] { writeFileAtomic(graph, prepared.modelBytes); });
+          reportProgress("MODEL_TRANSFORMED",
+            0.76 + 0.12 * static_cast<double>(index + 1) / program.entries.size());
+        }
+
+        const auto inventory = encodeNativeSourceEntryFiles(entries);
+        const auto modelName = root.get<std::string>("modelName", projection.plan.modelName);
+        const auto modelDigest = root.get<std::string>("modelIdentityDigest", "");
+        if (modelName.empty() || modelDigest.empty())
+          throw std::runtime_error("DI_CANONICAL_ROOT_MODEL_IDENTITY_MISSING");
+        const auto manifestText = nativeCanonicalJson({
+          {"schema", ASSEMBLED_SOURCE_PROGRAM_SCHEMA}, {"sourceEntryFiles", inventory},
+          {"modelName", modelName}, {"modelDigest", modelDigest},
+          {"assembledModelDigest", entries.front().graphDigest},
+          {"recipeDigest", role.recipeDigest}, {"modelManifestDigest", role.modelManifestDigest},
+          {"artifactProfileDigest", role.artifactProfileDigest}, {"graphDigest", role.graphDigest},
+          {"artifactCoordinate", role.artifactCoordinate}, {"role", role.selectedRole},
+          {"roleKind", role.roleKind}, {"tensorShardV1", role.tensorShardV1},
+          {"canonicalInitializerDigest", role.canonicalInitializerDigest},
+          {"adapterDescriptorDigest", role.adapterDescriptorDigest},
+          {"assemblerDescriptorDigest", role.assemblerDescriptorDigest}, {"backendAbi", role.backendAbi},
+          {"precision", role.precision}, {"quantization", role.quantization}, {"layout", role.layout},
+          {"padding", role.padding}, {"canonicalSourceDigest", sourceDigest},
+          {"signer", options.providerIdentity}});
+        if (manifestText.size() > MaxAssemblyMetadataBytes)
+          throw std::runtime_error("DI_NATIVE_ASSEMBLY_MANIFEST_TOO_LARGE");
+        const auto signature = options.signManifest(manifestText);
+        if (signature.empty())
+          throw std::runtime_error("DI_PROVIDER_ASSEMBLY_SIGNATURE_EMPTY");
+        const auto directory = std::filesystem::path(options.cacheDir) / "assembled" /
+          safeRole(role.selectedRole) / assembledCacheLeaf(role, role.recipeDigest.substr(7));
+        {
+          const std::lock_guard<std::mutex> lock(nativeAssemblyFinalizationMutex);
+          requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, directory);
+          if (!std::filesystem::exists(directory)) {
+            storeWhileAuthorized([&] {
+              writeFileAtomic(outputRoot / "manifest.json",
+                std::vector<std::uint8_t>(manifestText.begin(), manifestText.end()));
+              writeFileAtomic(outputRoot / "manifest.signature",
+                std::vector<std::uint8_t>(signature.begin(), signature.end()));
+              std::filesystem::create_directories(directory.parent_path());
+              std::filesystem::rename(outputRoot, directory);
+            });
+            finalArtifactDirectory = directory;
+            finalArtifactDirectoryOwned = true;
+          }
+        }
+        auto verifyOptions = options;
+        verifyOptions.reportProgress = {};
+        auto reopened = tryLoadNativeCanonicalOnnxRoleFromCache(configuredFetchers, projection,
+                                                                verifyOptions);
+        if (!reopened)
+          throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_CACHE_REOPEN_FAILED");
+        if (protectedRole) reopened->metadata["protectedCacheHit"] = "false";
+        reopened->metadata["assembledFrom"] = protectedRole
+          ? "protected-assembled-plaintext-cache" : "canonical-root-post-selection";
+        reportProgress("SOURCE_PROGRAM_VERIFIED", 0.90);
+        sourceScrubber.scrub();
+        if (!protectedRole) std::filesystem::remove_all(rootPath);
+        finalArtifactDirectoryOwned = false;
+        return std::move(*reopened);
+      }
       int initializerFd = -1;
       BOOST_SCOPE_EXIT_ALL(&initializerFd) {
         if (initializerFd >= 0) ::close(initializerFd);
       };
-      std::vector<std::string> transformInitializers;
-      if (!projection.assemblyContract().sourceTransformV1.empty()) {
-        auto transform = NativeOnnxSourceTransformV1::parse(
-          projection.assemblyContract().sourceTransformV1);
-        if (transform.kind == "add-conv-bias")
-          transformInitializers.push_back(transform.bias);
+      const auto appendInitializer = [&] (const auto& bytes) {
+        assemblyControl.requireActive();
+        if (initializerFd < 0) {
+          storeWhileAuthorized([&] {
+            initializerFd = ::open(initializerFile.c_str(),
+              O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+            if (initializerFd < 0)
+              throw std::runtime_error("DI_CANONICAL_INITIALIZER_FILE_CREATE_FAILED");
+          });
+        }
+        writeMaterial(initializerFd, bytes.data(), bytes.size());
+      };
+      if (sourceTransform && sourceTransform->kind == "ffn-pair-partial" &&
+          !projection.plan.steps.empty()) {
+        const NativeExecutionStepSpec* call = nullptr;
+        for (const auto& step : projection.plan.steps) {
+          if (step.unitId != role.selectedRole || step.operation == "SUM") continue;
+          if (call || step.operation != "CALL_SUBGRAPH")
+            throw std::invalid_argument("paired FFN role requires one CALL entry");
+          call = &step;
+        }
+        const auto matchesPort = [] (const auto& slots, const auto& ports) {
+          return slots.size() == 1 && ports.size() == 1 &&
+                 slots.front().slotId == ports.front().name &&
+                 slots.front().dtype == ports.front().dtype &&
+                 slots.front().shape == ports.front().shape;
+        };
+        if (!call || !matchesPort(call->inputSlots, role.expectedInputs) ||
+            !matchesPort(call->outputSlots, role.expectedOutputs))
+          throw std::invalid_argument("paired FFN CALL differs from its signed role ports");
+        NativeOnnxSourceEntryRecipeV1 entry{call->artifactEntry, {}, *sourceTransform};
+        for (const auto index : role.nodeIndices)
+          entry.sourceNodes.push_back("onnx-node-" + std::to_string(index));
+        materializedFiles = materializeNativeOnnxFfnEntrySource(canonicalSource, entry,
+          role.nodeIndices, *call, assemblyControl, appendInitializer);
       }
-      materializedFiles = materializeNativeCanonicalModelFiles(
-        canonicalSource, projection.assemblyContract().nodeIndices,
-        projection.assemblyContract().expectedInputs, projection.assemblyContract().expectedOutputs,
-        assemblyControl, [&] (const auto& bytes) {
-          assemblyControl.requireActive();
-          if (initializerFd < 0) {
-            storeWhileAuthorized([&] {
-              initializerFd = ::open(initializerFile.c_str(),
-                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
-              if (initializerFd < 0)
-                throw std::runtime_error("DI_CANONICAL_INITIALIZER_FILE_CREATE_FAILED");
-            });
-          }
-          writeMaterial(initializerFd, bytes.data(), bytes.size());
-        }, transformInitializers);
+      else {
+        materializedFiles = materializeNativeCanonicalModelFiles(canonicalSource, role.nodeIndices,
+          role.expectedInputs, role.expectedOutputs, assemblyControl, appendInitializer,
+          transformInitializers);
+      }
       canonicalSource.modelBytes = std::move(materializedFiles.modelBytes);
       if (initializerFd >= 0) {
         const auto closeStatus = ::close(initializerFd);
@@ -3521,9 +3827,8 @@ prepareNativeCanonicalOnnxRole(
       // region. Apply the admitted transform after the authenticated sidecar is
       // owned, so external weight bytes can be read through the same bounded
       // range source the runner will later use.
-      if (!projection.assemblyContract().sourceTransformV1.empty()) {
-        auto transform = NativeOnnxSourceTransformV1::parse(
-          projection.assemblyContract().sourceTransformV1);
+      if (sourceTransform) {
+        auto transform = *sourceTransform;
         onnx::ModelProto sourceModel;
         if (!sourceModel.ParseFromArray(canonicalSource.modelBytes.data(),
                                         static_cast<int>(canonicalSource.modelBytes.size())))
@@ -3533,20 +3838,8 @@ prepareNativeCanonicalOnnxRole(
         // are the export's own (`conv0`). Translate the id to the name the
         // selected graph actually carries before lowering.
         const bool ffnPair = transform.kind == "ffn-pair-partial";
-        if (ffnPair) {
-          const auto& indices = projection.assemblyContract().nodeIndices;
-          auto& graph = *sourceModel.mutable_graph();
-          if (indices.empty() || indices.size() != static_cast<std::size_t>(graph.node_size()) ||
-              transform.node != "onnx-node-" + std::to_string(indices.front()) ||
-              transform.downNode != "onnx-node-" + std::to_string(indices.back()))
-            throw std::invalid_argument("paired FFN projection ordinals differ from recipe");
-          // The materializer emits nodes in exactly the checked ordinal order.
-          // Give the two matched projections stable names in the derived graph.
-          graph.mutable_node(0)->set_name(transform.node);
-          graph.mutable_node(graph.node_size() - 1)->set_name(transform.downNode);
-        }
-        else if (const auto prefix = std::string("onnx-node-");
-            transform.node.rfind(prefix, 0) == 0 &&
+        if (const auto prefix = std::string("onnx-node-");
+            !ffnPair && transform.node.rfind(prefix, 0) == 0 &&
             !projection.assemblyContract().nodeIndices.empty()) {
           const auto target = std::stoull(transform.node.substr(prefix.size()));
           const auto first = projection.assemblyContract().nodeIndices.front();
@@ -3578,24 +3871,28 @@ prepareNativeCanonicalOnnxRole(
           derivedInitializerBytes += bytes.size();
         };
         std::map<std::string, std::vector<std::uint8_t>> externalCache;
-        const auto derived = applyNativeOnnxSourceTransform(sourceModel, transform,
-          [&] (const std::string& location, std::uint64_t offset, std::uint64_t length) {
-            if (ffnPair) {
-              assemblyControl.requireActive();
-              if (location != "model.onnx.data" || !initializerFileOwner)
-                throw std::runtime_error("DI_CANONICAL_FFN_SIDECAR_MISSING");
-              return initializerFileOwner->read(offset, length);
-            }
-            const auto key = location + ":" + std::to_string(offset) + ":" +
-                             std::to_string(length);
-            const auto cached = externalCache.find(key);
-            if (cached != externalCache.end()) return cached->second;
-            if (!canonicalSource.initializerRangeSource)
-              throw std::runtime_error("DI_CANONICAL_TRANSFORM_EXTERNAL_MISSING");
-            auto bytes = canonicalSource.initializerRangeSource->read(offset, length);
-            externalCache.emplace(key, bytes);
-            return bytes;
-          }, appendSlice);
+        const auto readSlice = [&] (const std::string& location, std::uint64_t offset,
+                                    std::uint64_t length) {
+          if (ffnPair) {
+            assemblyControl.requireActive();
+            if (location != "model.onnx.data" || !initializerFileOwner)
+              throw std::runtime_error("DI_CANONICAL_FFN_SIDECAR_MISSING");
+            return initializerFileOwner->read(offset, length);
+          }
+          const auto key = location + ":" + std::to_string(offset) + ":" +
+                           std::to_string(length);
+          const auto cached = externalCache.find(key);
+          if (cached != externalCache.end()) return cached->second;
+          if (!canonicalSource.initializerRangeSource)
+            throw std::runtime_error("DI_CANONICAL_TRANSFORM_EXTERNAL_MISSING");
+          auto bytes = canonicalSource.initializerRangeSource->read(offset, length);
+          externalCache.emplace(key, bytes);
+          return bytes;
+        };
+        const auto derived = ffnPair
+          ? lowerNativeMaterializedFfnEntry(std::move(sourceModel), transform,
+              projection.assemblyContract().nodeIndices, readSlice, appendSlice)
+          : applyNativeOnnxSourceTransform(sourceModel, transform, readSlice, appendSlice);
         if (derivedFd >= 0) {
           const auto closeStatus = ::close(derivedFd);
           derivedFd = -1;

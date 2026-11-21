@@ -78,9 +78,11 @@ NativeSourcePartitionStrategy::enumerateImpl(
   budget.validate();
   model.validate();
   graph.validate(model);
-  const auto& pair = m_profile.ffnPair;
+  const auto& windows = m_profile.ffnWindows;
+  const auto* pair = windows.empty() ? nullptr : &windows.front().transform;
+  const bool multiEntry = windows.size() > 1;
   const auto& activationTensor = pair ? pair->input : m_profile.convInputTensor;
-  const auto& partialTensor = pair ? pair->output : m_profile.convOutputTensor;
+  const auto& partialTensor = pair ? windows.back().transform.output : m_profile.convOutputTensor;
   const auto& shardAxis = pair ? pair->axis : m_profile.convInputAxis;
   const std::string stageSuffix = pair ? "/ffn" : "/conv";
   std::size_t firstRankNode = 0;
@@ -106,12 +108,35 @@ NativeSourcePartitionStrategy::enumerateImpl(
       std::distance(graph.topologicalOrder.begin(), boundary));
     lastRankNode = firstRankNode;
     if (pair) {
-      const auto last = std::find(boundary, graph.topologicalOrder.end(), pair->downNode);
-      if (last == graph.topologicalOrder.end() ||
-          std::distance(boundary, last) != (pair->bias.empty() ? 2 : 3) ||
-          graph.modelInputs.size() != 1 || graph.modelOutputs.size() != 1)
+      if (graph.modelInputs.size() != 1 || graph.modelOutputs.size() != 1)
         throw std::invalid_argument("paired FFN source window is incomplete");
-      lastRankNode = static_cast<std::size_t>(std::distance(graph.topologicalOrder.begin(), last));
+      auto cursor = boundary;
+      std::map<std::string, std::size_t> windowByNode;
+      for (std::size_t index = 0; index < windows.size(); ++index) {
+        const auto& window = windows[index];
+        for (const auto& node : window.nodes) {
+          if (cursor == graph.topologicalOrder.end() || *cursor != node ||
+              !windowByNode.emplace(node, index).second)
+            throw std::invalid_argument("paired FFN window has incomplete source node cover");
+          ++cursor;
+        }
+      }
+      if (windowByNode.empty())
+        throw std::invalid_argument("paired FFN source window has no nodes");
+      for (const auto& edge : graph.edges) {
+        const auto producer = windowByNode.find(edge.producer);
+        if (producer == windowByNode.end()) continue;
+        for (const auto& name : edge.consumers) {
+          const auto consumer = windowByNode.find(name);
+          if (consumer == windowByNode.end() || consumer->second == producer->second) continue;
+          if (consumer->second != producer->second + 1 ||
+              edge.id != windows[producer->second].transform.output ||
+              edge.id != windows[consumer->second].transform.input)
+            throw std::invalid_argument("paired FFN windows expose an undeclared internal edge");
+        }
+      }
+      lastRankNode = static_cast<std::size_t>(
+        std::distance(graph.topologicalOrder.begin(), cursor) - 1);
     }
     if (firstRankNode == 0 || lastRankNode + 1 >= graph.topologicalOrder.size())
       throw std::invalid_argument("source hybrid boundary leaves an empty region");
@@ -212,7 +237,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
     hybridStageDigest = nativePlanningDigest("source-hybrid|" + graph.graphDigest + "|" +
                                              m_profile.boundaryNode + "|" +
                                              std::to_string(m_profile.inputChannels) +
-                                             (pair ? "|" + pair->downNode : ""));
+                                             (pair ? "|" + windows.back().transform.downNode : ""));
     auto first = NativeJson::array();
     first.push_back(NativeJson{{"axis", shardAxis}, {"begin", 0},
                                {"end", half}, {"extent", m_profile.inputChannels}});
@@ -234,7 +259,22 @@ NativeSourcePartitionStrategy::enumerateImpl(
       2, 1, nativeCanonicalJson(shard1)};
     candidate.executionPlan.tensorDegree = 2;
     candidate.executionPlan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
-    const auto rankTransform = [&] (std::uint64_t begin, std::uint64_t end) {
+    const auto rankTransform = [&] (std::uint64_t rank) {
+      if (multiEntry) {
+        NativeOnnxSourceEntryProgramV1 program;
+        const auto& role = m_profile.roles[rank + 1];
+        for (std::size_t i = 0; i < windows.size(); ++i) {
+          const auto& window = windows[i];
+          auto transform = window.transform;
+          const auto range = nativeConvInputChannelRanges(transform.extent, 2)[rank];
+          transform.begin = range.first;
+          transform.end = range.second;
+          program.entries.push_back({role + "/artifact/" + std::to_string(i), window.nodes,
+                                     std::move(transform)});
+        }
+        program.validate();
+        return program.canonicalJson();
+      }
       NativeOnnxSourceTransformV1 value;
       if (pair) {
         value = *pair;
@@ -251,14 +291,14 @@ NativeSourcePartitionStrategy::enumerateImpl(
         value.strides = m_profile.convStrides;
         value.dilations = m_profile.convDilations;
       }
-      value.begin = begin;
-      value.end = end;
+      value.begin = rank == 0 ? 0 : half;
+      value.end = rank == 0 ? half : m_profile.inputChannels;
       value.extent = m_profile.inputChannels;
       value.validate();
       return value.canonicalJson();
     };
-    candidate.sourceTransformByRole[m_profile.roles[1]] = rankTransform(0, half);
-    candidate.sourceTransformByRole[m_profile.roles[2]] = rankTransform(half, m_profile.inputChannels);
+    candidate.sourceTransformByRole[m_profile.roles[1]] = rankTransform(0);
+    candidate.sourceTransformByRole[m_profile.roles[2]] = rankTransform(1);
     if (!pair && !m_profile.convBiasInitializer.empty()) {
       // A fused Conv bias has no explicit Add in the source graph; the suffix
       // still has to apply it exactly once. Bind the transform either way and
@@ -333,7 +373,12 @@ NativeSourcePartitionStrategy::enumerateImpl(
       throw std::invalid_argument(
         "hybrid source partition reuses a graph boundary tensor as an internal port");
     const std::string prefixStep = m_profile.roles[0] + "/RUN";
-    const std::string sumStep = m_profile.roles[1] + "/SUM";
+    const auto stepName = [multiEntry] (const std::string& role, const char* kind,
+                                        std::size_t index) {
+      return role + "/" + kind + (multiEntry ? "/" + std::to_string(index) : "");
+    };
+    const auto windowCount = pair ? windows.size() : 1;
+    const auto sumStep = stepName(m_profile.roles[1], "SUM", windowCount - 1);
     NativeExecutionStepSpec prefix;
     prefix.stepId = prefixStep;
     prefix.unitId = m_profile.roles[0];
@@ -358,28 +403,41 @@ NativeSourcePartitionStrategy::enumerateImpl(
                                                   "LOCAL_STEP", "", ""));
     }
     candidate.executionPlan.steps.push_back(std::move(prefix));
-    for (const auto& rank : {m_profile.roles[1], m_profile.roles[2]}) {
-      NativeExecutionStepSpec step;
-      step.stepId = rank + "/RUN";
-      step.unitId = rank;
-      step.operation = "CALL_SUBGRAPH";
-      step.artifactEntry = rank + "/artifact";
-      step.inputSlots.push_back(slot(activation, m_profile.activationShape, "REMOTE_STEP",
-                                     prefixStep, activation));
-      step.outputSlots.push_back(slot(partial, m_profile.partialShape,
-                                      "LOCAL_STEP", "", ""));
-      candidate.executionPlan.steps.push_back(std::move(step));
+    for (std::size_t index = 0; index < windowCount; ++index) {
+      if (control) control->requireActive();
+      const auto& inlet = pair ? windows[index].transform.input : activation;
+      const auto& outlet = pair ? windows[index].transform.output : partial;
+      const auto& inputShape = pair ? windows[index].inputShape : m_profile.activationShape;
+      const auto& outputShape = pair ? windows[index].outputShape : m_profile.partialShape;
+      for (std::size_t rank = 0; rank < 2; ++rank) {
+        const auto& role = m_profile.roles[rank + 1];
+        NativeExecutionStepSpec call;
+        call.stepId = stepName(role, "RUN", index);
+        call.unitId = role;
+        call.operation = "CALL_SUBGRAPH";
+        call.artifactEntry = stepName(role, "artifact", index);
+        call.inputSlots.push_back(slot(inlet, inputShape, index == 0 ? "REMOTE_STEP" : "LOCAL_STEP",
+          index == 0 ? prefixStep : stepName(role, "SUM", index - 1), inlet));
+        call.outputSlots.push_back(slot(outlet, outputShape, "LOCAL_STEP", "", ""));
+        candidate.executionPlan.steps.push_back(std::move(call));
+      }
+      const std::size_t reducers = index + 1 == windowCount ? 1 : 2;
+      for (std::size_t rank = 0; rank < reducers; ++rank) {
+        const auto& role = m_profile.roles[rank + 1];
+        NativeExecutionStepSpec sum;
+        sum.stepId = stepName(role, "SUM", index);
+        sum.unitId = role;
+        sum.operation = "SUM";
+        for (std::size_t contribution = 0; contribution < 2; ++contribution) {
+          const auto& producer = m_profile.roles[contribution + 1];
+          sum.inputSlots.push_back(slot("rank" + std::to_string(contribution), outputShape,
+            contribution == rank ? "LOCAL_STEP" : "REMOTE_STEP",
+            stepName(producer, "RUN", index), outlet));
+        }
+        sum.outputSlots.push_back(slot(outlet, outputShape, "LOCAL_STEP", "", ""));
+        candidate.executionPlan.steps.push_back(std::move(sum));
+      }
     }
-    NativeExecutionStepSpec sum;
-    sum.stepId = sumStep;
-    sum.unitId = m_profile.roles[1];
-    sum.operation = "SUM";
-    sum.inputSlots.push_back(slot("rank0", m_profile.partialShape, "LOCAL_STEP",
-                                  m_profile.roles[1] + "/RUN", partial));
-    sum.inputSlots.push_back(slot("rank1", m_profile.partialShape, "REMOTE_STEP",
-                                  m_profile.roles[2] + "/RUN", partial));
-    sum.outputSlots.push_back(slot(partial, m_profile.partialShape, "LOCAL_STEP", "", ""));
-    candidate.executionPlan.steps.push_back(std::move(sum));
     NativeExecutionStepSpec suffix;
     suffix.stepId = m_profile.roles[3] + "/RUN";
     suffix.unitId = m_profile.roles[3];
@@ -581,48 +639,69 @@ NativeSourcePartitionStrategy::enumerateImpl(
       result.consumerSlotId = consumerSlot;
       return result;
     };
-    for (const auto& rank : {m_profile.roles[1], m_profile.roles[2]})
+    if (multiEntry) {
+      std::map<std::string, const NativeExecutionStepSpec*> stepById;
+      for (const auto& step : candidate.executionPlan.steps)
+        stepById.emplace(step.stepId, &step);
+      for (const auto& step : candidate.executionPlan.steps) {
+        for (const auto& port : step.inputSlots) {
+          if (port.source != "REMOTE_STEP") continue;
+          const auto& producer = *stepById.at(port.producerStepId);
+          auto edge = dependency("source-entry-" +
+            std::to_string(candidate.executionPlan.dependencies.size()), producer.unitId,
+            step.unitId, producer.stepId, port.producerSlotId, step.stepId, port.slotId);
+          if (step.operation == "SUM") {
+            edge.operationKind = "TENSOR_PARTIAL";
+            edge.useNdnsfDataV1 = true;
+          }
+          candidate.executionPlan.dependencies.push_back(std::move(edge));
+        }
+      }
+    }
+    else {
+      for (const auto& rank : {m_profile.roles[1], m_profile.roles[2]})
+        candidate.executionPlan.dependencies.push_back(dependency(
+          "prefix-to-" + rank, m_profile.roles[0], rank,
+          m_profile.roles[0] + "/RUN", activationTensor, rank + "/RUN",
+          activationTensor));
+      auto partial = dependency(
+        "rank1-to-sum", m_profile.roles[2], m_profile.roles[1],
+        m_profile.roles[2] + "/RUN", partialTensor,
+        m_profile.roles[1] + "/SUM", "rank1");
+      partial.operationKind = "TENSOR_PARTIAL";
+      partial.useNdnsfDataV1 = true;
+      candidate.executionPlan.dependencies.push_back(std::move(partial));
       candidate.executionPlan.dependencies.push_back(dependency(
-        "prefix-to-" + rank, m_profile.roles[0], rank,
-        m_profile.roles[0] + "/RUN", activationTensor, rank + "/RUN",
-        activationTensor));
-    auto partial = dependency(
-      "rank1-to-sum", m_profile.roles[2], m_profile.roles[1],
-      m_profile.roles[2] + "/RUN", partialTensor,
-      m_profile.roles[1] + "/SUM", "rank1");
-    partial.operationKind = "TENSOR_PARTIAL";
-    partial.useNdnsfDataV1 = true;
-    candidate.executionPlan.dependencies.push_back(std::move(partial));
-    candidate.executionPlan.dependencies.push_back(dependency(
-      "sum-to-suffix", m_profile.roles[1], m_profile.roles[3],
-      m_profile.roles[1] + "/SUM", partialTensor,
-      m_profile.roles[3] + "/RUN", partialTensor));
-    // Direct bypass dependencies carry every non-SUM crossing into the suffix.
-    for (const auto& edge : graph.edges) {
-      const auto producer = ownerByNode.find(edge.producer);
-      if (producer == ownerByNode.end()) continue;
-      const bool fromRank = producer->second == m_profile.roles[1] ||
-                            producer->second == m_profile.roles[2];
-      if (producer->second != m_profile.roles[0] && !fromRank) continue;
-      if (edge.id == partialTensor ||
-          edge.producer == m_profile.boundaryNode)
-        continue;
-      const bool toSuffix = std::any_of(edge.consumers.begin(), edge.consumers.end(),
-        [&] (const auto& node) {
-          const auto consumer = ownerByNode.find(node);
-          return consumer != ownerByNode.end() &&
-                 consumer->second == m_profile.roles[3];
-        });
-      if (!toSuffix) continue;
-      const auto dependencyId = std::string("bypass-") + edge.id;
-      if (std::any_of(candidate.executionPlan.dependencies.begin(),
-                      candidate.executionPlan.dependencies.end(),
-                      [&] (const auto& value) { return value.dependencyId == dependencyId; }))
-        continue;
-      candidate.executionPlan.dependencies.push_back(dependency(
-        dependencyId, producer->second, m_profile.roles[3],
-        producer->second + "/RUN", edge.id,
-        m_profile.roles[3] + "/RUN", edge.id));
+        "sum-to-suffix", m_profile.roles[1], m_profile.roles[3],
+        m_profile.roles[1] + "/SUM", partialTensor,
+        m_profile.roles[3] + "/RUN", partialTensor));
+      // Direct bypass dependencies carry every non-SUM crossing into the suffix.
+      for (const auto& edge : graph.edges) {
+        const auto producer = ownerByNode.find(edge.producer);
+        if (producer == ownerByNode.end()) continue;
+        const bool fromRank = producer->second == m_profile.roles[1] ||
+                              producer->second == m_profile.roles[2];
+        if (producer->second != m_profile.roles[0] && !fromRank) continue;
+        if (edge.id == partialTensor ||
+            edge.producer == m_profile.boundaryNode)
+          continue;
+        const bool toSuffix = std::any_of(edge.consumers.begin(), edge.consumers.end(),
+          [&] (const auto& node) {
+            const auto consumer = ownerByNode.find(node);
+            return consumer != ownerByNode.end() &&
+                   consumer->second == m_profile.roles[3];
+          });
+        if (!toSuffix) continue;
+        const auto dependencyId = std::string("bypass-") + edge.id;
+        if (std::any_of(candidate.executionPlan.dependencies.begin(),
+                        candidate.executionPlan.dependencies.end(),
+                        [&] (const auto& value) { return value.dependencyId == dependencyId; }))
+          continue;
+        candidate.executionPlan.dependencies.push_back(dependency(
+          dependencyId, producer->second, m_profile.roles[3],
+          producer->second + "/RUN", edge.id,
+          m_profile.roles[3] + "/RUN", edge.id));
+      }
     }
   }
 
@@ -643,21 +722,37 @@ NativeSourcePartitionStrategy::enumerateImpl(
       {"role", role}, {"nodes", roleNodes}}));
     candidate.artifactsByRole[role] = {candidate.fragmentsByRole[role]};
     std::uint64_t residentBytes = roleBytes;
+    const auto denseWeights = m_profile.denseWeightBytesByRole.find(role);
+    if (denseWeights != m_profile.denseWeightBytesByRole.end())
+      residentBytes = std::max<std::uint64_t>(1, denseWeights->second);
     if (pair && role == m_profile.roles[0] && m_profile.ffnPrefixWeightBytes)
       residentBytes = std::max<std::uint64_t>(1, *m_profile.ffnPrefixWeightBytes);
-    const auto splitWeightBytes = pair ? m_profile.ffnPairWeightBytes : m_profile.convWeightBytes;
-    if (transformedRoles && splitWeightBytes != 0) {
-      if (role == m_profile.roles[1] || role == m_profile.roles[2]) {
-        const auto channels = m_profile.inputChannels;
-        if (splitWeightBytes % channels != 0)
-          throw std::invalid_argument("initializer bytes do not fit the channel split");
-        const auto firstRankChannels = channels / 2 + (pair ? channels % 2 : 0);
-        const auto rankChannels = role == m_profile.roles[1] ?
-          firstRankChannels : channels - firstRankChannels;
-        residentBytes = (splitWeightBytes / channels) * rankChannels;
+    if (transformedRoles && (role == m_profile.roles[1] || role == m_profile.roles[2])) {
+      const std::size_t rank = role == m_profile.roles[1] ? 0 : 1;
+      if (pair) {
+        residentBytes = 0;
+        for (const auto& window : windows) {
+          const auto extent = window.transform.extent;
+          if (window.weightBytes == 0 || window.weightBytes % extent != 0)
+            throw std::invalid_argument("initializer bytes do not fit the FFN channel split");
+          const auto bounds = nativeConvInputChannelRanges(extent, 2)[rank];
+          const auto sliced = (window.weightBytes / extent) * (bounds.second - bounds.first);
+          if (sliced > std::numeric_limits<std::uint64_t>::max() - residentBytes)
+            throw std::overflow_error("FFN rank resident weights exceed uint64");
+          residentBytes += sliced;
+        }
       }
-      else if (role == m_profile.roles[3] && m_profile.suffixWeightBytes)
-        residentBytes = std::max<std::uint64_t>(1, *m_profile.suffixWeightBytes);
+      else if (m_profile.convWeightBytes != 0) {
+        const auto channels = m_profile.inputChannels;
+        if (m_profile.convWeightBytes % channels != 0)
+          throw std::invalid_argument("initializer bytes do not fit the channel split");
+        const auto rankChannels = rank == 0 ? channels / 2 : channels - channels / 2;
+        residentBytes = (m_profile.convWeightBytes / channels) * rankChannels;
+      }
+    }
+    else if (transformedRoles && role == m_profile.roles[3] && m_profile.suffixWeightBytes &&
+             (pair || m_profile.convWeightBytes != 0)) {
+      residentBytes = std::max<std::uint64_t>(1, *m_profile.suffixWeightBytes);
     }
     candidate.requirementsByRole[role] = {
       {"onnxruntime-cpu", "onnxruntime-cuda"},

@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -384,58 +385,111 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
                             spec.backend);
   }
   std::shared_ptr<NativeModelRunner> runner;
-  if (spec.entryContract) {
-    const auto& entry = *spec.entryContract;
-    entry.validate();
-    if (entry.unitId != spec.role || entry.relativeGraphPath != "model.onnx" ||
-        std::filesystem::path(spec.path).filename() != entry.relativeGraphPath ||
-        entry.graphDigest != spec.metadata.at("assembledModelDigest"))
-      throw std::invalid_argument("whole-region runner entry differs from its assembled artifact");
-    auto child = spec;
-    child.entryContract.reset();
-    child.role = entry.entryId;
-    child.metadata["forceOutputBundle"] = "true";
-    for (std::size_t i = 0; i < entry.inputNames.size(); ++i) {
-      child.metadata["inputScope." + entry.inputNames[i]] = entry.inputNames[i];
-      child.metadata["inputScope." + std::to_string(i)] = entry.inputNames[i];
-    }
-    for (std::size_t i = 0; i < entry.outputNames.size(); ++i) {
-      child.metadata["outputScope." + entry.outputNames[i]] = entry.outputNames[i];
-      child.metadata["outputScope." + std::to_string(i)] = entry.outputNames[i];
-    }
-    if (!entry.stateSuccessorByInputGraphName.empty()) {
-      std::string inputs;
-      std::string outputs;
-      std::string successors;
-      for (const auto& pair : entry.stateSuccessorByInputGraphName) {
-        if (!inputs.empty()) {
-          inputs += ',';
-          outputs += ',';
-          successors += ',';
-        }
-        inputs += pair.first;
-        outputs += pair.second;
-        successors += pair.first + '=' + pair.second;
+  const bool sourceProgram = spec.metadata.count("sourceEntryFiles") != 0 ||
+                             spec.metadata.count("sourceEntryProgram") != 0;
+  if (spec.entryContract || sourceProgram) {
+    std::vector<NativeSubgraphEntryContract> entries;
+    const auto root = std::filesystem::path(spec.path).parent_path();
+    if (sourceProgram) {
+      if (spec.entryContract || std::filesystem::path(spec.path).filename() != "model.onnx")
+        throw std::invalid_argument("source program requires its verified model anchor");
+      const auto program = NativeOnnxSourceEntryProgramV1::parse(
+        spec.metadata.at("sourceEntryProgram"));
+      const auto files = decodeNativeSourceEntryFiles(spec.metadata.at("sourceEntryFiles"));
+      if (program.entries.size() != files.size() ||
+          files.front().graphDigest != spec.metadata.at("assembledModelDigest"))
+        throw std::invalid_argument("source program file set differs from its admitted entries");
+      for (std::size_t index = 0; index < files.size(); ++index) {
+        const auto& recipe = program.entries[index];
+        const auto& file = files[index];
+        if (file.entryId != recipe.entryId)
+          throw std::invalid_argument("source program file order differs from its admitted entries");
+        NativeSubgraphEntryContract entry;
+        entry.entryId = recipe.entryId;
+        entry.unitId = spec.role;
+        entry.relativeGraphPath =
+          nativeSourceEntryGraphPath(root, index).lexically_relative(root).string();
+        entry.graphDigest = file.graphDigest;
+        entry.inputNames = {recipe.transform.input};
+        entry.outputNames = {recipe.transform.output};
+        entry.inputSlotByGraphName.emplace(recipe.transform.input, recipe.transform.input);
+        entry.outputSlotByGraphName.emplace(recipe.transform.output, recipe.transform.output);
+        entries.push_back(std::move(entry));
       }
-      child.metadata["statefulModel"] = "true";
-      child.metadata["stateInputNames"] = std::move(inputs);
-      child.metadata["stateOutputNames"] = std::move(outputs);
-      child.metadata["stateSuccessorMap"] = std::move(successors);
     }
     else {
-      for (const auto* key : {"statefulModel", "stateInputNames", "stateOutputNames",
-                              "stateSuccessorMap", "kvTensorMap"})
-        child.metadata.erase(key);
+      const auto& entry = *spec.entryContract;
+      entry.validate();
+      if (entry.unitId != spec.role || entry.relativeGraphPath != "model.onnx" ||
+          std::filesystem::path(spec.path).filename() != entry.relativeGraphPath ||
+          entry.graphDigest != spec.metadata.at("assembledModelDigest"))
+        throw std::invalid_argument("whole-region entry differs from its assembled artifact");
+      entries.push_back(entry);
     }
+    const auto makeChild = [&] (const NativeSubgraphEntryContract& entry) {
+      auto child = spec;
+      child.entryContract.reset();
+      child.role = entry.entryId;
+      if (sourceProgram) {
+        child.path = (root / entry.relativeGraphPath).string();
+        for (auto metadata = child.metadata.begin(); metadata != child.metadata.end();) {
+          if (metadata->first.rfind("inputScope.", 0) == 0 ||
+              metadata->first.rfind("outputScope.", 0) == 0)
+            metadata = child.metadata.erase(metadata);
+          else
+            ++metadata;
+        }
+        for (const auto* key : {"sourceEntryFiles", "sourceEntryProgram", "assembledCachePath",
+                                "protectedResidentIdentity"})
+          child.metadata.erase(key);
+        child.metadata["assembledModelDigest"] = entry.graphDigest;
+        child.protectedResidentUse.reset();
+        child.residencyIdentity.reset();
+      }
+      child.metadata["forceOutputBundle"] = "true";
+      for (std::size_t i = 0; i < entry.inputNames.size(); ++i) {
+        child.metadata["inputScope." + entry.inputNames[i]] = entry.inputNames[i];
+        child.metadata["inputScope." + std::to_string(i)] = entry.inputNames[i];
+      }
+      for (std::size_t i = 0; i < entry.outputNames.size(); ++i) {
+        child.metadata["outputScope." + entry.outputNames[i]] = entry.outputNames[i];
+        child.metadata["outputScope." + std::to_string(i)] = entry.outputNames[i];
+      }
+      if (!entry.stateSuccessorByInputGraphName.empty()) {
+        std::string inputs;
+        std::string outputs;
+        std::string successors;
+        for (const auto& pair : entry.stateSuccessorByInputGraphName) {
+          if (!inputs.empty()) {
+            inputs += ',';
+            outputs += ',';
+            successors += ',';
+          }
+          inputs += pair.first;
+          outputs += pair.second;
+          successors += pair.first + '=' + pair.second;
+        }
+        child.metadata["statefulModel"] = "true";
+        child.metadata["stateInputNames"] = std::move(inputs);
+        child.metadata["stateOutputNames"] = std::move(outputs);
+        child.metadata["stateSuccessorMap"] = std::move(successors);
+      }
+      else {
+        for (const auto* key : {"statefulModel", "stateInputNames", "stateOutputNames",
+                                "stateSuccessorMap", "kvTensorMap"})
+          child.metadata.erase(key);
+      }
+      return child;
+    };
     runner = std::make_shared<NativeEntryRunner>(
-      std::vector<NativeSubgraphEntryContract>{entry},
+      std::move(entries),
       [creator = found->second] (const NativeModelRunnerSpec& childSpec) {
         auto childRunner = creator(childSpec);
         if (!childRunner)
           throw std::logic_error("NativeModelRunner backend returned null: " + childSpec.backend);
         return childRunner;
       },
-      [&child] (const NativeSubgraphEntryContract&) { return child; });
+      makeChild);
   }
   else {
     runner = found->second(spec);

@@ -82,6 +82,13 @@ assembledArtifactCoordinate(const NativeSplitCandidate& candidate,
   }
 
   if (!role.sourceTransformV1.empty() && !role.tensorShardV1.empty()) {
+    if (nativeParseJson(role.sourceTransformV1).value("schema", std::string{}) ==
+        NATIVE_SOURCE_ENTRY_PROGRAM_V1) {
+      const auto program = NativeOnnxSourceEntryProgramV1::parse(role.sourceTransformV1);
+      coordinate.append("entry").append("region").append("profile")
+        .append("program-" + nativePlanningDigest(program.canonicalJson()).substr(7));
+      return coordinate.toUri(ndn::name::UriFormat::ALTERNATE);
+    }
     const auto transform = NativeOnnxSourceTransformV1::parse(role.sourceTransformV1);
     const auto shard = parseNativeTensorShardV1(role.tensorShardV1);
     const auto& axes = shard.at("axes");
@@ -442,6 +449,16 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
   const auto initializers = metadata.at("initializers").get<std::vector<std::string>>();
   const auto postprocessing = nativeParseJson(candidate.postprocessingJson);
   const std::regex layerPattern("layer-([0-9]+)");
+  std::map<std::string, std::vector<const NativeExecutionStepSpec*>> callsByRole;
+  if (candidate.splitter.name == "native-source-partition") {
+    for (const auto& step : candidate.executionPlan.steps) {
+      if (step.operation == "CALL_SUBGRAPH") callsByRole[step.unitId].push_back(&step);
+    }
+  }
+  const bool sourceProgram = std::any_of(callsByRole.begin(), callsByRole.end(),
+    [] (const auto& item) {
+      return item.second.size() > 1;
+    });
   std::optional<qwen::QwenTpShape> qwenShape;
   std::vector<NativeSelectionRoleV3> result;
   for (const auto& name : candidate.executionPlan.roles) {
@@ -481,6 +498,42 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     const auto boundary = sourceBoundary(m_sourceGraph, metadata, owned, additionalOutputs, control);
     const auto& inputs = boundary.inputs;
     const auto& outputs = boundary.outputs;
+    if (sourceProgram) {
+      if (name == candidate.resultEgressRole &&
+          std::any_of(model.graph.modelOutputs.begin(), model.graph.modelOutputs.end(),
+            [&outputs] (const auto& port) { return outputs.count(port.name) == 0; }))
+        throw std::invalid_argument("source program terminal owner does not produce the model output");
+      const auto position = callsByRole.find(name);
+      if (position == callsByRole.end())
+        throw std::invalid_argument("source program role is missing its executable CALL");
+      const auto& calls = position->second;
+      if (calls.size() > 1) {
+        const auto recipe = candidate.sourceTransformByRole.find(name);
+        if (recipe == candidate.sourceTransformByRole.end() ||
+            nativeParseJson(recipe->second).value("schema", std::string{}) !=
+              NATIVE_SOURCE_ENTRY_PROGRAM_V1)
+          throw std::invalid_argument("source program role is missing its entry recipe");
+      }
+      else {
+        const auto matches = [] (const auto& ports, const auto& slots) {
+          return ports.size() == slots.size() && std::all_of(slots.begin(), slots.end(),
+            [&ports] (const auto& slot) {
+              const auto port = ports.find(slot.slotId);
+              return port != ports.end() && port->second.dtype == slot.dtype &&
+                     port->second.shape == slot.shape;
+            });
+        };
+        if (!matches(inputs, calls.front()->inputSlots) ||
+            !matches(outputs, calls.front()->outputSlots))
+          throw std::invalid_argument("source program outer CALL differs from its canonical frontier");
+        for (const auto& slot : calls.front()->inputSlots) {
+          if ((name == candidate.inputIngressRole && slot.source != "EPOCH_INPUT") ||
+              (name != candidate.inputIngressRole &&
+               (slot.source != "REMOTE_STEP" || slot.producerSlotId != slot.slotId)))
+            throw std::invalid_argument("source program outer CALL changes source tensor lineage");
+        }
+      }
+    }
     const auto checkState = [&](const auto& declared, const auto& actual) {
       const auto found = declared.find(name);
       if (found == declared.end()) return;
@@ -508,26 +561,63 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     // This is a source-derived lower bound, not backend peak memory. Rank
     // sharding and native postprocessing do not load this full ONNX weight set.
     const auto transform = candidate.sourceTransformByRole.find(name);
-    const auto sourceTransform = transform == candidate.sourceTransformByRole.end()
-      ? std::optional<NativeOnnxSourceTransformV1>{}
-      : NativeOnnxSourceTransformV1::parse(transform->second);
-    if (sourceTransform && (sourceTransform->kind == "conv-input-channel-partial" ||
-                            sourceTransform->kind == "ffn-pair-partial")) {
+    std::optional<NativeOnnxSourceTransformV1> sourceTransform;
+    std::vector<NativeOnnxSourceEntryRecipeV1> sourceEntries;
+    if (transform != candidate.sourceTransformByRole.end()) {
+      const auto schema = nativeParseJson(transform->second).value("schema", std::string{});
+      if (schema == NATIVE_SOURCE_ENTRY_PROGRAM_V1) {
+        auto program = NativeOnnxSourceEntryProgramV1::parse(transform->second);
+        program.validateRank(candidate.executionPlan, name, shardRank);
+        sourceEntries = std::move(program.entries);
+        for (const auto& entry : sourceEntries) {
+          control.requireActive();
+          std::set<std::uint64_t> entryNodes;
+          for (const auto& node : entry.sourceNodes) {
+            const auto& indices = m_mapping.at(node);
+            if (indices.size() != 1 ||
+                (!entryNodes.empty() && indices.front() != *entryNodes.rbegin() + 1))
+              throw std::invalid_argument("source entry does not have contiguous canonical nodes");
+            entryNodes.insert(indices.front());
+          }
+          const auto frontier = sourceBoundary(m_sourceGraph, metadata, entryNodes, {}, control);
+          const auto call = std::find_if(candidate.executionPlan.steps.begin(),
+            candidate.executionPlan.steps.end(), [&] (const auto& step) {
+              return step.unitId == name && step.artifactEntry == entry.entryId;
+            });
+          const auto matchesPort = [] (const auto& ports, const auto& slot) {
+            const auto port = ports.find(slot.slotId);
+            return ports.size() == 1 && port != ports.end() &&
+                   port->second.dtype == slot.dtype && port->second.shape == slot.shape;
+          };
+          if (call == candidate.executionPlan.steps.end() ||
+              !matchesPort(frontier.inputs, call->inputSlots.front()) ||
+              !matchesPort(frontier.outputs, call->outputSlots.front()))
+            throw std::invalid_argument("source entry CALL differs from its canonical frontier");
+        }
+      }
+      else {
+        sourceTransform = NativeOnnxSourceTransformV1::parse(transform->second);
+        if (sourceTransform->kind == "ffn-pair-partial")
+          sourceEntries.push_back({{}, {}, *sourceTransform});
+      }
+    }
+    if (!sourceEntries.empty() ||
+        (sourceTransform && sourceTransform->kind == "conv-input-channel-partial")) {
       if (!requirement.weightBytes || *requirement.weightBytes == 0)
         throw std::invalid_argument("transformed native role has no resident weight bound");
-      if (sourceTransform->kind == "ffn-pair-partial") {
-        const auto width = sourceTransform->end - sourceTransform->begin;
-        std::uint64_t residentBytes = 0;
-        for (const auto& initializer :
-             {sourceTransform->weight, sourceTransform->downWeight, sourceTransform->bias}) {
+      std::uint64_t residentBytes = 0;
+      for (const auto& entry : sourceEntries) {
+        const auto& slice = entry.transform;
+        const auto width = slice.end - slice.begin;
+        for (const auto& initializer : {slice.weight, slice.downWeight, slice.bias}) {
           if (initializer.empty()) continue;
           const auto& size = metadata.at("tensors").at(initializer).at("sizeBytes");
           if (!size.is_number_unsigned())
             throw std::invalid_argument("paired FFN initializer memory is unknown");
           const auto bytes = size.get<std::uint64_t>();
-          if (bytes == 0 || bytes % sourceTransform->extent != 0)
+          if (bytes == 0 || bytes % slice.extent != 0)
             throw std::invalid_argument("paired FFN initializer memory differs from its axis");
-          const auto shardBytes = (bytes / sourceTransform->extent) * width;
+          const auto shardBytes = (bytes / slice.extent) * width;
           if (shardBytes > *requirement.weightBytes - residentBytes)
             throw std::invalid_argument("paired FFN weight budget is below its sliced bytes");
           residentBytes += shardBytes;

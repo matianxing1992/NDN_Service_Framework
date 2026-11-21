@@ -16,6 +16,7 @@
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include <boost/test/unit_test.hpp>
@@ -877,6 +878,42 @@ BOOST_AUTO_TEST_CASE(FixedProviderPlacementBindsEachPipelineRankToConfiguredProv
   BOOST_CHECK_EQUAL(proposal.strategy.name, strategy.identity().name);
   BOOST_CHECK_EQUAL(proposal.providerByRole.at("/LLM/Pipeline/Stage/0#0"), "/provider/a");
   BOOST_CHECK_EQUAL(proposal.providerByRole.at("/LLM/Pipeline/Stage/0#1"), "/provider/b");
+}
+
+BOOST_AUTO_TEST_CASE(PlacementRejectsPeersSharingOneAdmittedProvider)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]);
+  const std::string first = "/LLM/Pipeline/Stage/0#0";
+  const std::string second = "/LLM/Pipeline/Stage/0#1";
+  input.context.distinctProviderPairs = {{first, second}};
+  const NativeFixedProviderPlacement separate({{first, "/provider/a"}, {second, "/provider/b"}});
+  const NativeFixedProviderPlacement together({{first, "/provider/a"}, {second, "/provider/a"}});
+  ExtensionControl control{std::chrono::steady_clock::now() + std::chrono::seconds(5),
+                           [] { return false; }};
+  const auto fixed = separate.proposeRoles(
+    input.context, input.ackDigest, input.roles, input.offers, 200, control);
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(fixed, input.roles, input.offers, 200));
+  BOOST_CHECK_THROW(together.proposeRoles(
+    input.context, input.ackDigest, input.roles, input.offers, 200, control),
+    NativeNoFeasiblePlacement);
+  auto forged = fixed;
+  forged.providerByRole.at(second) = forged.providerByRole.at(first);
+  BOOST_CHECK_EXCEPTION(validateNativeRolePlacement(forged, input.roles, input.offers, 200),
+    std::invalid_argument, [] (const std::invalid_argument& error) {
+      return std::string(error.what()) == "placement does not separate the required tensor peers";
+    });
+  const auto ordinary = NativePreSplitFirstPlacement().proposeRoles(
+    input.context, input.ackDigest, input.roles, input.offers, 200);
+  BOOST_CHECK_NE(ordinary.providerByRole.at(first), ordinary.providerByRole.at(second));
+
+  input.context.requiredExecutionCapabilities.push_back(NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1);
+  BOOST_CHECK_THROW(separate.proposeRoles(
+    input.context, input.ackDigest, input.roles, input.offers, 200, control),
+    NativeNoFeasiblePlacement);
+  BOOST_CHECK_THROW(NativePreSplitFirstPlacement().proposeRoles(
+    input.context, input.ackDigest, input.roles, input.offers, 200),
+    NativeNoFeasiblePlacement);
 }
 
 BOOST_AUTO_TEST_CASE(AdmittedGroupKeysReachCoreRsaCapabilityUnwrap)

@@ -2328,6 +2328,15 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     throw std::invalid_argument("Selection tensor shard version mismatch");
   if (!fixedAssignment)
     validateNativeQwenTensorAssembly(projection.assemblyContract(), projection.plan.stageLayout);
+  const auto& sourceRecipe = projection.assemblyContract().sourceTransformV1;
+  if (!sourceRecipe.empty() && nativeParseJson(sourceRecipe).value("schema", std::string{}) ==
+      NATIVE_SOURCE_ENTRY_PROGRAM_V1) {
+    const auto& assembly = projection.assemblyContract();
+    const auto program = NativeOnnxSourceEntryProgramV1::parse(sourceRecipe);
+    if (projection.generationContract.enabled)
+      throw std::invalid_argument("source entry program requires stateless execution");
+    program.validateRank(projection.plan, assembly.selectedRole, assembly.tensorParallelRank);
+  }
   projection.dataflow = fixedAssignment
     ? bindFixedTemplateDataflow(typedDataflow, projection, *fixedAssignment->executionTemplate())
     : dataflowFromV3Json(*dataflow);
@@ -4322,16 +4331,26 @@ void validateNativeAssembly(const NativeSelectionRoleV3& role)
   bool ffnPair = false;
   if (!role.sourceTransformV1.empty()) {
     const auto transform = nativeParseJson(role.sourceTransformV1);
-    if (!transform.is_object() ||
-        transform.value("schema", std::string{}) != "source_transform_v1" ||
-        transform.value("kind", std::string{}).empty())
+    if (!transform.is_object())
       throw std::invalid_argument("role source transform is invalid");
-    ffnPair = transform.value("kind", std::string{}) == "ffn-pair-partial";
+    const auto schema = transform.value("schema", std::string{});
+    const auto kind = transform.value("kind", std::string{});
+    const bool entryProgram = schema == NATIVE_SOURCE_ENTRY_PROGRAM_V1;
+    if (!entryProgram && (schema != "source_transform_v1" || kind.empty()))
+      throw std::invalid_argument("role source transform is invalid");
+    ffnPair = kind == "ffn-pair-partial" || entryProgram;
     if (ffnPair) {
-      const auto recipe = NativeOnnxSourceTransformV1::parse(role.sourceTransformV1);
       if (role.adapterId == "qwen" || role.tensorParallelDegree != 2 ||
           role.tensorParallelRank >= 2 || role.tensorShardV1.empty())
         throw std::invalid_argument("role paired FFN geometry is incomplete");
+      // The stage-level axes describe the first entry. Each subsequent range
+      // is checked against its own extent and the same rank by validateRank.
+      const auto recipe = [&] {
+        if (!entryProgram) return NativeOnnxSourceTransformV1::parse(role.sourceTransformV1);
+        const auto program = NativeOnnxSourceEntryProgramV1::parse(role.sourceTransformV1);
+        (void)program.bindSourceOrdinals(role.nodeIndices);
+        return program.entries.front().transform;
+      }();
       const auto ranges = nativeConvInputChannelRanges(recipe.extent, 2);
       const auto shard = parseNativeTensorShardV1(role.tensorShardV1);
       const auto& axes = shard.at("axes");

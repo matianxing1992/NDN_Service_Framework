@@ -14,6 +14,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "ndnsf-integration-fixture.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
@@ -580,7 +581,8 @@ runRegisteredProviderAssemblyCase(std::size_t providerCount)
 
 BOOST_AUTO_TEST_SUITE(Spec175NativeAssembly)
 
-BOOST_AUTO_TEST_CASE(PairedFfnMaterialSidecarReopensAndRejectsCorruption)
+static void
+checkPairedFfnMaterialAssembly(bool multiEntry)
 {
   constexpr std::uint64_t WIDTH = 524296;
   constexpr auto HALF = WIDTH / 2;
@@ -627,10 +629,18 @@ BOOST_AUTO_TEST_CASE(PairedFfnMaterialSidecarReopensAndRejectsCorruption)
   addOp("Gelu", {"expanded"}, "activated");
   addOp("MatMul", {"activated", "W2"}, "partial");
 
+  if (multiEntry) {
+    addMatrix("W3", 1, WIDTH, 2 * MATRIX_BYTES);
+    addMatrix("W4", WIDTH, 1, 3 * MATRIX_BYTES);
+    addOp("MatMul", {"partial", "W3"}, "expanded-next");
+    addOp("Gelu", {"expanded-next"}, "activated-next");
+    addOp("MatMul", {"activated-next", "W4"}, "next");
+    graph.mutable_output(0)->set_name("next");
+  }
   NativeCanonicalSource source;
   const auto wire = model.SerializeAsString();
   source.modelBytes.assign(wire.begin(), wire.end());
-  source.initializerBytes.emplace(2 * MATRIX_BYTES);
+  source.initializerBytes.emplace((multiEntry ? 4 : 2) * MATRIX_BYTES);
   for (std::uint64_t index = 0; index < source.initializerBytes->size(); ++index)
     (*source.initializerBytes)[index] = (index ^ (index >> 12) ^ (index >> 21)) & 0xff;
   const NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(45),
@@ -731,6 +741,34 @@ BOOST_AUTO_TEST_CASE(PairedFfnMaterialSidecarReopensAndRejectsCorruption)
   call.inputSlots = {inputSlot};
   call.outputSlots = {outputSlot};
   projection.plan.steps = {call};
+  if (multiEntry) {
+    auto next = pair;
+    next.node = "onnx-node-3";
+    next.downNode = "onnx-node-5";
+    next.input = "partial";
+    next.output = "next";
+    next.weight = "W3";
+    next.downWeight = "W4";
+    auto nextCall = call;
+    nextCall.stepId += "/1";
+    nextCall.artifactEntry += "/1";
+    nextCall.inputSlots.front().slotId = "partial";
+    nextCall.inputSlots.front().source = "LOCAL_STEP";
+    nextCall.inputSlots.front().producerStepId = call.stepId;
+    nextCall.inputSlots.front().producerSlotId = "partial";
+    nextCall.outputSlots.front().slotId = "next";
+    projection.plan.steps.push_back(nextCall);
+    NativeOnnxSourceEntryProgramV1 program;
+    program.entries = {{call.artifactEntry, {"onnx-node-0", "onnx-node-1", "onnx-node-2"}, pair},
+      {nextCall.artifactEntry, {"onnx-node-3", "onnx-node-4", "onnx-node-5"}, next}};
+    role.roleKind = "HYBRID_RANK";
+    role.layerEnd = 6;
+    role.nodeIndices = {0, 1, 2, 3, 4, 5};
+    role.sourceTransformV1 = program.canonicalJson();
+    role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
+    projection.selectedRole = role;
+  }
+
   projection.planCoreDigest = projection.planDigest;
   projection.securityPolicySnapshotDigest = projection.planDigest;
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -831,9 +869,65 @@ BOOST_AUTO_TEST_CASE(PairedFfnMaterialSidecarReopensAndRejectsCorruption)
   options.providerIdentity = projection.provider;
   options.workerLocation = testWorkerLocation();
   options.signManifest = [] (const std::string& bytes) { return digest(bytes); };
+  options.verifyManifest = [] (const std::string& bytes, const std::string& signature) {
+    return digest(bytes) == signature;
+  };
+  ndn::KeyChain receiptKeys("pib-memory:", "tpm-memory:");
+  if (multiEntry) {
+    const auto provider = receiptKeys.createIdentity(ndn::Name(projection.provider));
+    BOOST_REQUIRE(bindNativeSourceProgramManifestAuthentication(projection, options, receiptKeys,
+      provider.getDefaultKey().getDefaultCertificate()));
+  }
   options.roleAssemblySpecDigest = zeroDigest('e');
   options.protectedRuntime = makeRuntime();
   const auto built = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  if (multiEntry) {
+    const auto entries = decodeNativeSourceEntryFiles(built.metadata.at("sourceEntryFiles"));
+    BOOST_REQUIRE_EQUAL(entries.size(), 2u);
+    const auto programRoot = std::filesystem::path(built.path).parent_path();
+    const auto secondGraph = nativeSourceEntryGraphPath(programRoot, 1);
+    const auto secondSidecar = secondGraph.parent_path() / "model.onnx.data";
+    BOOST_CHECK(std::filesystem::is_regular_file(secondGraph));
+    const auto bytes = readBytes(secondSidecar);
+    BOOST_REQUIRE_EQUAL(bytes.size(), MATRIX_BYTES);
+    const auto& original = source.initializerBytes->asVector();
+    BOOST_CHECK(std::equal(bytes.begin(), bytes.begin() + HALF * 4,
+                           original.begin() + 2 * MATRIX_BYTES + HALF * 4));
+    BOOST_CHECK(std::equal(bytes.begin() + HALF * 4, bytes.end(),
+                           original.begin() + 3 * MATRIX_BYTES + HALF * 4));
+    options.protectedRuntime->complete();
+    options.protectedRuntime = makeRuntime();
+    const auto warm = tryLoadNativeCanonicalOnnxRoleFromCache(fetchers, projection, options, {}, {});
+    BOOST_REQUIRE(warm);
+    BOOST_CHECK_EQUAL(warm->metadata.at("sourceEntryFiles"), built.metadata.at("sourceEntryFiles"));
+    {
+      RegistryNativeModelRunnerFactory factory;
+      registerOnnxRuntimeBackend(factory);
+      const auto runner = std::dynamic_pointer_cast<NativeEntryRunner>(factory.create(*warm));
+      BOOST_REQUIRE(runner);
+      BOOST_CHECK(runner->checkTemplate(projection.plan.steps, role.selectedRole).empty());
+    }
+    {
+      std::fstream tamper(secondSidecar, std::ios::binary | std::ios::in | std::ios::out);
+      BOOST_REQUIRE(tamper.good());
+      tamper.put(static_cast<char>(bytes.front() ^ 1));
+    }
+    BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(fetchers, projection, options, {}, {}));
+    const auto rebuilt = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+    const auto signaturePath = std::filesystem::path(rebuilt.path).parent_path() /
+      "manifest.signature";
+    {
+      std::fstream tamper(signaturePath, std::ios::binary | std::ios::in | std::ios::out);
+      BOOST_REQUIRE(tamper.good());
+      const auto first = tamper.get();
+      BOOST_REQUIRE(first != std::char_traits<char>::eof());
+      tamper.seekp(0);
+      tamper.put(static_cast<char>(first ^ 1));
+    }
+    BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(fetchers, projection, options, {}, {}));
+    options.protectedRuntime->complete();
+    return;
+  }
   BOOST_REQUIRE(built.entryContract);
   BOOST_CHECK_EQUAL(built.entryContract->entryId, call.artifactEntry);
   const auto sidecar = std::filesystem::path(built.path).parent_path() / "model.onnx.data";
@@ -899,6 +993,16 @@ BOOST_AUTO_TEST_CASE(PairedFfnMaterialSidecarReopensAndRejectsCorruption)
   BOOST_CHECK(staged);
   cancelled.protectedRuntime->complete();
   BOOST_CHECK(!std::filesystem::exists(cancelled.cacheDir + "/assembled"));
+}
+
+BOOST_AUTO_TEST_CASE(PairedFfnMaterialSidecarReopensAndRejectsCorruption)
+{
+  checkPairedFfnMaterialAssembly(false);
+}
+
+BOOST_AUTO_TEST_CASE(SourceEntryProgramReopensAllFilesAndRejectsCorruptSecondSidecar)
+{
+  checkPairedFfnMaterialAssembly(true);
 }
 
 BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)

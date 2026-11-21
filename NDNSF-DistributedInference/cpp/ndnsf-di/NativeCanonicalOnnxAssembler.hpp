@@ -92,6 +92,8 @@ struct NativeCanonicalOnnxAssemblerOptions
   // already-authenticated decrypt/copy after an exact descriptor hit.
   std::shared_ptr<class NativeProtectedPlaintextCache> protectedPlaintextCache;
   std::shared_ptr<NativePersistentRecipeResidencyIndex> persistentRecipeResidencyIndex;
+  /** Verify a source program's exact receipt under the configured Provider certificate. */
+  std::function<bool(const std::string& manifest, const std::string& signature)> verifyManifest;
 };
 
 /** Check the current automatic seed before a cached descriptor is rebound.
@@ -109,6 +111,12 @@ validateNativeAutomaticCachedRunnerSource(
 void
 nativeBindStoredModelAssemblyCache(const NativeSelectionProjectionV3& projection,
                                   NativeCanonicalOnnxAssemblerOptions& options);
+
+/** Keep the SDK and standalone Provider on the same source-program receipt contract. */
+bool
+bindNativeSourceProgramManifestAuthentication(const NativeSelectionProjectionV3& projection,
+  NativeCanonicalOnnxAssemblerOptions& options, ndn::KeyChain& keyChain,
+  const ndn::security::Certificate& providerCert);
 
 /** Exact identity for one decrypted protected assembled model. */
 struct NativeProtectedPlaintextCacheKey
