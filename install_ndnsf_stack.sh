@@ -611,6 +611,12 @@ def read_manifest(path: Path) -> dict[str, object]:
     data.setdefault("aptPackages", [])
     files = {}
     for name, entry in data["files"].items():
+        # Older schema-1 ledgers recorded the size of regular files in
+        # addition to their SHA256 and mode. Use the current state fields.
+        for key in ("installed", "backupState", "pendingPrevious"):
+            state = entry.get(key)
+            if isinstance(state, dict) and state.get("kind") == "file":
+                state.pop("bytes", None)
         canonical = str(canonical_manifest_path(Path(name)))
         if canonical in files:
             previous = files[canonical]
@@ -1492,7 +1498,8 @@ native_runtime_rpath() {
 run_waf_clean() {
   refresh_global_pkg_config_path
   local -a waf_args=("$@")
-  local profile=stack-native-build
+  local profile=stack-native-build runtime_rpath
+  runtime_rpath="$(native_runtime_rpath)"
   # Only an explicitly requested private-SDK driver needs an ndn-cxx source pin.
   local ndncxx_source_tree="${NDNSF_NDN_CXX_SOURCE_TREE:-}"
   if [[ "${waf_args[0]:-}" == "configure" ]]; then
@@ -1503,7 +1510,8 @@ run_waf_clean() {
     [[ -z "$NAC_SDK_PREFIX" ]] || waf_args+=("--nac-abe-prefix=$NAC_SDK_PREFIX")
     if [[ "$RUN_WAF_CONFIGURE" == auto ]] &&
         "$PYTHON_BIN" "$BUILD_STORAGE" configured --build-dir "$NATIVE_BUILD_DIR" \
-          --cxx "${CXX:-}" -- "${waf_args[@]:1}" "--onnx-prefix=$GLOBAL_ONNX_PREFIX"; then
+          --cxx "${CXX:-}" --runtime-rpath "$runtime_rpath" -- \
+          "${waf_args[@]:1}" "--onnx-prefix=$GLOBAL_ONNX_PREFIX"; then
       echo "==> Reusing configured Waf state in $NATIVE_BUILD_DIR"
       return 0
     fi
@@ -1527,7 +1535,7 @@ run_waf_clean() {
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
     NM=/usr/bin/nm STRIP=/usr/bin/strip \
     NDNSF_LIBRARY_DIR="$RUNTIME_LIBRARY_DIR" \
-    NDNSF_RUNTIME_RPATH="$(native_runtime_rpath)" \
+    NDNSF_RUNTIME_RPATH="$runtime_rpath" \
     NDNSF_NDN_CXX_SOURCE_TREE="$ndncxx_source_tree" \
     "$PYTHON_BIN" ./waf \
     --out="$NATIVE_BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" "${waf_args[@]}"
@@ -2153,7 +2161,7 @@ require_global_file() {
 
 require_global_external_closure() {
   verify_nac_sdk || {
-    echo "Locked patched NAC SDK is absent or stale: $NAC_SDK_PREFIX; install dependencies first." >&2
+    echo "Locked NAC SDK is absent or stale: $NAC_SDK_PREFIX; install dependencies first." >&2
     return 1
   }
   probe_configured_openssl_api
@@ -2609,7 +2617,7 @@ sys.path.insert(0, sys.argv[1])
 import stack_sources
 
 receipt = stack_sources.fingerprint(
-    stack_sources.load_lock(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[6])
+    stack_sources.load_lock(sys.argv[2], host=True), sys.argv[3], sys.argv[4], sys.argv[6])
 destination = Path(sys.argv[5])
 destination.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n",
                        encoding="utf-8")
@@ -3359,13 +3367,13 @@ build_cmake_dependency() {
   local pkg="$2"
   local url="$3"
   local minimum="$4"
-  local dir build_dir install_stage materialized_root=""
+  local dir build_dir install_stage
   local dependency_prefix="$GLOBAL_DEPENDENCY_PREFIX"
 
   if [[ "$name" == "NAC-ABE" ]]; then
     [[ -n "$NAC_SDK_PREFIX" ]] || { echo 'Select the locked NAC SDK before building.' >&2; return 1; }
     if [[ "$FORCE_DEPENDENCIES" != "1" ]] && verify_nac_sdk; then
-      echo "==> Locked patched NAC SDK already installed: $NAC_SDK_PREFIX"
+      echo "==> Locked NAC SDK already installed: $NAC_SDK_PREFIX"
       return
     fi
   elif [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
@@ -3375,13 +3383,10 @@ build_cmake_dependency() {
 
   dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
   if [[ "$name" == "NAC-ABE" ]]; then
-    dir="$("$PYTHON_BIN" "$SOURCE_HELPER" materialize --lock "$LOCK_FILE" \
-      --name "$name" --source-dir "$dir" --build-root "$BUILD_DIR/source-materializations")" || return 1
-    materialized_root="$(dirname -- "$dir")"
-    build_dir="$materialized_root/build"
+    build_dir="$(mktemp -d "$BUILD_DIR/nac-build.XXXXXXXX")" || return 1
     dependency_prefix="$NAC_SDK_PREFIX"
     install_stage="$(mktemp -d "$BUILD_DIR/nac-install-stage.XXXXXXXX")"
-    echo "==> Isolated NAC source/build: $materialized_root; install staging: $install_stage"
+    echo "==> Building the published NAC source in $build_dir; install staging: $install_stage"
   else
     build_dir="$dir/.ndnsf-global-build-${name//[^A-Za-z0-9]/_}-$$"
     install_stage="$BUILD_DIR/install-staging/$name/usr/local"
@@ -3448,8 +3453,8 @@ build_cmake_dependency() {
     install_manifest_tree "$install_stage$GLOBAL_DEPENDENCY_PREFIX" \
       "$GLOBAL_DEPENDENCY_PREFIX" "NAC-ABE-sdk:${dependency_prefix##*/}"
     record_source_receipt "$name" "$dependency_prefix"
-    verify_nac_sdk || { echo "Installed NAC SDK failed verification; preserved $materialized_root and $install_stage" >&2; return 1; }
-    rm -rf -- "$materialized_root" "$install_stage"
+    verify_nac_sdk || { echo "Installed NAC SDK failed verification; preserved $build_dir and $install_stage" >&2; return 1; }
+    rm -rf -- "$build_dir" "$install_stage"
     return
   fi
   run bash -e -c "cd \"\$1\" && env -u BOOST_ROOT -u BOOST_INCLUDEDIR \

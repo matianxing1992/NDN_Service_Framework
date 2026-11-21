@@ -144,6 +144,20 @@ def test_parallel_sdk_receipt_binds_distinct_upstream_and_patch_identity(patched
     assert not sources.receipt(data, 'NAC-ABE', sdk, upstream_prefix=upstream)
 
 
+def test_host_nac_release_uses_published_commit_and_preserves_sealed_patch_recipe(tmp_path):
+    lock = ROOT / 'packaging/host-dependencies.lock.json'
+    legacy = sources.load_lock(lock)
+    host = sources.load_lock(lock, host=True)
+    old = legacy['sources']['NAC-ABE']
+    published = host['sources']['NAC-ABE']
+    assert published['commit'] != old['commit']
+    assert published['ref'] == 'Experimental'
+    assert 'patch_series' not in published
+    assert len(sources.patch_series(old)) == 5
+    assert sources.sdk_prefix(host, 'NAC-ABE', tmp_path) == (
+        tmp_path / 'ndnsf-sdk' / 'nac-abe' / published['commit'])
+
+
 def test_prepare_pins_commit_and_preserves_dirty_tree(repository, tmp_path):
     sha = git(repository, 'rev-parse', 'HEAD')
     source = {'url': str(repository), 'commit': sha}

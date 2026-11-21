@@ -24,11 +24,22 @@ LIBRARIES = {
 }
 
 
-def load_lock(path):
+def load_lock(path, *, host=False):
     data = json.loads(Path(path).read_text())
     if data.get('schema') != 1 or set(data.get('sources', {})) != set(LIBRARIES):
         raise ValueError('lock must declare schema 1 and exactly the five supported source dependencies')
     for name, source in data['sources'].items():
+        if name == 'NAC-ABE' and 'host_release' in source:
+            release = source.pop('host_release')
+            if (not isinstance(release, dict) or set(release) != {'commit', 'ref'} or
+                    not isinstance(release['commit'], str) or
+                    not re.fullmatch(r'[0-9a-f]{40}', release['commit']) or
+                    not isinstance(release['ref'], str) or not release['ref'] or
+                    any(c.isspace() for c in release['ref'])):
+                raise ValueError('NAC-ABE: invalid published host release')
+            if host:
+                source.update(release)
+                source.pop('patch_series', None)
         url = source.get('url', '')
         if not isinstance(url, str) or not url.startswith(('https://', 'ssh://', 'git@')) or any(c.isspace() for c in url):
             raise ValueError(f'{name}: expected an HTTPS/SSH repository URL')
@@ -155,9 +166,11 @@ def patch_series(source, root=None):
 def sdk_prefix(data, name, prefix):
     source = data['sources'][name]
     if name != 'NAC-ABE':
-        raise ValueError('only NAC-ABE has a parallel patched SDK')
-    patch_series(source)
-    identity = source['commit'] + '-' + source['patch_series']['sha256']
+        raise ValueError('only NAC-ABE has a versioned SDK prefix')
+    identity = source['commit']
+    if 'patch_series' in source:
+        patch_series(source)
+        identity += '-' + source['patch_series']['sha256']
     return Path(prefix) / 'ndnsf-sdk/nac-abe' / identity
 
 
@@ -311,7 +324,7 @@ def main():
     parser.add_argument('--require-nac', action='store_true')
     args = parser.parse_args()
     try:
-        data = load_lock(args.lock)
+        data = load_lock(args.lock, host=True)
         if args.action == 'plan':
             for name in order(data):
                 s = data['sources'][name]

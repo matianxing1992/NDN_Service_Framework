@@ -47,30 +47,23 @@ The new and legacy focused suites also pass against that installed library:
 NDNSF Waf configure passes its mandatory new-API compile/link probe against
 that installation. Core compilation and runtime qualification are separate.
 
-The stack installer now selects the patched source from the NAC entry in
-`packaging/host-dependencies.lock.json`. Its `patch_series` pins this directory's
-series file by SHA256; that file pins the upstream commit and every ordered
-patch. The source helper materializes and patches a private archive without
-editing the original checkout. An existing dirty checkout is rejected intact.
+The five patches are also published in NAC-ABE `Experimental` as commit
+`7592082abc291b6e5fb0c74924ad0402628af24c`. For host installation,
+`host_release` in `packaging/host-dependencies.lock.json` pins that exact
+revision. The installer builds the clean checkout and installs into
+`/usr/local/ndnsf-sdk/nac-abe/<commit>`. Build and staging directories are
+scratch. Waf uses the headers and pkg-config from that prefix, and the runtime
+loader resolves the NAC library there before the general system library path.
+Reuse requires the source and library receipt plus the compile/link and loader
+probe for `consumeWithCkAuthorization`. Waf reuses its configuration only when
+the cached runtime paths also match the installer's order.
 
-The SDK prefix is `/usr/local/ndnsf-sdk/nac-abe/<commit>-<series-sha256>`.
-Installation uses the existing manifest owner at `/usr/local`, with nested
-root-relative staging. It leaves the default `/usr/local/lib/libnac-abe.so`
-unchanged. Skip requires the matching source/upstream/library receipt and a
-compile/link/loader check of `consumeWithCkAuthorization`; version 0.1 alone is
-insufficient. The maintained Waf invocation receives the same explicit SDK
-prefix and controlled pkg-config selection. Configure-only mode requires this
-SDK already installed and does not build or fall back to the old global NAC.
+Host verification used `./install_ndnsf_stack.sh --deps-only --no-system-packages`
+and `./install_ndnsf_stack.sh --no-install --with-examples --with-tests`. The
+published NAC revision passed 17 native cases. The NDNSF `nac-transport`
+target passed eight native cases with `ldd -r` resolving the versioned global
+SDK and no loader environment overrides.
 
-These installer edits are under source review and have not yet qualified a new
-installation. The earlier parallel-SDK results above do not establish that the
-new installer path passes. Current Core/runtime, rejecting-validator/CA and
-sanitizer qualification remain separately tracked in Spec 210.
-
-Current five-patch native regression passes `TestProducerBoundCk`,
-`TestProducerBoundKpCk` and `TestConsumerRevocation`: 17 cases / 163 assertions.
-These results use the dependency build-tree library, real encryption and
-segmented transport with ValidatorNull plus explicit signer checks. They do
-not establish normal certificate-chain rejection or final installed NDNSF
-qualification. The maintained installer derives a separate SDK prefix from the
-pinned upstream commit and the exact `series.json` digest.
+Sealed Tiger SDK construction continues to use the historical base commit and
+this hashed series. Existing Tiger SDK receipts remain tied to their own sealed
+source snapshots.

@@ -41,6 +41,10 @@
     },
     "NAC-ABE": {
       "url": "https://github.com/matianxing1992/NAC-ABE.git",
+      "host_release": {
+        "ref": "Experimental",
+        "commit": "7592082abc291b6e5fb0c74924ad0402628af24c"
+      },
       "ref": "Experimental",
       "commit": "5ed23e68520fb9c4ef747c51d6d18c915ff88fc4",
       "build_recipe_revision": 2,

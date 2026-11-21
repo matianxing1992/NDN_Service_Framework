@@ -25,10 +25,12 @@ STAGE_MARKER = ".ndnsf-native-install-stage"
 
 
 def waf_cache_values(path, names):
-    return {node.targets[0].id: ast.literal_eval(node.value)
-            for node in ast.parse(path.read_text()).body
-            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id in names}
+    values = {}
+    for line in path.read_text().splitlines():
+        name, separator, value = line.partition(" = ")
+        if separator and name in names:
+            values[name] = ast.literal_eval(value)
+    return values
 
 
 def configure_options(arguments):
@@ -48,13 +50,19 @@ def configured(args):
     try:
         lock = waf_cache_values(build / ".lock-waf_linux_build",
                                 {"argv", "files", "hash", "out_dir", "top_dir"})
-        cache = waf_cache_values(build / "c4che/_cache.py", {"CXX", "sanitize_di"})
+        cache = waf_cache_values(build / "c4che/_cache.py", {"CXX", "LINKFLAGS", "sanitize_di"})
         if lock["out_dir"] != str(build) or lock["top_dir"] != str(source_root):
             return False
         if cache.get("sanitize_di") or (not args.source_dir and not (build / "config.hpp").is_file()):
             return False
         if args.cxx and Path(cache["CXX"][0]).resolve() != Path(args.cxx).resolve():
             return False
+        if args.runtime_rpath:
+            rpath_flag = "-Wl,-rpath,"
+            cached_rpaths = [flag[len(rpath_flag):] for flag in cache["LINKFLAGS"]
+                             if flag.startswith(rpath_flag)]
+            if cached_rpaths != args.runtime_rpath.split(os.pathsep):
+                return False
         signature = 0
         for source in lock["files"]:
             signature = hashlib.md5(repr((signature, Path(source).read_bytes())).encode()).digest()
@@ -445,6 +453,7 @@ def main():
     configuration.add_argument("--build-dir", required=True)
     configuration.add_argument("--source-dir")
     configuration.add_argument("--cxx")
+    configuration.add_argument("--runtime-rpath")
     configuration.add_argument("options", nargs=argparse.REMAINDER)
     gate = commands.add_parser("run")
     gate.add_argument("--build-dir", required=True)
