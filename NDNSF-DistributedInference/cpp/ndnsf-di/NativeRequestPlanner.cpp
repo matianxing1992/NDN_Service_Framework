@@ -1537,13 +1537,16 @@ NativePlannedRequest planNativeRequestImpl(
   logPlanPhase(control.requestId, "request_context_copy", contextCopyTiming);
   std::vector<NativeAdmittedOfferV3> offers;
   std::map<std::string, std::uint64_t> authenticatedTransportByProvider;
+  const bool stateless = !options.generation || !options.generation->enabled;
   auto phaseStarted = planPhaseStarted();
   for (const auto& ack : closure.candidates) {
     if (!ack.ack.getStatus() ||
         (encoded.recovery && ack.providerName.toUri() == encoded.recovery->failedProvider))
       continue;
     offers.push_back(admission.verify(ack, context, epochMs()));
-    if (reusePinnedConversationPlacement && ack.ack.hasProviderCapabilityOffer()) {
+    // Stateless requests have no decode history. The admitted ACK also authenticates
+    // the transport capability used to size speculative exact reads for fixed source ports.
+    if ((reusePinnedConversationPlacement || stateless) && ack.ack.hasProviderCapabilityOffer()) {
       const auto& fields = ack.ack.getProviderCapabilityOffer();
       if (fields.hasField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD)) {
         const auto bytes = detail::nativeTensorTransportSegmentBytesV1(

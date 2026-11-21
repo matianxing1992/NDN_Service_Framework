@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
@@ -3262,6 +3263,15 @@ prepareNativeCanonicalOnnxRole(
         selectedIds.insert(found->chunkPayloadIds.begin(), found->chunkPayloadIds.end());
         selectedDependencies.insert(found->dependencies.begin(), found->dependencies.end());
       }
+      // A transformed suffix applies a Conv bias that no selected node lists as
+      // an input; the admitted transform names it, so its payload belongs to
+      // this role's selected material closure.
+      if (!projection.assemblyContract().sourceTransformV1.empty()) {
+        const auto transform = NativeOnnxSourceTransformV1::parse(
+          projection.assemblyContract().sourceTransformV1);
+        if (transform.kind == "add-conv-bias")
+          selectedDependencies.insert(transform.bias);
+      }
       for (const auto& dependency : selectedDependencies) {
         const auto found = std::find_if(materialManifest->references.begin(),
           materialManifest->references.end(), [&] (const auto& reference) {
@@ -3470,6 +3480,13 @@ prepareNativeCanonicalOnnxRole(
       BOOST_SCOPE_EXIT_ALL(&initializerFd) {
         if (initializerFd >= 0) ::close(initializerFd);
       };
+      std::vector<std::string> transformInitializers;
+      if (!projection.assemblyContract().sourceTransformV1.empty()) {
+        auto transform = NativeOnnxSourceTransformV1::parse(
+          projection.assemblyContract().sourceTransformV1);
+        if (transform.kind == "add-conv-bias")
+          transformInitializers.push_back(transform.bias);
+      }
       materializedFiles = materializeNativeCanonicalModelFiles(
         canonicalSource, projection.assemblyContract().nodeIndices,
         projection.assemblyContract().expectedInputs, projection.assemblyContract().expectedOutputs,
@@ -3484,7 +3501,7 @@ prepareNativeCanonicalOnnxRole(
             });
           }
           writeMaterial(initializerFd, bytes.data(), bytes.size());
-        });
+        }, transformInitializers);
       canonicalSource.modelBytes = std::move(materializedFiles.modelBytes);
       if (initializerFd >= 0) {
         const auto closeStatus = ::close(initializerFd);
@@ -3497,6 +3514,58 @@ prepareNativeCanonicalOnnxRole(
           initializerFile.string(), materializedFiles.initializerBytes,
           materializedFiles.initializerDigest, initializerControl);
         canonicalSource.initializerRangeSource = initializerFileOwner;
+      }
+      // A transformed role executes a derived graph, not the plain selected
+      // region. Apply the admitted transform after the authenticated sidecar is
+      // owned, so external weight bytes can be read through the same bounded
+      // range source the runner will later use.
+      if (!projection.assemblyContract().sourceTransformV1.empty()) {
+        auto transform = NativeOnnxSourceTransformV1::parse(
+          projection.assemblyContract().sourceTransformV1);
+        onnx::ModelProto sourceModel;
+        if (!sourceModel.ParseFromArray(canonicalSource.modelBytes.data(),
+                                        static_cast<int>(canonicalSource.modelBytes.size())))
+          throw std::runtime_error("DI_CANONICAL_SOURCE_PARSE_FAILED");
+        // The planner names a source node by its stable graph id (`onnx-node-N`);
+        // the materialized role copies only its selected nodes, whose ONNX names
+        // are the export's own (`conv0`). Translate the id to the name the
+        // selected graph actually carries before lowering.
+        if (const auto prefix = std::string("onnx-node-");
+            transform.node.rfind(prefix, 0) == 0 &&
+            !projection.assemblyContract().nodeIndices.empty()) {
+          const auto target = std::stoull(transform.node.substr(prefix.size()));
+          const auto first = projection.assemblyContract().nodeIndices.front();
+          if (target >= first && target - first <
+                static_cast<std::uint64_t>(sourceModel.graph().node_size())) {
+            transform.node = sourceModel.graph().node(
+              static_cast<int>(target - first)).name();
+          }
+        }
+        std::map<std::string, std::vector<std::uint8_t>> externalCache;
+        const auto derived = applyNativeOnnxSourceTransform(sourceModel, transform,
+          [&] (const std::string& location, std::uint64_t offset, std::uint64_t length) {
+            const auto key = location + ":" + std::to_string(offset) + ":" +
+                             std::to_string(length);
+            const auto cached = externalCache.find(key);
+            if (cached != externalCache.end()) return cached->second;
+            if (!canonicalSource.initializerRangeSource)
+              throw std::runtime_error("DI_CANONICAL_TRANSFORM_EXTERNAL_MISSING");
+            auto bytes = canonicalSource.initializerRangeSource->read(offset, length);
+            externalCache.emplace(key, bytes);
+            return bytes;
+          });
+        std::string derivedBytes;
+        if (!derived.SerializeToString(&derivedBytes) ||
+            derivedBytes.size() > assemblyControl.maxAssembledBytes)
+          throw std::runtime_error("DI_CANONICAL_TRANSFORM_OUTPUT_INVALID");
+        canonicalSource.modelBytes.assign(derivedBytes.begin(), derivedBytes.end());
+        // The executable role graph is the derived one, so the role identity
+        // must bind it: a role that claims the original graph while running a
+        // Slice-prefixed graph would pass a digest check it does not satisfy.
+        const auto derivedIdentity = canonicalOnnxSourceIdentity(canonicalSource, assemblyControl);
+        canonicalSource.materializedGraphDigest = derivedIdentity.graphDigest;
+        canonicalSource.materializedInitializerDigest = derivedIdentity.initializerDigest;
+        reportProgress("MODEL_TRANSFORMED", 0.8);
       }
       // The file materializer consumed selected payloads and streamed large
       // initializers into the independently owned sidecar. Release the input
@@ -3649,16 +3718,40 @@ prepareNativeCanonicalOnnxRole(
       auto workerRecipe = projection.assemblyContract();
       if (canonicalSource.materializedRole) {
         if (canonicalSource.materializedNodeIndices != projection.assemblyContract().nodeIndices ||
-            canonicalSource.materializedSourceDigest != sourceDigest ||
-            canonicalSource.materializedGraphDigest != projection.assemblyContract().graphDigest ||
-            canonicalSource.materializedInitializerDigest !=
-              projection.assemblyContract().canonicalInitializerDigest)
+            canonicalSource.materializedSourceDigest != sourceDigest)
           throw std::runtime_error("DI_CANONICAL_MATERIAL_PROVENANCE_MISMATCH");
         const auto roleIdentity = canonicalOnnxSourceIdentity(canonicalSource, assemblyControl);
+        // A transformed role is authenticated against the derived identity it
+        // actually executes; an ordinary role must still match the admitted
+        // source graph and initializer identity exactly.
+        const bool transformed = !projection.assemblyContract().sourceTransformV1.empty();
+        if (transformed) {
+          if (canonicalSource.materializedGraphDigest != roleIdentity.graphDigest ||
+              canonicalSource.materializedInitializerDigest != roleIdentity.initializerDigest)
+            throw std::runtime_error("DI_CANONICAL_MATERIAL_PROVENANCE_MISMATCH");
+        }
+        else if (canonicalSource.materializedGraphDigest !=
+                   projection.assemblyContract().graphDigest ||
+                 canonicalSource.materializedInitializerDigest !=
+                   projection.assemblyContract().canonicalInitializerDigest) {
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_PROVENANCE_MISMATCH");
+        }
         workerRecipe.graphDigest = roleIdentity.graphDigest;
         workerRecipe.canonicalInitializerDigest = roleIdentity.initializerDigest;
         workerRecipe.nodeIndices.clear();
-        for (std::size_t index = 0; index < canonicalSource.materializedNodeIndices.size(); ++index)
+        std::size_t workerNodeCount = canonicalSource.materializedNodeIndices.size();
+        if (!projection.assemblyContract().sourceTransformV1.empty()) {
+          // The derived graph adds lowering nodes (Slice and/or bias Add), so the
+          // dense worker coverage must describe the graph it will actually run,
+          // not the original selection length.
+          onnx::ModelProto derived;
+          if (!derived.ParseFromArray(canonicalSource.modelBytes.data(),
+                                      static_cast<int>(canonicalSource.modelBytes.size())) ||
+              derived.graph().node_size() <= 0)
+            throw std::runtime_error("DI_CANONICAL_TRANSFORM_OUTPUT_INVALID");
+          workerNodeCount = static_cast<std::size_t>(derived.graph().node_size());
+        }
+        for (std::size_t index = 0; index < workerNodeCount; ++index)
           workerRecipe.nodeIndices.push_back(index);
         if (workerRecipe.roleKind != "COMPONENT_SET")
           workerRecipe.layerEnd = workerRecipe.nodeIndices.size();

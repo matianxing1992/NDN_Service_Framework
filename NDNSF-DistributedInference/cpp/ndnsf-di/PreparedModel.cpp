@@ -47,6 +47,183 @@ bool Result::matchesFloat32Tensor(const std::string& tensorName,
   }
 }
 
+bool Result::matchesFloat32Detections(const std::string& tensorName,
+                                            const std::vector<float>& expected,
+                                            std::size_t rowWidth,
+                                            double coordinateTolerance,
+                                            double scoreTolerance,
+                                            double iouFloor) const
+{
+  if (tensorName.empty() || rowWidth != 6 || expected.empty() ||
+      expected.size() % rowWidth != 0 || !std::isfinite(coordinateTolerance) ||
+      coordinateTolerance < 0.0 || !std::isfinite(scoreTolerance) ||
+      scoreTolerance < 0.0 || !std::isfinite(iouFloor) || iouFloor < 0.0 ||
+      iouFloor > 1.0)
+    return false;
+  try {
+    const auto tensors = decodeTensorBundle(payload);
+    const auto& tensor = findTensor(tensors, tensorName);
+    const auto rows = expected.size() / rowWidth;
+    if (tensor.elementType != TensorElementType::Float32 ||
+        tensor.payload.size() != expected.size() * sizeof(float))
+      return false;
+    const auto& shape = tensor.shape;
+    if (shape.size() != 3 || shape[0] != 1 ||
+        shape[1] != static_cast<std::int64_t>(rows) ||
+        shape[2] != static_cast<std::int64_t>(rowWidth))
+      return false;
+    std::vector<float> actual(expected.size());
+    std::memcpy(actual.data(), tensor.payload.data(), tensor.payload.size());
+    // A zero-score row is not a detection. NMS fills the tail with zeros, but
+    // it may also leave arbitrary coordinates beside a zero score; those rows
+    // are padding for comparison purposes and must not be matched elementwise.
+    const auto isPadding = [] (const float* row, std::size_t width) {
+      for (std::size_t i = 0; i < width; ++i)
+        if (row[i] != 0.0F) return false;
+      return true;
+    };
+    const auto isEffective = [&isPadding] (const float* row, std::size_t width) {
+      if (isPadding(row, width)) return false;
+      return row[4] > 0.0F;
+    };
+    const auto boxIou = [] (const float* a, const float* b) {
+      const double ax1 = a[0], ay1 = a[1], ax2 = a[2], ay2 = a[3];
+      const double bx1 = b[0], by1 = b[1], bx2 = b[2], by2 = b[3];
+      const double ix = std::max(0.0, std::min(ax2, bx2) - std::max(ax1, bx1));
+      const double iy = std::max(0.0, std::min(ay2, by2) - std::max(ay1, by1));
+      const double intersection = ix * iy;
+      const double areaA = std::max(0.0, ax2 - ax1) * std::max(0.0, ay2 - ay1);
+      const double areaB = std::max(0.0, bx2 - bx1) * std::max(0.0, by2 - by1);
+      const double uni = areaA + areaB - intersection;
+      return uni <= 0.0 ? (intersection <= 0.0 ? 1.0 : 0.0) : intersection / uni;
+    };
+    std::vector<bool> used(rows, false);
+    std::size_t expectedPadding = 0;
+    std::size_t actualPadding = 0;
+    std::vector<std::size_t> effective;
+    float expectedMin = 0.0F;
+    float actualMin = 0.0F;
+    bool haveExpectedMin = false;
+    bool haveActualMin = false;
+    for (std::size_t row = 0; row < rows; ++row) {
+      const auto* want = expected.data() + row * rowWidth;
+      const auto* got = actual.data() + row * rowWidth;
+      if (isEffective(want, rowWidth)) {
+        effective.push_back(row);
+        if (!haveExpectedMin || want[4] < expectedMin) { expectedMin = want[4]; haveExpectedMin = true; }
+      }
+      else ++expectedPadding;
+      if (isEffective(got, rowWidth)) {
+        if (!haveActualMin || got[4] < actualMin) { actualMin = got[4]; haveActualMin = true; }
+      }
+      else ++actualPadding;
+    }
+    if (expectedPadding != actualPadding) return false;
+    // NMS truncates at `max_det`. When several candidates share the lowest
+    // surviving score, only the slot count is interchangeable: which equal-score
+    // candidate occupies it depends on the operator's internal ordering. Require
+    // the boundary score itself to agree, then compare those rows by their score
+    // multiset; every row above the boundary keeps the full comparison.
+    if (haveExpectedMin != haveActualMin) return false;
+    if (haveExpectedMin && std::fabs(static_cast<double>(expectedMin) -
+                                     static_cast<double>(actualMin)) > scoreTolerance)
+      return false;
+    std::size_t expectedBoundary = 0;
+    std::size_t actualBoundary = 0;
+    for (std::size_t row = 0; row < rows; ++row) {
+      const auto* want = expected.data() + row * rowWidth;
+      const auto* got = actual.data() + row * rowWidth;
+      const auto atBoundary = [&] (const float* row, float boundary) {
+        return isEffective(row, rowWidth) &&
+          std::fabs(static_cast<double>(row[4]) -
+                    static_cast<double>(boundary)) <= scoreTolerance;
+      };
+      if (atBoundary(want, expectedMin)) ++expectedBoundary;
+      if (atBoundary(got, actualMin)) {
+        ++actualBoundary;
+        used[row] = true;
+      }
+    }
+    if (expectedBoundary != actualBoundary) return false;
+    for (const auto row : effective) {
+      const auto* want = expected.data() + row * rowWidth;
+      if (std::fabs(static_cast<double>(want[4]) -
+                    static_cast<double>(expectedMin)) <= scoreTolerance)
+        continue;
+      bool matched = false;
+      for (std::size_t candidate = 0; candidate < rows && !matched; ++candidate) {
+        if (used[candidate]) continue;
+        const auto* got = actual.data() + candidate * rowWidth;
+        if (!isEffective(got, rowWidth)) continue;
+        if (want[5] != got[5]) continue;
+        if (std::fabs(static_cast<double>(want[4]) -
+                      static_cast<double>(got[4])) > scoreTolerance) continue;
+        bool coordsMatch = true;
+        for (std::size_t column = 0; column < 4; ++column)
+          if (std::fabs(static_cast<double>(want[column]) -
+                        static_cast<double>(got[column])) > coordinateTolerance)
+            coordsMatch = false;
+        if (!coordsMatch) continue;
+        if (boxIou(want, got) + 1e-12 < iouFloor) continue;
+        used[candidate] = true;
+        matched = true;
+      }
+      if (!matched) return false;
+    }
+    return true;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
+bool Result::matchesFloat32TensorRows(const std::string& tensorName,
+                                      const std::vector<float>& expected,
+                                      double tolerance, std::size_t rowWidth) const
+{
+  if (tensorName.empty() || expected.empty() || !std::isfinite(tolerance) ||
+      tolerance < 0.0 || rowWidth == 0 || expected.size() % rowWidth != 0)
+    return false;
+  try {
+    const auto tensors = decodeTensorBundle(payload);
+    const auto& tensor = findTensor(tensors, tensorName);
+    if (tensor.elementType != TensorElementType::Float32 ||
+        tensor.payload.size() != expected.size() * sizeof(float))
+      return false;
+    std::vector<float> actual(expected.size());
+    std::memcpy(actual.data(), tensor.payload.data(), tensor.payload.size());
+    for (const auto value : actual)
+      if (!std::isfinite(value)) return false;
+    for (const auto value : expected)
+      if (!std::isfinite(value)) return false;
+    const auto rows = expected.size() / rowWidth;
+    std::vector<bool> used(rows, false);
+    for (std::size_t row = 0; row < rows; ++row) {
+      bool matched = false;
+      for (std::size_t candidate = 0; candidate < rows && !matched; ++candidate) {
+        if (used[candidate]) continue;
+        bool equal = true;
+        for (std::size_t column = 0; column < rowWidth; ++column) {
+          const auto index = row * rowWidth + column;
+          const auto other = candidate * rowWidth + column;
+          const double reference = static_cast<double>(expected[index]);
+          if (std::fabs(static_cast<double>(actual[other]) - reference) >
+              tolerance + tolerance * std::fabs(reference)) {
+            equal = false;
+            break;
+          }
+        }
+        if (equal) { used[candidate] = true; matched = true; }
+      }
+      if (!matched) return false;
+    }
+    return true;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
 namespace {
 
 bool isDigest(const std::string& value)

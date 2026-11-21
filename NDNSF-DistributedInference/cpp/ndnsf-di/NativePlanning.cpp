@@ -537,6 +537,12 @@ std::string NativeSplitCandidate::canonicalJson() const
     }
     executionPlanJson["tensor_identity"] = identities;
   }
+  if (!sourceTransformByRole.empty()) {
+    auto transforms = NativeJson::object();
+    for (const auto& item : sourceTransformByRole)
+      transforms[item.first] = nativeParseJson(item.second);
+    executionPlanJson["source_transform_by_role"] = transforms;
+  }
   if (!executionPlan.steps.empty()) {
     auto steps = NativeJson::array();
     for (const auto& step : executionPlan.steps) {
@@ -630,6 +636,41 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
       fragmentsByRole.size() != roles.size() || artifactsByRole.size() != roles.size() ||
       requirementsByRole.size() != roles.size()) {
     throw std::invalid_argument("split candidate role cover is incomplete");
+  }
+  // Every declared source transform must bind an existing role and carry a
+  // complete, self-consistent bounded descriptor. A malformed transform would
+  // otherwise reach the assembler as an arbitrary lowering instruction.
+  for (const auto& [role, wire] : sourceTransformByRole) {
+    if (roles.count(role) == 0)
+      throw std::invalid_argument("source transform names an undeclared role");
+    const auto transform = nativeParseJson(wire);
+    if (!transform.is_object() ||
+        transform.value("schema", std::string{}) != "source_transform_v1")
+      throw std::invalid_argument("source transform schema is unsupported");
+    const auto kind = transform.value("kind", std::string{});
+    if (kind == "conv-input-channel-partial") {
+      if (!transform.contains("begin") || !transform.contains("end") ||
+          !transform.contains("extent") || !transform.contains("node") ||
+          transform.at("node").get<std::string>().empty() ||
+          transform.value("input", std::string{}).empty() ||
+          transform.value("weight", std::string{}).empty() ||
+          transform.value("output", std::string{}).empty())
+        throw std::invalid_argument("channel-partial transform is incomplete");
+      const auto begin = transform.at("begin").get<std::uint64_t>();
+      const auto end = transform.at("end").get<std::uint64_t>();
+      const auto extent = transform.at("extent").get<std::uint64_t>();
+      if (begin >= end || end > extent || extent < 2)
+        throw std::invalid_argument("channel-partial transform range is invalid");
+    }
+    else if (kind == "add-conv-bias") {
+      if (transform.value("sourceConv", std::string{}).empty() ||
+          transform.value("bias", std::string{}).empty() ||
+          transform.value("partial", std::string{}).empty())
+        throw std::invalid_argument("conv-bias transform is incomplete");
+    }
+    else if (!kind.empty()) {
+      throw std::invalid_argument("source transform kind is unsupported");
+    }
   }
   for (const auto& role : roles) {
     if (fragmentsByRole.count(role) == 0 || artifactsByRole.count(role) == 0 ||
@@ -892,6 +933,8 @@ nativePlanRequiredCapabilities(const NativeSplitCandidate& candidate)
                   [] (const auto& item) { return !item.second.tensorShardV1.empty(); })) {
     required.emplace_back(NATIVE_TENSOR_SHARD_CAPABILITY_V1);
   }
+  if (!candidate.sourceTransformByRole.empty())
+    required.emplace_back(NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1);
   return required;
 }
 
@@ -1150,6 +1193,44 @@ nativeModelPathFacts(const NativeModelDescriptor& descriptor, const std::string&
     ? quantization : descriptor.quantizationSubtype;
   return nativeModelPathFacts(descriptor.modelName, descriptor.sourceRevision, family,
                               modelQuantization);
+}
+
+NativeExecutionPlan
+composeNativeStagePlans(const std::vector<NativeExecutionPlan>& stages)
+{
+  if (stages.empty())
+    throw std::invalid_argument("a hybrid plan needs at least one stage");
+  NativeExecutionPlan merged;
+  std::set<std::string> stageIds;
+  std::set<std::string> unitIds;
+  for (const auto& stage : stages) {
+    if (stage.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2 ||
+        stage.stageLayout.size() != 1) {
+      throw std::invalid_argument(
+        "every hybrid stage must be a single-window version-two plan");
+    }
+    const auto& layout = stage.stageLayout.front();
+    if (!stageIds.insert(layout.stageId).second)
+      throw std::invalid_argument("hybrid stages share a stage id: " + layout.stageId);
+    for (const auto& unit : layout.unitRoleIds) {
+      if (!unitIds.insert(unit).second)
+        throw std::invalid_argument("hybrid stages share a unit: " + unit);
+    }
+    merged.roles.insert(merged.roles.end(), stage.roles.begin(), stage.roles.end());
+    merged.steps.insert(merged.steps.end(), stage.steps.begin(), stage.steps.end());
+    merged.dependencies.insert(merged.dependencies.end(), stage.dependencies.begin(),
+                               stage.dependencies.end());
+    merged.stageLayout.push_back(layout);
+    merged.tensorDegree = std::max(merged.tensorDegree, stage.tensorDegree);
+  }
+  merged.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  merged.streamingOperationStride = merged.dependencies.size();
+  merged.validateSteps();
+  merged.modelFamily = stages.front().modelFamily;
+  merged.plannerKind = stages.front().plannerKind;
+  merged.serviceName = stages.front().serviceName;
+  merged.modelName = stages.front().modelName;
+  return merged;
 }
 
 } // namespace ndnsf::di

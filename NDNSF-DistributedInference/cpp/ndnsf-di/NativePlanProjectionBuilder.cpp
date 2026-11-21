@@ -432,6 +432,14 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
       : dependency.producerStepId;
     endpoint.namingPortId = dependency.producerSlotId.empty() ? "role-execution"
       : dependency.producerSlotId;
+    if (core.executionPlan.modelFamily == "onnx-source") {
+      // Source ports can contain arbitrary ONNX identifiers. Keep ordinary names readable
+      // and bind other ports to a bounded, disjoint digest coordinate.
+      const auto& port = endpoint.namingPortId;
+      if (port.size() > 64 || std::any_of(port.begin(), port.end(),
+            [] (unsigned char byte) { return byte <= 0x20 || byte >= 0x7f; }))
+        endpoint.namingPortId = nativePlanningDigest(port);
+    }
     const auto role = core.roleContracts().find(endpoint.producerRole);
     if (!dependency.producerStepId.empty()) {
       const auto& step = exactStep(core.executionPlan, dependency.producerStepId,
@@ -560,7 +568,8 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
       const auto chunk = context.tensorSegmentBytesByProvider.find(provider);
       if (!e.bundleTensorNames.empty() && dependency.redistributions.empty() && dependency.producers.size() == 1 &&
           dependency.consumers.size() == 1 &&
-          (dependency.operationKind == "ACTIVATION" || dependency.operationKind == "PIPELINE") &&
+          (dependency.operationKind == "ACTIVATION" || dependency.operationKind == "PIPELINE" ||
+           (dependency.operationKind == "TENSOR_PARTIAL" && !core.generationContract.enabled)) &&
           chunk != context.tensorSegmentBytesByProvider.end() && chunk->second != 0 &&
           chunk->second <= ndn::MAX_NDN_PACKET_SIZE &&
           std::all_of(e.consumerRoles.begin(), e.consumerRoles.end(), [&](const auto& consumer) {

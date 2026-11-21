@@ -3400,7 +3400,8 @@ materializeCanonicalModel(NativeCanonicalSource& source,
                                 const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
                                 const NativeAssemblyControl& control,
                                 NativeCanonicalMaterializedFiles* files,
-                                const std::function<void(const std::vector<std::uint8_t>&)>& append)
+                                const std::function<void(const std::vector<std::uint8_t>&)>& append,
+                                const std::vector<std::string>& extraInitializers = {})
 {
   checkActive(control);
   const auto checkMaterialActive = [&] { checkActive(control); };
@@ -3575,6 +3576,10 @@ materializeCanonicalModel(NativeCanonicalSource& source,
     *model.mutable_graph()->add_node() = std::move(node);
     dependencies.insert(reference->dependencies.begin(), reference->dependencies.end());
   }
+  // A transformed suffix consumes a bias initializer that no selected node
+  // lists as an input; the admitted transform names it explicitly.
+  for (const auto& extra : extraInitializers)
+    dependencies.insert(extra);
   for (const auto& dependency : dependencies) {
     const auto* match = findReference("shared-initializer", dependency);
     if (match == nullptr || payloads.find(match->payloadId) == payloads.end())
@@ -3775,11 +3780,12 @@ materializeNativeCanonicalModelFiles(
   const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
   const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
   const NativeAssemblyControl& control,
-  const std::function<void(const std::vector<std::uint8_t>&)>& appendInitializer)
+  const std::function<void(const std::vector<std::uint8_t>&)>& appendInitializer,
+  const std::vector<std::string>& extraInitializers)
 {
   NativeCanonicalMaterializedFiles files;
   files.modelBytes = materializeCanonicalModel(source, nodeIndices, expectedInputs, expectedOutputs,
-                                              control, &files, appendInitializer);
+                                              control, &files, appendInitializer, extraInitializers);
   return files;
 }
 
@@ -5127,6 +5133,38 @@ inspectNativeOnnxPlanningGraph(const NativeCanonicalSource& source,
   auto result = inspectNativeOnnxSourceGraph(source, expectedModel, control);
   result.graph.validate(expectedModel);
   return result;
+}
+
+std::string
+inspectOnnxNodeFacts(const NativeCanonicalSource& source, std::size_t nodeIndex,
+                     const NativeAssemblyControl& control)
+{
+  const auto model = ownedSourceModel(source, control, false);
+  if (!model.has_graph() || nodeIndex >= static_cast<std::size_t>(model.graph().node_size()))
+    throw std::invalid_argument("source node index is outside the graph");
+  const auto& node = model.graph().node(static_cast<int>(nodeIndex));
+  auto attributes = NativeJson::array();
+  for (const auto& attribute : node.attribute()) {
+    NativeJson entry{{"name", attribute.name()}, {"type", attribute.type()}};
+    if (attribute.ints_size() != 0)
+      entry["ints"] = std::vector<std::int64_t>(attribute.ints().begin(), attribute.ints().end());
+    else if (attribute.type() == onnx::AttributeProto::INT)
+      entry["int"] = attribute.i();
+    attributes.push_back(std::move(entry));
+  }
+  auto dims = NativeJson::array();
+  if (node.input_size() > 1) {
+    for (const auto& initializer : model.graph().initializer())
+      if (initializer.name() == node.input(1))
+        for (const auto dim : initializer.dims()) dims.push_back(dim);
+  }
+  auto inputs = NativeJson::array();
+  for (const auto& name : node.input()) inputs.push_back(name);
+  auto outputs = NativeJson::array();
+  for (const auto& name : node.output()) outputs.push_back(name);
+  return nativeCanonicalJson(NativeJson{{"index", nodeIndex}, {"op", node.op_type()},
+    {"name", node.name()}, {"inputs", std::move(inputs)}, {"outputs", std::move(outputs)},
+    {"attributes", std::move(attributes)}, {"weight_dims", std::move(dims)}});
 }
 
 std::uint32_t

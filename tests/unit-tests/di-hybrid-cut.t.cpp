@@ -4958,7 +4958,7 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
   });
   BOOST_CHECK_THROW(nullFactory.create(cold), std::logic_error);
 
-  // Reuse requires the same sealed step contract, even when the artifact key matches.
+  // The cached artifact is bound to its material geometry. The plan supplies the current entry.
   ProviderArtifactCache artifactCache;
   const auto key = nativeProviderArtifactKey(projection, projection.provider,
     inspected.canonicalSourceName, inspected.canonicalSourceDigest);
@@ -4996,8 +4996,10 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
   reboundProjection.plan.steps.front().artifactEntry = "rebound-arithmetic";
   auto changedEntry = artifactCache.acquireWithRunner(
     reboundKey, reboundProjection, reboundControl, build);
-  BOOST_CHECK(!changedEntry.cacheHit());
-  BOOST_CHECK_EQUAL(builds, 2u);
+  BOOST_REQUIRE(changedEntry.cacheHit());
+  BOOST_CHECK_EQUAL(builds, 1u);
+  BOOST_REQUIRE(changedEntry.runnerSpec());
+  BOOST_CHECK(!changedEntry.runnerSpec()->entryContract);
   auto reboundSpec = *changedEntry.runnerSpec();
   reboundSpec.path = reboundSpec.metadata.at("assembledCachePath");
   bindNativeRunnerPreparationContext(reboundSpec, reboundProjection,

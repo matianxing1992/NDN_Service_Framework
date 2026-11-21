@@ -199,8 +199,11 @@ class LeasedRunner final : public NativeModelRunner
 {
 public:
   LeasedRunner(std::shared_ptr<NativeModelRunner> inner,
-               std::shared_ptr<const void> lifetime)
-    : m_inner(std::move(inner)), m_lifetime(std::move(lifetime))
+               std::shared_ptr<const void> lifetime,
+               std::string planDigest = {},
+               std::string modelDigest = {})
+    : m_inner(std::move(inner)), m_lifetime(std::move(lifetime)),
+      m_planDigest(std::move(planDigest)), m_modelDigest(std::move(modelDigest))
   {
     if (!m_inner)
       throw std::invalid_argument("live runner lease requires an inner runner");
@@ -218,7 +221,17 @@ public:
 
   std::optional<ExecutionEvidence>
   executionEvidenceSnapshot() const final
-  { return m_inner->executionEvidenceSnapshot(); }
+  {
+    auto evidence = m_inner->executionEvidenceSnapshot();
+    if (!evidence) return evidence;
+    // A live runner outlives the request that prepared it, so its snapshot
+    // still names that request's plan (and whatever model identity the first
+    // preparation derived). The lease is per-request; rebind those two fields
+    // to the request that is actually using the runner.
+    if (!m_planDigest.empty()) evidence->planDigest = m_planDigest;
+    if (!m_modelDigest.empty()) evidence->modelDigest = m_modelDigest;
+    return evidence;
+  }
 
   std::optional<NativeRuntimeMetrics>
   runtimeMetricsSnapshot() const final
@@ -289,6 +302,8 @@ public:
 private:
   std::shared_ptr<NativeModelRunner> m_inner;
   std::shared_ptr<const void> m_lifetime;
+  std::string m_planDigest;
+  std::string m_modelDigest;
 };
 
 } // namespace
@@ -375,9 +390,20 @@ NativeProviderRunnerReuseCache::lookup(
       return {};
     auto use = authority->acquire(*identity, *runtime, providerRunnerReuseNowMs());
     auto lease = std::make_shared<ProtectedResidentAuthority::Use>(std::move(use));
-    return std::make_shared<LeasedRunner>(std::move(runner), std::move(lease));
+    const auto& contract = projection.assemblyContract();
+    const auto modelDigest = contract.modelManifestDigest.empty()
+      ? projection.planDigest : contract.modelManifestDigest;
+    return std::make_shared<LeasedRunner>(std::move(runner), std::move(lease),
+                                          projection.planDigest, modelDigest);
   }
-  return runner;
+  // Without a protected resident lease the cached runner is still a live
+  // object prepared for an earlier request, so it needs the same evidence
+  // rebinding before it can answer this one.
+  const auto& contract = projection.assemblyContract();
+  const auto modelDigest = contract.modelManifestDigest.empty()
+    ? projection.planDigest : contract.modelManifestDigest;
+  return std::make_shared<LeasedRunner>(std::move(runner), nullptr,
+                                        projection.planDigest, modelDigest);
 }
 
 void

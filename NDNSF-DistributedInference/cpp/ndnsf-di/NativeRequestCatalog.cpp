@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-split.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -20,7 +21,7 @@
 
 namespace ndnsf::di {
 namespace {
-enum class CatalogRoute { QWEN, LLAMA, YOLO, AUTOMATIC };
+enum class CatalogRoute { QWEN, LLAMA, YOLO, ONNX_SOURCE, AUTOMATIC };
 
 CatalogRoute
 parseCatalogRoute(std::string_view kind)
@@ -28,6 +29,7 @@ parseCatalogRoute(std::string_view kind)
   if (kind == "QWEN") return CatalogRoute::QWEN;
   if (kind == "LLAMA") return CatalogRoute::LLAMA;
   if (kind == "YOLO") return CatalogRoute::YOLO;
+  if (kind == "ONNX_SOURCE") return CatalogRoute::ONNX_SOURCE;
   if (kind == "AUTOMATIC") return CatalogRoute::AUTOMATIC;
   throw std::invalid_argument("unsupported native request splitter");
 }
@@ -484,6 +486,14 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     result.splitter = transformerStrategy;
   }
   else if (route == CatalogRoute::YOLO) {
+    // The legacy YOLO splitter is retired by default. A historical comparison
+    // run may opt back in explicitly with `legacy_yolo_retired: false`; every
+    // other catalog gets the typed retirement error instead of silently
+    // falling back to the old component model.
+    if (root.value("legacy_yolo_retired", true))
+      throw std::runtime_error(
+        "DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED: kind=YOLO is retired; "
+        "use splitter.kind=ONNX_SOURCE");
     if (referenceOnly)
       throw std::invalid_argument("DI_NATIVE_PREPARATION_REFERENCE_RESTORE_UNSUPPORTED");
     model.graph = inspectNativeOnnxPlanningGraph(source, model.descriptor, control).graph;
@@ -503,6 +513,87 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     auto strategy = std::make_shared<yolo::NativeYoloComponentSplit>(
       yolo::NativeYoloComponentSplit::fromOnnxCatalog(model.descriptor, source, control,
         std::move(components), nativeCanonicalJson(split.value("postprocessing", NativeJson::object()))));
+    result.cooperativeSplitter = strategy;
+    result.splitter = std::move(strategy);
+  }
+  else if (route == CatalogRoute::ONNX_SOURCE) {
+    if (referenceOnly)
+      throw std::invalid_argument("DI_NATIVE_PREPARATION_REFERENCE_RESTORE_UNSUPPORTED");
+    auto inspection = inspectNativeOnnxPlanningGraph(source, model.descriptor, control);
+    model.graph = std::move(inspection.graph);
+    // The historical design names this field selection_mode; keep accepting the
+    // shorter alias for existing configurations but refuse an ambiguous pair.
+    const auto modeValue = split.find("selection_mode");
+    const auto aliasValue = split.find("mode");
+    if (modeValue == split.end() && aliasValue == split.end())
+      throw std::invalid_argument("ONNX_SOURCE splitter has no selection mode");
+    if (modeValue != split.end() && aliasValue != split.end() &&
+        *modeValue != *aliasValue)
+      throw std::invalid_argument("ONNX_SOURCE mode and selection_mode disagree");
+    const auto& modeNode = modeValue != split.end() ? *modeValue : *aliasValue;
+    if (!modeNode.is_string())
+      throw std::invalid_argument("ONNX_SOURCE selection mode is not a string");
+    const auto modeText = modeNode.get<std::string>();
+    NativeSourcePartitionMode mode;
+    if (modeText == "full") mode = NativeSourcePartitionMode::FULL;
+    else if (modeText == "component") mode = NativeSourcePartitionMode::COMPONENT;
+    else if (modeText == "hybrid") mode = NativeSourcePartitionMode::HYBRID;
+    else throw std::invalid_argument("unsupported ONNX_SOURCE mode");
+    NativeSourcePartitionProfile profile;
+    profile.mode = mode;
+    profile.roles = split.at("roles").get<std::vector<std::string>>();
+    profile.boundaryNode = split.value("boundary_node", std::string{});
+    profile.inputIngressRole = split.at("input_ingress_role").get<std::string>();
+    profile.resultEgressRole = split.at("result_egress_role").get<std::string>();
+    profile.postprocessingJson = nativeCanonicalJson(
+      split.value("postprocessing", NativeJson::object()));
+    profile.inputChannels = split.value("input_channels", std::uint64_t{0});
+    profile.convInputAxis = split.value("conv_input_axis", std::string("input-channel"));
+    profile.activationShape = split.value("activation_shape", std::vector<std::int64_t>{});
+    profile.partialShape = split.value("partial_shape", std::vector<std::int64_t>{});
+    profile.activationDtype = split.value("activation_dtype", std::string("float32"));
+    profile.activationLayoutDigest = split.value("activation_layout_digest", std::string{});
+    profile.convWeightBytes = split.value("conv_weight_bytes", std::uint64_t{0});
+    profile.convBiasBytes = split.value("conv_bias_bytes", std::uint64_t{0});
+    profile.convInputTensor = split.value("conv_input_tensor", std::string{});
+    profile.convWeightInitializer = split.value("conv_weight_initializer", std::string{});
+    profile.convBiasInitializer = split.value("conv_bias_initializer", std::string{});
+    profile.convOutputTensor = split.value("conv_output_tensor", std::string{});
+    profile.convPads = split.value("conv_pads", std::vector<std::int64_t>{});
+    profile.convStrides = split.value("conv_strides", std::vector<std::int64_t>{});
+    profile.convDilations = split.value("conv_dilations", std::vector<std::int64_t>{});
+    if (mode == NativeSourcePartitionMode::HYBRID) {
+      const auto& order = model.graph.topologicalOrder;
+      const auto boundary = std::find(order.begin(), order.end(), profile.boundaryNode);
+      if (boundary == order.end())
+        throw std::invalid_argument("hybrid source boundary is absent from the graph");
+      const auto tensors = nativeParseJson(inspection.graphMetadataJson).at("tensors");
+      const auto initializerBytes = [&] (const std::string& name) {
+        const auto& size = tensors.at(name).at("sizeBytes");
+        if (!size.is_number_unsigned())
+          throw std::invalid_argument("ONNX_SOURCE initializer memory is unknown");
+        return size.get<std::uint64_t>();
+      };
+      profile.convWeightBytes = initializerBytes(profile.convWeightInitializer);
+      profile.convBiasBytes = profile.convBiasInitializer.empty() ? 0 :
+        initializerBytes(profile.convBiasInitializer);
+      std::set<std::uint64_t> suffixNodes;
+      for (auto node = std::next(boundary); node != order.end(); ++node)
+        suffixNodes.insert(inspection.canonicalNodeIndices.at(*node));
+      std::uint64_t suffixBytes = profile.convBiasBytes;
+      for (const auto& [name, users] : inspection.initializerConsumers) {
+        if (name == profile.convBiasInitializer ||
+            std::none_of(users.begin(), users.end(),
+                         [&] (auto node) { return suffixNodes.count(node) != 0; }))
+          continue;
+        const auto bytes = initializerBytes(name);
+        if (bytes > std::numeric_limits<std::uint64_t>::max() - suffixBytes)
+          throw std::overflow_error("ONNX_SOURCE suffix initializer memory exceeds uint64");
+        suffixBytes += bytes;
+      }
+      profile.suffixWeightBytes = suffixBytes;
+    }
+    auto strategy = std::make_shared<NativeSourcePartitionStrategy>(std::move(profile));
     result.cooperativeSplitter = strategy;
     result.splitter = std::move(strategy);
   }

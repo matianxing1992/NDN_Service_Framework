@@ -51,6 +51,8 @@ struct NativeSelectionRoleV3
   std::uint64_t requiredDeviceMemoryMb = 0;
   std::string artifactDigest;
   std::string recipeDigest;
+  /** Optional source_transform_v1 JSON for a transformed ONNX role. */
+  std::string sourceTransformV1;
   std::string roleKind;
   std::string adapterId;
   std::string adapterVersion;

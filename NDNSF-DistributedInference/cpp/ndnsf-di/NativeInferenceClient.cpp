@@ -7,6 +7,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-cancellation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
@@ -2896,6 +2897,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       };
       ndn_service_framework::RequestCapabilities capabilities;
       capabilities.setField("NDNSF_DATA_V1", "required");
+      if (!operation->options.generation || !operation->options.generation->enabled)
+        capabilities.setField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD, "optional");
       capabilities.setField(ndn_service_framework::RequestCapabilities::PUBLIC_REQUEST_ID_FIELD,
                             operation->publicRequestId);
       const bool supplyDiscovery = operation->encodedRequest && operation->encodedRequest->discoveryPayload &&

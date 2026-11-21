@@ -210,6 +210,10 @@ struct Options
   std::string artifactReferencesPath;
   std::string artifactCacheDir = "/tmp/ndnsf-di-native-artifacts";
   int artifactCacheMaxMiB = 8192;
+  // Each authenticated request keeps one resident per role, and a resident
+  // holds its role template until the session ends. The default suits a few
+  // requests; a longer session raises this explicitly.
+  int artifactCacheEntries = 8;
   std::string cacheCompatibilitySourceDir;
   // Deployment-local standalone tokenizer.  It is deliberately configured
   // outside the Selection wire contract and bound to the authenticated
@@ -825,6 +829,10 @@ parseArgs(int argc, char** argv)
     else if (arg == "--artifact-cache-dir") {
       options.artifactCacheDir = readValue();
     }
+    else if (arg == "--artifact-cache-entries") {
+      const auto value = readValue();
+      options.artifactCacheEntries = parsePositiveInt(value, arg);
+    }
     else if (arg == "--artifact-cache-max-mib") {
       const auto value = readValue();
       if (value.empty() || !std::all_of(value.begin(), value.end(), [] (unsigned char c) {
@@ -1237,6 +1245,7 @@ printUsage(const char* program)
     << "[--artifact-references <json>] "
     << "[--artifact-cache-dir <dir>] [--repo-service <service>] "
     << "[--artifact-cache-max-mib <positive-MiB>] "
+    << "[--artifact-cache-entries <positive-count>] "
     << "[--cache-compatibility-source-dir <verified-cache-dir>] "
     << "[--tokenizer-json <path>] "
     << "[--statistics-file <jsonl-path>] [--sample-kv-state-values | --capture-complete-kv-state] "
@@ -1367,7 +1376,10 @@ main(int argc, char** argv)
       config.capabilities = {NATIVE_STEP_PLAN_CAPABILITY_V1, NATIVE_STEP_PLAN_CAPABILITY_V2,
                              NATIVE_SUM_CAPABILITY_V1, NATIVE_TENSOR_SHARD_CAPABILITY_V1,
                              NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1,
-                             NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1};
+                             NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1,
+                             // The worker lowers an admitted ONNX source transform
+                             // into the derived role graph it executes.
+                             NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1};
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
       {
@@ -1418,7 +1430,8 @@ main(int argc, char** argv)
     // cache.  Qwen's maxSourceBytes + maxAssembledBytes exceeds 1 GiB.
     artifactCacheConfig.maxArtifactBytes =
       static_cast<std::uint64_t>(options.artifactCacheMaxMiB) << 20;
-    artifactCacheConfig.maxArtifactEntries = 8;
+    artifactCacheConfig.maxArtifactEntries =
+      static_cast<std::size_t>(options.artifactCacheEntries);
     artifactCacheConfig.assemblyJobTimeout =
       std::chrono::milliseconds(options.assemblyTimeoutMs);
     auto artifactCache = std::make_shared<ProviderArtifactCache>(artifactCacheConfig);

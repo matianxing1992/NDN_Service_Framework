@@ -476,6 +476,16 @@ NativeOnnxIdentity
 canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
                             const NativeAssemblyControl& control);
 
+/** Report one source node's bindable facts for catalog generation.
+ *
+ * Returns the operator identity, operands, outputs, integer attributes and the
+ * referenced initializer dimensions. The bytes come through the same bounded
+ * parser the planner uses, so a generated catalog cannot drift from it.
+ */
+std::string inspectOnnxNodeFacts(const NativeCanonicalSource& source,
+                                 std::size_t nodeIndex,
+                                 const NativeAssemblyControl& control);
+
 /**
  * Derive the prepare-time material manifest from the authenticated canonical
  * ONNX source.  This is a producer operation: it does not choose Provider
@@ -531,7 +541,8 @@ materializeNativeCanonicalModelFiles(
   const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
   const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
   const NativeAssemblyControl& control,
-  const std::function<void(const std::vector<std::uint8_t>&)>& appendInitializer);
+  const std::function<void(const std::vector<std::uint8_t>&)>& appendInitializer,
+  const std::vector<std::string>& extraInitializers = {});
 
 /** Compatibility entry for producer/fixture callers that retain the source
  * graph boundary.  Provider post-Selection assembly must use the overload

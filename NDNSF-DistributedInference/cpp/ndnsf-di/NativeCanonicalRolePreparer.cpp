@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 
@@ -78,6 +79,19 @@ assembledArtifactCoordinate(const NativeSplitCandidate& candidate,
   else {
     coordinate.append("graph").append("semantic").append("component")
       .append(ndn::name::Component(role.role));
+  }
+
+  if (!role.sourceTransformV1.empty() && !role.tensorShardV1.empty()) {
+    const auto transform = NativeOnnxSourceTransformV1::parse(role.sourceTransformV1);
+    const auto shard = parseNativeTensorShardV1(role.tensorShardV1);
+    const auto& axes = shard.at("axes");
+    if (transform.kind != "conv-input-channel-partial" || axes.size() != 1 ||
+        axes[0].at("axis") != transform.axis || axes[0].at("begin") != transform.begin ||
+        axes[0].at("end") != transform.end || axes[0].at("extent") != transform.extent)
+      throw std::invalid_argument("ONNX source artifact has invalid shard coordinates");
+    coordinate.append("entry").append("region").append("profile")
+      .append("channels-" + decimal(transform.begin) + "-" + decimal(transform.end));
+    return coordinate.toUri(ndn::name::UriFormat::ALTERNATE);
   }
 
   auto slice = uniformSlice;
@@ -491,7 +505,15 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     const auto& requirement = candidate.requirementsByRole.at(name);
     // This is a source-derived lower bound, not backend peak memory. Rank
     // sharding and native postprocessing do not load this full ONNX weight set.
-    if (degree == 1 && !(name == candidate.resultEgressRole &&
+    const auto transform = candidate.sourceTransformByRole.find(name);
+    const auto sourceTransform = transform == candidate.sourceTransformByRole.end()
+      ? std::optional<NativeOnnxSourceTransformV1>{}
+      : NativeOnnxSourceTransformV1::parse(transform->second);
+    if (sourceTransform && sourceTransform->kind == "conv-input-channel-partial") {
+      if (!requirement.weightBytes || *requirement.weightBytes == 0)
+        throw std::invalid_argument("transformed native role has no resident weight bound");
+    }
+    else if (degree == 1 && !(name == candidate.resultEgressRole &&
                         candidate.mergeKind == "NATIVE_POSTPROCESS")) {
       std::uint64_t consumedBytes = 0;
       for (const auto& initializer : initializers) {
@@ -499,7 +521,10 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
         const auto consumers = initializerConsumers.find(initializer);
         if (consumers == initializerConsumers.end()) continue;
         const auto& users = consumers->second;
-        if (std::none_of(users.begin(), users.end(), [&](auto node) { return owned.count(node); }))
+        const bool injectedBias = sourceTransform && sourceTransform->kind == "add-conv-bias" &&
+                                  initializer == sourceTransform->bias;
+        if (!injectedBias &&
+            std::none_of(users.begin(), users.end(), [&](auto node) { return owned.count(node); }))
           continue;
         const auto& bytes = metadata.at("tensors").at(initializer).at("sizeBytes");
         if (!bytes.is_number_unsigned())
@@ -567,6 +592,9 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
           role.tensorParallelRank = shardRank;
           role.tensorShardV1 = tensorIdentity->second.tensorShardV1;
         }
+        const auto transform = candidate.sourceTransformByRole.find(name);
+        if (transform != candidate.sourceTransformByRole.end())
+          role.sourceTransformV1 = transform->second;
         else if (degree > 1) {
           role.tensorParallelDegree = degree;
           role.tensorParallelRank = rank;

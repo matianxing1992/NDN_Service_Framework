@@ -134,6 +134,8 @@ void visitRoleFields(const NativeSelectionRoleV3& value, Sink&& sink)
     sink("tensor_shard_v1", value.tensorShardV1);
   if (!value.artifactCoordinate.empty())
     sink("artifact_coordinate", value.artifactCoordinate);
+  if (!value.sourceTransformV1.empty())
+    sink("source_transform_v1", value.sourceTransformV1);
   sink("merge_kind", value.mergeKind);
   sink("postprocess_identity", value.postprocessIdentity);
   sink("postprocess_output_name", value.postprocessOutputName);
@@ -778,6 +780,7 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
   role.tensorParallelRank = node.get<std::uint64_t>("tensor_parallel_rank", 0);
   role.tensorShardV1 = node.get<std::string>("tensor_shard_v1", "");
   role.artifactCoordinate = node.get<std::string>("artifact_coordinate", "");
+  role.sourceTransformV1 = node.get<std::string>("source_transform_v1", "");
   role.mergeKind = node.get<std::string>("merge_kind", "");
   role.postprocessIdentity = node.get<std::string>(
     "postprocess_identity", "");
@@ -810,6 +813,7 @@ sameAssembly(const NativeSelectionRoleV3& left,
          left.tensorParallelRank == right.tensorParallelRank &&
          left.tensorShardV1 == right.tensorShardV1 &&
          left.artifactCoordinate == right.artifactCoordinate &&
+         left.sourceTransformV1 == right.sourceTransformV1 &&
          left.automaticContractDigest == right.automaticContractDigest &&
           (!compareRecipe || left.recipeDigest == right.recipeDigest) &&
          left.roleKind == right.roleKind && left.adapterId == right.adapterId &&
@@ -1453,7 +1457,8 @@ void detail::validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpo
           return c > 0x20 && c < 0x7f;
         });
     };
-    if (!atom(endpoint.namingStepId) || !atom(endpoint.namingPortId))
+    if (!atom(endpoint.namingStepId) ||
+        (!atom(endpoint.namingPortId) && !isSha256Digest(endpoint.namingPortId)))
       throw std::invalid_argument("tensor naming step or port is not an atom");
     if (endpoint.namingLayerEnd != 0 && endpoint.namingLayerBegin >= endpoint.namingLayerEnd)
       throw std::invalid_argument("tensor naming layer interval must be non-empty");
@@ -3732,6 +3737,11 @@ detail::nativeRoleStepContractDigest(const NativeExecutionPlan& plan, std::strin
     if (step.unitId == role) steps.push_back(step);
   if (steps.empty())
     throw std::invalid_argument("selected role has no sealed execution steps");
+  // `artifactEntry` is a plan-owned rebinding target: the cache reuses one
+  // immutable artifact while the current plan supplies the entry id. Hashing it
+  // here would rebuild the template for every invocation even though the
+  // executable graph is identical.
+  for (auto& step : steps) step.artifactEntry.clear();
   return nativePlanningDigest(nativeCanonicalJson(NativeJson{
     {"version", plan.stepPlanVersion}, {"tensor_degree", plan.tensorDegree},
     {"steps", nativeStepsJson(steps)}}));
@@ -4308,11 +4318,29 @@ void validateAssemblyEncoding(const NativeSelectionRoleV3& role)
 
 void validateNativeAssembly(const NativeSelectionRoleV3& role)
 {
+  if (!role.sourceTransformV1.empty()) {
+    const auto transform = nativeParseJson(role.sourceTransformV1);
+    if (!transform.is_object() ||
+        transform.value("schema", std::string{}) != "source_transform_v1" ||
+        transform.value("kind", std::string{}).empty())
+      throw std::invalid_argument("role source transform is invalid");
+  }
   if (!role.tensorShardV1.empty()) {
-    if (role.adapterId != "qwen" || role.tensorParallelDegree < 2 ||
-        role.tensorParallelRank >= role.tensorParallelDegree ||
-        !role.automaticContractDigest.empty())
-      throw std::invalid_argument("tensor_shard_v1 requires a source-bound Qwen rank");
+    // A source-transformed ONNX rank carries its own channel-slice geometry in
+    // the same audit field the Qwen shard uses; its authority is the admitted
+    // source_transform_v1, not the Qwen adapter contract.
+    const bool transformedSourceRank = !role.sourceTransformV1.empty() &&
+      role.adapterId != "qwen";
+    if (!transformedSourceRank) {
+      if (role.adapterId != "qwen" || role.tensorParallelDegree < 2 ||
+          role.tensorParallelRank >= role.tensorParallelDegree ||
+          !role.automaticContractDigest.empty())
+        throw std::invalid_argument("tensor_shard_v1 requires a source-bound Qwen rank");
+    }
+    else if (role.tensorParallelDegree < 2 ||
+             role.tensorParallelRank >= role.tensorParallelDegree) {
+      throw std::invalid_argument("transformed source rank geometry is incomplete");
+    }
     (void)parseNativeTensorShardV1(role.tensorShardV1);
   }
   // Authenticate the equal-Qwen case too. Otherwise removing both the shard

@@ -53,7 +53,35 @@ aggregateEvidence(const EvidenceReferences& items)
         item.runtimeVersion != aggregate.runtimeVersion ||
         item.deviceKind != aggregate.deviceKind ||
         item.cpuFallbackUsed != aggregate.cpuFallbackUsed) {
-      throw std::runtime_error("provider runner execution evidence is internally inconsistent");
+      std::string fields;
+      const auto note = [&fields] (const char* name) {
+        if (!fields.empty()) fields += ",";
+        fields += name;
+      };
+      if (item.providerName != aggregate.providerName) note("providerName");
+      if (item.providerBootId != aggregate.providerBootId) note("providerBootId");
+      if (item.runnerKind != aggregate.runnerKind) note("runnerKind");
+      if (item.realCompute != aggregate.realCompute) note("realCompute");
+      if (item.modelDigest != aggregate.modelDigest) note("modelDigest");
+      if (item.planDigest != aggregate.planDigest) note("planDigest");
+      if (item.runtimeVersion != aggregate.runtimeVersion) note("runtimeVersion");
+      if (item.deviceKind != aggregate.deviceKind) note("deviceKind");
+      if (item.cpuFallbackUsed != aggregate.cpuFallbackUsed) note("cpuFallbackUsed");
+      std::string detail;
+      for (const auto& source : items) {
+        const auto& value = source.get();
+        std::string roles;
+        for (const auto& role : value.roles) {
+          if (!roles.empty()) roles += "|";
+          roles += role;
+        }
+        if (!detail.empty()) detail += "; ";
+        detail += "roles=" + roles + " model=" + value.modelDigest +
+                  " plan=" + value.planDigest;
+      }
+      throw std::runtime_error(
+        "provider runner execution evidence is internally inconsistent: " + fields +
+        " [" + detail + "]");
     }
     seedDeviceIds(item);
     seedGpuUuids(item);

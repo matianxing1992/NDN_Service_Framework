@@ -9,6 +9,7 @@ import importlib.util
 import json
 import math
 import os
+import subprocess
 from pathlib import Path
 import sys
 from typing import Any
@@ -169,49 +170,82 @@ def remap_yolo_semantic_partition(
     return result
 
 
-def native_yolo_splitter(manifest: dict[str, Any],
-                         role_map: dict[str, str]) -> dict[str, Any]:
-    catalogue = manifest.get("catalogue")
-    candidates = catalogue.get("candidates") if isinstance(catalogue, dict) else None
-    if not isinstance(candidates, list):
-        raise RuntimeError("SPEC196_YOLO_SIGNED_CATALOGUE_MISSING")
-    shared = next((item for item in candidates
-                   if item.get("candidateId") == "shared-backbone-two-shard-v1"), None)
-    atomic = next((item for item in candidates
-                   if item.get("candidateId") == "atomic-v1"), None)
-    if shared is None or atomic is None:
-        raise RuntimeError("SPEC196_YOLO_REQUIRED_CANDIDATE_MISSING")
-    components = [{
-        "candidate_id": str(atomic["candidateId"]),
-        "priority": int(atomic["selectionPriority"]),
-        "roles": [str(item["role"]) for item in atomic["roles"]],
-        "node_names_by_role": {},
-        "input_ingress_role": str(atomic["inputIngressRole"]),
-        "result_egress_role": str(atomic["resultEgressRole"]),
-        "merge_kind": str(atomic["mergeKind"]),
-        "candidate_digest": str(atomic["candidateDigest"]),
-        "semantic_partition": {},
-    }]
-    components[0]["input_ingress_role"] = "FullModel"
-    components[0]["result_egress_role"] = "FullModel"
-    mapped_roles = [role_map[str(item["role"])] for item in shared["roles"]]
-    partition = remap_yolo_semantic_partition(
-        shared["semanticPartition"], role_map)
-    if set(partition["roleNodeSets"]) != set(mapped_roles):
-        raise RuntimeError("SPEC196_YOLO_ROLE_REMAP_INCOMPLETE")
-    components.append({
-        "candidate_id": str(shared["candidateId"]),
-        "priority": int(shared["selectionPriority"]),
-        "roles": mapped_roles,
-        "node_names_by_role": {},
-        "input_ingress_role": role_map[str(shared["inputIngressRole"])],
-        "result_egress_role": role_map[str(shared["resultEgressRole"])],
-        "merge_kind": str(shared["mergeKind"]),
-        "candidate_digest": str(shared["candidateDigest"]),
-        "semantic_partition": partition,
-    })
-    return {"kind": "YOLO", "components": components,
-            "postprocessing": manifest.get("postprocessing", {})}
+def native_program(repo: Path, name: str) -> Path:
+    """Resolve one native executable from the installed prefix or the build tree."""
+    prefix = os.environ.get("NDNSF_TEST_RUNTIME_PREFIX", "")
+    if prefix:
+        for candidate in (Path(prefix) / "bin" / name,
+                          Path(prefix) / "libexec" / "ndnsf-di" / name):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
+        raise RuntimeError("SPEC261_NATIVE_PROGRAM_MISSING: " + name)
+    for subdir in ("", "tests", "examples"):
+        candidate = repo / "build" / subdir / name if subdir else repo / "build" / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise RuntimeError("SPEC261_NATIVE_PROGRAM_MISSING: " + name)
+
+
+def _inspect_source_conv(graph_path: Path, weights_path: Path, index: int,
+                         repo: Path, resolver: Any = None) -> dict[str, Any]:
+    """Read one Conv node's bindable facts from the maintained native helper."""
+    program = (resolver or native_program)(repo, "native-source-inspect")
+    completed = subprocess.run(
+        [str(program), "--conv", str(index), str(graph_path), str(weights_path)],
+        check=True, capture_output=True, text=True, timeout=300)
+    facts = json.loads(completed.stdout)
+    if facts.get("op") != "Conv":
+        raise RuntimeError("SPEC261_CONV_FACTS_NOT_A_CONV")
+    return facts
+
+
+def native_onnx_source_splitter(*, boundary_node: str, roles: list[str],
+                               conv: Mapping[str, Any],
+                               shapes: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Build the ``ONNX_SOURCE`` hybrid splitter from inspected source facts.
+
+    ``conv`` is the JSON emitted by ``native-source-inspect --conv`` for the cut
+    node, so operand names, geometry and channel counts are read from the model
+    rather than restated here. A caller that supplies its own numbers can drift
+    from the graph; this generator cannot.
+    """
+    attributes = {item["name"]: item for item in conv.get("attributes", [])
+                  if isinstance(item, dict)}
+    weight_dims = list(conv.get("weight_dims") or [])
+    if conv.get("op") != "Conv" or len(conv.get("inputs", [])) < 2 or len(weight_dims) != 4:
+        raise RuntimeError("SPEC261_ONNX_SOURCE_CONV_FACTS_INVALID")
+    inputs = list(conv["inputs"])
+    pads = list(attributes.get("pads", {}).get("ints", [0, 0, 0, 0]))
+    strides = list(attributes.get("strides", {}).get("ints", [1, 1]))
+    dilations = list(attributes.get("dilations", {}).get("ints", [1, 1]))
+    channels = int(weight_dims[1])
+    activation_shape = list((shapes or {}).get(inputs[0]) or [])
+    partial_shape = list((shapes or {}).get(list(conv["outputs"])[0]) or [])
+    if (len(activation_shape) != 4 or len(partial_shape) != 4 or
+            any(not isinstance(dim, int) or dim <= 0
+                for dim in activation_shape + partial_shape)):
+        raise RuntimeError("SPEC261_ONNX_SOURCE_TENSOR_SHAPE_INVALID")
+    return {
+        "kind": "ONNX_SOURCE",
+        "selection_mode": "hybrid",
+        "roles": roles,
+        "boundary_node": boundary_node,
+        "input_ingress_role": roles[0],
+        "result_egress_role": roles[-1],
+        "postprocessing": {},
+        "input_channels": channels,
+        "conv_input_axis": "input-channel",
+        "activation_dtype": "float32",
+        "activation_shape": activation_shape,
+        "partial_shape": partial_shape,
+        "conv_input_tensor": inputs[0],
+        "conv_weight_initializer": inputs[1],
+        "conv_bias_initializer": inputs[2] if len(inputs) > 2 else "",
+        "conv_output_tensor": list(conv["outputs"])[0],
+        "conv_pads": pads,
+        "conv_strides": strides,
+        "conv_dilations": dilations,
+    }
 
 
 def add_native_grant_service(policy_path: Path, *, requester: str,
@@ -498,7 +532,21 @@ def prepare_native_yolo_assets(
     trust_schema = bundle_root / "trust-schema.conf"
     trust_schema.write_text((repo / "examples/trust-schema.conf").read_text(
         encoding="utf-8"), encoding="utf-8")
-    splitter = native_yolo_splitter(manifest, role_map)
+    # The ONNX_SOURCE splitter is generated from the inspected Conv facts so the
+    # catalog cannot restate operand names, geometry or channel counts that the
+    # model does not have. A historical comparison run may still set
+    # `legacy_yolo_retired: false` on a hand-built kind=YOLO catalog.
+    conv_index = int(os.environ.get("SPEC261_CONV_INDEX", "3"))
+    conv_facts = _inspect_source_conv(
+        graph_path, weights_path, conv_index, repo, native_program)
+    from ndnsf_distributed_inference.adapters.onnx.graph import analyze_onnx_graph
+    summary = analyze_onnx_graph(graph_path)
+    shapes = {name: list(info.shape) for name, info in summary.tensors.items()
+              if info.shape}
+    splitter = native_onnx_source_splitter(
+        boundary_node=f"onnx-node-{conv_index}",
+        roles=["Prefix", "Rank0", "Rank1", "Suffix"],
+        conv=conv_facts, shapes=shapes)
     requester_config = {
         "schema": "ndnsf-di-native-requester-v1",
         "catalog": {

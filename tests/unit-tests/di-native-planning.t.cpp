@@ -19,6 +19,17 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
+#include <onnxruntime_cxx_api.h>
+#include <onnx/checker.h>
+#include <array>
+#include <map>
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
 #include <boost/test/unit_test.hpp>
 #include <onnx/shape_inference/implementation.h>
@@ -1916,6 +1927,8 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift
   const auto identity = canonicalOnnxSourceIdentity(source, control);
   const NativeJson configuration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
+    // Spec182 compares against the historical YOLO route on purpose.
+    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/source"},
       {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
@@ -2013,6 +2026,8 @@ BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
   const auto identity = canonicalOnnxSourceIdentity(source, control);
   const NativeJson catalogConfiguration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
+    // Spec182 compares against the historical YOLO route on purpose.
+    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/source"},
       {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
@@ -2345,6 +2360,677 @@ BOOST_AUTO_TEST_CASE(InlineGenerationOptionsRemainInRequestAndOutOfAckDiscovery)
   BOOST_CHECK(offer->at("input_payload_b64") == "");
   BOOST_CHECK(offer->at("input_manifest_digest") == encoded.inputManifestDigest);
   BOOST_CHECK(!detail::requiresSelectionGenerationOptions(discovery, false));
+}
+
+BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsFullAndComponentPlans)
+{
+  const auto graphDigest = digest("generic-source-partition");
+  auto sourceGraph = graph(graphDigest, {"input", "layer-00", "layer-01", "head"});
+  auto sourceModel = model("onnx", "GenericSource", graphDigest);
+
+  NativeSourcePartitionStrategy full({NativeSourcePartitionMode::FULL, {}, {"FullModel"},
+                                      "FullModel", "FullModel", "{}"});
+  auto fullCandidates = full.enumerate(sourceModel, sourceGraph, {});
+  BOOST_REQUIRE_EQUAL(fullCandidates.size(), 1U);
+  BOOST_CHECK(fullCandidates.front().nodeRoles.size() == sourceGraph.nodes.size());
+  BOOST_CHECK_NO_THROW(fullCandidates.front().validate(sourceGraph));
+
+  NativeSourcePartitionStrategy component({NativeSourcePartitionMode::COMPONENT, "layer-01",
+                                           {"Prefix", "Suffix"}, "Prefix", "Suffix", "{}"});
+  auto componentCandidates = component.enumerate(sourceModel, sourceGraph, {});
+  BOOST_REQUIRE_EQUAL(componentCandidates.size(), 1U);
+  const auto& candidate = componentCandidates.front();
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("input"), "Prefix");
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("layer-00"), "Prefix");
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("layer-01"), "Suffix");
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("head"), "Suffix");
+  BOOST_CHECK_EQUAL(candidate.crossPartitionTensors.size(), 1U);
+  BOOST_CHECK_NO_THROW(candidate.validate(sourceGraph));
+
+  NativeSourcePartitionStrategy bad({NativeSourcePartitionMode::COMPONENT, "missing",
+                                     {"Prefix", "Suffix"}, "Prefix", "Suffix", "{}"});
+  BOOST_CHECK_THROW(bad.enumerate(sourceModel, sourceGraph, {}), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
+{
+  const auto graphDigest = digest("generic-source-hybrid");
+  auto sourceGraph = graph(graphDigest, {"input", "pre", "conv", "post", "head"});
+  sourceGraph.nodes[2].opType = "Conv";
+  sourceGraph.nodes[3].opType = "Add";
+  auto sourceModel = model("onnx", "GenericHybrid", graphDigest);
+  NativeSourcePartitionProfile hybridProfile{NativeSourcePartitionMode::HYBRID, "conv",
+    {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 16, "input-channel",
+    {1, 16, 4, 4}, {1, 32, 4, 4}, "float32", ""};
+  hybridProfile.convInputTensor = "scaled";
+  hybridProfile.convWeightInitializer = "w";
+  hybridProfile.convOutputTensor = "conv_out";
+  hybridProfile.convBiasInitializer = "b_conv";
+  NativeSourcePartitionStrategy hybrid(hybridProfile);
+  auto candidates = hybrid.enumerate(sourceModel, sourceGraph, {});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto& candidate = candidates.front();
+  BOOST_REQUIRE_EQUAL(candidate.executionPlan.stageLayout.size(), 3U);
+  BOOST_CHECK_EQUAL(candidate.executionPlan.stageLayout[1].degree(), 2U);
+  BOOST_REQUIRE_EQUAL(candidate.tensorIdentityByRole.size(), 2U);
+  BOOST_CHECK_EQUAL(candidate.tensorIdentityByRole.at("Rank0").rank, 0U);
+  BOOST_CHECK_EQUAL(candidate.tensorIdentityByRole.at("Rank1").rank, 1U);
+  BOOST_CHECK_EQUAL(candidate.executionPlan.steps.size(), 5U);
+  BOOST_CHECK(std::any_of(candidate.executionPlan.steps.begin(), candidate.executionPlan.steps.end(),
+    [] (const auto& step) { return step.operation == "SUM"; }));
+  BOOST_CHECK_NO_THROW(candidate.validate(sourceGraph));
+  BOOST_REQUIRE_EQUAL(candidate.sourceTransformByRole.size(), 3U);
+  for (const auto& role : {"Rank0", "Rank1"}) {
+    const auto transform = nativeParseJson(candidate.sourceTransformByRole.at(role));
+    BOOST_CHECK_EQUAL(transform.at("kind").get<std::string>(), "conv-input-channel-partial");
+    BOOST_CHECK_EQUAL(transform.at("extent").get<std::uint64_t>(), 16U);
+  }
+  const auto suffixTransform = nativeParseJson(candidate.sourceTransformByRole.at("Suffix"));
+  BOOST_CHECK_EQUAL(suffixTransform.at("kind").get<std::string>(), "add-conv-bias");
+  BOOST_CHECK_EQUAL(suffixTransform.at("bias").get<std::string>(), "b_conv");
+
+  // The two rank shards must describe contiguous, disjoint halves of the
+  // admitted Conv input-channel axis; a gap, overlap or wrong extent would
+  // change the reduction result while still looking like a TP plan.
+  const auto rank0 = nativeParseJson(candidate.tensorIdentityByRole.at("Rank0").tensorShardV1);
+  const auto rank1 = nativeParseJson(candidate.tensorIdentityByRole.at("Rank1").tensorShardV1);
+  const auto axis0 = rank0.at("axes").at(0);
+  const auto axis1 = rank1.at("axes").at(0);
+  BOOST_CHECK_EQUAL(axis0.at("axis").get<std::string>(), "input-channel");
+  BOOST_CHECK_EQUAL(axis0.at("begin").get<std::int64_t>(), 0);
+  BOOST_CHECK_EQUAL(axis0.at("end").get<std::int64_t>(), 8);
+  BOOST_CHECK_EQUAL(axis1.at("begin").get<std::int64_t>(), 8);
+  BOOST_CHECK_EQUAL(axis1.at("end").get<std::int64_t>(), 16);
+  BOOST_CHECK_EQUAL(axis1.at("extent").get<std::int64_t>(), 16);
+  BOOST_CHECK_EQUAL(rank0.at("stage_layout_digest"), rank1.at("stage_layout_digest"));
+
+  BOOST_CHECK_THROW(NativeSourcePartitionStrategy({NativeSourcePartitionMode::HYBRID, "conv",
+    {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 1, "input-channel",
+    {1, 1, 4, 4}, {1, 1, 4, 4}, "float32", ""}), std::invalid_argument);
+
+  // A fused Conv bias has no following Add in the source graph; the suffix
+  // transform must still be emitted so the bias is applied exactly once.
+  {
+    auto fusedGraph = sourceGraph;
+    fusedGraph.nodes[3].opType = "Relu";
+    auto fusedProfile = hybridProfile;
+    fusedProfile.convBiasBytes = 128;
+    NativeSourcePartitionStrategy fused(std::move(fusedProfile));
+    const auto plans = fused.enumerate(sourceModel, fusedGraph, {});
+    BOOST_REQUIRE_EQUAL(plans.size(), 1U);
+    BOOST_REQUIRE(plans.front().sourceTransformByRole.count("Suffix") == 1);
+    const auto transform = nativeParseJson(plans.front().sourceTransformByRole.at("Suffix"));
+    BOOST_CHECK_EQUAL(transform.at("kind").get<std::string>(), "add-conv-bias");
+    BOOST_CHECK_EQUAL(transform.at("sourceConv").get<std::string>(), "conv");
+  }
+}
+
+BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
+  BOOST_REQUIRE(file.good());
+  const auto oracle = NativeJson::parse(file);
+  NativeCanonicalSource source;
+  const auto hex = oracle.at("model_hex").get<std::string>();
+  for (std::size_t i = 0; i < hex.size(); i += 2)
+    source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
+  const auto descriptor = model("yolo26n", "YOLOFixture", oracle.at("graph_digest").get<std::string>());
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 1024 * 1024, 1024 * 1024};
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  const NativeJson configuration{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    // Spec182 compares against the historical YOLO route on purpose.
+    {"legacy_yolo_retired", false},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/source"},
+      {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+      {"model_manifest_digest", digest("fixture-manifest")},
+      {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest("fixture-profile")},
+      {"assembler_descriptor_digest", digest("fixture-assembler-v1")}, {"backend_abi", "fixture-abi"},
+      {"precision", descriptor.precision}, {"quantization", "none"}, {"layout", "NCHW"},
+      {"padding", "none"}, {"protection_epoch", "fixture-epoch"}, {"max_source_bytes", 1048576},
+      {"max_assembled_bytes", 1048576}, {"max_nodes", 100}}},
+    {"publication", {{"artifact_root", "/fixture/artifacts"}}},
+    {"input_format", "JSON"}, {"max_payload_bytes", 32},
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"mode", "full"}, {"roles", {"FullModel"}},
+      {"input_ingress_role", "FullModel"}, {"result_egress_role", "FullModel"},
+      {"postprocessing", NativeJson::object()}}}
+  };
+  const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
+  BOOST_REQUIRE(loaded.splitter);
+  const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph, {});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  BOOST_CHECK_EQUAL(candidates.front().executionPlan.roles.size(), 1U);
+  BOOST_CHECK_NO_THROW(candidates.front().validate(loaded.model.graph));
+  NativeRequestControl requestControl{"/fixture/request", 1,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
+  const auto roles = loaded.preparation->prepareRoles(loaded.model,
+                                                       candidates.front(), requestControl);
+  BOOST_CHECK_EQUAL(roles.size(), 1U);
+
+  {
+    auto alias = configuration;
+    alias["splitter"].erase("mode");
+    alias["splitter"]["selection_mode"] = "full";
+    const auto aliased = NativeRequestCatalog::load(nativeCanonicalJson(alias), source, control);
+    BOOST_REQUIRE(aliased.splitter);
+    auto conflicting = alias;
+    conflicting["splitter"]["mode"] = "component";
+    BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(conflicting), source, control),
+                      std::invalid_argument);
+  }
+
+  for (const auto& mutation : std::vector<std::pair<std::string, NativeJson>>{
+         {"mode", NativeJson("foreign")},
+         {"roles", NativeJson::array()},
+         {"input_ingress_role", NativeJson("Missing")},
+         {"result_egress_role", NativeJson("Missing")}}) {
+    auto broken = configuration;
+    broken["splitter"][mutation.first] = mutation.second;
+    BOOST_TEST_CONTEXT("ONNX_SOURCE mutation " << mutation.first) {
+      BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(broken), source, control),
+                        std::invalid_argument);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec261/conv-bypass.onnx").string(),
+                     std::ios::binary);
+  BOOST_REQUIRE(file.good());
+  NativeCanonicalSource source;
+  source.modelBytes.assign(std::istreambuf_iterator<char>(file), {});
+  auto descriptor = model("fixture", "ConvBypass", digest("conv-bypass-placeholder"));
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 4 * 1024 * 1024, 4 * 1024 * 1024};
+  const auto inspected = inspectNativeOnnxSourceGraph(source, descriptor, control);
+  descriptor.graphDigest = inspected.graph.graphDigest;
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  BOOST_REQUIRE_EQUAL(inspected.graph.topologicalOrder.size(), 7U);
+  const auto boundary = inspected.graph.topologicalOrder.at(1);
+  const NativeJson configuration{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    // Spec182 compares against the historical YOLO route on purpose.
+    {"legacy_yolo_retired", false},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/conv"},
+      {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+      {"model_manifest_digest", digest("conv-manifest")},
+      {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest("conv-profile")},
+      {"assembler_descriptor_digest", digest("conv-assembler")}, {"backend_abi", "fixture-abi"},
+      {"precision", descriptor.precision}, {"quantization", "none"}, {"layout", "NCHW"},
+      {"padding", "none"}, {"protection_epoch", "epoch-1"}, {"max_source_bytes", 4194304},
+      {"max_assembled_bytes", 4194304}, {"max_nodes", 100}}},
+    {"publication", {{"artifact_root", "/fixture/conv/artifacts"}}},
+    {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"mode", "hybrid"},
+      {"roles", {"Prefix", "Rank0", "Rank1", "Suffix"}},
+      {"boundary_node", boundary}, {"input_ingress_role", "Prefix"},
+      {"result_egress_role", "Suffix"}, {"postprocessing", NativeJson::object()},
+      {"input_channels", 16}, {"conv_input_axis", "input-channel"},
+      {"activation_shape", {1, 16, 8, 8}}, {"partial_shape", {1, 32, 8, 8}},
+      {"activation_dtype", "float32"},
+      {"conv_weight_bytes", 18432}, {"conv_bias_bytes", 128},
+      {"conv_input_tensor", "scaled"}, {"conv_weight_initializer", "w_conv"},
+      {"conv_bias_initializer", "b_conv"}, {"conv_output_tensor", "conv_out"},
+      {"conv_pads", {1, 1, 1, 1}}, {"conv_strides", {1, 1}},
+      {"conv_dilations", {1, 1}}}}
+  };
+  const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
+  BOOST_REQUIRE(loaded.splitter);
+  const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph, {});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  BOOST_REQUIRE_EQUAL(candidates.front().sourceTransformByRole.size(), 3U);
+  BOOST_REQUIRE(candidates.front().requirementsByRole.at("Rank0").weightBytes);
+  BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Rank0").weightBytes, 9216U);
+  BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Rank1").weightBytes, 9216U);
+  BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Suffix").weightBytes, 128U);
+  const auto& dependencies = candidates.front().executionPlan.dependencies;
+  const auto partial = std::find_if(dependencies.begin(), dependencies.end(),
+    [] (const auto& edge) { return edge.dependencyId == "rank1-to-sum"; });
+  BOOST_REQUIRE(partial != dependencies.end());
+  BOOST_CHECK_EQUAL(partial->operationKind, "TENSOR_PARTIAL");
+  BOOST_CHECK_EQUAL(partial->producerStepId, "Rank1/RUN");
+  BOOST_CHECK_EQUAL(partial->consumerStepId, "Rank0/SUM");
+  BOOST_CHECK(partial->useNdnsfDataV1);
+  const auto rank0Transform = nativeParseJson(
+    candidates.front().sourceTransformByRole.at("Rank0"));
+  BOOST_CHECK_EQUAL(rank0Transform.at("input").get<std::string>(), "scaled");
+  BOOST_CHECK_EQUAL(rank0Transform.at("weight").get<std::string>(), "w_conv");
+  BOOST_CHECK_EQUAL(rank0Transform.at("output").get<std::string>(), "conv_out");
+  BOOST_CHECK_EQUAL(rank0Transform.at("pads").at(0).get<std::int64_t>(), 1);
+  const auto capabilities = nativePlanRequiredCapabilities(candidates.front());
+  BOOST_CHECK(std::find(capabilities.begin(), capabilities.end(),
+    NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1) != capabilities.end());
+  BOOST_CHECK_NO_THROW(candidates.front().validate(loaded.model.graph));
+  NativeRequestControl requestControl{"/fixture/conv/request", 1,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
+  const auto roles = loaded.preparation->prepareRoles(loaded.model, candidates.front(), requestControl);
+  BOOST_REQUIRE_EQUAL(roles.size(), 4U);
+  for (const auto& role : roles) {
+    BOOST_TEST_CONTEXT(role.selectedRole) {
+      BOOST_CHECK_NO_THROW(validateNativeAssembly(role));
+    }
+  }
+  std::size_t transformed = 0;
+  for (const auto& role : roles)
+    if (!role.sourceTransformV1.empty()) ++transformed;
+  BOOST_CHECK_EQUAL(transformed, 3U);
+  auto insufficient = candidates.front();
+  insufficient.requirementsByRole.at("Suffix").weightBytes = 127;
+  insufficient.candidateDigest = insufficient.computedDigest();
+  BOOST_CHECK_EXCEPTION(
+    loaded.preparation->prepareRoles(loaded.model, insufficient, requestControl),
+    std::invalid_argument, [] (const std::invalid_argument& failure) {
+      return std::string(failure.what()) ==
+        "native role weight budget is below its consumed initializers";
+    });
+}
+
+BOOST_AUTO_TEST_CASE(NativeConvInputChannelRangesAreContiguous)
+{
+  const auto halves = nativeConvInputChannelRanges(16, 2);
+  BOOST_REQUIRE_EQUAL(halves.size(), 2U);
+  BOOST_CHECK_EQUAL(halves[0].first, 0U); BOOST_CHECK_EQUAL(halves[0].second, 8U);
+  BOOST_CHECK_EQUAL(halves[1].first, 8U); BOOST_CHECK_EQUAL(halves[1].second, 16U);
+  const auto thirds = nativeConvInputChannelRanges(10, 3);
+  BOOST_REQUIRE_EQUAL(thirds.size(), 3U);
+  BOOST_CHECK_EQUAL(thirds[0].second, 4U);
+  BOOST_CHECK_EQUAL(thirds[1].first, 4U); BOOST_CHECK_EQUAL(thirds[1].second, 7U);
+  BOOST_CHECK_EQUAL(thirds[2].first, 7U); BOOST_CHECK_EQUAL(thirds[2].second, 10U);
+  BOOST_CHECK_THROW(nativeConvInputChannelRanges(1, 2), std::invalid_argument);
+  BOOST_CHECK_THROW(nativeConvInputChannelRanges(4, 0), std::invalid_argument);
+  BOOST_CHECK_THROW(nativeConvInputChannelRanges(4, 5), std::invalid_argument);
+
+  // The bias codec writes `partial`; parsing must round-trip that name rather
+  // than requiring the channel-partial `output` key.
+  NativeOnnxSourceTransformV1 bias;
+  bias.kind = "add-conv-bias";
+  bias.sourceConv = "conv0"; bias.node = "bias0";
+  bias.bias = "b_conv"; bias.output = "conv_out";
+  const auto parsed = NativeOnnxSourceTransformV1::parse(bias.canonicalJson());
+  BOOST_CHECK_EQUAL(parsed.kind, "add-conv-bias");
+  BOOST_CHECK_EQUAL(parsed.output, "conv_out");
+  BOOST_CHECK_EQUAL(parsed.bias, "b_conv");
+}
+
+namespace {
+
+std::vector<float>
+readNpyFloats(const std::filesystem::path& path, std::vector<std::int64_t>* shape = nullptr)
+{
+  std::ifstream input(path, std::ios::binary);
+  if (!input) throw std::runtime_error("npy missing");
+  std::string raw((std::istreambuf_iterator<char>(input)), {});
+  if (raw.size() < 128 || raw.compare(0, 6, "\x93NUMPY") != 0)
+    throw std::runtime_error("npy signature");
+  const auto major = static_cast<unsigned char>(raw[6]);
+  std::size_t offset = 0, length = 0;
+  if (major == 1) {
+    std::uint16_t value = 0; std::memcpy(&value, raw.data() + 8, 2);
+    offset = 10; length = value;
+  } else {
+    std::uint32_t value = 0; std::memcpy(&value, raw.data() + 8, 4);
+    offset = 12; length = value;
+  }
+  const auto header = raw.substr(offset, length);
+  if (header.find("'<f4'") == std::string::npos) throw std::runtime_error("npy dtype");
+  std::vector<std::int64_t> dims;
+  const auto open = header.find('(');
+  const auto close = header.find(')', open);
+  std::size_t index = open + 1;
+  while (index < close) {
+    while (index < close && (header[index] == ' ' || header[index] == ',')) ++index;
+    std::size_t end = index;
+    while (end < close && header[end] >= '0' && header[end] <= '9') ++end;
+    if (end == index) break;
+    dims.push_back(std::stoll(header.substr(index, end - index)));
+    index = end;
+  }
+  std::size_t count = 1;
+  for (const auto dim : dims) count *= static_cast<std::size_t>(dim);
+  if (raw.size() != offset + length + count * 4) throw std::runtime_error("npy size");
+  std::vector<float> result(count);
+  std::memcpy(result.data(), raw.data() + offset + length, count * 4);
+  if (shape) *shape = dims;
+  return result;
+}
+
+onnx::ModelProto
+subgraph(const onnx::ModelProto& source, const std::vector<std::string>& nodeNames,
+         const std::vector<std::string>& inputs, const std::vector<std::string>& outputs,
+         const std::vector<std::string>& initializers)
+{
+  onnx::ModelProto result;
+  result.set_ir_version(source.ir_version());
+  for (const auto& opset : source.opset_import()) *result.add_opset_import() = opset;
+  result.mutable_graph()->set_name("spec261-transform");
+  for (const auto& node : source.graph().node())
+    if (std::find(nodeNames.begin(), nodeNames.end(), node.name()) != nodeNames.end())
+      *result.mutable_graph()->add_node() = node;
+  for (const auto& initializer : source.graph().initializer())
+    if (std::find(initializers.begin(), initializers.end(), initializer.name()) != initializers.end())
+      *result.mutable_graph()->add_initializer() = initializer;
+  // The reference graph declares only full-model I/O, so an internal handoff
+  // (for example the prefix output) has no ValueInfo in the source bytes. Give
+  // the role boundary the exact typed contract the caller provides.
+  const auto shapeOf = [&] (const std::string& name) -> std::optional<std::vector<std::int64_t>> {
+    if (name == "scaled") return std::vector<std::int64_t>{1, 16, 8, 8};
+    if (name == "conv_out") return std::vector<std::int64_t>{1, 32, 8, 8};
+    return std::nullopt;
+  };
+  const auto addValue = [&] (const std::string& name, bool input) {
+    const auto& values = input ? source.graph().input() : source.graph().output();
+    for (const auto& value : values)
+      if (value.name() == name) {
+        if (input) *result.mutable_graph()->add_input() = value;
+        else *result.mutable_graph()->add_output() = value;
+        return;
+      }
+    const auto shape = shapeOf(name);
+    if (!shape) throw std::runtime_error("subgraph value missing: " + name);
+    auto* value = input ? result.mutable_graph()->add_input()
+                         : result.mutable_graph()->add_output();
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    for (const auto dim : *shape) tensor->mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  for (const auto& name : inputs) addValue(name, true);
+  for (const auto& name : outputs) addValue(name, false);
+  onnx::checker::check_model(result);
+  return result;
+}
+
+std::vector<float>
+runOrt(const onnx::ModelProto& model, const std::map<std::string, std::vector<float>>& inputs,
+       const std::map<std::string, std::vector<std::int64_t>>& shapes,
+       const std::string& output)
+{
+  std::string bytes;
+  model.SerializeToString(&bytes);
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec261-transform");
+  Ort::SessionOptions options;
+  options.SetIntraOpNumThreads(1);
+  Ort::Session session(env, bytes.data(), bytes.size(), options);
+  Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  std::vector<Ort::Value> values;
+  std::vector<const char*> names;
+  for (const auto& item : inputs) {
+    const auto shape = shapes.at(item.first);
+    if (shape.size() != 4) throw std::runtime_error("unexpected rank");
+    const std::array<std::int64_t, 4> fixed{shape[0], shape[1], shape[2], shape[3]};
+    values.push_back(Ort::Value::CreateTensor<float>(memory,
+      const_cast<float*>(item.second.data()), item.second.size(), fixed.data(), 4));
+    names.push_back(item.first.c_str());
+  }
+  const char* outputName = output.c_str();
+  auto result = session.Run(Ort::RunOptions{nullptr}, names.data(), values.data(), values.size(),
+                            &outputName, 1);
+  const auto count = result.front().GetTensorTypeAndShapeInfo().GetElementCount();
+  const auto* data = result.front().GetTensorData<float>();
+  return {data, data + count};
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformMatchesTheFullConvModel)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec261/conv-bypass.onnx").string(),
+                     std::ios::binary);
+  BOOST_REQUIRE(file.good());
+  std::string modelBytes((std::istreambuf_iterator<char>(file)), {});
+  onnx::ModelProto source;
+  BOOST_REQUIRE(source.ParseFromArray(modelBytes.data(), static_cast<int>(modelBytes.size())));
+  std::vector<std::int64_t> inputShape;
+  const auto frozen = readNpyFloats(
+    ndnsf::test::testFixturePath("spec261/conv-input.npy"), &inputShape);
+  BOOST_REQUIRE_EQUAL(frozen.size(), 3072U);
+  std::vector<float> images(frozen.begin(), frozen.begin() + 1024);
+  std::vector<float> residual(frozen.begin() + 1024, frozen.end());
+  const auto expected = readNpyFloats(ndnsf::test::testFixturePath("spec261/conv-oracle.npy"));
+  BOOST_REQUIRE_EQUAL(expected.size(), 2048U);
+
+  // Independent full-graph reference through ONNX Runtime.
+  const auto full = runOrt(source, {{"images", images}, {"residual", residual}},
+    {{"images", {1, 16, 8, 8}}, {"residual", {1, 32, 8, 8}}}, "predictions");
+  double fullError = 0.0;
+  for (std::size_t i = 0; i < expected.size(); ++i)
+    fullError = std::max(fullError, std::abs(double(full[i]) - double(expected[i])));
+  BOOST_CHECK_SMALL(fullError, 1e-5);
+
+  // prefix: pre0
+  const auto prefix = subgraph(source, {"pre0"}, {"images"}, {"scaled"}, {"scale"});
+  const auto scaled = runOrt(prefix, {{"images", images}}, {{"images", {1, 16, 8, 8}}}, "scaled");
+  BOOST_REQUIRE_EQUAL(scaled.size(), 1024U);
+
+  const auto rankModel = subgraph(source, {"conv0"}, {"scaled"}, {"conv_out"}, {"w_conv"});
+  NativeOnnxSourceTransformV1 rank0;
+  rank0.kind = "conv-input-channel-partial";
+  rank0.node = "conv0"; rank0.axis = "input-channel";
+  rank0.input = "scaled"; rank0.weight = "w_conv"; rank0.output = "conv_out";
+  rank0.begin = 0; rank0.end = 8; rank0.extent = 16;
+  rank0.pads = {1, 1, 1, 1}; rank0.strides = {1, 1}; rank0.dilations = {1, 1};
+  NativeOnnxSourceTransformV1 rank1 = rank0;
+  rank1.begin = 8; rank1.end = 16;
+  const auto rank0Model = applyNativeOnnxSourceTransform(rankModel, rank0);
+  const auto rank1Model = applyNativeOnnxSourceTransform(rankModel, rank1);
+  const auto partial0 = runOrt(rank0Model, {{"scaled", scaled}},
+    {{"scaled", {1, 16, 8, 8}}}, "conv_out");
+  const auto partial1 = runOrt(rank1Model, {{"scaled", scaled}},
+    {{"scaled", {1, 16, 8, 8}}}, "conv_out");
+  std::vector<float> partial(partial0.size());
+  for (std::size_t i = 0; i < partial.size(); ++i) partial[i] = partial0[i] + partial1[i];
+
+  const auto suffixModel = subgraph(source, {"bias0", "relu0", "add0", "relu1", "head0"},
+    {"conv_out", "residual"}, {"predictions"}, {"b_conv"});
+  NativeOnnxSourceTransformV1 bias;
+  bias.kind = "add-conv-bias"; bias.sourceConv = "conv0"; bias.node = "bias0";
+  bias.bias = "b_conv"; bias.output = "conv_out";
+  const auto derived = applyNativeOnnxSourceTransform(suffixModel, bias);
+
+  // The fused-export case: the suffix consumes the Conv output directly and
+  // carries no bias Add yet. Build that graph explicitly; the frozen fixture
+  // already spells its bias out, so deriving it from the same bytes would
+  // exercise the early-return path instead.
+  onnx::ModelProto fused;
+  fused.set_ir_version(8);
+  fused.add_opset_import()->set_version(17);
+  fused.mutable_graph()->set_name("fused-suffix");
+  {
+    auto* bias = fused.mutable_graph()->add_initializer();
+    bias->set_name("b_conv");
+    bias->set_data_type(onnx::TensorProto::FLOAT);
+    bias->add_dims(32);
+    for (int i = 0; i < 32; ++i) bias->add_float_data(0.25F);
+    auto* relu = fused.mutable_graph()->add_node();
+    relu->set_name("relu0"); relu->set_op_type("Relu");
+    relu->add_input("conv_out"); relu->add_output("features");
+    auto* head = fused.mutable_graph()->add_node();
+    head->set_name("head0"); head->set_op_type("Identity");
+    head->add_input("features"); head->add_output("predictions");
+    for (const auto& name : {std::string("conv_out"), std::string("predictions")}) {
+      auto* value = name == "conv_out" ? fused.mutable_graph()->add_input()
+                                       : fused.mutable_graph()->add_output();
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto::FLOAT);
+      for (const auto dim : {1, 32, 8, 8})
+        tensor->mutable_shape()->add_dim()->set_dim_value(dim);
+    }
+    onnx::checker::check_model(fused);
+  }
+  NativeOnnxSourceTransformV1 synthesized;
+  synthesized.kind = "add-conv-bias"; synthesized.sourceConv = "conv0";
+  synthesized.node = "conv_out";
+  synthesized.bias = "b_conv"; synthesized.output = "conv_out";
+  const auto synthesizedGraph = applyNativeOnnxSourceTransform(fused, synthesized);
+  bool hasBiasAdd = false;
+  for (const auto& node : synthesizedGraph.graph().node())
+    if (node.op_type() == "Add" && node.input_size() == 2 &&
+        node.input(0) == "conv_out" && node.input(1) == "b_conv") hasBiasAdd = true;
+  BOOST_CHECK(hasBiasAdd);
+  const auto synthesizedOut = runOrt(synthesizedGraph,
+    {{"conv_out", partial}},
+    {{"conv_out", {1, 32, 8, 8}}}, "predictions");
+  double synthesizedError = 0.0;
+  for (std::size_t i = 0; i < synthesizedOut.size(); ++i)
+    synthesizedError = std::max(synthesizedError,
+      std::abs(double(synthesizedOut[i]) - std::max(0.0, double(partial[i]) + 0.25)));
+  BOOST_CHECK_SMALL(synthesizedError, 1e-5);
+  const auto hybrid = runOrt(derived, {{"conv_out", partial}, {"residual", residual}},
+    {{"conv_out", {1, 32, 8, 8}}, {"residual", {1, 32, 8, 8}}}, "predictions");
+  double hybridError = 0.0;
+  for (std::size_t i = 0; i < expected.size(); ++i)
+    hybridError = std::max(hybridError, std::abs(double(hybrid[i]) - double(expected[i])));
+  BOOST_CHECK_SMALL(hybridError, 1e-5);
+}
+
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformRejectsAnUnboundConv)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec261/conv-single.onnx").string(),
+                     std::ios::binary);
+  BOOST_REQUIRE(file.good());
+  std::string bytes((std::istreambuf_iterator<char>(file)), {});
+  onnx::ModelProto source;
+  BOOST_REQUIRE(source.ParseFromArray(bytes.data(), static_cast<int>(bytes.size())));
+  NativeOnnxSourceTransformV1 rank;
+  rank.kind = "conv-input-channel-partial";
+  rank.node = "conv0"; rank.axis = "input-channel";
+  rank.input = "scaled"; rank.weight = "w_conv"; rank.output = "conv_out";
+  rank.bias = "b_conv";
+  rank.begin = 0; rank.end = 8; rank.extent = 16;
+  rank.pads = {1, 1, 1, 1}; rank.strides = {1, 1}; rank.dilations = {1, 1};
+  BOOST_CHECK_NO_THROW(applyNativeOnnxSourceTransform(source, rank));
+  auto wrongWeight = rank; wrongWeight.weight = "other_weight";
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongWeight),
+                    std::invalid_argument);
+  auto droppedBias = rank; droppedBias.bias.clear();
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, droppedBias),
+                    std::invalid_argument);
+  auto wrongStride = rank; wrongStride.strides = {2, 2};
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongStride),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(DetectionOracleRejectsChangedClassesAndPadding)
+{
+  const std::vector<float> expected{
+    1.0F, 2.0F, 3.0F, 4.0F, 0.90F, 5.0F,
+    10.0F, 20.0F, 30.0F, 40.0F, 0.50F, 7.0F,
+    0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+  auto payloadOf = [] (const std::vector<float>& values,
+                       const std::vector<std::int64_t>& shape) {
+    ndnsf::di::NamedTensor tensor;
+    tensor.name = "det";
+    tensor.elementType = ndnsf::di::TensorElementType::Float32;
+    tensor.shape = shape;
+    tensor.payload.resize(values.size() * sizeof(float));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    return ndnsf::di::encodeTensorBundle({tensor});
+  };
+  ndnsf::di::Result result;
+  // Rows are permuted, and the effective values differ only by noise inside the
+  // coordinate/score tolerances.
+  const std::vector<float> permuted{
+    10.0001F, 20.0001F, 30.0001F, 40.0001F, 0.50001F, 7.0F,
+    1.0001F, 2.0001F, 3.0001F, 4.0001F, 0.90001F, 5.0F,
+    0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+  result.payload = payloadOf(permuted, {1, 3, 6});
+  BOOST_CHECK(result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  auto classChanged = permuted;
+  classChanged[11] = 9.0F;
+  result.payload = payloadOf(classChanged, {1, 3, 6});
+  BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  // Losing a real detection (its score becomes zero) must fail; leftover
+  // coordinates on a zero-score row are padding and are covered separately.
+  auto detectionLost = permuted;
+  detectionLost[4] = 0.0F;
+  result.payload = payloadOf(detectionLost, {1, 3, 6});
+  BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  auto shifted = permuted;
+  shifted[6] += 0.5F;
+  result.payload = payloadOf(shifted, {1, 3, 6});
+  BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  result.payload = payloadOf(permuted, {3, 6});
+  BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  // A zero-score row with leftover coordinates is padding, not a detection; it
+  // must not be matched element-wise.
+  auto zeroScoreTail = permuted;
+  zeroScoreTail[12] = 123.0F;   // x on a row whose score stays zero
+  zeroScoreTail[13] = -7.0F;
+  result.payload = payloadOf(zeroScoreTail, {1, 3, 6});
+  BOOST_CHECK(result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  // At the NMS max-det boundary two candidates with exactly the same score are
+  // interchangeable; only their count is part of the contract.
+  auto boundaryTie = permuted;
+  boundaryTie[0] = 111.0F; boundaryTie[1] = 222.0F;
+  boundaryTie[2] = 333.0F; boundaryTie[3] = 444.0F;
+  boundaryTie[5] = 9.0F;
+  result.payload = payloadOf(boundaryTie, {1, 3, 6});
+  BOOST_CHECK(result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  auto boundaryCountLost = permuted;
+  boundaryCountLost[10] = 0.0F;
+  result.payload = payloadOf(boundaryCountLost, {1, 3, 6});
+  BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+}
+
+BOOST_AUTO_TEST_CASE(RequestCatalogRejectsRetiredLegacyYolo)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
+  BOOST_REQUIRE(file.good());
+  const auto oracle = NativeJson::parse(file);
+  NativeCanonicalSource source;
+  const auto hex = oracle.at("model_hex").get<std::string>();
+  for (std::size_t i = 0; i < hex.size(); i += 2)
+    source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
+  const auto descriptor = model("yolo26n", "YOLOFixture", oracle.at("graph_digest").get<std::string>());
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 1024 * 1024, 1024 * 1024};
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  NativeJson configuration{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/source"},
+      {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+      {"model_manifest_digest", digest("fixture-manifest")},
+      {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest("fixture-profile")},
+      {"assembler_descriptor_digest", digest("fixture-assembler-v1")}, {"backend_abi", "fixture-abi"},
+      {"precision", descriptor.precision}, {"quantization", "none"}, {"layout", "NCHW"},
+      {"padding", "none"}, {"protection_epoch", "fixture-epoch"}, {"max_source_bytes", 1048576},
+      {"max_assembled_bytes", 1048576}, {"max_nodes", 100}}},
+    {"publication", {{"artifact_root", "/fixture/artifacts"}}},
+    {"input_format", "JSON"}, {"max_payload_bytes", 32},
+    {"splitter", {{"kind", "YOLO"}}}
+  };
+  // Retired by default.
+  BOOST_CHECK_EXCEPTION(
+    NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control),
+    std::runtime_error, [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED") == 0;
+    });
+  // A historical comparison run may opt back in; it then fails on its own
+  // missing components rather than on the retirement gate.
+  NativeJson legacy = configuration;
+  legacy["legacy_yolo_retired"] = false;
+  BOOST_CHECK_EXCEPTION(
+    NativeRequestCatalog::load(nativeCanonicalJson(legacy), source, control),
+    std::exception, [] (const std::exception& error) {
+      return std::string(error.what()).find("DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED") ==
+        std::string::npos;
+    });
 }
 
 BOOST_AUTO_TEST_SUITE_END()

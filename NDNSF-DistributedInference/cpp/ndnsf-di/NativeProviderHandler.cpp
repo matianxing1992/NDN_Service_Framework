@@ -1719,6 +1719,19 @@ roleMayAnswerRequester(const RoleSpec& roleSpec, std::optional<bool> sealedTermi
   return sealedTerminalOwner ? *sealedTerminalOwner : nativeProviderRoleAnswersRequester(roleSpec);
 }
 
+/** Return the transport bytes for a terminal value.
+ *
+ * A step-produced value is a local tensor view with no wire payload; forwarding
+ * it unchanged would send an empty response while claiming success. Materialize
+ * it once at the network boundary, exactly as an output edge already does.
+ */
+static std::vector<uint8_t>
+terminalBundlePayload(const TensorBundle& bundle)
+{
+  if (!bundle.localTensors) return bundle.payload;
+  return materializeTensorBundleWire(bundle).payload;
+}
+
 static std::optional<std::vector<uint8_t>>
 finalResponsePayloadForRole(const RoleSpec& roleSpec, const ProviderRoleResult& result,
   const std::string& finalResponseScope, std::optional<bool> sealedTerminalOwner)
@@ -1729,9 +1742,15 @@ finalResponsePayloadForRole(const RoleSpec& roleSpec, const ProviderRoleResult& 
 
   const auto found = result.outputsByScope.find(finalResponseScope);
   if (found != result.outputsByScope.end()) {
-    return found->second.payload;
+    return terminalBundlePayload(found->second);
   }
-  if (sealedTerminalOwner) return std::nullopt;
+  // A sealed terminal owner that carries a step template binds its result to
+  // the unconsumed output slot the template declared. Only a step-less sealed
+  // owner must publish the literal final-response scope.
+  if (sealedTerminalOwner &&
+      (roleSpec.steps == nullptr || roleSpec.steps->empty())) {
+    return std::nullopt;
+  }
   // A step-carrying role has no final-response edge; its terminal value is keyed by
   // the slot the template declared (logits for a sharded head).
   if (roleSpec.steps != nullptr && !roleSpec.steps->empty()) {
@@ -1744,7 +1763,8 @@ finalResponsePayloadForRole(const RoleSpec& roleSpec, const ProviderRoleResult& 
       for (const auto& slot : step.outputSlots) {
         if (consumed.count(step.stepId + "\n" + slot.slotId) != 0) continue;
         const auto terminal = result.outputsByScope.find(slot.slotId);
-        if (terminal != result.outputsByScope.end()) return terminal->second.payload;
+        if (terminal != result.outputsByScope.end())
+          return terminalBundlePayload(terminal->second);
       }
     }
   }
@@ -4944,7 +4964,17 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             return !lhs.inputs.empty() && rhs.inputs.empty();
           });
         if (!io) {
-          io = makeNetworkIo(0);
+          std::size_t inputCount = 0;
+          bool hasExactPartial = false;
+          for (const auto& spec : localRoleSpecs) {
+            inputCount += spec.inputs.size();
+            hasExactPartial |= std::any_of(spec.inputs.begin(), spec.inputs.end(),
+              [] (const auto& edge) {
+                return edge.operationKind == "TENSOR_PARTIAL" && edge.useNdnsfDataV1 &&
+                       edge.declaredByV3 && !edge.manifestDataName.empty();
+              });
+          }
+          io = makeNetworkIo(hasExactPartial ? inputCount : 0);
         }
         // The sampler's self-feedback loop stays in this process while its shard's remote
         // partials still travel over Named Data, so the two kinds of edge are served by one

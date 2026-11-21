@@ -978,6 +978,13 @@ makeNativeProviderObservationAckHandlerV4(
     detail::logNativeWorkPhase(context.requestId, "ack_base_decision", phaseStarted);
     if (!complete)
       return;
+    const bool transportRequested = decision.status && request.hasRequestCapabilities() &&
+      !transportFields.empty() &&
+      request.getRequestCapabilities().hasField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD) &&
+      request.getRequestCapabilities().getField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD) ==
+        "optional";
+    if (transportRequested)
+      decision.providerCapabilityFields.insert(transportFields.begin(), transportFields.end());
     if (!decision.status || !request.hasRequestCapabilities() ||
         !request.getRequestCapabilities().hasField("DI_PLACEMENT_V4") ||
         request.getRequestCapabilities().getField("DI_PLACEMENT_V4") != "optional") {
@@ -1092,7 +1099,8 @@ makeNativeProviderObservationAckHandlerV4(
           fields.emplace(NATIVE_PROVIDER_OFFER_V4_FIELD, fallback);
           decision.providerCapabilityFieldFallbacks.push_back(std::move(fields));
         }
-        decision.providerCapabilityFieldFallbacks.emplace_back();
+        decision.providerCapabilityFieldFallbacks.push_back(
+          transportRequested ? transportFields : std::map<std::string, std::string>{});
         // Optional observation freshness must not shorten base admission:
         // the base capability remains executable after the V4 view expires.
       }
