@@ -27,9 +27,12 @@ def shell(code, *args, env=None):
     with tempfile.TemporaryDirectory(prefix='ndnsf-installer-test-') as directory:
         fixture = Path(directory) / 'installer.sh'
         fixture.write_text(code)
+        # Fixtures must never share a live installer's default SDK scratch/lock.
+        fixture_env = dict(os.environ if env is None else env)
+        fixture_env.setdefault("NDNSF_BUILD_DIR", str(Path(directory) / "sdk-build"))
         return subprocess.run(
             ["bash", str(fixture), *args], text=True,
-            capture_output=True, env=env, timeout=10,
+            capture_output=True, env=fixture_env, timeout=10,
         )
 
 
@@ -187,12 +190,15 @@ def test_person_runtime_requires_verified_wheel_before_creating_environment(tmp_
     assert not destination.exists()
 
 
-def test_installer_defaults_to_six_jobs():
+def test_installer_defaults_to_host_memory_policy():
     environment = dict(os.environ)
     environment.pop("NDNSF_BUILD_JOBS", None)
     result = shell(DEFINITIONS + '\nprintf "%s" "$JOBS"', env=environment)
     assert result.returncode == 0
-    assert result.stdout == "6"
+    total_bytes = int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines()
+                           if line.startswith('MemTotal:'))) * 1024
+    expected = subprocess.check_output(['nproc'], text=True).strip() if total_bytes > 100_000_000_000 else '6'
+    assert result.stdout == expected
 
 
 def test_person_runtime_rejects_disposable_parent_environment(tmp_path):
@@ -887,7 +893,13 @@ build_waf_dependency ndn-svs libndn-svs invalid-url 0.1
     assert not (output / 'install-stage').exists()
 
 
-def test_install_refreshes_loader_before_python_and_limits_jobs():
+def test_install_refreshes_loader_before_python_and_limits_jobs(tmp_path):
+    prefix = tmp_path / 'runtime'
+    library_dir = prefix / 'lib'
+    library_dir.mkdir(parents=True)
+    for name in ('libndn-service-framework.so', 'libndnsf-distributed-inference.so',
+                 'libndnsf-distributed-repo.a'):
+        (library_dir / name).touch()
     stubs = '''
 PYTHON_BIN=/bin/echo
 select_nac_sdk() { NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture; }
@@ -908,6 +920,9 @@ native_digest_receipt() { echo '{}'; }
 pip_install() { echo "PIP:$*"; }
 run() { printf 'RUN:%s\\n' "$*"; }
 '''
+    stubs = ('RUNTIME_PREFIX=' + shlex.quote(str(prefix)) + '\n' +
+             'GLOBAL_DEPENDENCY_PREFIX=' + shlex.quote(str(prefix)) + '\n' +
+             'RUNTIME_LIBRARY_DIR=' + shlex.quote(str(library_dir)) + '\n' + stubs)
     result = shell(DEFINITIONS + stubs + MAIN, "--no-dependencies", "--jobs", "2")
     assert result.returncode == 0, result.stderr
     assert "WAF:-j2" in result.stdout

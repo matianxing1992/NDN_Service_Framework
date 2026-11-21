@@ -4,8 +4,10 @@
 set -euo pipefail
 
 build_repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+source "$build_repo/scripts/host-build-jobs.sh"
+default_build_jobs=$(ndnsf_default_host_build_jobs)
 if (( $# == 0 )); then
-    set -- build --jobs=6
+    set -- build --jobs="$default_build_jobs"
 fi
 
 build_command=()
@@ -27,7 +29,7 @@ elif [[ $1 == build || $1 == asan ]]; then
     fi
     build_jobs_seen=false
     build_jobs_pending=false
-    build_jobs=6
+    build_jobs=$default_build_jobs
     build_targets=""
     build_targets_pending=false
     for build_arg in "$@"; do
@@ -52,9 +54,8 @@ elif [[ $1 == build || $1 == asan ]]; then
                 *) continue ;;
             esac
         fi
-        if [[ $build_jobs_value != 1 && $build_jobs_value != 2 &&
-              $build_jobs_value != 4 && $build_jobs_value != 6 ]]; then
-            echo 'Host builds accept --jobs=1, --jobs=2, --jobs=4 or --jobs=6' >&2
+        if ! ndnsf_host_build_jobs_allowed "$build_jobs_value"; then
+            echo 'Positive host build job counts above six require more than 100 GB total RAM; otherwise use 1, 2, 4 or 6' >&2
             exit 2
         fi
         build_jobs=$build_jobs_value
@@ -65,7 +66,7 @@ elif [[ $1 == build || $1 == asan ]]; then
         exit 2
     fi
     if ! $build_jobs_seen; then
-        set -- "$@" --jobs=6
+        set -- "$@" --jobs="$default_build_jobs"
     fi
     if [[ ! -f "$build_working_dir/$build_lock" ]]; then
         echo "Configure the maintained tree before using $build_mode: $build_working_dir" >&2

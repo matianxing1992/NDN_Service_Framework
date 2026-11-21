@@ -807,6 +807,8 @@ void check(const ndn::InMemoryStorage& storage, const ndn::Name& name) {
     conf.env.INCLUDES_NDNSF_NAC = [os.path.join(nac_abe_prefix, 'include')]
     conf.env.LIBPATH_NDNSF_NAC = [os.path.join(nac_abe_prefix, 'lib')]
     conf.env.LIB_NDNSF_NAC = ['nac-abe']
+    # Keep the selected SDK's public compile contract in the explicit-prefix probe.
+    conf.env.DEFINES_NDNSF_NAC = list(conf.env['DEFINES_NAC-ABE'] or [])
     nac_consumer_header = os.path.join(nac_abe_prefix, 'include', 'nac-abe', 'consumer.hpp')
     conf.check_cxx(
         msg='Checking installed NAC-ABE producer-bound CK API',

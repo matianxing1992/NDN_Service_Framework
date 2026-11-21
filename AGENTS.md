@@ -813,16 +813,22 @@ approval again or hide an exception in a special-case branch.
   same toolchain. If a toolchain change is necessary, reconfigure the same
   maintained tree, rebuild the affected targets and record the new artifact
   identity. Re-baseline measurements compared across the change.
-- For host compilation on the six-core development host, default to six jobs
-  without an artificial compiler memory cap or a desktop-headroom admission gate.
+- Only when the current host has **more than 100 GB total physical RAM**
+  (`MemTotal` from `/proc/meminfo`, with 100 GB = 100,000,000,000 bytes), remove
+  the fixed compilation-job ceiling and default to the available CPU count
+  (`nproc`). Explicit job counts must remain positive integers. This applies to
+  the OGMA Ubuntu20.04 VM, which has 416 GiB configured RAM and 28 vCPUs.
+  Hosts at or below 100 GB, or with unavailable memory information, retain the
+  existing supported counts 1, 2, 4 and 6, defaulting to six jobs.
+  Do not impose an artificial compiler memory cap or a desktop-headroom admission gate.
   Do not serialize large source units: Waf's requested job count controls all
   compilation tasks. Lower concurrency only after an observed OOM or at the
   user's explicit request; do not silently restore the old two-job default.
   Keep compiler processes under the invoking user in an isolated resource group.
   Preserve `WAFLOCK` when using an existing configured build directory.
   `scripts/build-safe.sh build` and `scripts/build-safe.sh asan` select the
-  ordinary and diagnostic trees. They default to six jobs, serialize Waf
-  launchers and perform disk admission without imposing a memory limit.
+  ordinary and diagnostic trees. They use the memory-gated default above,
+  serialize Waf launchers and perform disk admission without imposing a memory limit.
   Ordinary GCC builds default to `-g1` for source locations. Use
   `--host-debug-info=full` when debugging requires full symbols.
   The invoking launcher supplies the isolated resource group and OOM cleanup.

@@ -6,7 +6,8 @@ NATIVE_BUILD_DIR="$ROOT/build"
 BUILD_STORAGE="$ROOT/scripts/build-storage.py"
 PROMOTE_NATIVE_STAGE=0
 PYTHON_BIN="${PYTHON:-python3}"
-JOBS="${NDNSF_BUILD_JOBS:-6}"
+source "$ROOT/scripts/host-build-jobs.sh"
+JOBS="${NDNSF_BUILD_JOBS:-$(ndnsf_default_host_build_jobs)}"
 PERSON_RUNTIME=""
 WAF_CONFIGURE_ARGS=()
 QWEN_MININDN=0
@@ -159,7 +160,7 @@ Options:
   --legacy-build-dir PATH  Validate/remove a pre-manifest build dir with --uninstall.
   --configure              Always run ./waf configure.
   --no-configure           Unsupported; configure is required for every install.
-  --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS or 6).
+  --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS, or CPU count above 100 GB RAM; otherwise 6).
   NDNSF_TMPDIR=PATH        SDK temporary files (default: BUILD_DIR/tmp; native Waf uses ROOT/build).
   --with-examples          Pass --with-examples to Waf configure.
   --with-tests             Pass --with-tests to Waf configure.
@@ -428,8 +429,8 @@ if (( FORCE_DEPENDENCIES && NO_DEPENDENCIES_REQUESTED )); then
   echo '--force-dependencies cannot be combined with --no-dependencies' >&2
   exit 2
 fi
-[[ "$JOBS" == 1 || "$JOBS" == 2 || "$JOBS" == 4 || "$JOBS" == 6 ]] || {
-  echo '--jobs must be 1, 2, 4 or 6 for the host build' >&2
+ndnsf_host_build_jobs_allowed "$JOBS" || {
+  echo '--jobs must be positive; host build counts above six require more than 100 GB total RAM (otherwise choose 1, 2, 4 or 6)' >&2
   exit 2
 }
 [[ "$REUSE_BUILD_DIR" == 0 || "$REUSE_BUILD_DIR" == 1 ]] || {
@@ -2351,7 +2352,7 @@ install_common_system_packages() {
       packages+=(gcc-10 g++-10)
     fi
     if (( NDNSF_INSTALL_UAV )); then
-      packages+=(libgtkmm-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev
+      packages+=(libgtkmm-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev libjpeg-dev
                  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav)
       for test_option in "${WAF_CONFIGURE_ARGS[@]}"; do
         if [[ "$test_option" == --with-tests ]]; then
@@ -2615,7 +2616,7 @@ PY
 
 build_openabe_dependency() {
   local dir materialized_root
-  local source_base="$BUILD_DIR/openabe-source"
+  local source_base="$DEPS_DIR"
   local install_stage="$BUILD_DIR/install-staging/openabe/usr/local"
 
   if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe &&
@@ -2643,6 +2644,10 @@ build_openabe_dependency() {
       BOOST_ROOT= BOOST_INCLUDEDIR= BOOST_LIBRARYDIR= USE_DEPS="relic gtest"
     make clean
     make -j"$3" deps
+    # The upstream scanner rule does not depend on the parser's public headers.
+    # Generate and publish those headers before any parallel C++ compilation.
+    make -C src header
+    (cd src && "$(command -v bison)" -d -v zparser.yy && cp -- *.hh "$ZROOT/root/include/openabe/")
     BISON="$(command -v bison)" FLEX="$(command -v flex)" make -j"$3" src
     BISON="$(command -v bison)" FLEX="$(command -v flex)" make -j"$3" examples
     if [[ -e deps/root/include/openssl ]]; then

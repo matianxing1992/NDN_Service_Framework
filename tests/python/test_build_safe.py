@@ -15,7 +15,7 @@ class BuildTreeSelection(unittest.TestCase):
         (root / 'build/.lock-waf_linux_build').touch()
         (root / '.lock-waf_linux_build').write_text('out_dir = "build-ASAN-UBSAN"\n')
         scripts = Path(__file__).resolve().parents[2] / 'scripts'
-        for name in ('build-safe.sh', 'build-storage.py'):
+        for name in ('build-safe.sh', 'build-storage.py', 'host-build-jobs.sh'):
             shutil.copyfile(scripts / name, root / 'scripts' / name)
         waf = root / 'waf'
         waf.write_text('#!/bin/sh\npwd\nprintf "%s\\n" "$WAFLOCK" "$@"\n')
