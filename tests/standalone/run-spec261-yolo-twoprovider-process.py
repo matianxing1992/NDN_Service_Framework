@@ -155,6 +155,9 @@ registry2=json.loads(json.dumps(registry)); registry2['artifactPolicyAuthority']
 # session so a later case does not fail on an expired grant or fetch window.
 RUN_FOR_MS=120000+20000*len(args.case)
 ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":RUN_FOR_MS,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":{"/example/hello/provider":"../provider/public.pem","/example/hello/provider2":"../provider2/public.pem"},"publication_sources":{package:{"model_name":model["model_name"],"model_content_digest":model["content_digest"],"canonical_source_digest":src_digest,"initializer_object_digest":YOLO[variant]["initializer"],"artifact_profile_digest":profile}}}}
+if args.case:
+ # A longer request window needs a matching grant policy ceiling.
+ ac['max_grant_ttl_ms']=300000
 (run_root/'authority/authority.json').write_text(json.dumps(ac))
 # requester files
 (run_root/'requester/requester-private.pem').write_bytes(reqpriv.read_bytes());(run_root/'requester/requester-private.pem').chmod(0o600); shutil.copy2(authpub,run_root/'requester/authority-public.pem'); shutil.copy2(offerpub,run_root/'requester/offer-public.pem'); shutil.copy2(offer2pub,run_root/'requester/offer2-public.pem'); (run_root/'requester/trust-schema.conf').write_text(fixture_schema); (run_root/'requester/model.onnx').write_bytes(src); (run_root/'requester/model.weights').write_bytes(weights); (run_root/'requester/catalog.json').write_text(json.dumps(catalog));
@@ -180,6 +183,11 @@ hdr=b'NDITB001'+struct.pack('<I',1)+struct.pack('<I',6)+b'images'+struct.pack('<
 for d in dims: hdr+=struct.pack('<q',d)
 hdr+=struct.pack('<Q',len(input_raw))
 (run_root/'requester/input.bin').write_bytes(hdr+input_raw)
+# Multi-case sessions on a high-latency topology need a request window that
+# covers the sequential segment fetch of the input and model material.
+if args.case:
+ rc['request']['timeout_ms']=180000
+ rc['request']['no_progress_ms']=60000
 rc['oracle']={'tensor':YOLO[variant]['output'],'float32':oracle_values,'tolerance':1e-4,
  'row_width':6,'detections':True,'coordinate_tolerance':0.01,'score_tolerance':1e-4,'iou_floor':0.999}
 (run_root/'requester/config.json').write_text(json.dumps(rc))
@@ -233,7 +241,7 @@ try:
    # Each authenticated request keeps one resident per role and each resident
    # holds its role template, so a multi-sample session needs a larger bounded
    # template cache than the default.
-   pm += ['--artifact-cache-entries','64']
+   pm += ['--artifact-cache-entries','64','--repo-fetch-timeout-ms','30000']
   pe['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY']=str(run_root/(tag+'/authority-public.pem'));pe['SPEC181_PROVIDER_RECIPIENT_KEY_MAP']=str(run_root/(tag+'/recipient-key-map.json'));pe['NDNSF_DI_WORKER_BINARY']=str(WORKER)
   ps=launch(pm,pe,tag,tag);children.append(ps); b.wait_marker(ps,run_root/(tag+'.log'),'NDNSF_DI_NATIVE_PROVIDER_READY',60)
   return ps

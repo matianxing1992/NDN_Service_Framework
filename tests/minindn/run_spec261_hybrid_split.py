@@ -43,6 +43,8 @@ def main() -> int:
     parser.add_argument("--scratch-root", type=Path, required=True)
     parser.add_argument("--prefix", type=Path, default=Path("/usr/local"))
     parser.add_argument("--variant", choices=["26n", "11n"], default="26n")
+    parser.add_argument("--topology", type=Path, default=TOPOLOGY,
+                        help="MiniNDN topology file (default: the maintained hybrid topology)")
     parser.add_argument("--case", action="append", default=[],
                         help="case directory under the model assets (repeatable)")
     parser.add_argument("--timeout", type=float, default=600)
@@ -72,7 +74,7 @@ def main() -> int:
         "schema": "spec261-minindn-hybrid-v1",
         "status": "IN_PROGRESS",
         "variant": args.variant,
-        "topologySha256": digest(TOPOLOGY),
+        "topologySha256": digest(args.topology),
         "harnessSha256": digest(Path(__file__)),
         "installed": {name: {"path": str(path), "sha256": digest(path)}
                       for name, path in installed.items()},
@@ -135,7 +137,7 @@ def main() -> int:
             process.wait(timeout=10)
 
     try:
-        ndn = Minindn(parser=parser, topoFile=str(TOPOLOGY),
+        ndn = Minindn(parser=parser, topoFile=str(args.topology),
                       workDir=str(scratch / "nodes"), controller=None)
         if Minindn.ndnSecurityDisabled:
             raise RuntimeError("dummy keychain cannot qualify signature behavior")
