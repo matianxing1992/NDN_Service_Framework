@@ -4234,7 +4234,9 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
         contract.synthesizedInputGraphNames.push_back(name);
       }
     }
-    else if (!additiveMask && name.find("pos_ids") != std::string::npos) {
+    else if (name.find("pos_ids") != std::string::npos) {
+      // Source inspection can infer dimensions that are absent in the extracted
+      // entry. Both descriptions must bind the position value to the same slot.
       contract.inputSlotByGraphName[name] = "position_ids";
     }
     else {
