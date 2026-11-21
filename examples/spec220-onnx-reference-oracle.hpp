@@ -15,6 +15,7 @@ struct CompleteKvCapture
   std::string provider;
   std::string boot;
   const std::vector<ndnsf::di::NativeJson>& requests;
+  bool captureLogits = true;
 };
 
 /** Independently replay pinned greedy cold/warm inputs through the unsplit CPU model.

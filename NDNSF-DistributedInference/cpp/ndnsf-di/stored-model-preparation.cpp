@@ -307,13 +307,11 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
     if (nextMetadata == metadata.size()) return std::nullopt;
     return std::move(metadata[nextMetadata++]);
   };
-  // N4 package facts. The splitter kind is the verified adapter family; precision and revision come from the
-  // descriptor. A size is only taken from a label the family prefixes, never guessed.
+  // N4 package facts come from the verified adapter and model descriptor.
   NativeStoredModelSemanticContext semantic;
   try {
     const auto family = config.at("splitter").at("kind").get<std::string>() == "LLAMA" ? "llama" : "qwen";
-    const auto facts = nativeModelPathFacts(model.modelName, model.sourceRevision, family,
-                                            model.precision);
+    const auto facts = nativeModelPathFacts(model, family, {});
     semantic.modelFamily = facts.family;
     semantic.modelSize = facts.size;
     semantic.quantization = facts.quantization;

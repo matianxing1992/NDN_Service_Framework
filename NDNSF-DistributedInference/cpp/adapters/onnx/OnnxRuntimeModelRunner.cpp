@@ -740,11 +740,11 @@ sampleKvState(const Ort::Value& value, const std::string& inputName, bool comple
   const auto* source = static_cast<const std::uint8_t*>(value.GetTensorRawData());
   if (!source)
     throw std::runtime_error("missing qualification KV allocation");
-  // The explicitly installed observer can verify complete small-fixture state. Larger
-  // production tensors keep the existing bounded scalar sample rather than copying KV.
-  constexpr std::size_t MAX_COMPLETE_KV_OBSERVATION_ELEMENTS = 4096;
-  const auto points = completeSmallState && count <= MAX_COMPLETE_KV_OBSERVATION_ELEMENTS
-    ? count : std::min<std::size_t>(16, count);
+  if (completeSmallState && count > MAX_COMPLETE_ONNX_KV_ELEMENTS)
+    throw std::runtime_error("complete qualification tensor exceeds element bound");
+  const auto points = completeSmallState ? count : std::min<std::size_t>(16, count);
+  sample.indices.reserve(points);
+  sample.values.reserve(points);
   for (std::size_t i = 0; i < points; ++i) {
     const auto index = points == 1 ? 0 :
       ((count - 1) / (points - 1)) * i + ((count - 1) % (points - 1)) * i / (points - 1);

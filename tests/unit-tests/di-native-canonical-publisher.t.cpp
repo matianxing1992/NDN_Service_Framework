@@ -3384,7 +3384,7 @@ BOOST_AUTO_TEST_CASE(UsesRealCoreIoAndEncryptedPublicationWithLocalMockKey)
   const auto& descriptor = materialInput.model.descriptor;
   const auto expectedReceipt = ndn::Name("/publisher-test/user").append("NDNSF-DI")
     .append("receipt").append("unspecified").append("unspecified")
-    .append(fact(descriptor.precision)).append("revision").append(fact(descriptor.sourceRevision))
+    .append("unspecified").append("revision").append(fact(descriptor.sourceRevision))
     .append("assembly");
   BOOST_REQUIRE(expectedReceipt.isPrefixOf(receiptName));
   BOOST_CHECK_EQUAL(receiptName.size(), expectedReceipt.size() + 3);

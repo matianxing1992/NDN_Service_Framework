@@ -3885,8 +3885,8 @@ ndn_service_framework::PublishedContentName nativeFixedRoleSourceContentName(
   if (modelIdentity.size() != 71 || modelIdentity.compare(0, 7, "sha256:") != 0)
     throw std::invalid_argument("fixed role source lacks verified model identity");
   content.modelIdentity = modelIdentity.substr(7);
-  const auto facts = nativeModelPathFacts(projection.plan.modelName, std::string(),
-    projection.plan.modelFamily, std::string());
+  const auto facts = projection.modelKeyPath.value_or(nativeModelPathFacts(
+    projection.plan.modelName, {}, projection.plan.modelFamily, fixed.roleOwner()->quantization));
   content.modelFamily = facts.family;
   content.modelSize = facts.size;
   content.quantization = facts.quantization;

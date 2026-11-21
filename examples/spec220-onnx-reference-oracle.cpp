@@ -1,4 +1,5 @@
 #include "spec220-onnx-reference-oracle.hpp"
+#include "onnx-kv-state-probe.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
@@ -144,7 +145,9 @@ stateShape(const Ort::ConstTensorTypeAndShapeInfo& info, std::uint64_t prefix)
 class CompleteKvReplay
 {
 public:
-  CompleteKvReplay(const NativeJson& catalog, const std::vector<CompleteKvCapture>& captures)
+  void
+  loadEvidence(const NativeJson& catalog, const std::vector<CompleteKvCapture>& captures,
+               const std::map<std::string, std::string>& referenceSuccessors)
   {
     if (captures.empty())
       return;
@@ -152,6 +155,10 @@ public:
     const auto& stages = splitter.at("roles");
     const auto& degrees = splitter.at("tensor_degrees");
     const auto& stateInputs = catalog.at("state_inputs");
+    const auto layout = catalog.at("recipe").at("layout").get<std::string>();
+    // Qwen's recipe describes native assembly layout. The independent
+    // reference tensors below still have to prove the BNSH state geometry.
+    const bool qwenNativeLayout = layout == "native" && splitter.value("kind", "") == "QWEN";
     if (!stages.is_array() || !degrees.is_array() || stages.empty() ||
         stages.size() != degrees.size() || !stateInputs.is_object() ||
         stateInputs.size() != stages.size())
@@ -164,16 +171,25 @@ public:
         reject("complete-kv-degree");
       std::vector<std::string> roles;
       for (std::size_t rank = 0; rank < degree; ++rank) {
-        roles.push_back(stageName + "/Tensor/Rank/" + std::to_string(rank));
+        roles.push_back(degree == 1 ? stageName : stageName + "/Tensor/Rank/" +
+                       std::to_string(rank));
         if (!allRoles.insert(roles.back()).second)
           reject("complete-kv-duplicate-role");
       }
-      if (degree > 1 && catalog.at("recipe").at("layout") != "BNSH")
+      if (degree > 1 && layout != "BNSH" && !qwenNativeLayout)
         reject("complete-kv-shard-axis");
-      for (const auto& group : stateInputs.at(stageName)) {
-        for (const auto& input : group) {
-          if (!m_owners.emplace(input.get<std::string>(), roles).second)
-            reject("complete-kv-duplicate-owner");
+      if (qwenNativeLayout && stages.size() == 1) {
+        // One source-defined Qwen stage owns all verified ONNX KV inputs.
+        // Older catalog hints may list only the initial subset of layers.
+        for (const auto& successor : referenceSuccessors)
+          m_owners.emplace(successor.first, roles);
+      }
+      else {
+        for (const auto& group : stateInputs.at(stageName)) {
+          for (const auto& input : group) {
+            if (!m_owners.emplace(input.get<std::string>(), roles).second)
+              reject("complete-kv-duplicate-owner");
+          }
         }
       }
     }
@@ -181,6 +197,7 @@ public:
       reject("complete-kv-role-cover");
     std::uintmax_t totalBytes = 0;
     for (const auto& capture : captures) {
+      m_requireLogits = m_requireLogits || capture.captureLogits;
       struct stat directory{};
       const auto& path = capture.directory;
       if (!path.is_absolute() || ::lstat(path.c_str(), &directory) != 0 ||
@@ -191,14 +208,14 @@ public:
       std::size_t files = 0;
       for (const auto& file : std::filesystem::directory_iterator(path)) {
         struct stat info{};
-        if (++files > 512 || ::lstat(file.path().c_str(), &info) != 0 ||
+        if (++files > MAX_COMPLETE_KV_CAPTURE_RECORDS || ::lstat(file.path().c_str(), &info) != 0 ||
             !S_ISREG(info.st_mode) || info.st_uid != ::getuid() ||
             (info.st_mode & 0777) != 0600 || info.st_size <= 0)
           reject("complete-kv-private-record");
         const auto size = static_cast<std::uintmax_t>(info.st_size);
         bytes += size;
         totalBytes += size;
-        if (bytes > 16U * 1024U * 1024U || totalBytes > 64U * 1024U * 1024U)
+        if (bytes > MAX_COMPLETE_KV_CAPTURE_BYTES || totalBytes > 2 * MAX_COMPLETE_KV_CAPTURE_BYTES)
           reject("complete-kv-record-budget");
         load(nativeParseJson(readSmall(file.path())), capture);
       }
@@ -208,7 +225,8 @@ public:
   }
 
   void
-  compare(std::size_t round, std::size_t epoch, const std::string& input, const Ort::Value& value)
+  compare(std::size_t round, std::size_t epoch, const std::string& input,
+          const Ort::Value& value, std::uint64_t prefixTokens)
   {
     if (m_owners.empty())
       return;
@@ -219,12 +237,13 @@ public:
     auto shape = info.GetShape();
     const auto degree = static_cast<std::int64_t>(owner->second.size());
     if (degree > 1) {
-      if (shape.size() != 4 || shape.front() != 1 || shape.at(1) % degree != 0)
+      if (shape.size() != 4 || shape.front() != 1 || shape[1] <= 0 || shape[1] % degree != 0 ||
+          shape[2] <= 0 || static_cast<std::uint64_t>(shape[2]) != prefixTokens || shape[3] <= 0)
         reject("complete-kv-head-cover:" + input);
       shape.at(1) /= degree;
     }
     const auto extent = info.GetElementCount() / owner->second.size();
-    if (extent == 0 || extent > 4096)
+    if (extent == 0 || extent > MAX_COMPLETE_ONNX_KV_ELEMENTS)
       reject("complete-kv-value-bound");
     const auto type = info.GetElementType();
     const char* elementType = type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ? "float32" :
@@ -240,15 +259,12 @@ public:
       if (found == m_tensors.end())
         reject("complete-kv-missing-shard" + context);
       const auto& tensor = found->second;
-      const auto& scalars = tensor.at("values");
-      if (tensor.at("shape") != NativeJson(shape) || tensor.at("elementType") != elementType ||
-          !scalars.is_array() || scalars.size() != extent)
+      const auto& scalars = tensor.values;
+      if (tensor.shape != shape || tensor.elementType != elementType || scalars.size() != extent)
         reject("complete-kv-shape-or-type" + context);
       for (std::size_t i = 0; i < extent; ++i) {
         const auto index = rank * extent + i;
-        if (!scalars[i].is_number())
-          reject("complete-kv-scalar" + context);
-        const double actual = scalars[i].get<double>();
+        const double actual = scalars[i];
         double reference;
         switch (type) {
           case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
@@ -283,7 +299,7 @@ public:
   compareLogits(std::size_t round, std::size_t epoch, const std::string& name,
                 const Ort::Value& value)
   {
-    if (m_owners.empty())
+    if (!m_requireLogits)
       return;
     const auto context = ":round=" + std::to_string(round) + ":epoch=" + std::to_string(epoch);
     const auto found = m_logits.find({round, epoch});
@@ -328,6 +344,13 @@ public:
   double maxLogitsError = 0;
 
 private:
+  struct ObservedState
+  {
+    std::vector<std::int64_t> shape;
+    std::string elementType;
+    std::vector<double> values;
+  };
+
   void
   load(const NativeJson& document, const CompleteKvCapture& capture)
   {
@@ -355,7 +378,8 @@ private:
     const auto role = record.at("role").get<std::string>();
     if (record.contains("logits")) {
       const auto& logits = record.at("logits");
-      if (record.contains("tensors") || request->at("eventsPublished") != count - 1 ||
+      if (!capture.captureLogits || record.contains("tensors") ||
+          request->at("eventsPublished") != count - 1 ||
           !logits.is_array() || logits.size() != 1)
         reject("complete-logits-publisher");
       const auto& values = logits.at(0).at("values");
@@ -371,7 +395,7 @@ private:
     for (const auto& tensor : tensors) {
       const auto input = tensor.at("inputName").get<std::string>();
       const auto& values = tensor.at("values");
-      if (!values.is_array() || values.empty() || values.size() > 4096)
+      if (!values.is_array() || values.empty() || values.size() > MAX_COMPLETE_ONNX_KV_ELEMENTS)
         reject("complete-kv-value-bound");
       const auto owner = m_owners.find(input);
       if (owner == m_owners.end())
@@ -380,15 +404,24 @@ private:
       if (rank == owner->second.end())
         reject("complete-kv-unexpected-role:" + role + ":tensor=" + input);
       const auto index = static_cast<std::size_t>(rank - owner->second.begin());
-      if (!m_tensors.emplace(TensorKey{round, epoch, input, index}, tensor).second)
+      ObservedState state{tensor.at("shape").get<std::vector<std::int64_t>>(),
+                          tensor.at("elementType").get<std::string>(), {}};
+      state.values.reserve(values.size());
+      for (const auto& value : values) {
+        if (!value.is_number())
+          reject("complete-kv-scalar:" + input);
+        state.values.push_back(value.get<double>());
+      }
+      if (!m_tensors.emplace(TensorKey{round, epoch, input, index}, std::move(state)).second)
         reject("complete-kv-duplicate-shard:" + input);
     }
   }
 
   using TensorKey = std::tuple<std::size_t, std::size_t, std::string, std::size_t>;
   std::map<std::string, std::vector<std::string>> m_owners;
-  std::map<TensorKey, NativeJson> m_tensors;
+  std::map<TensorKey, ObservedState> m_tensors;
   std::map<std::pair<std::size_t, std::size_t>, NativeJson> m_logits;
+  bool m_requireLogits = false;
 };
 
 } // namespace
@@ -483,7 +516,7 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     admittedCheckpoints.push_back(std::move(checkpoint));
   }
   const auto& catalog = requester.at("catalog");
-  CompleteKvReplay completeKv(catalog, captures);
+  CompleteKvReplay completeKv;
   const auto& source = catalog.at("source");
   const auto sourceBound = requester.at("limits").at("max_source_bytes").get<std::uint64_t>();
   const std::filesystem::path modelPath = source.at("file").get<std::string>();
@@ -592,6 +625,8 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
         shape.data(), shape.size(), type));
     }
     if (states.size() != successors.size()) reject("missing-state-input");
+    if (round == 0)
+      completeKv.loadEvidence(catalog, captures, successors);
     const auto raw = readSmall(turn.at("input_file").get<std::string>());
     const auto tensors = decodeTensorBundle(std::vector<std::uint8_t>(raw.begin(), raw.end()));
     if (tensors.size() != 1 || tensors.front().name != tokenName ||
@@ -701,7 +736,7 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
         const auto inputInfo = typeInfo.GetTensorTypeAndShapeInfo();
         if (stateInfo.GetElementType() != inputInfo.GetElementType() ||
             stateInfo.GetShape() != stateShape(inputInfo, prefix)) reject("state-extents");
-        completeKv.compare(round, step, entry.first, value);
+        completeKv.compare(round, step, entry.first, value, prefix);
         stateBytes += tensorBytes(stateInfo.GetShape(), stateInfo.GetElementType(),
                                   stateBound - stateBytes);
         if (step == expected.size()) {

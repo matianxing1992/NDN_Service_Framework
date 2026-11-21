@@ -180,8 +180,9 @@ ndn_service_framework::PublishedContentName publicationContentName(
   ndn_service_framework::makeNamingLabelComponent(model.descriptor.modelName);
   if (!digest(model.descriptor.contentDigest))
     throw std::invalid_argument("invalid model content identity");
-  const auto facts = nativeModelPathFacts(model.descriptor.modelName, model.descriptor.sourceRevision,
-                                          std::string(), model.descriptor.precision);
+  const auto& adapter = model.descriptor.adapterId;
+  const auto facts = nativeModelPathFacts(model.descriptor,
+    adapter == "qwen" || adapter == "llama" ? adapter : std::string{}, std::string{});
   const auto setFacts = [&value, &facts] {
     value.modelFamily = facts.family;
     value.modelSize = facts.size;

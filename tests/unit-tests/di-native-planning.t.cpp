@@ -12,6 +12,8 @@
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-preparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
@@ -2288,10 +2290,61 @@ BOOST_AUTO_TEST_CASE(ModelPathFactsComeFromVerifiedFactsOnly)
   BOOST_CHECK_EQUAL(fromPlan.revisionLabel, "r3");
   BOOST_CHECK_EQUAL(nativeModelPathFacts("", "", "generic-onnx", "").size, "unspecified");
 
+  descriptor.modelName = "Qwen/Qwen3-0.6B";
+  descriptor.precision = "float32";
+  descriptor.quantizationSubtype = "weight_only_int4";
+  const auto stored = nativeModelPathFacts(descriptor, "qwen", {});
+  BOOST_CHECK_EQUAL(stored.family, "qwen");
+  BOOST_CHECK_EQUAL(stored.size, "0.6b");
+  BOOST_CHECK_EQUAL(stored.quantization, "int4");
+  BOOST_CHECK_EQUAL(nativeModelPathFacts(descriptor, "qwen", "weight_only_int4").quantization,
+                    "int4");
+  BOOST_CHECK_EQUAL(nativeModelPathFacts(descriptor, "llama", {}).size, "unspecified");
+
   // A fact that is not an atom is refused rather than escaped.
   NativeModelDescriptor hostile;
   hostile.modelName = "qwen3-0.6b";
   BOOST_CHECK_THROW(nativeModelPathFacts(hostile, "qwen3", "int4/e4m3"), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(InlineGenerationOptionsRemainInRequestAndOutOfAckDiscovery)
+{
+  const auto descriptor = model("qwen", "Qwen/Qwen3-0.6B", digest("graph"));
+  NativeRequestContract contract{"/di/generation", "task", descriptor.adapterId,
+    descriptor.adapter.descriptorDigest(), digest("composition"), digest("task")};
+  contract.generationMode = "TOKEN_STREAMING";
+  contract.tokenizerDigest = digest("tokenizer");
+  NativeApplicationInput input;
+  input.taskName = contract.taskName;
+  input.inputSchemaDigest = descriptor.adapter.inputSchemaDigest;
+  input.optionsSchemaDigest = descriptor.adapter.optionsSchemaDigest;
+  input.payload = {1, 2, 3};
+  NativeJson stateMap = NativeJson::object();
+  for (int layer = 0; layer < 56; ++layer) {
+    const auto suffix = std::to_string(layer);
+    stateMap["present_key_values." + suffix] = "past_key_values." + suffix;
+  }
+  const auto options = nativeCanonicalJson(NativeJson{
+    {"stateInputNames", stateMap}, {"stateSuccessorMap", stateMap}, {"maxNewTokens", 32}});
+  input.options.assign(options.begin(), options.end());
+
+  const auto encoded = detail::encodeNativeRequestEnvelopeForRuntime(
+    descriptor, input, contract, "/request/large-options", 1, 10000, std::nullopt,
+    {}, std::nullopt, std::nullopt, {}, "INLINE", {});
+  const auto request = encodeNativeRequestEnvelope(
+    descriptor, input, contract, "/request/large-options", 1, 10000);
+  BOOST_CHECK(encoded.wire == request.wire);
+  BOOST_CHECK_EQUAL(encoded.requestContractDigest, request.requestContractDigest);
+  BOOST_CHECK_GT(encoded.wire.size(), 4096U);
+  BOOST_REQUIRE(encoded.discoveryPayload);
+  BOOST_CHECK_LE(encoded.discoveryPayload->size(), 4096U);
+  const std::string discovery(encoded.discoveryPayload->begin(), encoded.discoveryPayload->end());
+  const auto offer = parseNativeRequestOffer(discovery);
+  BOOST_REQUIRE(offer);
+  BOOST_CHECK(offer->at("options_payload_b64") == "");
+  BOOST_CHECK(offer->at("input_payload_b64") == "");
+  BOOST_CHECK(offer->at("input_manifest_digest") == encoded.inputManifestDigest);
+  BOOST_CHECK(!detail::requiresSelectionGenerationOptions(discovery, false));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

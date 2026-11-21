@@ -1411,7 +1411,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     if (first.empty() || width == 0 || width > exact->providers)
       chainFailure("deployment-exact-token-ingress-layout");
     for (std::uint64_t rank = 0; rank < width; ++rank) {
-      const auto role = first + "/Tensor/Rank/" + std::to_string(rank);
+      const auto role = width == 1 ? first : first + "/Tensor/Rank/" + std::to_string(rank);
       if (!placement.contains(role))
         chainFailure("deployment-exact-token-ingress-role:" + role);
       tokenInputRoles.insert(role);
@@ -1505,7 +1505,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   const auto requester = readStatistics(requesterStatisticsPath,
     "ndnsf-di-native-requester-statistics-v1", rounds, false);
   std::vector<StatisticsRows> providers;
-  std::vector<std::filesystem::path> providerKvDirectories;
+  std::vector<std::pair<std::filesystem::path, bool>> providerKvCaptures;
   std::map<std::string, std::vector<std::string>> gpuUuids;
   std::set<std::string> gpuNodes;
   const auto requesterHost = slurm ? roleReceipts.at(requesterId).at("host").get<std::string>() : "";
@@ -1527,8 +1527,11 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       : (actorRoot(id) / (id + "-statistics.jsonl")).string();
     providers.push_back(readStatistics(statisticsPath,
       "ndnsf-di-native-request-statistics-v1", rounds, true, automaticPlacement));
-    if (exact)
-      providerKvDirectories.emplace_back(statisticsPath + ".kv-complete");
+    if (exact) {
+      const bool captureLogits = actor.contains("parameters") &&
+        actor.at("parameters").contains("capture-logits-output");
+      providerKvCaptures.emplace_back(statisticsPath + ".kv-complete", captureLogits);
+    }
     providers.back().actor = id;
     if (slurm) {
       providers.back().host = roleReceipts.at(id).at("host").get<std::string>();
@@ -1920,8 +1923,9 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     if (exact) {
       for (std::size_t i = 0; i < providers.size(); ++i) {
         const auto& provider = providers[i];
-        captures.push_back({providerKvDirectories.at(i), provider.provider,
-                            provider.boot, provider.requests});
+        const auto& [directory, captureLogits] = providerKvCaptures.at(i);
+        captures.push_back({directory, provider.provider, provider.boot, provider.requests,
+                            captureLogits});
       }
     }
     receipt["modelReference"] = spec220::oracle::validateOnnxReference(

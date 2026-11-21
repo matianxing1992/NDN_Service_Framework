@@ -1110,16 +1110,34 @@ nativeModelPathFacts(const std::string& modelName, const std::string& sourceRevi
 {
   NativeModelPathFacts facts;
   facts.family = modelPathFact(family);
-  // The model label carries the size for a prepared Qwen/Llama export ("qwen2.5-0.5b", "qwen3-0.6b"), but a
-  // label is not validation. Only the adapter-declared family together with a label that starts with it is
-  // accepted; otherwise the size stays unspecified.
-  const auto dash = modelName.find('-');
-  if (facts.family != "unspecified" && dash != std::string::npos &&
-      modelName.compare(0, facts.family.size(), facts.family) == 0)
-    facts.size = modelPathFact(modelName.substr(dash + 1));
+  // Match the verified model family against the registered model label,
+  // including catalog repository labels such as Qwen/Qwen3-0.6B.
+  auto label = modelName.substr(modelName.find_last_of('/') + 1);
+  std::transform(label.begin(), label.end(), label.begin(), [](char byte) {
+    return byte >= 'A' && byte <= 'Z' ? static_cast<char>(byte - 'A' + 'a') : byte;
+  });
+  facts.size = "unspecified";
+  const auto dash = label.find('-');
+  const auto digit = [](char byte) { return byte >= '0' && byte <= '9'; };
+  const auto versionCharacter = [&](char byte) { return digit(byte) || byte == '.'; };
+  if (facts.family != "unspecified" && dash != std::string::npos && dash >= facts.family.size() &&
+      std::all_of(label.begin() + facts.family.size(), label.begin() + dash, versionCharacter) &&
+      label.compare(0, facts.family.size(), facts.family) == 0) {
+    const auto modelSize = label.substr(dash + 1);
+    if (modelSize.size() >= 2 && modelSize.back() == 'b' &&
+        digit(modelSize.front()) && digit(modelSize[modelSize.size() - 2]) &&
+        std::all_of(modelSize.begin(), modelSize.end() - 1, versionCharacter) &&
+        std::count(modelSize.begin(), modelSize.end(), '.') <= 1)
+      facts.size = modelSize;
+  }
+  if (quantization == "weight_only_int4")
+    facts.quantization = "int4";
+  else if (quantization == "weight_only_int8")
+    facts.quantization = "int8";
+  else if (quantization == "dynamic_int8")
+    facts.quantization = "dynamic-int8";
   else
-    facts.size = "unspecified";
-  facts.quantization = modelPathFact(quantization);
+    facts.quantization = modelPathFact(quantization);
   facts.revisionLabel = modelPathFact(sourceRevision);
   return facts;
 }
@@ -1128,7 +1146,10 @@ NativeModelPathFacts
 nativeModelPathFacts(const NativeModelDescriptor& descriptor, const std::string& family,
                      const std::string& quantization)
 {
-  return nativeModelPathFacts(descriptor.modelName, descriptor.sourceRevision, family, quantization);
+  const auto& modelQuantization = descriptor.quantizationSubtype == "none"
+    ? quantization : descriptor.quantizationSubtype;
+  return nativeModelPathFacts(descriptor.modelName, descriptor.sourceRevision, family,
+                              modelQuantization);
 }
 
 } // namespace ndnsf::di

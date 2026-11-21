@@ -49,7 +49,7 @@ void invoke(const NativeCheckpointExportOptions& options, NativeCheckpointExport
   }
 }
 
-void writeAll(int fd, const std::string& bytes)
+void writeAll(int fd, std::string_view bytes)
 {
   std::size_t offset = 0;
   while (offset < bytes.size()) {
@@ -178,12 +178,19 @@ detail::writePrivateCheckpointFile(const std::filesystem::path& destination,
 }
 
 void
-nativeExportPrivateCheckpoint(const std::filesystem::path& destination,
-                                   const NativeJson& state,
-                                   const NativeCheckpointExportOptions& options)
+detail::writePrivateCheckpointBytes(const std::filesystem::path& destination,
+                                    std::string_view bytes,
+                                    const NativeCheckpointExportOptions& options)
 {
-  const auto bytes = nativeCanonicalJson(state);
-  detail::writePrivateCheckpointFile(destination, options, [&] (int fd) { writeAll(fd, bytes); });
+  writePrivateCheckpointFile(destination, options, [&] (int fd) { writeAll(fd, bytes); });
+}
+
+void
+nativeExportPrivateCheckpoint(const std::filesystem::path& destination,
+                              const NativeJson& state,
+                              const NativeCheckpointExportOptions& options)
+{
+  detail::writePrivateCheckpointBytes(destination, nativeCanonicalJson(state), options);
 }
 
 } // namespace ndnsf::di

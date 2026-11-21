@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-private-checkpoint-file.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -18,6 +19,10 @@
 #include <sys/stat.h>
 
 namespace ndnsf::di {
+
+// Two complete 28-layer Qwen-0.6B turns need up to 1,848 records per rank.
+inline constexpr std::size_t MAX_COMPLETE_KV_CAPTURE_RECORDS = 4096;
+inline constexpr std::uint64_t MAX_COMPLETE_KV_CAPTURE_BYTES = 4ULL * 1024U * 1024U * 1024U;
 
 /** Bounded private qualification output shared by this Provider's runners. */
 class OnnxKvStateProbe final : public OnnxKvStateObserver,
@@ -104,6 +109,7 @@ private:
         lineage.inferenceEpoch != context.inferenceEpoch)
       throw std::invalid_argument("qualification KV lineage mismatch");
     NativeJson tensors = NativeJson::array();
+    std::vector<NativeJson> batches;
     std::set<std::string> names;
     std::size_t elements = 0;
     for (const auto& sample : samples) {
@@ -111,7 +117,7 @@ private:
           !names.insert(sample.inputName).second || sample.shape.empty() ||
           sample.shape.size() > 8 ||
           sample.indices.empty() ||
-          sample.indices.size() > (m_captureComplete ? MAX_COMPLETE_TENSOR_ELEMENTS : 16) ||
+          sample.indices.size() > (m_captureComplete ? MAX_COMPLETE_ONNX_KV_ELEMENTS : 16) ||
           sample.indices.size() != sample.values.size())
         throw std::invalid_argument("qualification KV sample bound exceeded");
       if (sample.elementType != "float32" && sample.elementType != "float16" &&
@@ -126,15 +132,20 @@ private:
         std::size_t extent = 1;
         for (auto dimension : sample.shape) {
           if (dimension <= 0 ||
-              static_cast<std::uint64_t>(dimension) > MAX_COMPLETE_TENSOR_ELEMENTS / extent)
+              static_cast<std::uint64_t>(dimension) > MAX_COMPLETE_ONNX_KV_ELEMENTS / extent)
             throw std::runtime_error("complete qualification KV tensor exceeds element bound");
           extent *= static_cast<std::size_t>(dimension);
         }
-        if (extent != sample.indices.size() || extent > MAX_COMPLETE_RECORD_ELEMENTS - elements)
-          throw std::runtime_error("complete qualification KV coverage or record bound failed");
+        if (extent != sample.indices.size())
+          throw std::runtime_error("complete qualification KV coverage failed");
         for (std::size_t index = 0; index < extent; ++index) {
           if (sample.indices[index] != index)
             throw std::runtime_error("complete qualification KV coverage is not contiguous");
+        }
+        if (extent > MAX_COMPLETE_RECORD_ELEMENTS - elements) {
+          batches.push_back(std::move(tensors));
+          tensors = NativeJson::array();
+          elements = 0;
         }
         elements += extent;
       }
@@ -151,14 +162,14 @@ private:
       {"operationIndex", lineage.operationIndex},
       {"generationId", lineage.generationId},
       {"logicalPrefixDigest", lineage.logicalPrefixDigest},
-      {"logicalPrefixTokenCount", lineage.logicalPrefixTokenCount},
-      {logits ? "logits" : "tensors", std::move(tensors)}};
+      {"logicalPrefixTokenCount", lineage.logicalPrefixTokenCount}};
     std::lock_guard<std::mutex> lock(m_mutex);
     const EpochKey key{context.requestId, context.attemptEpoch, context.role,
                        context.inferenceEpoch, logits};
     if (m_captureComplete) {
       // Stateful child entries may observe disjoint tensors for the same epoch.
-      if (m_completeRecords >= MAX_COMPLETE_RECORDS)
+      batches.push_back(std::move(tensors));
+      if (batches.size() > MAX_COMPLETE_KV_CAPTURE_RECORDS - m_completeRecords)
         throw std::runtime_error("complete qualification KV record bound exceeded");
       const auto found = m_completeKeys.find(key);
       if (found != m_completeKeys.end()) {
@@ -167,28 +178,29 @@ private:
             throw std::runtime_error("duplicate complete qualification KV tensor");
         }
       }
-      const NativeJson document{{"schema", "ndnsf-di-kv-complete-v1"},
-        {"provider", m_provider}, {"record", std::move(observation)}};
-      const auto bytes = nativeCanonicalJson(document).size();
-      if (bytes > MAX_COMPLETE_BYTES - m_completeBytes)
-        throw std::runtime_error("complete qualification KV directory byte bound exceeded");
-      auto [seen, inserted] = m_completeKeys.try_emplace(key);
-      try {
-        nativeExportPrivateCheckpoint(
-          m_destination / (std::to_string(m_completeRecords) + ".json"), document);
+      auto& seen = m_completeKeys[key];
+      for (auto& batch : batches) {
+        std::set<std::string> batchNames;
+        for (const auto& tensor : batch)
+          batchNames.insert(tensor.at("inputName").get<std::string>());
+        NativeJson document{{"schema", "ndnsf-di-kv-complete-v1"},
+          {"provider", m_provider}, {"record", observation}};
+        document["record"][logits ? "logits" : "tensors"] = std::move(batch);
+        // Encode each record once while retaining round-trip floating-point precision.
+        const auto wire = document.dump();
+        if (wire.size() > MAX_COMPLETE_KV_CAPTURE_BYTES - m_completeBytes)
+          throw std::runtime_error("complete qualification KV directory byte bound exceeded");
+        detail::writePrivateCheckpointBytes(
+          m_destination / (std::to_string(m_completeRecords) + ".json"), wire);
+        seen.merge(batchNames);
+        ++m_completeRecords;
+        m_completeBytes += wire.size();
       }
-      catch (...) {
-        if (inserted)
-          m_completeKeys.erase(seen);
-        throw;
-      }
-      seen->second.merge(names);
-      ++m_completeRecords;
-      m_completeBytes += bytes;
       return;
     }
     if (m_keys.size() >= 64 || !m_keys.insert(key).second)
       throw std::runtime_error("qualification KV record bound or duplicate observation");
+    observation["tensors"] = std::move(tensors);
     m_records.push_back(std::move(observation));
     const NativeJson document{{"schema", "ndnsf-di-kv-value-samples-v1"},
       {"provider", m_provider}, {"records", m_records}};
@@ -197,10 +209,7 @@ private:
     nativeExportPrivateCheckpoint(m_destination, document);
   }
 
-  static constexpr std::size_t MAX_COMPLETE_TENSOR_ELEMENTS = 4096;
-  static constexpr std::size_t MAX_COMPLETE_RECORD_ELEMENTS = 16384;
-  static constexpr std::size_t MAX_COMPLETE_RECORDS = 512;
-  static constexpr std::size_t MAX_COMPLETE_BYTES = 16 * 1024 * 1024;
+  static constexpr std::size_t MAX_COMPLETE_RECORD_ELEMENTS = 2 * MAX_COMPLETE_ONNX_KV_ELEMENTS;
   using EpochKey = std::tuple<std::string, std::uint64_t, std::string, std::uint64_t, bool>;
 
   const std::filesystem::path m_destination;
@@ -208,7 +217,7 @@ private:
   const bool m_captureComplete;
   const std::string m_logitsOutput;
   std::mutex m_mutex;
-  std::size_t m_completeBytes = 0;
+  std::uint64_t m_completeBytes = 0;
   std::size_t m_completeRecords = 0;
   std::map<EpochKey, std::set<std::string>> m_completeKeys;
   NativeJson m_records = NativeJson::array();

@@ -9,6 +9,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -339,6 +340,15 @@ BOOST_AUTO_TEST_CASE(CompleteProviderKvIsReassembledByRankAndCheckedAtEveryEpoch
   BOOST_CHECK_EQUAL(result.at("providerStateValueCount"), 54);
   BOOST_CHECK_EQUAL(result.at("providerLogitsValueCount"), 24);
   BOOST_CHECK_EQUAL(result.at("providerStateMaxAbsoluteError"), 0);
+  catalog["splitter"]["kind"] = "QWEN";
+  catalog["recipe"]["layout"] = "native";
+  catalog["state_inputs"]["role"] = NativeJson::object();
+  BOOST_CHECK_EQUAL(replay().at("providerStateValueCount"), 54);
+  catalog["recipe"]["layout"] = "BSNH";
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-kv-shard-axis");
+  });
+  catalog["recipe"]["layout"] = "native";
   const auto logitsPath = captures.back().directory / "logits-5.json";
   std::ifstream logitFile(logitsPath);
   NativeJson observedLogits;
@@ -353,7 +363,14 @@ BOOST_AUTO_TEST_CASE(CompleteProviderKvIsReassembledByRankAndCheckedAtEveryEpoch
   BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
     return reason(error, "complete-logits-missing:round=1:epoch=2");
   });
-  nativeExportPrivateCheckpoint(logitsPath, observedLogits);
+  for (std::size_t index = 0; index < 5; ++index)
+    BOOST_REQUIRE(std::filesystem::remove(
+      captures.back().directory / ("logits-" + std::to_string(index) + ".json")));
+  for (auto& capture : captures)
+    capture.captureLogits = false;
+  const auto kvOnly = replay();
+  BOOST_CHECK_EQUAL(kvOnly.at("providerStateValueCount"), 54);
+  BOOST_CHECK_EQUAL(kvOnly.at("providerLogitsValueCount"), 0);
 
   const auto path = captures.back().directory / "5.json";
   std::ifstream file(path);
@@ -471,7 +488,7 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
       fixture.saveModel();
     }
     for (const auto& [initialSize, complete] : {std::pair{2U, false}, std::pair{20U, false},
-                                               std::pair{20U, true}}) {
+                                               std::pair{5000U, true}}) {
       const auto destination = fixture.directory /
         ("private-kv-" + std::to_string(initialSize) + (complete ? ".complete" : ".json"));
       auto probe = std::make_shared<OnnxKvStateProbe>(destination, "/reference-provider",
@@ -497,8 +514,11 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
       const auto finalEpoch = complete ? 3u : 2u;
       for (std::uint64_t epoch = 0; epoch <= finalEpoch; ++epoch) {
         std::vector<std::int64_t> ids(epoch ? 1 : initialSize, 1);
-        if (!epoch)
+        if (!epoch) {
           std::iota(ids.begin(), ids.end(), 0);
+          for (auto& id : ids)
+            id %= 1024;
+        }
         prefix.insert(prefix.end(), ids.begin(), ids.end());
         RoleExecutionContext context;
         context.requestId = "probe-request";
@@ -582,7 +602,8 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
         BOOST_CHECK((fileMode & std::filesystem::perms::group_all) == std::filesystem::perms::none);
         BOOST_CHECK((fileMode & std::filesystem::perms::others_all) == std::filesystem::perms::none);
         if (complete && epoch == finalEpoch) {
-          const OnnxKvStateSample other{"past-other-layer", "float32", {1, 2}, {0, 1}, {3, 4}};
+          const OnnxKvStateSample other{"past-other-layer", "float32", {1, 2}, {0, 1},
+                                        {1.0 / 3, -std::ldexp(1.0, -126)}};
           BOOST_CHECK_NO_THROW(probe->record(context, {other}));
           std::ifstream fragmentFile(destination / "8.json");
           NativeJson fragment;
@@ -590,12 +611,42 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
           BOOST_CHECK_EQUAL(fragment.at("record").at("inferenceEpoch"), finalEpoch);
           BOOST_CHECK_EQUAL(fragment.at("record").at("tensors").at(0).at("inputName"),
                             "past-other-layer");
+          BOOST_CHECK(fragment.at("record").at("tensors").at(0).at("values") ==
+                      NativeJson(other.values));
           BOOST_CHECK_THROW(probe->record(context, {other}), std::runtime_error);
           auto incomplete = other;
           incomplete.inputName = "past-uncovered";
           incomplete.shape = {1, 3};
           BOOST_CHECK_THROW(probe->record(context, {incomplete}), std::runtime_error);
           BOOST_CHECK(!std::filesystem::exists(destination / "9.json"));
+          if (stateType == onnx::TensorProto::FLOAT) {
+            const auto extent = MAX_COMPLETE_ONNX_KV_ELEMENTS;
+            auto sample = other;
+            sample.shape = {1, static_cast<std::int64_t>(extent)};
+            sample.indices.resize(extent);
+            std::iota(sample.indices.begin(), sample.indices.end(), 0);
+            sample.values.assign(extent, 0.125);
+            std::vector<OnnxKvStateSample> samples;
+            for (unsigned layer = 0; layer < 3; ++layer) {
+              sample.inputName = "past-stage-" + std::to_string(layer);
+              samples.push_back(sample);
+            }
+            BOOST_REQUIRE_NO_THROW(probe->record(context, samples));
+            for (unsigned batch = 0; batch < 2; ++batch) {
+              std::ifstream input(destination / (std::to_string(9 + batch) + ".json"));
+              NativeJson document;
+              input >> document;
+              const auto& row = document.at("record");
+              BOOST_CHECK_EQUAL(row.at("inferenceEpoch"), finalEpoch);
+              const auto& tensors = row.at("tensors");
+              BOOST_REQUIRE_EQUAL(tensors.size(), batch == 0 ? 2 : 1);
+              BOOST_CHECK_EQUAL(tensors.at(0).at("inputName"), samples.at(2 * batch).inputName);
+              BOOST_CHECK_EQUAL(tensors.back().at("values").size(), extent);
+              BOOST_CHECK_EQUAL(tensors.back().at("values").back(), 0.125);
+            }
+            BOOST_CHECK_THROW(probe->record(context, {samples.back()}), std::runtime_error);
+            BOOST_CHECK(!std::filesystem::exists(destination / "11.json"));
+          }
         }
       }
       const auto mode = std::filesystem::status(destination).permissions();

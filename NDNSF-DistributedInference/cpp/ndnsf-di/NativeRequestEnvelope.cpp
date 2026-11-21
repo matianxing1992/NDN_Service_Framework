@@ -721,8 +721,14 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
     auto& inputValue = envelope.at("input_payload_b64");
     auto payload = std::move(inputValue);
     inputValue = "";
+    // The ACK path validates options transport from the control fields.
+    // The actual options bytes belong to the protected request or Selection.
+    auto& optionsValue = envelope.at("options_payload_b64");
+    auto options = std::move(optionsValue);
+    optionsValue = "";
     auto discovery = nativeCanonicalJson(envelope);
     inputValue = std::move(payload);
+    optionsValue = std::move(options);
     return discovery;
   };
   auto wire = nativeCanonicalJson(envelope);
