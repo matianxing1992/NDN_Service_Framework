@@ -279,6 +279,13 @@ requireStoredProcessOracle(const std::filesystem::path& runRoot, const std::stri
   const auto firstHandle = nativeLoadStoredModelHandle(runRoot / "consumer-b/stored-handle.json");
   BOOST_CHECK(firstHandle.producer == producer);
   BOOST_CHECK(firstHandle.repository == repoNode);
+  const ndn::Name packageStem(
+    "/example/hello/user/NDNSF-DI/model/qwen/unspecified/float32/revision/pinned-r1/stored/rep");
+  BOOST_REQUIRE_EQUAL(firstHandle.rootName.size(), packageStem.size() + 2);
+  BOOST_CHECK(packageStem.isPrefixOf(firstHandle.rootName));
+  BOOST_CHECK_EQUAL(firstHandle.rootName[-2].type(), ndn::tlv::GenericNameComponent);
+  BOOST_CHECK_EQUAL(firstHandle.rootName[-2].value_size(), 32U);
+  BOOST_CHECK(firstHandle.rootName[-1] == ndn::name::Component("root"));
   std::optional<std::string> modelContract;
   for (const auto& name : {std::string("consumer-b"), std::string("consumer-c")}) {
     const auto directory = runRoot / name;
