@@ -26,6 +26,8 @@ def parse_args() -> argparse.Namespace:
                         help="native spec261-ort-detection-oracle executable")
     parser.add_argument("--shape", default="1,3,640,640")
     parser.add_argument("--extra-cases", type=int, default=4)
+    parser.add_argument("--no-edge-cases", action="store_true",
+                        help="emit only the frozen input and perturbations")
     return parser.parse_args()
 
 
@@ -47,6 +49,15 @@ def main() -> int:
         rng = np.random.default_rng(seed)
         value = np.clip(frozen * gain + rng.normal(0, noise, frozen.shape).astype("float32"), 0, 1)
         cases.append(value.astype("float32"))
+    if not args.no_edge_cases:
+        # Edge inputs that are not perturbations of the image: they exercise the
+        # empty-detection tail, saturated activations and structure-free noise.
+        cases.append(np.zeros(shape, dtype="float32"))
+        cases.append(np.ones(shape, dtype="float32"))
+        ramp = np.linspace(0.0, 1.0, shape[-1], dtype="float32")
+        row = np.repeat(ramp[None, :], shape[-2], axis=0)
+        cases.append(np.broadcast_to(row, shape).astype("float32").copy())
+        cases.append(np.random.default_rng(7).random(shape, dtype=np.float32))
     args.output.mkdir(parents=True, exist_ok=True)
     import subprocess
     for index, value in enumerate(cases):
