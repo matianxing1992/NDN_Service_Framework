@@ -250,6 +250,7 @@ def build(bld):
                     lib=['jpeg'],
                     defines=['NDNSF_UAV_TRACKING_TEST_SEAM'] if bld.env.WITH_TESTS else [],
                     cxxflags=uav_cxxflags,
+                    linkflags=['-Wl,-rpath,$ORIGIN'],
                     install_path='${LIBDIR}')
         bld.program(name='UavTrackingNode', target='UavTrackingNode',
                     source=['../NDNSF-UAV-APP/tracking/UavTrackingNode.cpp'],

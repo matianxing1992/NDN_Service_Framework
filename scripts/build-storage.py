@@ -363,12 +363,28 @@ def verify_install(args):
                 with program.open("rb") as stream:
                     native = stream.read(4) == b"\x7fELF"
                 if native:
+                    loader_env = env
+                    if program.name == "UavTrackingNode":
+                        # The node must find its installed SDK without a search-path override.
+                        loader_env = {key: value for key, value in env.items()
+                                      if key != "LD_LIBRARY_PATH"}
                     probe = subprocess.run(["/usr/bin/ldd", str(program)], cwd=workspace,
-                                           env=env, timeout=30, text=True, capture_output=True)
+                                           env=loader_env, timeout=30, text=True, capture_output=True)
                     if "not found" in probe.stdout or (
                             probe.returncode and "not a dynamic executable" not in probe.stderr):
                         raise ValueError(f"installed loader check failed for {program}: "
                                          f"{probe.stdout}{probe.stderr}")
+                    if program.name == "UavTrackingNode":
+                        resolved = {fields[0]: Path(fields[2]).resolve()
+                                    for line in probe.stdout.splitlines()
+                                    for fields in [line.split()]
+                                    if len(fields) >= 3 and fields[1] == "=>"}
+                        for library in ("libndnsf-uav-tracking.so",
+                                        "libndn-service-framework.so.0.1.0"):
+                            expected = (prefix / "lib" / library).resolve(strict=True)
+                            if resolved.get(library) != expected:
+                                raise ValueError(f"{program} resolved {library} to "
+                                                 f"{resolved.get(library)}, expected {expected}")
     print(f"Verified {checked} installed files against {stage}")
 
 
