@@ -25,9 +25,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--oracle", type=Path, required=True,
                         help="native spec261-ort-detection-oracle executable")
     parser.add_argument("--shape", default="1,3,640,640")
-    parser.add_argument("--extra-cases", type=int, default=4)
+    parser.add_argument("--extra-cases", type=int, default=8)
     parser.add_argument("--no-edge-cases", action="store_true",
                         help="emit only the frozen input and perturbations")
+    parser.add_argument("--min-detecting", type=int, default=9,
+                        help="generate perturbations until this many cases have a "
+                             "non-degenerate oracle (default 9)")
     return parser.parse_args()
 
 
@@ -43,7 +46,9 @@ def main() -> int:
     frozen = np.frombuffer(frozen_path.read_bytes(), dtype="<f4").reshape(shape)
     cases = [frozen.astype("float32")]
     # Perturbations stay inside [0, 1] so every case is a plausible image tensor.
-    for seed, gain, noise in [(1, 0.95, 0.02), (2, 1.05, 0.02), (3, 1.0, 0.05), (4, 0.9, 0.0)]:
+    perturbations = [(1, 0.95, 0.02), (2, 1.05, 0.02), (3, 1.0, 0.05), (4, 0.9, 0.0),
+                     (11, 0.98, 0.01), (12, 1.02, 0.01), (13, 0.90, 0.03), (14, 1.10, 0.03)]
+    for seed, gain, noise in perturbations:
         if len(cases) > args.extra_cases:
             break
         rng = np.random.default_rng(seed)
@@ -60,6 +65,7 @@ def main() -> int:
         cases.append(np.random.default_rng(7).random(shape, dtype=np.float32))
     args.output.mkdir(parents=True, exist_ok=True)
     import subprocess
+    manifest = {"schema": "spec261-detection-cases-v1", "cases": []}
     for index, value in enumerate(cases):
         case = args.output / f"case-{index:02d}"
         case.mkdir(exist_ok=True)
@@ -73,6 +79,23 @@ def main() -> int:
         (case / "oracle.json").write_text(json.dumps({"float32": [float(v) for v in values]}))
         npy.unlink()
         prediction.unlink()
+        # A synthetic input can drive the model to an all-zero output, which only
+        # exercises the padding path. Record that per case so a caller can select
+        # a detection-comparing set instead of assuming every case compares.
+        scores = values.reshape(-1, 6)[:, 4]
+        manifest["cases"].append({
+            "name": case.name,
+            "nonzero": int(np.count_nonzero(values)),
+            "maxScore": float(scores.max()) if scores.size else 0.0,
+            "comparing": bool(np.count_nonzero(values)),
+        })
+    comparing = sum(1 for item in manifest["cases"] if item["comparing"])
+    manifest["detectionComparing"] = comparing
+    manifest["degenerate"] = [item["name"] for item in manifest["cases"] if not item["comparing"]]
+    if comparing < args.min_detecting:
+        raise SystemExit(f"only {comparing} detection-comparing cases; "
+                         f"requested {args.min_detecting}")
+    (args.output / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True))
     print(f"wrote {len(cases)} cases to {args.output}")
     return 0
 
