@@ -19933,7 +19933,10 @@ BOOST_AUTO_TEST_CASE(AStepWithTwoRemoteContributionsKeepsBothAcrossItsWaits)
     BOOST_CHECK_EQUAL(worker.snapshot().dependencyWaitCompleted,
                       mode == Delivery::LATER ? expectedReceives.size() : 0U);
     BOOST_CHECK_GT(result.outputsByScope.size(), 0U);
+    BOOST_CHECK(!result.exactForwardCacheKey.empty());
     const auto snapshot = observations->snapshot();
+    BOOST_CHECK_EQUAL(snapshot.phases.at("role-step-template-prepare").calls, 1U);
+    BOOST_CHECK_EQUAL(snapshot.phases.at("role-exact-forward-cache-key").calls, 1U);
     std::set<std::string> observedReceives;
     for (const auto& transfer : snapshot.transfers) {
       if (transfer.point != NativeTransferPoint::WORKER_INPUT) continue;

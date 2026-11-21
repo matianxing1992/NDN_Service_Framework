@@ -1378,38 +1378,43 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
   //
   // A value is still needed after its last step when it carries a role output (the terminal pass
   // reads it back to return an already-published edge) or when it is a terminal slot surfaced as a
-  // result. Both are marked `kKeepToEnd`.
-  constexpr std::size_t kKeepToEnd = std::numeric_limits<std::size_t>::max();
-  std::map<std::string, std::size_t> lastUseOf;
-  for (std::size_t index = 0; index < steps.size(); ++index) {
-    for (const auto& slot : steps[index].inputSlots) {
-      if (slot.producerStepId.empty()) continue;
-      lastUseOf[slot.producerStepId + "\n" + slot.producerSlotId] = index;
-    }
-  }
-  for (const auto& edge : item.role.outputs) {
-    if (edge.producerStepId.empty()) continue;
-    lastUseOf[edge.producerStepId + "\n" + edge.producerSlotId] = kKeepToEnd;
-  }
-  {
-    std::set<std::string> consumed;
-    for (const auto& step : steps) {
-      for (const auto& slot : step.inputSlots) {
+  // result. Both are marked `KEEP_TO_END`.
+  constexpr std::size_t KEEP_TO_END = std::numeric_limits<std::size_t>::max();
+  if (!item.stepLastUse) {
+    NativeWorkScope prepareWork(item.role.workStatistics, "role-step-template-prepare",
+                                NativeWorkKind::LOCAL);
+    auto& lastUseOf = item.stepLastUse.emplace();
+    for (std::size_t index = 0; index < steps.size(); ++index) {
+      for (const auto& slot : steps[index].inputSlots) {
         if (slot.producerStepId.empty()) continue;
-        consumed.insert(slot.producerStepId + "\n" + slot.producerSlotId);
+        lastUseOf[slot.producerStepId + "\n" + slot.producerSlotId] = index;
       }
     }
-    std::set<std::string> edges;
-    for (const auto& edge : item.role.outputs)
-      edges.insert(edge.producerStepId + "\n" + edge.producerSlotId);
-    for (const auto& step : steps) {
-      for (const auto& slot : step.outputSlots) {
-        const auto key = step.stepId + "\n" + slot.slotId;
-        if (consumed.count(key) != 0 || edges.count(key) != 0) continue;
-        lastUseOf[key] = kKeepToEnd;
+    for (const auto& edge : item.role.outputs) {
+      if (edge.producerStepId.empty()) continue;
+      lastUseOf[edge.producerStepId + "\n" + edge.producerSlotId] = KEEP_TO_END;
+    }
+    {
+      std::set<std::string> consumed;
+      for (const auto& step : steps) {
+        for (const auto& slot : step.inputSlots) {
+          if (slot.producerStepId.empty()) continue;
+          consumed.insert(slot.producerStepId + "\n" + slot.producerSlotId);
+        }
+      }
+      std::set<std::string> edges;
+      for (const auto& edge : item.role.outputs)
+        edges.insert(edge.producerStepId + "\n" + edge.producerSlotId);
+      for (const auto& step : steps) {
+        for (const auto& slot : step.outputSlots) {
+          const auto key = step.stepId + "\n" + slot.slotId;
+          if (consumed.count(key) != 0 || edges.count(key) != 0) continue;
+          lastUseOf[key] = KEEP_TO_END;
+        }
       }
     }
   }
+  const auto& lastUseOf = *item.stepLastUse;
   for (auto stepIt = steps.begin() + static_cast<std::ptrdiff_t>(item.resumeStepIndex);
        stepIt != steps.end(); ++stepIt) {
     const auto& step = *stepIt;
@@ -1724,7 +1729,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         std::distance(steps.begin(), stepIt));
       for (auto it = produced.begin(); it != produced.end();) {
         const auto use = lastUseOf.find(it->first);
-        if (use != lastUseOf.end() && use->second != kKeepToEnd && use->second <= stepIndex)
+        if (use != lastUseOf.end() && use->second != KEEP_TO_END && use->second <= stepIndex)
           it = produced.erase(it);
         else
           ++it;
@@ -1903,7 +1908,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
     {{"sessionId", item.sessionId},
      {"role", item.role.role},
      {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
-  std::map<std::string, TensorBundle> inputsByScope = item.initialInputsByScope;
+  const auto& inputsByScope = item.initialInputsByScope;
 
   auto runner = item.runner;
   auto automaticBinding = item.role.automaticBinding;
@@ -2022,7 +2027,12 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
   // Automatic admission is request-owned and must run even for equal bytes.
   // Reuse the immutable model/session, not an unchecked prior execution.
   if (!ctx.automaticBinding) {
-    result.exactForwardCacheKey = exactForwardCacheKeyFor(item, runner.get(), inputsByScope);
+    if (!item.exactForwardKey) {
+      NativeWorkScope keyWork(item.role.workStatistics, "role-exact-forward-cache-key",
+                              NativeWorkKind::LOCAL);
+      item.exactForwardKey = exactForwardCacheKeyFor(item, runner.get(), inputsByScope);
+    }
+    result.exactForwardCacheKey = *item.exactForwardKey;
   }
   if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
     NativeWorkScope traceWork(item.role.workStatistics, "role-input-trace",

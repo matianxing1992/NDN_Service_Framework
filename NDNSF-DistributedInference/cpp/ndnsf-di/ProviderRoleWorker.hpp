@@ -332,6 +332,9 @@ private:
     // that blocks in place holds the thread, and two units on one worker then hold each other:
     // the one that got the thread waits for a contribution only the other can publish.
     std::map<std::string, TensorBundle> producedSteps;
+    // Both are derived from the same sealed role, initial inputs and stable runner.
+    std::optional<std::map<std::string, std::size_t>> stepLastUse;
+    std::optional<std::string> exactForwardKey;
     // One record per sealed step's backend call, bounded by the template. Collected here because
     // the unit's runner snapshot only exposes the last call.
     std::vector<StepBackendTiming> stepBackendTimings;
