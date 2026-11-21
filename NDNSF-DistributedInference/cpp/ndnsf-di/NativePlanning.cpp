@@ -653,9 +653,7 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
           identity->second.tensorShardV1.empty())
         throw std::invalid_argument("source entry program requires a two-rank shard identity");
       program.validateRank(executionPlan, role, identity->second.rank);
-      std::vector<std::string> covered;
-      for (const auto& entry : program.entries)
-        covered.insert(covered.end(), entry.sourceNodes.begin(), entry.sourceNodes.end());
+      const auto covered = program.sourceNodeCover();
       const auto region = roleNodeIdsByRole.find(role);
       if (region == roleNodeIdsByRole.end() || covered != region->second)
         throw std::invalid_argument("source entry program does not cover the ordered source region");
@@ -962,19 +960,28 @@ nativePlanRequiredCapabilities(const NativeSplitCandidate& candidate)
   }
   if (!candidate.sourceTransformByRole.empty())
     required.emplace_back(NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1);
-  if (std::any_of(candidate.sourceTransformByRole.begin(), candidate.sourceTransformByRole.end(),
-                  [] (const auto& item) {
-                    const auto transform = nativeParseJson(item.second);
-                    return transform.value("kind", std::string{}) == "ffn-pair-partial" ||
-                      transform.value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1;
-                  }))
-    required.emplace_back(NATIVE_FFN_PAIR_CAPABILITY_V1);
-  if (std::any_of(candidate.sourceTransformByRole.begin(), candidate.sourceTransformByRole.end(),
-                  [] (const auto& item) {
-                    return nativeParseJson(item.second).value("schema", std::string{}) ==
-                           NATIVE_SOURCE_ENTRY_PROGRAM_V1;
-                  }))
-    required.emplace_back(NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1);
+  bool ffnPair = false;
+  bool sourceProgram = false;
+  bool attentionEntry = false;
+  for (const auto& [role, wire] : candidate.sourceTransformByRole) {
+    const auto transform = nativeParseJson(wire);
+    if (transform.value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1) {
+      sourceProgram = true;
+      for (const auto& entry : transform.at("entries")) {
+        const auto kind = entry.at("transform").at("kind").get<std::string>();
+        ffnPair |= kind == "ffn-pair-partial";
+        attentionEntry |= kind == "attention-qkv" || kind == "attention-heads" ||
+                          kind == "attention-rms-stat" || kind == "attention-rms-normalize" ||
+                          kind == "attention-source-component";
+      }
+    }
+    else {
+      ffnPair |= transform.value("kind", std::string{}) == "ffn-pair-partial";
+    }
+  }
+  if (ffnPair) required.emplace_back(NATIVE_FFN_PAIR_CAPABILITY_V1);
+  if (sourceProgram) required.emplace_back(NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1);
+  if (attentionEntry) required.emplace_back(NATIVE_SOURCE_ATTENTION_ENTRY_CAPABILITY_V1);
   return required;
 }
 
@@ -1006,14 +1013,22 @@ nativeDistinctProviderPairs(const NativeSplitCandidate& candidate)
     if (isProgram(leftWire)) {
       auto left = NativeOnnxSourceEntryProgramV1::parse(leftWire);
       const auto right = NativeOnnxSourceEntryProgramV1::parse(rightWire);
-      if (left.entries.size() != right.entries.size())
+      const bool hasRankZeroEpilogue = left.entries.size() == right.entries.size() + 1 &&
+        !right.entries.empty() &&
+        right.entries.back().transform.kind == "ffn-pair-partial" &&
+        left.entries.back().transform.kind == "attention-source-component" &&
+        std::any_of(right.entries.begin(), right.entries.end(), [] (const auto& entry) {
+          return entry.transform.kind == "attention-heads";
+        });
+      if (left.entries.size() != right.entries.size() && !hasRankZeroEpilogue)
         throw std::invalid_argument("source peer programs carry different numbers of entries");
-      for (std::size_t index = 0; index < left.entries.size(); ++index) {
+      for (std::size_t index = 0; index < right.entries.size(); ++index) {
         auto& a = left.entries[index];
         const auto& b = right.entries[index];
         a.transform.begin = b.transform.begin;
         a.transform.end = b.transform.end;
-        if (a.sourceNodes != b.sourceNodes ||
+        if (a.sourceNodes != b.sourceNodes || a.inputPorts != b.inputPorts ||
+            a.outputPorts != b.outputPorts ||
             a.transform.canonicalJson() != b.transform.canonicalJson())
           throw std::invalid_argument("source peer programs carry different transformation facts");
       }

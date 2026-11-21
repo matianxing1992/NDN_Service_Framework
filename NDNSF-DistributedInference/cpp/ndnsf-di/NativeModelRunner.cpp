@@ -410,10 +410,12 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
         entry.relativeGraphPath =
           nativeSourceEntryGraphPath(root, index).lexically_relative(root).string();
         entry.graphDigest = file.graphDigest;
-        entry.inputNames = {recipe.transform.input};
-        entry.outputNames = {recipe.transform.output};
-        entry.inputSlotByGraphName.emplace(recipe.transform.input, recipe.transform.input);
-        entry.outputSlotByGraphName.emplace(recipe.transform.output, recipe.transform.output);
+        entry.inputNames = recipe.transform.isAttention()
+          ? recipe.inputPorts : std::vector<std::string>{recipe.transform.input};
+        entry.outputNames = recipe.transform.isAttention()
+          ? recipe.outputPorts : std::vector<std::string>{recipe.transform.output};
+        for (const auto& name : entry.inputNames) entry.inputSlotByGraphName.emplace(name, name);
+        for (const auto& name : entry.outputNames) entry.outputSlotByGraphName.emplace(name, name);
         entries.push_back(std::move(entry));
       }
     }
@@ -442,6 +444,13 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
         for (const auto* key : {"sourceEntryFiles", "sourceEntryProgram", "assembledCachePath",
                                 "protectedResidentIdentity"})
           child.metadata.erase(key);
+        // ORT derives a profile filename from the prefix and timestamp.
+        // Several children can start in the same millisecond.
+        for (const auto* key : {"providerProfilePrefix", "provider_profile_prefix"}) {
+          const auto profile = child.metadata.find(key);
+          if (profile != child.metadata.end() && !profile->second.empty())
+            profile->second += "-entry-" + nativePlanningDigest(entry.entryId).substr(7);
+        }
         child.metadata["assembledModelDigest"] = entry.graphDigest;
         child.protectedResidentUse.reset();
         child.residencyIdentity.reset();

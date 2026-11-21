@@ -1595,11 +1595,12 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         contributions.push_back(
           decodeTensorBundleViews(input->second, item.role.workStatistics));
       }
-      // A SOURCE component preserves its graph's SSA port names. Distinct single-value
-      // producer ports are explicit operands, not bundles with interchangeable members.
+      // A source CALL preserves its graph's SSA names. A reduced tensor can
+      // have a new output port even when both original partials share a name.
       // Normalize only owned view names after checking that exact sealed contract; never
       // rewrite a published partial or relax the codec's multi-member/name validation.
-      const bool distinctPorts = item.role.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 &&
+      const bool portPlan = item.role.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2;
+      const bool distinctPorts = portPlan &&
         std::any_of(step.inputSlots.begin(), step.inputSlots.end(), [&] (const auto& slot) {
           return slot.producerSlotId != step.inputSlots.front().producerSlotId;
         });
@@ -1610,7 +1611,10 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
             std::equal(values.begin(), values.end(), first.begin(),
               [] (const auto& left, const auto& right) { return left.name == right.name; });
         });
-      if (distinctPorts && !sharedMembers) {
+      const bool renamedPort = portPlan && contributions.front().size() == 1 &&
+        contributions.front().front().name == step.inputSlots.front().producerSlotId &&
+        contributions.front().front().name != outputSlot;
+      if (renamedPort || (distinctPorts && !sharedMembers)) {
         const auto& output = step.outputSlots.front();
         for (std::size_t index = 0; index < contributions.size(); ++index) {
           const auto& input = step.inputSlots[index];

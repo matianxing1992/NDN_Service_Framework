@@ -24,7 +24,7 @@ parser.add_argument('--build', type=Path, default=Path(os.environ.get("SPEC185_B
 parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--cache', type=Path, default=None)
-parser.add_argument('--variant', choices=['26n','11n','ffn'], default='26n')
+parser.add_argument('--variant', choices=['26n','11n','ffn','attention-ffn'], default='26n')
 parser.add_argument('--boundary', default='onnx-node-3')
 parser.add_argument('--case', action='append', default=[],
                     help='case directory name under the model assets (repeatable)')
@@ -66,12 +66,13 @@ YOLO = {
    'max_nodes': 1024},
 }
 variant = args.variant
-ffn = variant == 'ffn'
+blocks = variant == 'attention-ffn'
+ffn = variant == 'ffn' or blocks
 if args.ffn_cancel and not ffn:
  parser.error('--ffn-cancel requires the FFN fixture')
 if ffn and (args.cache is None or args.case or args.revoke):
  parser.error('the FFN variant needs --cache with the generated fixture')
-subject = ({'name': 'Spec263Ffn', 'output': 'y', 'max_nodes': 32, 'initializer': ''}
+subject = ({'name': 'Spec263Blocks' if blocks else 'Spec263Ffn', 'output': 'y', 'max_nodes': 256 if blocks else 32, 'initializer': ''}
            if ffn else YOLO[variant])
 cache = (args.cache or subject['dir']).resolve()
 model_path = cache / 'model.onnx'
@@ -80,7 +81,7 @@ if not model_path.is_file() and not ffn:
 src = model_path.read_bytes()
 weights_path = cache / 'model.weights' if (cache / 'model.weights').exists() else cache / f'yolo{variant}.weights'
 weights = None if ffn else weights_path.read_bytes()
-input_raw = (cache / 'input.f32').read_bytes()
+input_raw = (cache / ('input.bundle' if blocks else 'input.f32')).read_bytes()
 oracle_values = json.loads((cache / 'oracle.json').read_text())
 src_digest = 'sha256:' + hashlib.sha256(src).hexdigest()
 ad=adapter_descriptor('spec261','1',dg('fixture-adapter-state'),'fixture-abi-v1',('onnx',),('task',),('onnxruntime',),('float32',),dg('fixture-input-schema'),dg('fixture-options-schema'),dg('fixture-result-schema'),dg('fixture-graph-schema'),dg('fixture-split-schema'),dg('fixture-state-schema'),True,True,True)
@@ -104,7 +105,9 @@ splitter = {'kind': 'ONNX_SOURCE', 'selection_mode': 'hybrid',
             'roles': ['Prefix', 'Rank0', 'Rank1', 'Suffix'],
             'input_ingress_role': 'Prefix', 'result_egress_role': 'Suffix',
             'postprocessing': {}}
-if ffn:
+if blocks:
+ splitter.update(json.loads((cache / 'source-anchors.json').read_text()))
+elif ffn:
  splitter['ffn_windows'] = [
   {'up_node': 'onnx-node-1', 'down_node': 'onnx-node-4'},
   {'up_node': 'onnx-node-5', 'down_node': 'onnx-node-7'},
@@ -233,11 +236,13 @@ input_name = b'x' if ffn else b'images'
 hdr = b'NDITB001' + struct.pack('<II', 1, len(input_name)) + input_name
 hdr += struct.pack('<II', 1, len(dims)) + struct.pack('<' + 'q' * len(dims), *dims)
 hdr += struct.pack('<Q', len(input_raw))
-(run_root/'requester/input.bin').write_bytes(hdr+input_raw)
+(run_root/'requester/input.bin').write_bytes(input_raw if blocks else hdr+input_raw)
 if args.case:
  rc['request']['timeout_ms']=180000
  rc['request']['no_progress_ms']=60000
-if ffn:
+if blocks:
+ rc['oracle'] = dict(oracle_values, tolerance=oracle_values['atol'])
+elif ffn:
  rc['oracle'] = oracle_values
 else:
  rc['oracle']={'tensor':subject['output'],'float32':oracle_values,'tolerance':1e-4,
@@ -372,10 +377,11 @@ try:
     session = match.split(injected, 1)[1].split()[0]
     deadline = time.monotonic() + 1
     marker = f'DEPENDENCY_FETCH status=begin requestId={session} '
+    withheld = '/8=step/8=Rank1%2FRUN%2F2/' if blocks else '/8=step/8=Rank1%2FRUN%2F0/'
     while time.monotonic() < deadline and process.poll() is None:
      lines = (run_root / 'provider.log').read_text(errors='replace').splitlines()
      if any(marker in line and ' role=Rank0 ' in line and
-            '/8=step/8=Rank1%2FRUN%2F0/' in line for line in lines):
+            withheld in line for line in lines):
       break
      time.sleep(0.025)
     else:

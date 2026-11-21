@@ -143,16 +143,18 @@ NativeAssemblyTensorContractV3 tensor(const NativeJson& value)
   return result;
 }
 
+} // namespace
+
 NativeSourceRegionBoundary
-sourceBoundary(const NativeOnnxGraphInspection& source, const NativeJson& metadata,
+inspectNativeSourceBoundary(const NativeGraphSnapshot& graph, const NativeJson& metadata,
                const std::set<std::uint64_t>& owned,
                const std::vector<std::string>& additionalOutputs,
-               const NativeRequestControl& control)
+               const std::function<void()>& requireActive)
 {
   NativeSourceRegionBoundary result;
   const auto initializers = metadata.at("initializers").get<std::vector<std::string>>();
   for (const auto& item : metadata.at("tensorConsumers").items()) {
-    control.requireActive();
+    requireActive();
     if (std::find(initializers.begin(), initializers.end(), item.key()) != initializers.end())
       continue;
     const auto consumers = item.value().get<std::vector<std::uint64_t>>();
@@ -168,8 +170,8 @@ sourceBoundary(const NativeOnnxGraphInspection& source, const NativeJson& metada
                     [&] (auto i) { return !owned.count(i); }))
       result.outputs.emplace(item.key(), tensor(metadata.at("tensors").at(item.key())));
   }
-  for (const auto& item : source.graph.modelOutputs) {
-    control.requireActive();
+  for (const auto& item : graph.modelOutputs) {
+    requireActive();
     const auto producer = metadata.at("tensorProducers").find(item.name);
     if (producer != metadata.at("tensorProducers").end() &&
         owned.count(producer->get<std::uint64_t>()))
@@ -177,7 +179,7 @@ sourceBoundary(const NativeOnnxGraphInspection& source, const NativeJson& metada
         NativeAssemblyTensorContractV3{item.name, item.dtype, item.shape});
   }
   for (const auto& name : additionalOutputs) {
-    control.requireActive();
+    requireActive();
     const auto producer = metadata.at("tensorProducers").find(name);
     if (producer == metadata.at("tensorProducers").end() ||
         !owned.count(producer->get<std::uint64_t>()))
@@ -186,9 +188,8 @@ sourceBoundary(const NativeOnnxGraphInspection& source, const NativeJson& metada
   }
   if (result.inputs.empty() || result.outputs.empty())
     throw std::invalid_argument("native role source boundary requires input and output tensors");
-  control.requireActive();
+  requireActive();
   return result;
-}
 }
 
 NativeCanonicalRolePreparer::NativeCanonicalRolePreparer(NativeInspectedModel model,
@@ -304,7 +305,8 @@ NativeCanonicalRolePreparer::sourceRegion(const std::vector<std::string>& nodeId
   const auto metadata = nativeParseJson(m_sourceGraph.graphMetadataJson);
   if (additionalOutputs.size() > metadata.at("tensors").size())
     throw std::invalid_argument("native source region exceeds its output tensor bound");
-  auto result = sourceBoundary(m_sourceGraph, metadata, owned, additionalOutputs, control);
+  auto result = inspectNativeSourceBoundary(m_sourceGraph.graph, metadata, owned, additionalOutputs,
+                                                   [&] { control.requireActive(); });
   const auto ports = [&control] (const auto& contracts) {
     auto values = NativeJson::object();
     for (const auto& [name, contract] : contracts) {
@@ -495,7 +497,8 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     const auto stateOutputs = candidate.roleStateOutputsByRole.find(name);
     if (stateOutputs != candidate.roleStateOutputsByRole.end())
       for (const auto& item : stateOutputs->second) additionalOutputs.push_back(item.name);
-    const auto boundary = sourceBoundary(m_sourceGraph, metadata, owned, additionalOutputs, control);
+    const auto boundary = inspectNativeSourceBoundary(m_sourceGraph.graph, metadata, owned, additionalOutputs,
+                                                   [&] { control.requireActive(); });
     const auto& inputs = boundary.inputs;
     const auto& outputs = boundary.outputs;
     if (sourceProgram) {
@@ -527,9 +530,11 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
             !matches(outputs, calls.front()->outputSlots))
           throw std::invalid_argument("source program outer CALL differs from its canonical frontier");
         for (const auto& slot : calls.front()->inputSlots) {
-          if ((name == candidate.inputIngressRole && slot.source != "EPOCH_INPUT") ||
-              (name != candidate.inputIngressRole &&
-               (slot.source != "REMOTE_STEP" || slot.producerSlotId != slot.slotId)))
+          const auto isModelInput = metadata.at("tensorProducers").count(slot.slotId) == 0;
+          if ((isModelInput && slot.source != "EPOCH_INPUT") ||
+              (!isModelInput &&
+               (name == candidate.inputIngressRole || slot.source != "REMOTE_STEP" ||
+                slot.producerSlotId != slot.slotId)))
             throw std::invalid_argument("source program outer CALL changes source tensor lineage");
         }
       }
@@ -579,26 +584,32 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
               throw std::invalid_argument("source entry does not have contiguous canonical nodes");
             entryNodes.insert(indices.front());
           }
-          const auto frontier = sourceBoundary(m_sourceGraph, metadata, entryNodes, {}, control);
+          const auto frontier = inspectNativeSourceBoundary(m_sourceGraph.graph, metadata, entryNodes, {},
+                                                            [&] { control.requireActive(); });
           const auto call = std::find_if(candidate.executionPlan.steps.begin(),
             candidate.executionPlan.steps.end(), [&] (const auto& step) {
               return step.unitId == name && step.artifactEntry == entry.entryId;
             });
-          const auto matchesPort = [] (const auto& ports, const auto& slot) {
-            const auto port = ports.find(slot.slotId);
-            return ports.size() == 1 && port != ports.end() &&
-                   port->second.dtype == slot.dtype && port->second.shape == slot.shape;
+          const auto matchesPorts = [] (const auto& ports, const auto& slots) {
+            return ports.size() == slots.size() &&
+              std::all_of(slots.begin(), slots.end(), [&] (const auto& slot) {
+                const auto port = ports.find(slot.slotId);
+                return port != ports.end() && port->second.dtype == slot.dtype &&
+                       port->second.shape == slot.shape;
+              });
           };
           if (call == candidate.executionPlan.steps.end() ||
-              !matchesPort(frontier.inputs, call->inputSlots.front()) ||
-              !matchesPort(frontier.outputs, call->outputSlots.front()))
+              !matchesPorts(frontier.inputs,
+                            entry.transform.originalPorts(call->inputSlots, false)) ||
+              !matchesPorts(frontier.outputs,
+                            entry.transform.originalPorts(call->outputSlots, true)))
             throw std::invalid_argument("source entry CALL differs from its canonical frontier");
         }
       }
       else {
         sourceTransform = NativeOnnxSourceTransformV1::parse(transform->second);
         if (sourceTransform->kind == "ffn-pair-partial")
-          sourceEntries.push_back({{}, {}, *sourceTransform});
+          sourceEntries.push_back({{}, {}, *sourceTransform, {}, {}});
       }
     }
     if (!sourceEntries.empty() ||
@@ -606,22 +617,82 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
       if (!requirement.weightBytes || *requirement.weightBytes == 0)
         throw std::invalid_argument("transformed native role has no resident weight bound");
       std::uint64_t residentBytes = 0;
+      const auto chargeBytes = [&] (std::uint64_t bytes) {
+        if (bytes > *requirement.weightBytes - residentBytes)
+          throw std::invalid_argument("source entry weight budget is below its derived bytes");
+        residentBytes += bytes;
+      };
+      const auto charge = [&] (const std::string& initializer, std::uint64_t extent,
+                                std::uint64_t width) {
+        const auto& size = metadata.at("tensors").at(initializer).at("sizeBytes");
+        if (!size.is_number_unsigned())
+          throw std::invalid_argument("source entry initializer memory is unknown");
+        const auto bytes = size.get<std::uint64_t>();
+        const auto shardBytes = extent == width ? bytes : nativeFfnSliceBytes(bytes, extent, width);
+        chargeBytes(shardBytes);
+      };
       for (const auto& entry : sourceEntries) {
         const auto& slice = entry.transform;
         const auto width = slice.end - slice.begin;
-        for (const auto& initializer : {slice.weight, slice.downWeight, slice.bias}) {
-          if (initializer.empty()) continue;
-          const auto& size = metadata.at("tensors").at(initializer).at("sizeBytes");
-          if (!size.is_number_unsigned())
-            throw std::invalid_argument("paired FFN initializer memory is unknown");
-          const auto bytes = size.get<std::uint64_t>();
-          if (bytes == 0 || bytes % slice.extent != 0)
-            throw std::invalid_argument("paired FFN initializer memory differs from its axis");
-          const auto shardBytes = (bytes / slice.extent) * width;
-          if (shardBytes > *requirement.weightBytes - residentBytes)
-            throw std::invalid_argument("paired FFN weight budget is below its sliced bytes");
-          residentBytes += shardBytes;
+        const auto& consumers = m_sourceGraph.initializerConsumers;
+        if (slice.isAttention()) {
+          std::set<std::uint64_t> entryNodes;
+          for (const auto& node : entry.sourceNodes) entryNodes.insert(m_mapping.at(node).front());
+          const auto outputProjection = *entryNodes.rbegin();
+          if (slice.isRmsNorm()) {
+            const auto first = *entryNodes.begin();
+            for (const auto& initializer : initializers) {
+              const auto& users = consumers.at(initializer);
+              const auto usedBy = [&users] (std::uint64_t index) {
+                return std::find(users.begin(), users.end(), index) != users.end();
+              };
+              if (slice.kind == "attention-rms-stat") {
+                if (usedBy(first + 1)) charge(initializer, slice.extent, slice.extent);
+              }
+              else {
+                if (usedBy(first + 2)) charge(initializer, slice.extent, slice.extent);
+                if (usedBy(first + 5)) charge(initializer, slice.extent, width);
+              }
+            }
+            if (slice.kind == "attention-rms-normalize") chargeBytes(sizeof(float));
+            continue;
+          }
+          for (const auto& initializer : initializers) {
+            const auto& users = consumers.at(initializer);
+            if (std::none_of(users.begin(), users.end(),
+                [&] (auto node) { return entryNodes.count(node) != 0; }))
+              continue;
+            const bool sliced = slice.kind == "attention-qkv" ||
+              (slice.kind == "attention-heads" &&
+               users == std::vector<std::uint64_t>{outputProjection});
+            charge(initializer, slice.extent, sliced ? width : slice.extent);
+          }
+          continue;
         }
+        const auto projectionOrdinals = [&] (const std::string& node) {
+          const auto& indices = m_mapping.at(node);
+          if (indices.size() != 1)
+            throw std::invalid_argument("paired FFN projection must own one source node");
+          return indices;
+        };
+        std::set<std::string> material;
+        const auto addProjection = [&] (const std::string& node, const std::string& weight) {
+          const auto indices = projectionOrdinals(node);
+          const auto& info = metadata.at("nodes").at(indices.front());
+          if (consumers.at(weight) != indices || !material.insert(weight).second)
+            throw std::invalid_argument("paired FFN initializer does not belong to its projection");
+          if (info.at("opType") != "MatMulNBits") return;
+          const auto scale = std::find_if(initializers.begin(), initializers.end(),
+            [&] (const auto& initializer) {
+              return initializer != weight && consumers.at(initializer) == indices;
+            });
+          if (scale == initializers.end() || !material.insert(*scale).second)
+            throw std::invalid_argument("packed FFN projection has no scale initializer");
+        };
+        addProjection(slice.node, slice.weight);
+        addProjection(slice.downNode, slice.downWeight);
+        if (!slice.bias.empty()) material.insert(slice.bias);
+        for (const auto& initializer : material) charge(initializer, slice.extent, width);
       }
     }
     else if (degree == 1 && !(name == candidate.resultEgressRole &&

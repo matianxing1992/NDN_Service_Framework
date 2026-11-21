@@ -43,7 +43,8 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def check_ffn_handoffs(run_root: Path, requester_log: str, warm: bool) -> dict:
+def check_ffn_handoffs(run_root: Path, requester_log: str, warm: bool,
+                       block_edges=None) -> dict:
     selection = "NDNSF_DI_NATIVE_SELECTION_COMMITTED requestId="
     sessions = [line.split(selection, 1)[1].split()[0]
                 for line in requester_log.splitlines() if selection in line]
@@ -61,6 +62,8 @@ def check_ffn_handoffs(run_root: Path, requester_log: str, warm: bool) -> dict:
         ("Rank0", "Suffix", "Rank0/SUM/1", "last", 64),
         ("Prefix", "Suffix", "Prefix/RUN", "hidden", 66),
     ]
+    if block_edges is not None:
+        edges = block_edges
     rows = []
     fetch_events = {"Rank0": [], "Rank1": []}
     middle_cache = {}
@@ -103,10 +106,24 @@ def check_ffn_handoffs(run_root: Path, requester_log: str, warm: bool) -> dict:
         pair = [row for node, row in rows if row.get("producer") == producer and
                 row.get("consumer") == consumer and
                 f"/8=step/8={step.replace('/', '%2F')}/" in row.get("planned_name", "") and
-                f"/8=port/8={port}/" in row["planned_name"] and
+                f"/8=port/8={port.replace('/', '%2F')}/" in row["planned_name"] and
                 row.get("encoded_payload_bytes") == str(size) and
                 ((node == owners[producer] and row["direction"] == "publish-exact-ndn") or
                  (node == owners[consumer] and row["direction"] == "fetch-exact-ndn"))]
+        if block_edges is not None and (producer, consumer) in (
+                ("Prefix", "Rank0"), ("Prefix", "Rank1")):
+            # The same latents can feed the first LayerNorm and its residual.
+            names = {row["planned_name"] for row in pair}
+            if not names or any({row["direction"] for row in pair
+                                  if row["planned_name"] == name} !=
+                                 {"publish-exact-ndn", "fetch-exact-ndn"} or
+                                not name.startswith(f"/8=example/8=hello/8={owners[producer]}/")
+                                for name in names):
+                raise RuntimeError(f"missing signed prefix handoff to {consumer}")
+            for name in sorted(names):
+                verified.append({"producer": producer, "consumer": consumer, "step": step,
+                                 "port": port, "bytes": size, "name": name})
+            continue
         if ({row["direction"] for row in pair} != {"publish-exact-ndn", "fetch-exact-ndn"} or
                 len({row["planned_name"] for row in pair}) != 1 or
                 not pair[0]["planned_name"].startswith(
@@ -120,16 +137,51 @@ def check_ffn_handoffs(run_root: Path, requester_log: str, warm: bool) -> dict:
     for role, actual in fetch_events.items():
         expected = [(event, edge["name"]) for edge in verified if edge["consumer"] == role
                     for event in ("begin", "validated")]
-        if actual != expected:
+        if block_edges is not None:
+            # A bypass can be consumed by multiple distinct CALLs. Across all
+            # steps the worker still admits one remote operand at a time.
+            started = [name for operation, name in actual if operation == "begin"]
+            paired = [(event, name) for name in started for event in ("begin", "validated")]
+            if actual != paired or sorted(actual) != sorted(expected):
+                raise RuntimeError(f"{role} has an unmatched or out-of-order remote read")
+        elif actual != expected:
             raise RuntimeError(f"{role} did not fetch only the active step's remote operand")
+    count = 128 if block_edges is not None else 3
     if (terminals != [("provider2", "/example/hello/provider2", "Suffix")] or
-            "NATIVE_NUMERICAL_ORACLE_PASS tensor=y values=3" not in requester_log.splitlines()):
+            f"NATIVE_NUMERICAL_ORACLE_PASS tensor=y values={count}" not in requester_log.splitlines()):
         raise RuntimeError("hybrid run did not return the verified y output from Suffix")
     return {"request": session, "handoffs": verified, "middleCache": middle_cache,
             "middleFetchOrder": fetch_events, "terminalRole": "Suffix", "outputTensor": "y"}
 
 
-def check_ffn_cancellation(run_root: Path) -> dict:
+def check_block_handoffs(run_root: Path, requester_log: str, warm: bool) -> dict:
+    def tensor_bytes(name, elements):
+        return 56 + len(name) + 4 * elements
+
+    edges = [("Prefix", rank, "Prefix/RUN", "prefix", tensor_bytes("prefix", 128))
+             for rank in ("Rank0", "Rank1")]
+    for block in range(2):
+        base = 16 * block
+        for branch, offset in (("self", 0), ("cross", 7)):
+            name = f"block-{block}/{branch}"
+            phases = ((2, name + "/norm-q/mean", 2),
+                      (4, name + "/norm-k/mean", 2 if branch == "self" else 3),
+                      (6, name + "/o/projection", 128))
+            for phase, port, elements in phases:
+                for source, target in (("Rank0", "Rank1"), ("Rank1", "Rank0")):
+                    edges.append((source, target, f"{source}/RUN/{base + offset + phase}",
+                                  port, tensor_bytes(port, elements)))
+        port = f"block-{block}/down/projection"
+        edges.append(("Rank1", "Rank0", f"Rank1/RUN/{base + 15}",
+                      port, tensor_bytes(port, 128)))
+        if block == 0:
+            edges.append(("Rank0", "Rank1", "Rank0/RUN/15", port, tensor_bytes(port, 128)))
+    port = "block-1/residual"
+    edges.append(("Rank0", "Suffix", "Rank0/RUN/32", port, tensor_bytes(port, 128)))
+    return check_ffn_handoffs(run_root, requester_log, warm, edges)
+
+
+def check_ffn_cancellation(run_root: Path, blocks: bool) -> dict:
     session = (run_root / "cancelled-request.txt").read_text().strip()
     requester = (run_root / "requester-hybrid-cancel.log").read_text(errors="replace")
     marker = f"NDNSF_DI_NATIVE_CANCELLATION_RECEIPT requestId={session} "
@@ -146,17 +198,21 @@ def check_ffn_cancellation(run_root: Path) -> dict:
         raise RuntimeError(f"incomplete cancellation or drain receipt: {counts}")
     left = (run_root / "provider.log").read_text(errors="replace").splitlines()
     right = (run_root / "provider2-fault.log").read_text(errors="replace").splitlines()
+    first, subsequent = (2, 4) if blocks else (0, 1)
+    withheld = f"/8=step/8=Rank1%2FRUN%2F{first}/"
+    next_partial = f"/8=step/8=Rank1%2FRUN%2F{subsequent}/"
+    downstream = "/8=step/8=Rank0%2FRUN%2F32/" if blocks else "/8=step/8=Rank0%2FSUM%2F1/"
     if not any(session in line and "status=begin" in line and " role=Rank0 " in line and
-               "/8=step/8=Rank1%2FRUN%2F0/" in line for line in left):
+               withheld in line for line in left):
         raise RuntimeError("Rank0 did not wait on the withheld Rank1 partial")
     for line in left + right:
         if session not in line:
             continue
         if ("stage=DEPENDENCY_FETCH status=begin " in line and " role=Rank0 " in line and
-                "/8=step/8=Rank1%2FRUN%2F1/" in line):
+                next_partial in line):
             raise RuntimeError("Rank0 started the next window with its first operand missing")
         if ("direction=publish-exact-ndn" in line and
-                any(step in line for step in ("Rank1%2FRUN%2F0", "Rank0%2FSUM%2F1"))):
+                any(step in line for step in (withheld, downstream))):
             raise RuntimeError("cancelled rank published the withheld or dependent tensor")
         if "stage=EXECUTION_COMPLETED" in line and " role=Suffix " in line:
             raise RuntimeError("suffix completed with a missing rank operand")
@@ -168,7 +224,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scratch-root", type=Path, required=True)
     parser.add_argument("--prefix", type=Path, default=Path("/usr/local"))
-    parser.add_argument("--variant", choices=["26n", "11n", "ffn"], default="26n")
+    parser.add_argument("--variant", choices=["26n", "11n", "ffn", "attention-ffn"], default="26n")
     parser.add_argument("--ffn-fixture", type=Path, help="output of prepare-ffn.py")
     parser.add_argument("--ffn-cancel", action="store_true")
     parser.add_argument("--topology", type=Path, default=TOPOLOGY,
@@ -178,8 +234,9 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--nfd-log-level", default="NONE", choices=("NONE", "WARN", "DEBUG"))
     args = parser.parse_args()
-    if (args.variant == "ffn") != (args.ffn_fixture is not None):
-        parser.error("--variant ffn and --ffn-fixture must be supplied together")
+    blocks = args.variant == "attention-ffn"
+    if (args.variant in ("ffn", "attention-ffn")) != (args.ffn_fixture is not None):
+        parser.error("the selected variant and --ffn-fixture disagree")
     if args.ffn_fixture and args.case:
         parser.error("--case selects YOLO samples")
     if args.ffn_cancel and not args.ffn_fixture:
@@ -220,8 +277,9 @@ def main() -> int:
         "forcedCleanup": False,
     }
     if args.ffn_fixture:
-        result["fixture"] = {name: digest(args.ffn_fixture / name)
-                             for name in ("model.onnx", "input.f32", "oracle.json")}
+        files = ("model.onnx", "oracle.json") + (
+            ("input.bundle", "source-anchors.json") if blocks else ("input.f32",))
+        result["fixture"] = {name: digest(args.ffn_fixture / name) for name in files}
 
     def persist() -> None:
         receipt.write_text(json.dumps(result, indent=1, sort_keys=True), encoding="utf-8")
@@ -335,7 +393,10 @@ def main() -> int:
 
         environment = os.environ.copy()
         environment["NDNSF_TEST_RUNTIME_PREFIX"] = str(prefix)
-        environment.setdefault("NDN_LOG", "ndnsf.di.NativeRequester=WARN")
+        driver_log = "ndnsf.di.NativeRequester=WARN"
+        if args.ffn_fixture:
+            driver_log += ":ndnsf.di.Spec220PreparationTrace=DEBUG"
+        environment.setdefault("NDN_LOG", driver_log)
         for role, node in ROLE_NODE.items():
             environment["SPEC261_TRANSPORT_" + role] = transports[node]
             environment["SPEC261_NETNS_PID_" + role] = str(pids[node])
@@ -383,7 +444,7 @@ def main() -> int:
                                                for actor in result["actorCleanup"])
             if args.ffn_cancel and any(trial["phase"] == "hybrid-cancel"
                                        for trial in result.get("requesterTrials", [])):
-                result["cancellation"] = check_ffn_cancellation(run_root)
+                result["cancellation"] = check_ffn_cancellation(run_root, blocks)
             if passed:
                 actor_exits = {actor["pid"]: actor["exit"] for actor in result.get("actorCleanup", [])}
                 actors = ["controller", "authority", "provider", "provider2"]
@@ -395,13 +456,14 @@ def main() -> int:
                     expected_exits[int((run_root / "requester-hybrid-cancel.pid").read_text())] = 1
                 if actor_exits != expected_exits:
                     raise RuntimeError(f"unexpected FFN actor exit status: {actor_exits}")
-                result["hybridHandoffs"] = [check_ffn_handoffs(run_root, log, warm)
+                check_handoffs = check_block_handoffs if blocks else check_ffn_handoffs
+                result["hybridHandoffs"] = [check_handoffs(run_root, log, warm)
                                             for log, warm in zip(texts[2:], (False, True))]
                 if len({trial["request"] for trial in result["hybridHandoffs"]}) != 2:
                     raise RuntimeError("cold and warm trials reused a request identity")
                 if args.ffn_cancel:
                     cancelled = result["cancellation"]
-                    recovery = check_ffn_handoffs(run_root, texts[-1], warm=True)
+                    recovery = check_handoffs(run_root, texts[-1], warm=True)
                     earlier = {trial["request"] for trial in result["hybridHandoffs"]}
                     if recovery["request"] in earlier | {cancelled["request"]}:
                         raise RuntimeError("recovery reused a request identity")

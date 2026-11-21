@@ -4343,13 +4343,17 @@ void validateNativeAssembly(const NativeSelectionRoleV3& role)
       if (role.adapterId == "qwen" || role.tensorParallelDegree != 2 ||
           role.tensorParallelRank >= 2 || role.tensorShardV1.empty())
         throw std::invalid_argument("role paired FFN geometry is incomplete");
-      // The stage-level axes describe the first entry. Each subsequent range
-      // is checked against its own extent and the same rank by validateRank.
+      // Stage axes describe the first sharded entry. Replicated source
+      // components can precede it, for example the block's input LayerNorm.
       const auto recipe = [&] {
         if (!entryProgram) return NativeOnnxSourceTransformV1::parse(role.sourceTransformV1);
         const auto program = NativeOnnxSourceEntryProgramV1::parse(role.sourceTransformV1);
         (void)program.bindSourceOrdinals(role.nodeIndices);
-        return program.entries.front().transform;
+        const auto firstShard = std::find_if(program.entries.begin(), program.entries.end(),
+          [] (const auto& entry) { return entry.transform.extent != 0; });
+        if (firstShard == program.entries.end())
+          throw std::invalid_argument("source entry program has no sharded geometry");
+        return firstShard->transform;
       }();
       const auto ranges = nativeConvInputChannelRanges(recipe.extent, 2);
       const auto shard = parseNativeTensorShardV1(role.tensorShardV1);

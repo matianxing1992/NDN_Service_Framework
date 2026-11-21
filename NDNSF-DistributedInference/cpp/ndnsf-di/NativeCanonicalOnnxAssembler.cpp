@@ -3619,7 +3619,7 @@ prepareNativeCanonicalOnnxRole(
             if (fd >= 0 && ::close(std::exchange(fd, -1)) != 0)
               throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_FILE_CLOSE_FAILED");
           };
-          auto raw = materializeNativeOnnxFfnEntrySource(canonicalSource, entry, windows[index],
+          auto raw = materializeNativeOnnxEntrySource(canonicalSource, entry, windows[index],
             *matched, assemblyControl, [&] (const auto& bytes) {
               appendFile(unslicedFd, unslicedPath, bytes);
             });
@@ -3635,18 +3635,30 @@ prepareNativeCanonicalOnnxRole(
               !model.ParseFromArray(raw.modelBytes.data(), static_cast<int>(raw.modelBytes.size())))
             throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_MATERIALIZED_GRAPH_INVALID");
           OPENSSL_cleanse(raw.modelBytes.data(), raw.modelBytes.size());
-          auto modelOut = lowerNativeMaterializedFfnEntry(std::move(model), entry.transform,
-            windows[index], [&] (const auto& location, auto offset, auto count) {
+          const auto readEntry = [&] (const auto& location, auto offset, auto count) {
               assemblyControl.requireActive();
               if (location != "model.onnx.data" || !original)
-                throw std::runtime_error("DI_CANONICAL_FFN_SIDECAR_MISSING");
+                throw std::runtime_error("DI_CANONICAL_SOURCE_ENTRY_SIDECAR_MISSING");
               return original->read(offset, count);
-            }, [&] (const auto& bytes) {
+            };
+          const auto writeEntry = [&] (const auto& bytes) {
               if (bytes.size() > role.maxAssembledBytes - outputBytes)
                 throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_TOTAL_EXCEEDS_LIMIT");
               appendFile(sidecarFd, sidecarPath, bytes);
               outputBytes += bytes.size();
-            });
+            };
+          auto modelOut = entry.transform.isAttention()
+            ? applyNativeOnnxSourceTransform(model, entry.transform, readEntry, writeEntry)
+            : lowerNativeMaterializedFfnEntry(std::move(model), entry.transform,
+                                               windows[index], readEntry, writeEntry);
+          if (entry.transform.kind == "attention-source-component" && original) {
+            for (std::uint64_t offset = 0; offset < raw.initializerBytes;) {
+              const auto count = std::min(raw.initializerBytes - offset,
+                                          NativeCanonicalMaterialBundleMaxBytes);
+              writeEntry(readEntry("model.onnx.data", offset, count));
+              offset += count;
+            }
+          }
           closeFile(sidecarFd);
           if (original) {
             storeWhileAuthorized([&] {
@@ -3688,8 +3700,10 @@ prepareNativeCanonicalOnnxRole(
           const auto port = [] (const auto& slot) {
             return NativeAssemblyTensorContractV3{slot.slotId, slot.dtype, slot.shape};
           };
-          recipe.expectedInputs = {port(matched->inputSlots.front())};
-          recipe.expectedOutputs = {port(matched->outputSlots.front())};
+          recipe.expectedInputs.clear();
+          recipe.expectedOutputs.clear();
+          for (const auto& slot : matched->inputSlots) recipe.expectedInputs.push_back(port(slot));
+          for (const auto& slot : matched->outputSlots) recipe.expectedOutputs.push_back(port(slot));
           recipe.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(recipe));
           // The parent already authenticated the sidecar. Send only the graph to the worker.
           derived.initializerRangeSource.reset();
@@ -3799,10 +3813,10 @@ prepareNativeCanonicalOnnxRole(
         if (!call || !matchesPort(call->inputSlots, role.expectedInputs) ||
             !matchesPort(call->outputSlots, role.expectedOutputs))
           throw std::invalid_argument("paired FFN CALL differs from its signed role ports");
-        NativeOnnxSourceEntryRecipeV1 entry{call->artifactEntry, {}, *sourceTransform};
+        NativeOnnxSourceEntryRecipeV1 entry{call->artifactEntry, {}, *sourceTransform, {}, {}};
         for (const auto index : role.nodeIndices)
           entry.sourceNodes.push_back("onnx-node-" + std::to_string(index));
-        materializedFiles = materializeNativeOnnxFfnEntrySource(canonicalSource, entry,
+        materializedFiles = materializeNativeOnnxEntrySource(canonicalSource, entry,
           role.nodeIndices, *call, assemblyControl, appendInitializer);
       }
       else {

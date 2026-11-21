@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-split.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
@@ -82,6 +83,222 @@ resourceProfilesFromCatalog(const NativeJson& split, const std::vector<std::stri
   return result;
 }
 
+
+void
+buildNativeSourceBlockEntries(NativeSourcePartitionProfile& profile,
+                              const NativeJson& attention,
+                              const NativeOnnxGraphInspection& inspection,
+                              const NativeGraphSnapshot& snapshot, const NativeJson& metadata,
+                              const onnx::ModelProto& original,
+                              const NativeAssemblyControl& control)
+{
+  const auto& order = snapshot.topologicalOrder;
+  const auto& graph = original.graph();
+  const auto ordinal = [&] (const std::string& id) -> std::uint64_t {
+    const auto found = inspection.canonicalNodeIndices.find(id);
+    if (found == inspection.canonicalNodeIndices.end() ||
+        found->second >= static_cast<std::uint64_t>(graph.node_size()) ||
+        order.at(found->second) != id)
+      throw std::invalid_argument("source block anchor is not a canonical node: " + id);
+    return found->second;
+  };
+  const auto first = ordinal(profile.boundaryNode);
+  const auto last = ordinal(profile.suffixNode);
+  if (first == 0 || first >= last || attention.size() != 2 * profile.ffnWindows.size())
+    throw std::invalid_argument("source block program requires two ordered attentions per FFN");
+  const auto& tensors = metadata.at("tensors");
+  const auto& uses = inspection.initializerConsumers;
+  const auto region = [&] (std::uint64_t begin, std::uint64_t end) {
+    if (begin >= end || end > order.size())
+      throw std::invalid_argument("source block window has invalid bounds");
+    NativeSourceBlockEntry result;
+    result.recipe.sourceNodes.assign(order.begin() + begin, order.begin() + end);
+    std::set<std::uint64_t> indices;
+    for (auto i = begin; i < end; ++i) indices.insert(i);
+    const auto frontier = inspectNativeSourceBoundary(snapshot, metadata, indices, {},
+                                                      control.requireActive);
+    const auto append = [&] (const auto& ports, auto& destination) {
+      for (const auto& [name, port] : ports) {
+        const auto& shape = port.shape;
+        const auto bytes = tensors.at(name).at("sizeBytes");
+        if (port.dtype != "float32" || !bytes.is_number_unsigned() || shape.empty() ||
+            std::any_of(shape.begin(), shape.end(), [] (const auto& dim) {
+              const auto* size = std::get_if<std::int64_t>(&dim);
+              return size == nullptr || *size <= 0;
+            }))
+          throw std::invalid_argument("source block frontier requires exact FP32 shapes: " + name);
+        destination.push_back({name, port.dtype, shape, bytes.template get<std::uint64_t>()});
+      }
+    };
+    append(frontier.inputs, result.inputs);
+    append(frontier.outputs, result.outputs);
+    for (const auto& [name, consumers] : uses) {
+      control.requireActive();
+      if (std::none_of(consumers.begin(), consumers.end(), [&] (auto node) {
+            return node >= begin && node < end;
+          }))
+        continue;
+      const auto bytes = tensors.at(name).at("sizeBytes").get<std::uint64_t>();
+      if (bytes > std::numeric_limits<std::uint64_t>::max() - result.initializerBytes)
+        throw std::overflow_error("source block initializer memory exceeds uint64");
+      result.initializerBytes += bytes;
+    }
+    return result;
+  };
+  auto cursor = first;
+  const auto plainUntil = [&] (std::uint64_t end) {
+    if (end < cursor)
+      throw std::invalid_argument("source block declarations overlap or are out of order");
+    if (cursor == end) return;
+    // Each selected projection must be admitted through a named TP region.
+    for (auto i = cursor; i < end; ++i) {
+      const auto& node = graph.node(static_cast<int>(i));
+      if (node.op_type() == "MatMul" || node.op_type() == "MatMulNBits" ||
+          node.op_type() == "Gemm" || node.op_type() == "Attention" ||
+          node.op_type() == "MultiHeadAttention")
+        throw std::invalid_argument("unassigned projection in the source block window");
+    }
+    auto plain = region(cursor, end);
+    plain.recipe.transform.kind = "attention-source-component";
+    plain.recipe.transform.node = order.at(cursor);
+    profile.blockEntries.push_back(std::move(plain));
+    cursor = end;
+  };
+  for (std::size_t block = 0; block < profile.ffnWindows.size(); ++block) {
+    control.requireActive();
+    for (std::size_t branch = 0; branch < 2; ++branch) {
+      const auto& entry = attention.at(2 * block + branch);
+      if (!entry.is_object() || entry.size() != 7 ||
+          entry.at("kind") != (branch == 0 ? "self" : "cross"))
+        throw std::invalid_argument("source block requires ordered self and cross attention");
+      const auto anchor = [&] (const auto* key) {
+        return ordinal(entry.at(key).template get<std::string>());
+      };
+      const auto q = anchor("q"), k = anchor("k"), v = anchor("v");
+      const auto qMean = anchor("q_stat"), kMean = anchor("k_stat"), o = anchor("out");
+      if (!(q < k && k < v && v + 1 < qMean && qMean + 6 == kMean && kMean + 5 < o))
+        throw std::invalid_argument("source attention anchors are not in canonical order");
+      const auto& qNode = graph.node(static_cast<int>(q));
+      const auto& kNode = graph.node(static_cast<int>(k));
+      const auto& vNode = graph.node(static_cast<int>(v));
+      const auto& oNode = graph.node(static_cast<int>(o));
+      const auto qDims = inspectNativeOnnxLinearProjection(original, qNode);
+      const auto kDims = inspectNativeOnnxLinearProjection(original, kNode);
+      const auto vDims = inspectNativeOnnxLinearProjection(original, vNode);
+      const auto oDims = inspectNativeOnnxLinearProjection(original, oNode);
+      if (qDims.n != kDims.n || qDims.n != vDims.n || qDims.n != oDims.k ||
+          (qNode.input(0) == kNode.input(0)) != (branch == 0) ||
+          kNode.input(0) != vNode.input(0))
+        throw std::invalid_argument("source attention projections do not share their declared geometry");
+      plainUntil(q);
+      auto projections = region(q, qMean - 1);
+      auto qNorm = region(qMean - 1, kMean - 1);
+      auto kNorm = region(kMean - 1, kMean + 5);
+      auto tail = region(kMean + 5, o + 1);
+      if (projections.outputs.size() != 3 || qNorm.inputs.size() != 1 ||
+          qNorm.outputs.size() != 1 || kNorm.inputs.size() != 1 || kNorm.outputs.size() != 1 ||
+          tail.outputs.size() != 1 || tail.outputs.front().name != oNode.output(0))
+        throw std::invalid_argument("source attention window has unexpected original ports");
+      const auto& qInput = qNorm.inputs.front().name;
+      const auto& kInput = kNorm.inputs.front().name;
+      const auto& qOutput = qNorm.outputs.front().name;
+      const auto& kOutput = kNorm.outputs.front().name;
+      const auto vInput = std::find_if(projections.outputs.begin(), projections.outputs.end(),
+        [&] (const auto& port) { return port.name != qInput && port.name != kInput; });
+      std::vector<std::int64_t> geometry;
+      for (auto i = kMean + 5; i < o; ++i) {
+        const auto& node = graph.node(static_cast<int>(i));
+        if (node.op_type() == "Reshape" && node.domain().empty() && node.input_size() == 2 &&
+            node.output_size() == 1 && node.input(0) == qOutput)
+          geometry = tensors.at(node.output(0)).at("shape").get<std::vector<std::int64_t>>();
+      }
+      const auto projectionPort = [&] (const auto& projection, const std::string& target) {
+        if (projection.output(0) == target) return true;
+        const auto producer = metadata.at("tensorProducers").at(target).get<std::uint64_t>();
+        const auto& add = graph.node(static_cast<int>(producer));
+        return producer >= q && producer < qMean - 1 && add.op_type() == "Add" &&
+               add.domain().empty() && add.input_size() == 2 &&
+               std::find(add.input().begin(), add.input().end(), projection.output(0)) !=
+                 add.input().end();
+      };
+      if (vInput == projections.outputs.end() || !projectionPort(qNode, qInput) ||
+          !projectionPort(kNode, kInput) || !projectionPort(vNode, vInput->name) ||
+          geometry.size() != 4 || geometry[2] < 2 || geometry[3] <= 0 ||
+          geometry[2] > qDims.n || qDims.n % geometry[2] != 0 ||
+          qDims.n / geometry[2] != geometry[3])
+        throw std::invalid_argument("source attention head layout or projection ports differ");
+      const auto heads = static_cast<std::uint64_t>(geometry[2]);
+      const auto width = static_cast<std::uint64_t>(geometry[3]);
+      const auto split = nativeConvInputChannelRanges(heads, 2).front().second;
+      if (oDims.packed && split * width % NativeOnnxLinearProjection::BLOCK != 0)
+        throw std::invalid_argument("source attention output rank splits a packed K block");
+      const auto bind = [&] (NativeSourceBlockEntry& window, const char* kind) -> auto& {
+        auto& transform = window.recipe.transform;
+        transform.kind = kind;
+        transform.node = window.recipe.sourceNodes.front();
+        transform.axis = "attention-head";
+        transform.end = split;
+        transform.extent = heads;
+        transform.headWidth = width;
+        return transform;
+      };
+      bind(projections, "attention-qkv").attentionPorts = {qInput, kInput, vInput->name};
+      bind(tail, "attention-heads").attentionPorts = {qOutput, kOutput, vInput->name};
+      // The order of the Q/K/V projection graph outputs is part of the sealed ABI.
+      const auto projectionOrder = projections.recipe.transform.attentionPorts;
+      std::sort(projections.outputs.begin(), projections.outputs.end(),
+        [&] (const auto& a, const auto& b) {
+          return std::find(projectionOrder.begin(), projectionOrder.end(), a.name) <
+                 std::find(projectionOrder.begin(), projectionOrder.end(), b.name);
+        });
+      profile.blockEntries.push_back(std::move(projections));
+      const auto emitNorm = [&] (NativeSourceBlockEntry window, std::uint64_t mean) {
+        const auto& node = graph.node(static_cast<int>(mean));
+        if (node.op_type() != "ReduceMean" || node.output_size() != 1)
+          throw std::invalid_argument("source attention RMS statistic is not ReduceMean");
+        auto& transform = bind(window, "attention-rms-stat");
+        transform.input = window.inputs.front().name;
+        transform.output = window.outputs.front().name;
+        transform.statistic = node.output(0);
+        transform.globalStatistic = transform.statistic + "/global";
+        if (tensors.contains(transform.globalStatistic) ||
+            window.initializerBytes > std::numeric_limits<std::uint64_t>::max() - sizeof(float))
+          throw std::invalid_argument("source attention RMS synthetic port or memory collides");
+        window.initializerBytes += sizeof(float);
+        profile.blockEntries.push_back(window);
+        transform.kind = "attention-rms-normalize";
+        profile.blockEntries.push_back(std::move(window));
+      };
+      emitNorm(std::move(qNorm), qMean);
+      emitNorm(std::move(kNorm), kMean);
+      profile.blockEntries.push_back(std::move(tail));
+      cursor = o + 1;
+    }
+    const auto& ffn = profile.ffnWindows[block];
+    const auto up = ordinal(ffn.transform.node);
+    const auto down = ordinal(ffn.transform.downNode);
+    plainUntil(up);
+    auto window = region(up, down + 1);
+    if (window.inputs.size() != 1 || window.inputs.front().name != ffn.transform.input ||
+        window.outputs.size() != 1 || window.outputs.front().name != ffn.transform.output)
+      throw std::invalid_argument("source block FFN has extra original ports");
+    window.recipe.transform = ffn.transform;
+    profile.blockEntries.push_back(std::move(window));
+    cursor = down + 1;
+  }
+  if (cursor >= last)
+    throw std::invalid_argument("source block has no final post-FFN operations");
+  plainUntil(last);
+  profile.outerEntries = {region(0, first), region(last, order.size())};
+  const auto qkv = std::find_if(profile.blockEntries.begin(), profile.blockEntries.end(),
+    [] (const auto& entry) { return entry.recipe.transform.kind == "attention-qkv"; });
+  profile.inputChannels = qkv == profile.blockEntries.end() ? 0 : qkv->recipe.transform.extent;
+  if (profile.inputChannels == 0)
+    throw std::invalid_argument("source block has no admitted head geometry");
+  profile.convInputAxis = "attention-head";
+  profile.denseWeightBytesByRole[profile.roles.front()] = profile.outerEntries.front().initializerBytes;
+  profile.denseWeightBytesByRole[profile.roles.back()] = profile.outerEntries.back().initializerBytes;
+}
 
 } // namespace
 
@@ -567,8 +784,15 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     std::vector<std::pair<std::string, std::string>> ffnAnchors;
     const auto pairedDown = split.find("ffn_down_node");
     const auto pairedWindows = split.find("ffn_windows");
+    const auto attention = split.find("attention_windows");
+    const bool blockProgram = attention != split.end();
+    if (blockProgram && (mode != NativeSourcePartitionMode::HYBRID ||
+        pairedWindows == split.end() || !attention->is_array() ||
+        !split.contains("boundary_node") || !split.contains("suffix_node")))
+      throw std::invalid_argument("source attention windows require a bounded hybrid block program");
+    if (blockProgram) profile.suffixNode = split.at("suffix_node").get<std::string>();
     if (pairedWindows != split.end()) {
-      if (split.contains("boundary_node") || pairedDown != split.end() ||
+      if ((!blockProgram && split.contains("boundary_node")) || pairedDown != split.end() ||
           !pairedWindows->is_array() || pairedWindows->size() < 2)
         throw std::invalid_argument("ffn_windows requires at least two exclusive window declarations");
       for (const auto& window : *pairedWindows) {
@@ -578,14 +802,15 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
         ffnAnchors.emplace_back(window.at("up_node").get<std::string>(),
                                 window.at("down_node").get<std::string>());
       }
-      profile.boundaryNode = ffnAnchors.front().first;
+      if (!blockProgram) profile.boundaryNode = ffnAnchors.front().first;
     }
     else if (pairedDown != split.end()) {
       ffnAnchors.emplace_back(profile.boundaryNode, pairedDown->get<std::string>());
     }
     if (!ffnAnchors.empty() && mode != NativeSourcePartitionMode::HYBRID)
       throw std::invalid_argument("paired FFN window requires source hybrid mode");
-    const auto tensors = nativeParseJson(inspection.graphMetadataJson).at("tensors");
+    const auto metadata = nativeParseJson(inspection.graphMetadataJson);
+    const auto& tensors = metadata.at("tensors");
     const auto initializerBytes = [&] (const std::string& name) {
       const auto& size = tensors.at(name).at("sizeBytes");
       if (!size.is_number_unsigned())
@@ -599,8 +824,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
         throw std::invalid_argument("hybrid source boundary is absent from the graph");
       auto suffixStart = std::next(boundary);
       if (!ffnAnchors.empty()) {
-        if (model.graph.modelInputs.size() != 1 || model.graph.modelOutputs.size() != 1 ||
-            profile.roles.size() != 4 || profile.inputIngressRole != profile.roles.front() ||
+        if ((!blockProgram && model.graph.modelInputs.size() != 1) ||
+            model.graph.modelOutputs.size() != 1 || profile.roles.size() != 4 || profile.inputIngressRole != profile.roles.front() ||
             profile.resultEgressRole != profile.roles.back() || boundary == order.begin())
           throw std::invalid_argument("paired FFN source ports need prefix and suffix owners");
         onnx::ModelProto original;
@@ -612,7 +837,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
         auto next = boundary;
         for (const auto& [upId, downId] : ffnAnchors) {
           control.requireActive();
-          const auto upPosition = next;
+          const auto upPosition = blockProgram ? std::find(next, order.end(), upId) : next;
           if (upPosition == order.end() || *upPosition != upId)
             throw std::invalid_argument("paired FFN windows must be contiguous and ordered");
           const auto downPosition = std::find(std::next(upPosition), order.end(), downId);
@@ -632,8 +857,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
                 node.output_size() != 1 || (op != "Gelu" && node.attribute_size() != 0))
               throw std::invalid_argument("paired FFN window has an unsupported source operator");
           };
-          requireOp(up, "MatMul", 2);
-          requireOp(down, "MatMul", 2);
+          const auto upShape = inspectNativeOnnxLinearProjection(original, up);
+          const auto downShape = inspectNativeOnnxLinearProjection(original, down);
           auto activationInput = up.output(0);
           NativeSourceFfnWindow window;
           auto& pair = window.transform;
@@ -666,21 +891,22 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
               throw std::invalid_argument("paired FFN requires positive source dimensions");
             return shape;
           };
-          const auto upDims = floatShape(pair.weight);
-          const auto downDims = floatShape(pair.downWeight);
           window.inputShape = floatShape(pair.input);
           window.outputShape = floatShape(pair.output);
-          if (upDims.size() != 2 || downDims.size() != 2 || upDims[1] < 2 ||
-              upDims[1] != downDims[0] || window.inputShape.size() < 2 ||
+          if (upShape.n < 2 || upShape.n != downShape.k || window.inputShape.size() < 2 ||
               window.inputShape.size() != window.outputShape.size() ||
               !std::equal(window.inputShape.begin(), window.inputShape.end() - 1,
                           window.outputShape.begin()) ||
-              window.inputShape.back() != upDims[0] || window.outputShape.back() != downDims[1] ||
-              (!pair.bias.empty() && floatShape(pair.bias) != std::vector<std::int64_t>{upDims[1]}))
+              window.inputShape.back() != upShape.k || window.outputShape.back() != downShape.n ||
+              (!pair.bias.empty() && floatShape(pair.bias) != std::vector<std::int64_t>{upShape.n}))
             throw std::invalid_argument("paired FFN source shapes do not contract");
+          if (downShape.packed && upShape.n % (2 * NativeOnnxLinearProjection::BLOCK) != 0)
+            throw std::invalid_argument("paired FFN rank boundary splits a packed K block");
           for (const auto& [name, owner] :
                {std::make_pair(pair.weight, start), std::make_pair(pair.downWeight, finish),
-                std::make_pair(pair.bias, start + 1)}) {
+                std::make_pair(pair.bias, start + 1),
+                std::make_pair(upShape.packed ? up.input(2) : std::string{}, start),
+                std::make_pair(downShape.packed ? down.input(2) : std::string{}, finish)}) {
             if (name.empty()) continue;
             const auto users = inspection.initializerConsumers.find(name);
             if (users == inspection.initializerConsumers.end() ||
@@ -691,11 +917,11 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
               throw std::overflow_error("paired FFN initializer bytes exceed uint64");
             window.weightBytes += bytes;
           }
-          pair.extent = static_cast<std::uint64_t>(upDims[1]);
+          pair.extent = static_cast<std::uint64_t>(upShape.n);
           pair.end = pair.extent / 2 + pair.extent % 2;
           pair.validate();
           window.nodes.assign(upPosition, next);
-          if (!profile.ffnWindows.empty()) {
+          if (!blockProgram && !profile.ffnWindows.empty()) {
             const auto& previous = profile.ffnWindows.back();
             if (previous.transform.output != pair.input || previous.outputShape != window.inputShape)
               throw std::invalid_argument("paired FFN windows do not share an exact activation");
@@ -704,38 +930,45 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
         }
         if (next == order.end())
           throw std::invalid_argument("paired FFN windows leave no suffix");
-        suffixStart = next;
-        const auto& first = profile.ffnWindows.front();
-        profile.activationShape = first.inputShape;
-        profile.partialShape = profile.ffnWindows.back().outputShape;
-        profile.inputChannels = first.transform.extent;
-        profile.activationDtype = "float32";
-        profile.convBiasBytes = 0;
-        const auto start = inspection.canonicalNodeIndices.at(*boundary);
-        const auto last = inspection.canonicalNodeIndices.at(profile.ffnWindows.back().nodes.back());
-        const auto& sourceInput = model.graph.modelInputs.front().name;
-        const auto& sourceOutput = model.graph.modelOutputs.front().name;
-        bool suffixProducesOutput = false;
-        for (auto i = start; i < static_cast<std::uint64_t>(graph.node_size()); ++i) {
-          const auto& node = graph.node(static_cast<int>(i));
-          if (std::find(node.input().begin(), node.input().end(), sourceInput) != node.input().end())
-            throw std::invalid_argument("paired FFN source input has users outside the prefix");
-          if (i > last &&
-              std::find(node.output().begin(), node.output().end(), sourceOutput) != node.output().end())
-            suffixProducesOutput = true;
+        if (blockProgram) {
+          buildNativeSourceBlockEntries(profile, *attention, inspection, model.graph,
+                                        metadata, original, control);
+          suffixStart = std::find(next, order.end(), profile.suffixNode);
         }
-        if (!suffixProducesOutput)
-          throw std::invalid_argument("paired FFN source suffix does not own terminal output");
-        std::uint64_t prefixBytes = 0;
-        for (const auto& [name, users] : inspection.initializerConsumers) {
-          if (std::none_of(users.begin(), users.end(), [start](auto node) { return node < start; }))
-            continue;
-          const auto bytes = initializerBytes(name);
-          if (bytes > std::numeric_limits<std::uint64_t>::max() - prefixBytes)
-            throw std::overflow_error("paired FFN prefix initializer bytes exceed uint64");
-          prefixBytes += bytes;
+        else {
+          suffixStart = next;
+          const auto& first = profile.ffnWindows.front();
+          profile.activationShape = first.inputShape;
+          profile.partialShape = profile.ffnWindows.back().outputShape;
+          profile.inputChannels = first.transform.extent;
+          profile.activationDtype = "float32";
+          profile.convBiasBytes = 0;
+          const auto start = inspection.canonicalNodeIndices.at(*boundary);
+          const auto last = inspection.canonicalNodeIndices.at(profile.ffnWindows.back().nodes.back());
+          const auto& sourceInput = model.graph.modelInputs.front().name;
+          const auto& sourceOutput = model.graph.modelOutputs.front().name;
+          bool suffixProducesOutput = false;
+          for (auto i = start; i < static_cast<std::uint64_t>(graph.node_size()); ++i) {
+            const auto& node = graph.node(static_cast<int>(i));
+            if (std::find(node.input().begin(), node.input().end(), sourceInput) != node.input().end())
+              throw std::invalid_argument("paired FFN source input has users outside the prefix");
+            if (i > last &&
+                std::find(node.output().begin(), node.output().end(), sourceOutput) != node.output().end())
+              suffixProducesOutput = true;
+          }
+          if (!suffixProducesOutput)
+            throw std::invalid_argument("paired FFN source suffix does not own terminal output");
+          std::uint64_t prefixBytes = 0;
+          for (const auto& [name, users] : inspection.initializerConsumers) {
+            if (std::none_of(users.begin(), users.end(), [start](auto node) { return node < start; }))
+              continue;
+            const auto bytes = initializerBytes(name);
+            if (bytes > std::numeric_limits<std::uint64_t>::max() - prefixBytes)
+              throw std::overflow_error("paired FFN prefix initializer bytes exceed uint64");
+            prefixBytes += bytes;
+          }
+          profile.ffnPrefixWeightBytes = prefixBytes;
         }
-        profile.ffnPrefixWeightBytes = prefixBytes;
       }
       else {
         profile.convWeightBytes = initializerBytes(profile.convWeightInitializer);

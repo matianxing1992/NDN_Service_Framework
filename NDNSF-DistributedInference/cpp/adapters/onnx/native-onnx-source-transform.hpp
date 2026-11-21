@@ -25,6 +25,58 @@ using NativeOnnxExternalReader =
 /** Append to a new, empty model.onnx.data owned by the caller. */
 using NativeOnnxExternalAppender = std::function<void(const std::vector<std::uint8_t>&)>;
 
+/** Geometry of a dense or symmetric block-32 linear projection. */
+struct NativeOnnxLinearProjection
+{
+  static constexpr std::int64_t BLOCK = 32;
+  static constexpr std::int64_t BLOB_BYTES = BLOCK / 2;
+  std::int64_t k = 0;
+  std::int64_t n = 0;
+  bool packed = false;
+};
+
+/** Check the operator and its initializer ABI before deriving any rank range. */
+NativeOnnxLinearProjection
+inspectNativeOnnxLinearProjection(const onnx::ModelProto& model, const onnx::NodeProto& node);
+
+enum class NativeOnnxProjectionAxis
+{
+  INPUT,
+  OUTPUT
+};
+
+/** Narrow the original initializer and operator without changing projection precision. */
+void
+sliceNativeOnnxLinearProjection(onnx::ModelProto& model, onnx::NodeProto& node,
+  NativeOnnxProjectionAxis axis, std::uint64_t begin, std::uint64_t end,
+  const NativeOnnxExternalReader& external, const NativeOnnxExternalAppender& append,
+  std::uint64_t& sidecarOffset);
+
+struct NativeOnnxRmsNormEntries
+{
+  onnx::ModelProto statistics;
+  onnx::ModelProto normalization;
+};
+
+/** Split one source FP32 RMSNorm into local squares and global-stat normalization. */
+NativeOnnxRmsNormEntries
+lowerNativeOnnxRmsNorm(const onnx::ModelProto& source, std::uint64_t begin,
+                      std::uint64_t end, const std::string& globalSquares,
+                      const NativeOnnxExternalReader& external = {});
+
+/** The tail starts at normalized Q/K and projected V, and ends before the output bias. */
+onnx::ModelProto
+lowerNativeOnnxAttentionHeads(onnx::ModelProto source, const std::string& query,
+  const std::string& key, const std::string& value, std::uint64_t headBegin,
+  std::uint64_t headEnd, const NativeOnnxExternalReader& external = {},
+  const NativeOnnxExternalAppender& append = {}, std::uint64_t sealedHeadWidth = 0);
+
+/** Slice the original Q/K/V output channels and their separate bias operands. */
+onnx::ModelProto
+lowerNativeOnnxAttentionProjections(onnx::ModelProto source, std::uint64_t begin,
+  std::uint64_t end, const NativeOnnxExternalReader& external = {},
+  const NativeOnnxExternalAppender& append = {});
+
 /**
  * Apply a source_transform_v1 lowering to one materialized role graph.
  *
@@ -48,7 +100,7 @@ lowerNativeMaterializedFfnEntry(onnx::ModelProto source,
 
 /** Rebuild only one entry's authenticated graph and initializer closure from a shared spool. */
 NativeCanonicalMaterializedFiles
-materializeNativeOnnxFfnEntrySource(const NativeCanonicalSource& source,
+materializeNativeOnnxEntrySource(const NativeCanonicalSource& source,
   const NativeOnnxSourceEntryRecipeV1& entry, const std::vector<std::uint64_t>& sourceOrdinals,
   const NativeExecutionStepSpec& call, const NativeAssemblyControl& control,
   const NativeOnnxExternalAppender& append);

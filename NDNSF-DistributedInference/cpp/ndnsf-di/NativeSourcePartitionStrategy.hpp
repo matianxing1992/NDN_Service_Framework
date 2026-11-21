@@ -27,6 +27,15 @@ struct NativeSourceFfnWindow
   std::uint64_t weightBytes = 0;
 };
 
+/** One canonical source window and the original typed frontier of its derived CALL. */
+struct NativeSourceBlockEntry
+{
+  NativeOnnxSourceEntryRecipeV1 recipe;
+  std::vector<NativeTensorContract> inputs;
+  std::vector<NativeTensorContract> outputs;
+  std::uint64_t initializerBytes = 0;
+};
+
 /** Declarative mode and source boundary for a generic ONNX source plan. */
 struct NativeSourcePartitionProfile
 {
@@ -55,6 +64,9 @@ struct NativeSourcePartitionProfile
   std::map<std::string, std::uint64_t> denseWeightBytesByRole;
   std::vector<NativeSourceFfnWindow> ffnWindows;
   std::optional<std::uint64_t> ffnPrefixWeightBytes;
+  std::string suffixNode;
+  std::vector<NativeSourceBlockEntry> blockEntries;
+  std::vector<NativeSourceBlockEntry> outerEntries;
 };
 
 /**
@@ -83,6 +95,10 @@ public:
     const ExtensionControl& control) const override;
 
 private:
+  void buildBlockSteps(NativeSplitCandidate& candidate,
+                       const NativeGraphSnapshot& graph,
+                       const ExtensionControl* control) const;
+
   std::vector<NativeSplitCandidate> enumerateImpl(
     const NativeModelDescriptor& model,
     const NativeGraphSnapshot& graph,

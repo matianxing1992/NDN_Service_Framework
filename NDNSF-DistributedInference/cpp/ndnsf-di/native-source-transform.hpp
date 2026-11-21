@@ -11,8 +11,11 @@ inline constexpr const char* NATIVE_FFN_PAIR_CAPABILITY_V1 = "onnx-source-ffn-pa
 inline constexpr const char* NATIVE_SOURCE_ENTRY_PROGRAM_V1 = "source_entry_program_v1";
 inline constexpr const char* NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1 =
   "onnx-source-entry-program-v1";
+inline constexpr const char* NATIVE_SOURCE_ATTENTION_ENTRY_CAPABILITY_V1 =
+  "onnx-source-attention-entry-v1";
 
 struct NativeExecutionPlan;
+struct NativeStepSlotSpec;
 
 /** Versioned lowering instruction carried by a transformed ONNX role recipe.
  *
@@ -41,10 +44,20 @@ struct NativeOnnxSourceTransformV1
   std::vector<std::int64_t> pads;
   std::vector<std::int64_t> strides;
   std::vector<std::int64_t> dilations;
+  // Exact original Q, K and V SSA ports. Head coordinates describe the
+  // contiguous subset shared by Q/K/V output and O input slicing.
+  std::vector<std::string> attentionPorts;
+  std::uint64_t headWidth = 0;
+  std::string statistic;
+  std::string globalStatistic;
 
   void validate() const;
   std::string canonicalJson() const;
   static NativeOnnxSourceTransformV1 parse(const std::string& wire);
+  bool isAttention() const;
+  bool isRmsNorm() const;
+  std::vector<NativeStepSlotSpec>
+  originalPorts(const std::vector<NativeStepSlotSpec>& slots, bool outputs) const;
 };
 
 /** One graph derivation under an ordered, role-local CALL entry. */
@@ -54,6 +67,8 @@ struct NativeOnnxSourceEntryRecipeV1
   // Exact ordered node identities in the canonical graph, including intermediates.
   std::vector<std::string> sourceNodes;
   NativeOnnxSourceTransformV1 transform;
+  std::vector<std::string> inputPorts;
+  std::vector<std::string> outputPorts;
 };
 
 /** Bind every derived graph of a generic ONNX rank into its signed role recipe. */
@@ -66,6 +81,7 @@ struct NativeOnnxSourceEntryProgramV1
                     std::uint64_t rank) const;
   std::vector<std::vector<std::uint64_t>>
   bindSourceOrdinals(const std::vector<std::uint64_t>& roleOrdinals) const;
+  std::vector<std::string> sourceNodeCover() const;
   std::string canonicalJson() const;
   static NativeOnnxSourceEntryProgramV1 parse(const std::string& wire);
 };
@@ -73,6 +89,10 @@ struct NativeOnnxSourceEntryProgramV1
 /** Split an admitted Conv input-channel axis into contiguous rank ranges. */
 std::vector<std::pair<std::uint64_t, std::uint64_t>>
 nativeConvInputChannelRanges(std::uint64_t extent, std::uint64_t degree);
+
+/** Compute a proportional initializer shard after validating the packing alignment. */
+std::uint64_t
+nativeFfnSliceBytes(std::uint64_t sourceBytes, std::uint64_t extent, std::uint64_t width);
 
 } // namespace ndnsf::di
 

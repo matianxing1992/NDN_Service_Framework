@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <limits>
 #include <set>
@@ -39,7 +40,8 @@ NativeSourcePartitionStrategy::NativeSourcePartitionStrategy(
   if (m_profile.mode == NativeSourcePartitionMode::HYBRID &&
       (m_profile.roles.size() != 4 || m_profile.boundaryNode.empty() ||
        m_profile.inputChannels < 2 || m_profile.convInputAxis.empty() ||
-       m_profile.activationShape.empty() || m_profile.partialShape.empty()))
+       (m_profile.blockEntries.empty() &&
+        (m_profile.activationShape.empty() || m_profile.partialShape.empty()))))
     throw std::invalid_argument("hybrid source partition requires four roles, boundary, channels and shapes");
 }
 
@@ -69,6 +71,183 @@ NativeSourcePartitionStrategy::enumerate(
   return result;
 }
 
+void
+NativeSourcePartitionStrategy::buildBlockSteps(NativeSplitCandidate& candidate,
+                                               const NativeGraphSnapshot& graph,
+                                               const ExtensionControl* control) const
+{
+  const auto& roles = m_profile.roles;
+  auto& plan = candidate.executionPlan;
+  const auto layout = nativePlanningDigest("source-activation-layout-v1");
+  struct Value
+  {
+    std::string role;
+    std::string step;
+  };
+  std::array<std::map<std::string, Value>, 2> values;
+  std::array<NativeOnnxSourceEntryProgramV1, 2> programs;
+  const auto makeSlot = [&] (const NativeTensorContract& port) {
+    NativeStepSlotSpec slot;
+    slot.slotId = port.name;
+    slot.dtype = port.dtype;
+    slot.shape = port.shape;
+    slot.layoutDigest = layout;
+    slot.source = "LOCAL_STEP";
+    return slot;
+  };
+  const auto connect = [&] (NativeStepSlotSpec& slot, const std::string& role,
+                            const std::map<std::string, Value>& available) {
+    const auto producer = available.find(slot.slotId);
+    if (producer == available.end()) {
+      if (std::none_of(graph.modelInputs.begin(), graph.modelInputs.end(), [&] (const auto& input) {
+            return input.name == slot.slotId && input.dtype == slot.dtype &&
+                   input.shape == slot.shape;
+          }))
+        throw std::invalid_argument("source block CALL input has no earlier source producer: " +
+                                    slot.slotId);
+      slot.source = "EPOCH_INPUT";
+      return;
+    }
+    slot.source = producer->second.role == role ? "LOCAL_STEP" : "REMOTE_STEP";
+    slot.producerStepId = producer->second.step;
+    slot.producerSlotId = slot.slotId;
+  };
+  const auto outerCall = [&] (std::size_t index, const std::map<std::string, Value>& available) {
+    const auto& window = m_profile.outerEntries.at(index);
+    const auto& role = index == 0 ? roles.front() : roles.back();
+    NativeExecutionStepSpec call;
+    call.stepId = role + "/RUN";
+    call.unitId = role;
+    call.operation = "CALL_SUBGRAPH";
+    call.artifactEntry = role + "/artifact";
+    for (const auto& port : window.inputs) {
+      auto slot = makeSlot(port);
+      connect(slot, role, available);
+      call.inputSlots.push_back(std::move(slot));
+    }
+    for (const auto& port : window.outputs) call.outputSlots.push_back(makeSlot(port));
+    return call;
+  };
+  auto prefix = outerCall(0, {});
+  for (auto& available : values)
+    for (const auto& slot : prefix.outputSlots)
+      available.emplace(slot.slotId, Value{prefix.unitId, prefix.stepId});
+  plan.steps.push_back(std::move(prefix));
+
+  for (std::size_t index = 0; index < m_profile.blockEntries.size(); ++index) {
+    if (control) control->requireActive();
+    const auto& window = m_profile.blockEntries[index];
+    const auto& recipe = window.recipe.transform;
+    const auto label = "/" + std::to_string(index);
+    const bool finalFfn = index + 2 == m_profile.blockEntries.size() &&
+                          recipe.kind == "ffn-pair-partial";
+    const bool finalComponent = index + 1 == m_profile.blockEntries.size();
+    const bool stats = recipe.kind == "attention-rms-stat";
+    const bool reduce = stats || recipe.kind == "attention-heads" ||
+                        recipe.kind == "ffn-pair-partial";
+    std::array<std::string, 2> contributions;
+    NativeStepSlotSpec partial;
+    for (std::size_t rank = 0; rank < (finalComponent ? 1U : 2U); ++rank) {
+      const auto& role = roles[rank + 1];
+      auto& available = values[rank];
+      auto entry = window.recipe;
+      entry.entryId = role + "/artifact" + label;
+      auto& transform = entry.transform;
+      if (transform.extent != 0) {
+        const auto range = nativeConvInputChannelRanges(transform.extent, 2)[rank];
+        transform.begin = range.first;
+        transform.end = range.second;
+      }
+      NativeExecutionStepSpec call;
+      call.stepId = role + "/RUN" + label;
+      call.unitId = role;
+      call.operation = "CALL_SUBGRAPH";
+      call.artifactEntry = entry.entryId;
+      const auto localWidth = static_cast<std::int64_t>((transform.end - transform.begin) *
+                                                        transform.headWidth);
+      for (const auto& port : window.inputs) {
+        auto slot = makeSlot(port);
+        if ((transform.isRmsNorm() && port.name == transform.input) ||
+            (transform.kind == "attention-heads" && contains(transform.attentionPorts, port.name)))
+          slot.shape.back() = localWidth;
+        connect(slot, role, available);
+        call.inputSlots.push_back(std::move(slot));
+      }
+      if (transform.kind == "attention-rms-normalize") {
+        auto global = call.inputSlots.front();
+        global.slotId = transform.globalStatistic;
+        global.shape.back() = std::int64_t{1};
+        connect(global, role, available);
+        call.inputSlots.push_back(std::move(global));
+      }
+      for (const auto& port : window.outputs) {
+        auto slot = makeSlot(port);
+        if (stats) {
+          slot.slotId = transform.statistic;
+          slot.shape.back() = std::int64_t{1};
+        }
+        else if (transform.kind == "attention-qkv" || transform.isRmsNorm()) {
+          slot.shape.back() = localWidth;
+        }
+        available[slot.slotId] = {role, call.stepId};
+        call.outputSlots.push_back(std::move(slot));
+      }
+      if (entry.transform.isAttention()) {
+        for (const auto& slot : call.inputSlots) entry.inputPorts.push_back(slot.slotId);
+        for (const auto& slot : call.outputSlots) entry.outputPorts.push_back(slot.slotId);
+      }
+      if (reduce) {
+        if (call.outputSlots.size() != 1)
+          throw std::invalid_argument("source reduction requires one output port");
+        partial = call.outputSlots.front();
+        contributions[rank] = call.stepId;
+      }
+      programs[rank].entries.push_back(std::move(entry));
+      plan.steps.push_back(std::move(call));
+    }
+    if (!reduce) continue;
+    for (std::size_t rank = 0; rank < (finalFfn ? 1U : 2U); ++rank) {
+      const auto& role = roles[rank + 1];
+      NativeExecutionStepSpec sum;
+      sum.stepId = role + "/SUM" + label;
+      sum.unitId = role;
+      sum.operation = "SUM";
+      for (std::size_t sender = 0; sender < 2; ++sender) {
+        auto operand = partial;
+        operand.slotId = "rank" + std::to_string(sender);
+        operand.source = sender == rank ? "LOCAL_STEP" : "REMOTE_STEP";
+        operand.producerStepId = contributions[sender];
+        operand.producerSlotId = partial.slotId;
+        sum.inputSlots.push_back(std::move(operand));
+      }
+      auto result = partial;
+      if (stats) result.slotId = recipe.globalStatistic;
+      values[rank][result.slotId] = {role, sum.stepId};
+      sum.outputSlots.push_back(std::move(result));
+      plan.steps.push_back(std::move(sum));
+    }
+  }
+  auto suffix = outerCall(1, values.front());
+  if (std::none_of(suffix.inputSlots.begin(), suffix.inputSlots.end(), [&] (const auto& slot) {
+        return slot.producerStepId == roles[1] + "/RUN/" +
+          std::to_string(m_profile.blockEntries.size() - 1);
+      }) ||
+      std::none_of(plan.steps.begin(), plan.steps.end(), [&] (const auto& step) {
+        return step.unitId == roles[2] &&
+          std::any_of(step.inputSlots.begin(), step.inputSlots.end(), [&] (const auto& slot) {
+            return slot.producerStepId == roles[0] + "/RUN";
+          });
+      }))
+    throw std::invalid_argument("source block program does not carry both pipeline handoffs");
+  plan.steps.push_back(std::move(suffix));
+  for (std::size_t rank = 0; rank < programs.size(); ++rank) {
+    programs[rank].validate();
+    const auto& role = roles[rank + 1];
+    candidate.roleNodeIdsByRole[role] = programs[rank].sourceNodeCover();
+    candidate.sourceTransformByRole[role] = programs[rank].canonicalJson();
+  }
+}
+
 std::vector<NativeSplitCandidate>
 NativeSourcePartitionStrategy::enumerateImpl(
   const NativeModelDescriptor& model, const NativeGraphSnapshot& graph,
@@ -79,12 +258,13 @@ NativeSourcePartitionStrategy::enumerateImpl(
   model.validate();
   graph.validate(model);
   const auto& windows = m_profile.ffnWindows;
-  const auto* pair = windows.empty() ? nullptr : &windows.front().transform;
-  const bool multiEntry = windows.size() > 1;
+  const bool blockProgram = !m_profile.blockEntries.empty();
+  const auto* pair = blockProgram || windows.empty() ? nullptr : &windows.front().transform;
+  const bool multiEntry = blockProgram || windows.size() > 1;
   const auto& activationTensor = pair ? pair->input : m_profile.convInputTensor;
   const auto& partialTensor = pair ? windows.back().transform.output : m_profile.convOutputTensor;
   const auto& shardAxis = pair ? pair->axis : m_profile.convInputAxis;
-  const std::string stageSuffix = pair ? "/ffn" : "/conv";
+  const std::string stageSuffix = blockProgram ? "/blocks" : pair ? "/ffn" : "/conv";
   std::size_t firstRankNode = 0;
   std::size_t lastRankNode = 0;
   std::map<std::string, std::string> ownerByNode;
@@ -102,11 +282,19 @@ NativeSourcePartitionStrategy::enumerateImpl(
       throw std::invalid_argument("source partition boundary is not in the graph");
     const auto boundaryNode = std::find_if(graph.nodes.begin(), graph.nodes.end(),
       [&] (const auto& node) { return node.id == m_profile.boundaryNode; });
-    if (boundaryNode == graph.nodes.end() || boundaryNode->opType != (pair ? "MatMul" : "Conv"))
+    if (boundaryNode == graph.nodes.end() ||
+        (!blockProgram && boundaryNode->opType != (pair ? "MatMul" : "Conv")))
       throw std::invalid_argument("source hybrid boundary has the wrong operator");
     firstRankNode = static_cast<std::size_t>(
       std::distance(graph.topologicalOrder.begin(), boundary));
     lastRankNode = firstRankNode;
+    if (blockProgram) {
+      const auto suffix = std::find(std::next(boundary), graph.topologicalOrder.end(),
+                                    m_profile.suffixNode);
+      if (suffix == graph.topologicalOrder.end())
+        throw std::invalid_argument("source block stage has no ordered suffix boundary");
+      lastRankNode = static_cast<std::size_t>(suffix - graph.topologicalOrder.begin() - 1);
+    }
     if (pair) {
       if (graph.modelInputs.size() != 1 || graph.modelOutputs.size() != 1)
         throw std::invalid_argument("paired FFN source window is incomplete");
@@ -233,11 +421,12 @@ NativeSourcePartitionStrategy::enumerateImpl(
          })))
       throw std::invalid_argument("paired FFN does not have both source pipeline handoffs");
     const auto half = m_profile.inputChannels / 2 +
-                      (pair ? m_profile.inputChannels % 2 : 0);
+                      (pair || blockProgram ? m_profile.inputChannels % 2 : 0);
     hybridStageDigest = nativePlanningDigest("source-hybrid|" + graph.graphDigest + "|" +
                                              m_profile.boundaryNode + "|" +
                                              std::to_string(m_profile.inputChannels) +
-                                             (pair ? "|" + windows.back().transform.downNode : ""));
+                                             (blockProgram ? "|" + m_profile.suffixNode :
+                                              pair ? "|" + windows.back().transform.downNode : ""));
     auto first = NativeJson::array();
     first.push_back(NativeJson{{"axis", shardAxis}, {"begin", 0},
                                {"end", half}, {"extent", m_profile.inputChannels}});
@@ -297,27 +486,29 @@ NativeSourcePartitionStrategy::enumerateImpl(
       value.validate();
       return value.canonicalJson();
     };
-    candidate.sourceTransformByRole[m_profile.roles[1]] = rankTransform(0);
-    candidate.sourceTransformByRole[m_profile.roles[2]] = rankTransform(1);
-    if (!pair && !m_profile.convBiasInitializer.empty()) {
-      // A fused Conv bias has no explicit Add in the source graph; the suffix
-      // still has to apply it exactly once. Bind the transform either way and
-      // let lowering decide whether the source already spells the Add out.
-      std::string biasNode = m_profile.boundaryNode;
-      if (lastRankNode + 1 < graph.topologicalOrder.size()) {
-        const auto& nextId = graph.topologicalOrder[lastRankNode + 1];
-        const auto next = std::find_if(graph.nodes.begin(), graph.nodes.end(),
-          [&] (const auto& node) { return node.id == nextId; });
-        if (next != graph.nodes.end() && next->opType == "Add") biasNode = nextId;
+    if (!blockProgram) {
+      candidate.sourceTransformByRole[m_profile.roles[1]] = rankTransform(0);
+      candidate.sourceTransformByRole[m_profile.roles[2]] = rankTransform(1);
+      if (!pair && !m_profile.convBiasInitializer.empty()) {
+        // A fused Conv bias has no explicit Add in the source graph; the suffix
+        // still has to apply it exactly once. Bind the transform either way and
+        // let lowering decide whether the source already spells the Add out.
+        std::string biasNode = m_profile.boundaryNode;
+        if (lastRankNode + 1 < graph.topologicalOrder.size()) {
+          const auto& nextId = graph.topologicalOrder[lastRankNode + 1];
+          const auto next = std::find_if(graph.nodes.begin(), graph.nodes.end(),
+            [&] (const auto& node) { return node.id == nextId; });
+          if (next != graph.nodes.end() && next->opType == "Add") biasNode = nextId;
+        }
+        NativeOnnxSourceTransformV1 bias;
+        bias.kind = "add-conv-bias";
+        bias.sourceConv = m_profile.boundaryNode;
+        bias.node = biasNode;
+        bias.bias = m_profile.convBiasInitializer;
+        bias.output = m_profile.convOutputTensor;
+        bias.validate();
+        candidate.sourceTransformByRole[m_profile.roles[3]] = bias.canonicalJson();
       }
-      NativeOnnxSourceTransformV1 bias;
-      bias.kind = "add-conv-bias";
-      bias.sourceConv = m_profile.boundaryNode;
-      bias.node = biasNode;
-      bias.bias = m_profile.convBiasInitializer;
-      bias.output = m_profile.convOutputTensor;
-      bias.validate();
-      candidate.sourceTransformByRole[m_profile.roles[3]] = bias.canonicalJson();
     }
     candidate.executionPlan.stageLayout = {
       {m_profile.roles[0] + "/stage", nativePlanningDigest("source-prefix|" + graph.graphDigest),
@@ -327,6 +518,10 @@ NativeSourcePartitionStrategy::enumerateImpl(
       {m_profile.roles[3] + "/stage", nativePlanningDigest("source-suffix|" + graph.graphDigest),
        {m_profile.roles[3]}},
     };
+    if (blockProgram) {
+      buildBlockSteps(candidate, graph, control);
+    }
+    else {
     const auto layout = [&] {
       if (!m_profile.activationLayoutDigest.empty()) return m_profile.activationLayoutDigest;
       return nativePlanningDigest("source-activation-layout-v1");
@@ -464,6 +659,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
       ? contractSlot(sourceOutput, {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", "")
       : contractSlot(sourceOutput, graph.modelOutputs.front(), "LOCAL_STEP"));
     candidate.executionPlan.steps.push_back(std::move(suffix));
+    }
   }
 
   // Ordinary source roles execute through the same V2 step template as the
@@ -500,9 +696,11 @@ NativeSourcePartitionStrategy::enumerateImpl(
       step.unitId = m_profile.roles.front();
       step.operation = "CALL_SUBGRAPH";
       step.artifactEntry = m_profile.roles.front() + "/artifact";
-      step.inputSlots.push_back(graph.modelInputs.empty()
-        ? contractSlot(sourceInput, {"", m_profile.activationDtype, {}, {}}, "EPOCH_INPUT", "", "")
-        : contractSlot(sourceInput, graph.modelInputs.front(), "EPOCH_INPUT", "", ""));
+      for (const auto& input : graph.modelInputs)
+        step.inputSlots.push_back(contractSlot(input.name, input, "EPOCH_INPUT", "", ""));
+      if (step.inputSlots.empty())
+        step.inputSlots.push_back(contractSlot(sourceInput, {"", m_profile.activationDtype, {}, {}},
+                                               "EPOCH_INPUT", "", ""));
       step.outputSlots.push_back(graph.modelOutputs.empty()
         ? contractSlot(sourceOutput, {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", "")
         : contractSlot(sourceOutput, graph.modelOutputs.front(), "LOCAL_STEP", "", ""));
@@ -710,7 +908,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
   for (const auto& role : m_profile.roles) {
     if (control) control->requireActive();
     std::vector<std::string> roleNodes;
-    if (pair) {
+    if (pair || blockProgram) {
       roleNodes = candidate.roleNodeIdsByRole.at(role);
     }
     else {
@@ -729,14 +927,23 @@ NativeSourcePartitionStrategy::enumerateImpl(
       residentBytes = std::max<std::uint64_t>(1, *m_profile.ffnPrefixWeightBytes);
     if (transformedRoles && (role == m_profile.roles[1] || role == m_profile.roles[2])) {
       const std::size_t rank = role == m_profile.roles[1] ? 0 : 1;
-      if (pair) {
+      if (blockProgram) {
+        residentBytes = 0;
+        for (const auto& entry : m_profile.blockEntries) {
+          if (rank == 1 && &entry == &m_profile.blockEntries.back()) continue;
+          if (entry.initializerBytes > std::numeric_limits<std::uint64_t>::max() - residentBytes)
+            throw std::overflow_error("source block rank initializer memory exceeds uint64");
+          residentBytes += entry.initializerBytes;
+        }
+        residentBytes = std::max<std::uint64_t>(1, residentBytes);
+      }
+      else if (pair) {
         residentBytes = 0;
         for (const auto& window : windows) {
           const auto extent = window.transform.extent;
-          if (window.weightBytes == 0 || window.weightBytes % extent != 0)
-            throw std::invalid_argument("initializer bytes do not fit the FFN channel split");
           const auto bounds = nativeConvInputChannelRanges(extent, 2)[rank];
-          const auto sliced = (window.weightBytes / extent) * (bounds.second - bounds.first);
+          const auto sliced = nativeFfnSliceBytes(window.weightBytes, extent,
+                                                 bounds.second - bounds.first);
           if (sliced > std::numeric_limits<std::uint64_t>::max() - residentBytes)
             throw std::overflow_error("FFN rank resident weights exceed uint64");
           residentBytes += sliced;

@@ -1382,7 +1382,8 @@ main(int argc, char** argv)
                              // into the derived role graph it executes.
                              NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1,
                              NATIVE_FFN_PAIR_CAPABILITY_V1,
-                             NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1};
+                             NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1,
+                             NATIVE_SOURCE_ATTENTION_ENTRY_CAPABILITY_V1};
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
       {

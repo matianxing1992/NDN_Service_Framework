@@ -616,7 +616,30 @@ NativeEntryRunner::run(const RoleExecutionContext& ctx)
     // make the child report that input as missing even though the step supplied it, so the
     // bundle is narrowed to the one tensor this graph input needs. A slot whose bundle
     // already names the tensor, or a raw payload, is passed through untouched.
-    if (isEncodedTensorBundle(value->second.payload)) {
+    if (value->second.localTensors) {
+      const auto views = decodeTensorBundleViews(value->second);
+      const auto byName = [&views] (const std::string& name) {
+        return std::find_if(views.begin(), views.end(), [&name] (const auto& tensor) {
+          return tensor.name == name;
+        });
+      };
+      auto selected = byName(graphInput);
+      if (selected == views.end()) selected = byName(bound->second);
+      if (selected != views.end() && (views.size() != 1 || selected->name != graphInput)) {
+        auto local = std::make_shared<LocalTensorBundle>();
+        local->owner = value->second.localTensors->owner;
+        local->tensors.push_back(*selected);
+        local->tensors.front().name = graphInput;
+        TensorBundle narrowed;
+        narrowed.name = graphInput;
+        narrowed.expectedBytes = tensorBundleWireSize(*local);
+        narrowed.localTensors = std::move(local);
+        narrowed.transferObservation = value->second.transferObservation;
+        child.inputsByScope.emplace(graphInput, std::move(narrowed));
+        continue;
+      }
+    }
+    else if (isEncodedTensorBundle(value->second.payload)) {
       // The bundle names its tensor after the slot only when the slot carries exactly one
       // value; a vector-valued slot names each member. So both the graph input name and the
       // slot id are legitimate keys, and the graph input name is preferred because that is
