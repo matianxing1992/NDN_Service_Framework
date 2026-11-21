@@ -1480,10 +1480,10 @@ check_waf_inventory() {
 }
 
 native_runtime_rpath() {
-  local paths="$RUNTIME_LIBRARY_DIR" directory
-  for directory in "${NAC_SDK_PREFIX:+$NAC_SDK_PREFIX/lib}" "$GLOBAL_LIBRARY_DIR"; do
+  local paths="" directory
+  for directory in "${NAC_SDK_PREFIX:+$NAC_SDK_PREFIX/lib}" "$RUNTIME_LIBRARY_DIR" "$GLOBAL_LIBRARY_DIR"; do
     if [[ -n "$directory" && ":$paths:" != *":$directory:"* ]]; then
-      paths+=":$directory"
+      paths+="${paths:+:}$directory"
     fi
   done
   printf '%s' "$paths"
