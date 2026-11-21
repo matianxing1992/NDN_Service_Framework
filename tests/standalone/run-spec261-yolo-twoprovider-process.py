@@ -153,7 +153,9 @@ registry2=json.loads(json.dumps(registry)); registry2['artifactPolicyAuthority']
 # authority config
 # Every case adds one request; keep the actor lifetimes above the whole
 # session so a later case does not fail on an expired grant or fetch window.
-RUN_FOR_MS=120000+20000*len(args.case)
+# A case takes about 30 s on the high-latency topology, so budget a minute each
+# plus the fixed startup allowance.
+RUN_FOR_MS=120000+60000*len(args.case)
 ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":RUN_FOR_MS,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":{"/example/hello/provider":"../provider/public.pem","/example/hello/provider2":"../provider2/public.pem"},"publication_sources":{package:{"model_name":model["model_name"],"model_content_digest":model["content_digest"],"canonical_source_digest":src_digest,"initializer_object_digest":YOLO[variant]["initializer"],"artifact_profile_digest":profile}}}}
 if args.case:
  # A longer request window needs a matching grant policy ceiling.
