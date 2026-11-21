@@ -2364,13 +2364,16 @@ def build(bld):
     # Fixture preparation helper: print the canonical identity a planner will
     # compute for one ONNX file, so a tracked driver never re-implements it.
     bld.program(target='../native-source-inspect', name='native-source-inspect',
-                source=[bld.path.find_node('standalone/native-source-inspect.cpp')] +
+                source=[bld.path.find_node('standalone/native-source-inspect.cpp'),
+                        bld.path.find_node('standalone/native-yolo-tp-checkpoints.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ' + di_integration_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
-                linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()],
-                install_path=None)
+                linkflags=['-Wl,--no-relax', '-Wl,-rpath,$ORIGIN',
+                           '-Wl,-rpath,$ORIGIN/../../lib'],
+                install_path='${PREFIX}/libexec/ndnsf-tests'
+                    if bld.env.INSTALL_EXPERIMENT_FIXTURES else None)
 
     tests_share = '${PREFIX}/share/ndnsf/tests'
     bld.install_files(tests_share, 'run-checks.py', chmod=0o755)

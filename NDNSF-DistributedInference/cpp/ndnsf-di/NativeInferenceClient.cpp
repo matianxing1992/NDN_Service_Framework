@@ -825,8 +825,15 @@ awaitNativeCancellation(const std::shared_ptr<NativeInferenceHandle::Operation>&
     operation->cancellationReceipt.cancellationFencedRoles = fenced.size();
     operation->cancellationReceipt.cancellationDrainedRoles = drained.size();
   }
-  std::lock_guard<std::mutex> lock(operation->mutex);
-  operation->cancellationReceipt.cancellationUnconfirmed = drained.size() != targets.size();
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    operation->cancellationReceipt.cancellationUnconfirmed = drained.size() != targets.size();
+  }
+  std::ostringstream receipt;
+  receipt << "NDNSF_DI_NATIVE_CANCELLATION_RECEIPT requestId=" << id.toUri()
+          << " expected=" << targets.size() << " fenced=" << fenced.size()
+          << " drained=" << drained.size();
+  logRuntimeEvidence(receipt.str());
 }
 
 bool

@@ -1,7 +1,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -11,6 +14,48 @@
 #include <vector>
 
 namespace ndnsf::di::detail {
+
+bool
+bindNativeSourceProgramEntries(const NativeSelectionProjectionV3& projection,
+                               NativeModelRunnerSpec& spec)
+{
+  spec.sourceProgramDependencyEntries.clear();
+  const auto& role = projection.assemblyContract();
+  const bool programRole = !role.sourceTransformV1.empty() &&
+    nativeParseJson(role.sourceTransformV1).value("schema", std::string{}) ==
+      NATIVE_SOURCE_ENTRY_PROGRAM_V1;
+  const auto files = spec.metadata.find("sourceEntryFiles");
+  if (!programRole) {
+    if (files != spec.metadata.end() || spec.metadata.count("sourceEntryProgram") != 0)
+      throw std::invalid_argument("unbound source program files");
+    return false;
+  }
+  if (files == spec.metadata.end() || spec.entryContract || projection.generationContract.enabled ||
+      spec.role != role.selectedRole || spec.backend != role.backend)
+    throw std::invalid_argument("source program has no complete admitted runner file set");
+  validateNativeAssembly(role);
+  const auto program = NativeOnnxSourceEntryProgramV1::parse(role.sourceTransformV1);
+  program.validateRank(projection.plan, role.selectedRole, role.tensorParallelRank);
+  (void)program.bindSourceOrdinals(role.nodeIndices);
+  const auto entries = decodeNativeSourceEntryFiles(files->second);
+  if (entries.size() != program.entries.size())
+    throw std::invalid_argument("source program files do not cover the admitted CALLs");
+  for (std::size_t index = 0; index < entries.size(); ++index) {
+    if (entries[index].entryId != program.entries[index].entryId)
+      throw std::invalid_argument("source program files have a different CALL order");
+  }
+  if (!program.tensorLayouts.empty()) {
+    for (const auto& call : projection.plan.steps) {
+      if (call.unitId == role.selectedRole && call.operation == "CALL_SUBGRAPH" &&
+          std::any_of(call.inputSlots.begin(), call.inputSlots.end(), [] (const auto& slot) {
+            return slot.source == "LOCAL_STEP" || slot.source == "REMOTE_STEP";
+          }))
+        spec.sourceProgramDependencyEntries.push_back(call.artifactEntry);
+    }
+  }
+  spec.metadata["sourceEntryProgram"] = program.canonicalJson();
+  return true;
+}
 
 /** Bind the exact source-name ABI of an ordinary, single-CALL region. */
 bool

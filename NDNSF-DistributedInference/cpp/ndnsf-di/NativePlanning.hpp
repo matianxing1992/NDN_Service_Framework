@@ -535,6 +535,10 @@ nativePlanRequiredCapabilities(const NativeExecutionPlan& plan);
 std::vector<std::string>
 nativePlanRequiredCapabilities(const NativeSplitCandidate& candidate);
 
+/** Identify tensor peers that must execute on distinct admitted Providers. */
+std::vector<std::pair<std::string, std::string>>
+nativeDistinctProviderPairs(const NativeSplitCandidate& candidate);
+
 /** Whether one Provider's declared capabilities cover what the plan requires. */
 bool
 nativeProviderCanExecute(const NativeProviderPlanningView& offer,

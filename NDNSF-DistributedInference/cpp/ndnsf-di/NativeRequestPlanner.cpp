@@ -329,7 +329,8 @@ bool sameOfferBindingContext(const NativeOfferBindingContext& left,
     left.placementObservationSnapshotDigest == right.placementObservationSnapshotDigest &&
     left.placementObservationFallbackReason == right.placementObservationFallbackReason &&
     left.placementProbeRoundCompleted == right.placementProbeRoundCompleted &&
-    left.requiredExecutionCapabilities == right.requiredExecutionCapabilities;
+    left.requiredExecutionCapabilities == right.requiredExecutionCapabilities &&
+    left.distinctProviderPairs == right.distinctProviderPairs;
 }
 
 NativeJson placementProbePairsJson(
@@ -1746,6 +1747,7 @@ NativePlannedRequest planNativeRequestImpl(
     }
     logPlanPhase(control.requestId, "candidate_role_copy", candidateCopyTiming);
     context.requiredExecutionCapabilities = nativePlanRequiredCapabilities(candidate);
+    context.distinctProviderPairs = nativeDistinctProviderPairs(candidate);
     NativeRolePlacementProposalV3 proposal;
     auto expectedPlacementIdentity = ports.placementIdentity;
     const auto placementStart = std::chrono::steady_clock::now();
@@ -2405,7 +2407,9 @@ NativePlannedRequest planNativeRequestImpl(
     }
     for (const auto& scope : scopes)
       plan.keyScopes.push_back({scope.first, std::vector<std::string>(scope.second.begin(), scope.second.end())});
-    if (!conversationTurn && options.generation && options.generation->enabled) {
+    const bool generation = options.generation && options.generation->enabled;
+    if (!conversationTurn &&
+        (generation || execution.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2)) {
       if (scopes.count(detail::NATIVE_CANCELLATION_SCOPE))
         throw std::invalid_argument("execution dataflow uses reserved cancellation scope");
       plan.keyScopes.push_back({detail::NATIVE_CANCELLATION_SCOPE, execution.roles});

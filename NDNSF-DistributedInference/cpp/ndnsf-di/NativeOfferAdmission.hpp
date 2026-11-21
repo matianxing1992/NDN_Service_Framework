@@ -47,6 +47,8 @@ struct NativeOfferBindingContext {
   // Candidate-derived execution constraints, not remote authorization or V4 telemetry.
   // The sealer independently derives the same set from the final execution plan.
   std::vector<std::string> requiredExecutionCapabilities;
+  // Source-derived role pairs whose admitted Provider identities must differ.
+  std::vector<std::pair<std::string, std::string>> distinctProviderPairs;
 };
 /** Only the admission owner constructs verified observations; no lease authority. */
 class NativeAdmittedOfferV3 {

@@ -14,6 +14,11 @@ bool
 bindNativeWholeRegionEntry(const NativeSelectionProjectionV3& projection,
                           NativeModelRunnerSpec& spec);
 
+/** Bind the admitted source program to the verified file inventory. */
+bool
+bindNativeSourceProgramEntries(const NativeSelectionProjectionV3& projection,
+                               NativeModelRunnerSpec& spec);
+
 } // namespace ndnsf::di::detail
 
 #endif // NDNSF_DI_DETAIL_NATIVE_WHOLE_REGION_ENTRY_HPP

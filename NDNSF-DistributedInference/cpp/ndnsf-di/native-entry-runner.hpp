@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
@@ -12,6 +13,26 @@
 #include <vector>
 
 namespace ndnsf::di {
+
+/** Byte identity of one model and its optional external initializer in a source program. */
+struct NativeSourceEntryFiles
+{
+  std::string entryId;
+  std::string graphDigest;
+  std::uint64_t graphBytes = 0;
+  std::string initializerDigest;
+  std::uint64_t initializerBytes = 0;
+};
+
+/** The signed array order defines the file layout. Entry IDs never become path components. */
+std::filesystem::path
+nativeSourceEntryGraphPath(const std::filesystem::path& root, std::size_t index);
+
+std::string
+encodeNativeSourceEntryFiles(const std::vector<NativeSourceEntryFiles>& entries);
+
+std::vector<NativeSourceEntryFiles>
+decodeNativeSourceEntryFiles(const std::string& wire);
 
 /** Model-independent graph boundary supplied by an admitted adapter.
  *

@@ -21242,8 +21242,7 @@ BOOST_AUTO_TEST_CASE(ASecondTurnFindsThePublishedRunnerAndReusesEveryChildSessio
   // The case T004's first sentence actually asks for, driven through the cache the Provider
   // uses. A runner is published for one projection, then looked up again for a second
   // projection that differs only in request identity: same artifact, same rank, same plan. The
-  // cache must hand the same runner back, because that is what keeps the children's sessions
-  // resident and stops a second turn from loading 58 ONNX sessions again.
+  // cache lease must retain the original runner and its resident child sessions.
   //
   // The runner is the real tensor-parallel parent over one assembled unit, not a stub: a stub
   // would prove the cache stores pointers, not that a reusable unit exists.
@@ -21319,15 +21318,21 @@ BOOST_AUTO_TEST_CASE(ASecondTurnFindsThePublishedRunnerAndReusesEveryChildSessio
   const auto bootId = std::string("reuse-cache-boot");
   ndnsf::di::NativeProviderRunnerReuseCache cache(4);
   cache.publish(projectionFor("/request/turn/0"), provider, bootId, nullptr, runner);
-  const auto reused = cache.lookup(projectionFor("/request/turn/1"), provider, bootId, nullptr);
+  auto reused = cache.lookup(projectionFor("/request/turn/1"), provider, bootId, nullptr);
   BOOST_REQUIRE_MESSAGE(reused != nullptr,
     "a second turn of the same artifact found no published runner");
-  BOOST_CHECK(reused.get() == runner.get());
   // A different artifact must not reuse it: the unit was assembled from this rank's tables, and
   // another artifact has different ones.
   auto otherProjection = projectionFor("/request/turn/1");
   otherProjection.assembly.artifactDigest = std::string("sha256:") + std::string(64, 'd');
   BOOST_CHECK(cache.lookup(otherProjection, provider, bootId, nullptr) == nullptr);
+
+  const std::weak_ptr<NativeModelRunner> original = runner;
+  runner.reset();
+  cache.clear();
+  BOOST_CHECK(!original.expired());
+  reused.reset();
+  BOOST_CHECK(original.expired());
 
   std::filesystem::remove_all(root, cleanupError);
 }

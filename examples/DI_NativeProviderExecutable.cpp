@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-publication.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
@@ -1379,7 +1380,11 @@ main(int argc, char** argv)
                              NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1,
                              // The worker lowers an admitted ONNX source transform
                              // into the derived role graph it executes.
-                             NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1};
+                             NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1,
+                             NATIVE_FFN_PAIR_CAPABILITY_V1,
+                             NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1,
+                             NATIVE_SOURCE_ATTENTION_ENTRY_CAPABILITY_V1,
+                             NATIVE_SOURCE_TENSOR_LAYOUT_CAPABILITY_V1};
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
       {
@@ -2322,6 +2327,8 @@ main(int argc, char** argv)
                       return signNativeAssemblyManifest(
                         keyChain, providerCert, manifestBytes);
                     };
+                  bindNativeSourceProgramManifestAuthentication(projection, assemblyOptions,
+                                                                keyChain, providerCert);
                   logProviderPreparationProgress(projection, "CACHE_ACQUIRE_BEGIN",
                                                  "provider-artifact-cache");
                   NativeRequestControl control;
@@ -2407,7 +2414,11 @@ main(int argc, char** argv)
                         "\",\"role\":\"" + projection.assemblyContract().selectedRole +
                         "\",\"recipeDigest\":\"" + projection.assemblyContract().recipeDigest +
                         "\",\"backendAbi\":\"" + projection.assemblyContract().backendAbi + "\"}";
-                      artifact->ciphertextBytes = static_cast<std::uint64_t>(artifactBytes);
+                      artifact->ciphertextBytes = built.metadata.count("sourceEntryFiles") != 0
+                        ? validateNativeAssembledArtifactFiles(built, jobOptions.cacheDir,
+                            projection.assemblyContract().maxAssembledBytes, false,
+                            [&jobControl] { jobControl.requireActive(); })
+                        : static_cast<std::uint64_t>(artifactBytes);
                       auto runnerSpec = std::make_shared<const NativeModelRunnerSpec>(
                         std::move(built));
                       return ProviderArtifactCache::BuildResult{
@@ -2454,6 +2465,9 @@ main(int argc, char** argv)
                     spec.path = cachedPath->second;
                     if (!std::filesystem::is_regular_file(spec.path))
                       throw std::runtime_error("DI_PROVIDER_ARTIFACT_MATERIALIZATION_MISSING");
+                    if (templateHit && spec.metadata.count("sourceEntryFiles") != 0)
+                      validateNativeAssembledArtifactFiles(spec, assemblyOptions.cacheDir,
+                        role.maxAssembledBytes, true, [&control] { control.requireActive(); });
                   }
                   else if (protectedRuntime) {
                     plaintextLease = materializeNativeCanonicalOnnxCacheHit(

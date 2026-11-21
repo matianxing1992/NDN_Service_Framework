@@ -1,6 +1,7 @@
 #include "NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -644,6 +645,20 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
     if (roles.count(role) == 0)
       throw std::invalid_argument("source transform names an undeclared role");
     const auto transform = nativeParseJson(wire);
+    if (transform.is_object() &&
+        transform.value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1) {
+      const auto program = NativeOnnxSourceEntryProgramV1::parse(wire);
+      const auto identity = tensorIdentityByRole.find(role);
+      if (identity == tensorIdentityByRole.end() || identity->second.degree != 2 ||
+          identity->second.tensorShardV1.empty())
+        throw std::invalid_argument("source entry program requires a two-rank shard identity");
+      program.validateRank(executionPlan, role, identity->second.rank);
+      const auto covered = program.sourceNodeCover();
+      const auto region = roleNodeIdsByRole.find(role);
+      if (region == roleNodeIdsByRole.end() || covered != region->second)
+        throw std::invalid_argument("source entry program does not cover the ordered source region");
+      continue;
+    }
     if (!transform.is_object() ||
         transform.value("schema", std::string{}) != "source_transform_v1")
       throw std::invalid_argument("source transform schema is unsupported");
@@ -667,6 +682,16 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
           transform.value("bias", std::string{}).empty() ||
           transform.value("partial", std::string{}).empty())
         throw std::invalid_argument("conv-bias transform is incomplete");
+    }
+    else if (kind == "ffn-pair-partial") {
+      const auto pair = NativeOnnxSourceTransformV1::parse(wire);
+      const auto identity = tensorIdentityByRole.find(role);
+      if (identity == tensorIdentityByRole.end() || identity->second.degree != 2 ||
+          identity->second.rank >= 2 || identity->second.tensorShardV1.empty())
+        throw std::invalid_argument("paired FFN requires a two-rank shard identity");
+      const auto ranges = nativeConvInputChannelRanges(pair.extent, 2);
+      if (ranges[identity->second.rank] != std::make_pair(pair.begin, pair.end))
+        throw std::invalid_argument("paired FFN transform range differs from rank identity");
     }
     else if (!kind.empty()) {
       throw std::invalid_argument("source transform kind is unsupported");
@@ -935,7 +960,97 @@ nativePlanRequiredCapabilities(const NativeSplitCandidate& candidate)
   }
   if (!candidate.sourceTransformByRole.empty())
     required.emplace_back(NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1);
+  bool ffnPair = false;
+  bool sourceProgram = false;
+  bool attentionEntry = false;
+  bool tensorLayout = false;
+  for (const auto& [role, wire] : candidate.sourceTransformByRole) {
+    const auto transform = nativeParseJson(wire);
+    if (transform.value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1) {
+      sourceProgram = true;
+      tensorLayout |= transform.contains("tensorLayouts");
+      for (const auto& entry : transform.at("entries")) {
+        const auto kind = entry.at("transform").at("kind").get<std::string>();
+        ffnPair |= kind == "ffn-pair-partial";
+        attentionEntry |= kind == "attention-qkv" || kind == "attention-heads" ||
+                          kind == "attention-rms-stat" || kind == "attention-rms-normalize" ||
+                          kind == "attention-source-component";
+      }
+    }
+    else {
+      ffnPair |= transform.value("kind", std::string{}) == "ffn-pair-partial";
+    }
+  }
+  if (ffnPair) required.emplace_back(NATIVE_FFN_PAIR_CAPABILITY_V1);
+  if (sourceProgram) required.emplace_back(NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1);
+  if (attentionEntry) required.emplace_back(NATIVE_SOURCE_ATTENTION_ENTRY_CAPABILITY_V1);
+  if (tensorLayout) required.emplace_back(NATIVE_SOURCE_TENSOR_LAYOUT_CAPABILITY_V1);
   return required;
+}
+
+std::vector<std::pair<std::string, std::string>>
+nativeDistinctProviderPairs(const NativeSplitCandidate& candidate)
+{
+  std::set<std::string> unbound;
+  for (const auto& [id, transform] : candidate.sourceTransformByRole) {
+    const auto recipe = nativeParseJson(transform);
+    if (recipe.value("kind", std::string{}) == "ffn-pair-partial" ||
+        recipe.value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1)
+      unbound.insert(id);
+  }
+  std::vector<std::pair<std::string, std::string>> pairs;
+  for (const auto& stage : candidate.executionPlan.stageLayout) {
+    std::size_t bound = 0;
+    for (const auto& id : stage.unitRoleIds)
+      bound += unbound.erase(id);
+    if (bound == 0) continue;
+    if (stage.degree() != 2 || bound != 2)
+      throw std::invalid_argument("paired FFN source stage requires exactly two transformed ranks");
+    const auto& leftWire = candidate.sourceTransformByRole.at(stage.unitRoleIds[0]);
+    const auto& rightWire = candidate.sourceTransformByRole.at(stage.unitRoleIds[1]);
+    const auto isProgram = [] (const auto& wire) {
+      return nativeParseJson(wire).value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1;
+    };
+    if (isProgram(leftWire) != isProgram(rightWire))
+      throw std::invalid_argument("source stage mixes single-entry and multi-entry ranks");
+    if (isProgram(leftWire)) {
+      auto left = NativeOnnxSourceEntryProgramV1::parse(leftWire);
+      const auto right = NativeOnnxSourceEntryProgramV1::parse(rightWire);
+      if (!left.tensorLayouts.empty() || !right.tensorLayouts.empty()) {
+        if (left.tensorLayouts.empty() || right.tensorLayouts.empty() ||
+            nativeParseJson(leftWire).at("tensorLayouts") !=
+              nativeParseJson(rightWire).at("tensorLayouts"))
+          throw std::invalid_argument("source peers bind different whole-model tensor layouts");
+        left.validateRank(candidate.executionPlan, stage.unitRoleIds[0], 0);
+        right.validateRank(candidate.executionPlan, stage.unitRoleIds[1], 1);
+        pairs.emplace_back(stage.unitRoleIds[0], stage.unitRoleIds[1]);
+        continue;
+      }
+      const bool hasRankZeroEpilogue = left.entries.size() == right.entries.size() + 1 &&
+        !right.entries.empty() &&
+        right.entries.back().transform.kind == "ffn-pair-partial" &&
+        left.entries.back().transform.kind == "attention-source-component" &&
+        std::any_of(right.entries.begin(), right.entries.end(), [] (const auto& entry) {
+          return entry.transform.kind == "attention-heads";
+        });
+      if (left.entries.size() != right.entries.size() && !hasRankZeroEpilogue)
+        throw std::invalid_argument("source peer programs carry different numbers of entries");
+      for (std::size_t index = 0; index < right.entries.size(); ++index) {
+        auto& a = left.entries[index];
+        const auto& b = right.entries[index];
+        a.transform.begin = b.transform.begin;
+        a.transform.end = b.transform.end;
+        if (a.sourceNodes != b.sourceNodes || a.inputPorts != b.inputPorts ||
+            a.outputPorts != b.outputPorts ||
+            a.transform.canonicalJson() != b.transform.canonicalJson())
+          throw std::invalid_argument("source peer programs carry different transformation facts");
+      }
+    }
+    pairs.emplace_back(stage.unitRoleIds[0], stage.unitRoleIds[1]);
+  }
+  if (!unbound.empty())
+    throw std::invalid_argument("paired FFN source role has no stage");
+  return pairs;
 }
 
 bool
