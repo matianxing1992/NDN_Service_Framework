@@ -27,6 +27,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
 #include <onnxruntime_cxx_api.h>
 #include <onnx/checker.h>
+#include <onnx/defs/tensor_proto_util.h>
 #include <array>
 #include <map>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
@@ -35,6 +36,7 @@
 #include <onnx/shape_inference/implementation.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <unistd.h>
@@ -2749,13 +2751,15 @@ subgraph(const onnx::ModelProto& source, const std::vector<std::string>& nodeNam
 std::vector<float>
 runOrt(const onnx::ModelProto& model, const std::map<std::string, std::vector<float>>& inputs,
        const std::map<std::string, std::vector<std::int64_t>>& shapes,
-       const std::string& output)
+       const std::string& output, const std::vector<std::int64_t>& outputShape,
+       GraphOptimizationLevel optimization)
 {
   std::string bytes;
   model.SerializeToString(&bytes);
   Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec261-transform");
   Ort::SessionOptions options;
   options.SetIntraOpNumThreads(1);
+  options.SetGraphOptimizationLevel(optimization);
   Ort::Session session(env, bytes.data(), bytes.size(), options);
   Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
   std::vector<Ort::Value> values;
@@ -2771,123 +2775,265 @@ runOrt(const onnx::ModelProto& model, const std::map<std::string, std::vector<fl
   const char* outputName = output.c_str();
   auto result = session.Run(Ort::RunOptions{nullptr}, names.data(), values.data(), values.size(),
                             &outputName, 1);
-  const auto count = result.front().GetTensorTypeAndShapeInfo().GetElementCount();
+  const auto outputInfo = result.front().GetTensorTypeAndShapeInfo();
+  BOOST_REQUIRE(outputInfo.GetShape() == outputShape);
+  const auto count = outputInfo.GetElementCount();
   const auto* data = result.front().GetTensorData<float>();
   return {data, data + count};
 }
 
-} // namespace
+constexpr int CONV_INPUT_CHANNELS = 16;
+constexpr int CONV_OUTPUT_CHANNELS = 32;
+constexpr int CONV_SIDE = 8;
+constexpr int CONV_PLANE = CONV_SIDE * CONV_SIDE;
+const std::vector<std::int64_t> CONV_INPUT_SHAPE{1, CONV_INPUT_CHANNELS, CONV_SIDE, CONV_SIDE};
+const std::vector<std::int64_t> CONV_OUTPUT_SHAPE{1, CONV_OUTPUT_CHANNELS, CONV_SIDE, CONV_SIDE};
 
-BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformMatchesTheFullConvModel)
+onnx::ModelProto
+loadConvFixture()
 {
   std::ifstream file(ndnsf::test::testFixturePath("spec261/conv-bypass.onnx").string(),
                      std::ios::binary);
   BOOST_REQUIRE(file.good());
-  std::string modelBytes((std::istreambuf_iterator<char>(file)), {});
+  const std::string bytes((std::istreambuf_iterator<char>(file)), {});
   onnx::ModelProto source;
-  BOOST_REQUIRE(source.ParseFromArray(modelBytes.data(), static_cast<int>(modelBytes.size())));
-  std::vector<std::int64_t> inputShape;
-  const auto frozen = readNpyFloats(
-    ndnsf::test::testFixturePath("spec261/conv-input.npy"), &inputShape);
-  BOOST_REQUIRE_EQUAL(frozen.size(), 3072U);
-  std::vector<float> images(frozen.begin(), frozen.begin() + 1024);
-  std::vector<float> residual(frozen.begin() + 1024, frozen.end());
-  const auto expected = readNpyFloats(ndnsf::test::testFixturePath("spec261/conv-oracle.npy"));
-  BOOST_REQUIRE_EQUAL(expected.size(), 2048U);
+  BOOST_REQUIRE(source.ParseFromArray(bytes.data(), static_cast<int>(bytes.size())));
+  return source;
+}
 
-  // Independent full-graph reference through ONNX Runtime.
-  const auto full = runOrt(source, {{"images", images}, {"residual", residual}},
-    {{"images", {1, 16, 8, 8}}, {"residual", {1, 32, 8, 8}}}, "predictions");
-  double fullError = 0.0;
-  for (std::size_t i = 0; i < expected.size(); ++i)
-    fullError = std::max(fullError, std::abs(double(full[i]) - double(expected[i])));
-  BOOST_CHECK_SMALL(fullError, 1e-5);
+struct HybridConvResult
+{
+  std::array<std::vector<float>, 2> ranks;
+  std::vector<float> sum;
+  std::vector<float> output;
+};
 
-  // prefix: pre0
+HybridConvResult
+runHybridConv(const onnx::ModelProto& source, const std::vector<float>& images,
+              const std::vector<float>& residual, GraphOptimizationLevel optimization,
+              bool synthesizeBias = false)
+{
   const auto prefix = subgraph(source, {"pre0"}, {"images"}, {"scaled"}, {"scale"});
-  const auto scaled = runOrt(prefix, {{"images", images}}, {{"images", {1, 16, 8, 8}}}, "scaled");
-  BOOST_REQUIRE_EQUAL(scaled.size(), 1024U);
+  const auto scaled = runOrt(prefix, {{"images", images}}, {{"images", CONV_INPUT_SHAPE}},
+                             "scaled", CONV_INPUT_SHAPE, optimization);
+  BOOST_REQUIRE_EQUAL(scaled.size(), images.size());
 
   const auto rankModel = subgraph(source, {"conv0"}, {"scaled"}, {"conv_out"}, {"w_conv"});
-  NativeOnnxSourceTransformV1 rank0;
-  rank0.kind = "conv-input-channel-partial";
-  rank0.node = "conv0"; rank0.axis = "input-channel";
-  rank0.input = "scaled"; rank0.weight = "w_conv"; rank0.output = "conv_out";
-  rank0.begin = 0; rank0.end = 8; rank0.extent = 16;
-  rank0.pads = {1, 1, 1, 1}; rank0.strides = {1, 1}; rank0.dilations = {1, 1};
-  NativeOnnxSourceTransformV1 rank1 = rank0;
-  rank1.begin = 8; rank1.end = 16;
-  const auto rank0Model = applyNativeOnnxSourceTransform(rankModel, rank0);
-  const auto rank1Model = applyNativeOnnxSourceTransform(rankModel, rank1);
-  const auto partial0 = runOrt(rank0Model, {{"scaled", scaled}},
-    {{"scaled", {1, 16, 8, 8}}}, "conv_out");
-  const auto partial1 = runOrt(rank1Model, {{"scaled", scaled}},
-    {{"scaled", {1, 16, 8, 8}}}, "conv_out");
-  std::vector<float> partial(partial0.size());
-  for (std::size_t i = 0; i < partial.size(); ++i) partial[i] = partial0[i] + partial1[i];
+  NativeOnnxSourceTransformV1 transform;
+  transform.kind = "conv-input-channel-partial";
+  transform.node = "conv0";
+  transform.axis = "input-channel";
+  transform.input = "scaled";
+  transform.weight = "w_conv";
+  transform.output = "conv_out";
+  transform.extent = CONV_INPUT_CHANNELS;
+  transform.pads = {1, 1, 1, 1};
+  transform.strides = {1, 1};
+  transform.dilations = {1, 1};
 
-  const auto suffixModel = subgraph(source, {"bias0", "relu0", "add0", "relu1", "head0"},
-    {"conv_out", "residual"}, {"predictions"}, {"b_conv"});
-  NativeOnnxSourceTransformV1 bias;
-  bias.kind = "add-conv-bias"; bias.sourceConv = "conv0"; bias.node = "bias0";
-  bias.bias = "b_conv"; bias.output = "conv_out";
-  const auto derived = applyNativeOnnxSourceTransform(suffixModel, bias);
-
-  // The fused-export case: the suffix consumes the Conv output directly and
-  // carries no bias Add yet. Build that graph explicitly; the frozen fixture
-  // already spells its bias out, so deriving it from the same bytes would
-  // exercise the early-return path instead.
-  onnx::ModelProto fused;
-  fused.set_ir_version(8);
-  fused.add_opset_import()->set_version(17);
-  fused.mutable_graph()->set_name("fused-suffix");
-  {
-    auto* bias = fused.mutable_graph()->add_initializer();
-    bias->set_name("b_conv");
-    bias->set_data_type(onnx::TensorProto::FLOAT);
-    bias->add_dims(32);
-    for (int i = 0; i < 32; ++i) bias->add_float_data(0.25F);
-    auto* relu = fused.mutable_graph()->add_node();
-    relu->set_name("relu0"); relu->set_op_type("Relu");
-    relu->add_input("conv_out"); relu->add_output("features");
-    auto* head = fused.mutable_graph()->add_node();
-    head->set_name("head0"); head->set_op_type("Identity");
-    head->add_input("features"); head->add_output("predictions");
-    for (const auto& name : {std::string("conv_out"), std::string("predictions")}) {
-      auto* value = name == "conv_out" ? fused.mutable_graph()->add_input()
-                                       : fused.mutable_graph()->add_output();
-      value->set_name(name);
-      auto* tensor = value->mutable_type()->mutable_tensor_type();
-      tensor->set_elem_type(onnx::TensorProto::FLOAT);
-      for (const auto dim : {1, 32, 8, 8})
-        tensor->mutable_shape()->add_dim()->set_dim_value(dim);
-    }
-    onnx::checker::check_model(fused);
+  HybridConvResult result;
+  std::vector<std::vector<NamedTensorView>> contributions;
+  for (std::size_t rank = 0; rank < result.ranks.size(); ++rank) {
+    transform.begin = rank * (CONV_INPUT_CHANNELS / 2);
+    transform.end = transform.begin + CONV_INPUT_CHANNELS / 2;
+    auto& partial = result.ranks[rank];
+    partial = runOrt(applyNativeOnnxSourceTransform(rankModel, transform), {{"scaled", scaled}},
+                     {{"scaled", CONV_INPUT_SHAPE}}, "conv_out", CONV_OUTPUT_SHAPE, optimization);
+    BOOST_REQUIRE_EQUAL(partial.size(), residual.size());
+    const auto* data = reinterpret_cast<const std::uint8_t*>(partial.data());
+    contributions.push_back({{"conv_out", TensorElementType::Float32, CONV_OUTPUT_SHAPE,
+                              {data, partial.size() * sizeof(float)}}});
   }
-  NativeOnnxSourceTransformV1 synthesized;
-  synthesized.kind = "add-conv-bias"; synthesized.sourceConv = "conv0";
-  synthesized.node = "conv_out";
-  synthesized.bias = "b_conv"; synthesized.output = "conv_out";
-  const auto synthesizedGraph = applyNativeOnnxSourceTransform(fused, synthesized);
-  bool hasBiasAdd = false;
-  for (const auto& node : synthesizedGraph.graph().node())
-    if (node.op_type() == "Add" && node.input_size() == 2 &&
-        node.input(0) == "conv_out" && node.input(1) == "b_conv") hasBiasAdd = true;
-  BOOST_CHECK(hasBiasAdd);
-  const auto synthesizedOut = runOrt(synthesizedGraph,
-    {{"conv_out", partial}},
-    {{"conv_out", {1, 32, 8, 8}}}, "predictions");
-  double synthesizedError = 0.0;
-  for (std::size_t i = 0; i < synthesizedOut.size(); ++i)
-    synthesizedError = std::max(synthesizedError,
-      std::abs(double(synthesizedOut[i]) - std::max(0.0, double(partial[i]) + 0.25)));
-  BOOST_CHECK_SMALL(synthesizedError, 1e-5);
-  const auto hybrid = runOrt(derived, {{"conv_out", partial}, {"residual", residual}},
-    {{"conv_out", {1, 32, 8, 8}}, {"residual", {1, 32, 8, 8}}}, "predictions");
-  double hybridError = 0.0;
-  for (std::size_t i = 0; i < expected.size(); ++i)
-    hybridError = std::max(hybridError, std::abs(double(hybrid[i]) - double(expected[i])));
-  BOOST_CHECK_SMALL(hybridError, 1e-5);
+  const auto summed = sumTensorBundleViews("conv_out", contributions);
+  const auto views = decodeTensorBundleViews(summed);
+  BOOST_REQUIRE_EQUAL(views.size(), 1U);
+  BOOST_REQUIRE_EQUAL(views.front().payload.size(), residual.size() * sizeof(float));
+  result.sum.resize(residual.size());
+  std::memcpy(result.sum.data(), views.front().payload.data(), views.front().payload.size());
+
+  auto suffix = subgraph(source, {"bias0", "relu0", "add0", "relu1", "head0"},
+                         {"conv_out", "residual"}, {"predictions"}, {"b_conv"});
+  if (synthesizeBias) {
+    // Model the suffix after extraction from a source Conv with a fused bias.
+    auto& graph = *suffix.mutable_graph();
+    BOOST_REQUIRE_EQUAL(graph.node(0).name(), "bias0");
+    BOOST_REQUIRE_EQUAL(graph.node(1).name(), "relu0");
+    graph.mutable_node(1)->set_input(0, "conv_out");
+    graph.mutable_node()->DeleteSubrange(0, 1);
+    auto* bias = graph.mutable_initializer(0);
+    bias->clear_dims();
+    bias->add_dims(CONV_OUTPUT_CHANNELS);
+  }
+  NativeOnnxSourceTransformV1 bias;
+  bias.kind = "add-conv-bias";
+  bias.sourceConv = "conv0";
+  bias.node = "bias0";
+  bias.bias = "b_conv";
+  bias.output = "conv_out";
+  const auto derived = applyNativeOnnxSourceTransform(suffix, bias);
+  result.output = runOrt(derived, {{"conv_out", result.sum}, {"residual", residual}},
+    {{"conv_out", CONV_OUTPUT_SHAPE}, {"residual", CONV_OUTPUT_SHAPE}},
+    "predictions", CONV_OUTPUT_SHAPE, optimization);
+  return result;
+}
+
+struct ConvReferenceValue
+{
+  double value;
+  double magnitude;
+};
+
+std::vector<ConvReferenceValue>
+referenceConvFp64(const onnx::ModelProto& source, const std::vector<float>& images,
+                  const std::vector<float>& residual)
+{
+  std::map<std::string, std::vector<float>> initializers;
+  for (const auto& tensor : source.graph().initializer())
+    initializers.emplace(tensor.name(), onnx::ParseData<float>(&tensor));
+  const auto& scale = initializers.at("scale");
+  const auto& weights = initializers.at("w_conv");
+  const auto& bias = initializers.at("b_conv");
+  BOOST_REQUIRE_EQUAL(scale.size(), CONV_INPUT_CHANNELS);
+  BOOST_REQUIRE_EQUAL(weights.size(), CONV_OUTPUT_CHANNELS * CONV_INPUT_CHANNELS * 9);
+  BOOST_REQUIRE_EQUAL(bias.size(), CONV_OUTPUT_CHANNELS);
+
+  std::vector<ConvReferenceValue> result;
+  for (int output = 0; output < CONV_OUTPUT_CHANNELS; ++output) {
+    for (int y = 0; y < CONV_SIDE; ++y) {
+      for (int x = 0; x < CONV_SIDE; ++x) {
+        double sum = 0;
+        double magnitude = std::abs(bias[output]);
+        for (int input = 0; input < CONV_INPUT_CHANNELS; ++input) {
+          for (int ky = 0; ky < 3; ++ky) {
+            for (int kx = 0; kx < 3; ++kx) {
+              const int iy = y + ky - 1;
+              const int ix = x + kx - 1;
+              if (iy < 0 || iy >= CONV_SIDE || ix < 0 || ix >= CONV_SIDE)
+                continue;
+              const auto weight = weights[(output * CONV_INPUT_CHANNELS + input) * 9 + ky * 3 + kx];
+              const double pixel = images[input * CONV_PLANE + iy * CONV_SIDE + ix];
+              const double term = pixel * scale[input] * weight;
+              sum += term;
+              magnitude += std::abs(term);
+            }
+          }
+        }
+        const double skip = residual[output * CONV_PLANE + y * CONV_SIDE + x];
+        const double outputValue = std::max(0.0, std::max(0.0, sum + bias[output]) + skip);
+        result.push_back({outputValue, magnitude + std::abs(skip)});
+      }
+    }
+  }
+  return result;
+}
+
+void
+checkConvFp32Error(const std::vector<float>& actual, const std::vector<ConvReferenceValue>& expected)
+{
+  BOOST_REQUIRE_EQUAL(actual.size(), expected.size());
+  // Budget four FP32 epsilons of the input-term magnitudes for this CPU fixture.
+  // The sum of magnitudes keeps the check meaningful when terms nearly cancel.
+  constexpr double BUDGET = 4 * std::numeric_limits<float>::epsilon();
+  double maxError = 0;
+  double maxBudgetFraction = 0;
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    const double error = std::abs(actual[i] - expected[i].value);
+    const double bound = BUDGET * expected[i].magnitude;
+    BOOST_TEST_CONTEXT("element " << i) {
+      BOOST_CHECK_LE(error, bound);
+    }
+    maxError = std::max(maxError, error);
+    if (bound > 0)
+      maxBudgetFraction = std::max(maxBudgetFraction, error / bound);
+  }
+  BOOST_TEST_MESSAGE("max absolute error=" << maxError << ", max budget fraction="
+                                             << maxBudgetFraction);
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformPreservesExactConvAndResidual)
+{
+  auto source = loadConvFixture();
+  // Every input channel is distinguishable, including the channels on both sides of the cut.
+  std::vector<float> images(CONV_INPUT_CHANNELS * CONV_PLANE);
+  for (int c = 0; c < CONV_INPUT_CHANNELS; ++c)
+    std::fill_n(images.begin() + c * CONV_PLANE, CONV_PLANE, static_cast<float>(c + 1));
+  for (auto& tensor : *source.mutable_graph()->mutable_initializer()) {
+    tensor.clear_raw_data();
+    tensor.clear_float_data();
+    if (tensor.name() == "scale") {
+      for (int c = 0; c < CONV_INPUT_CHANNELS; ++c)
+        tensor.add_float_data(0.5F);
+    }
+    else if (tensor.name() == "w_conv") {
+      for (int oc = 0; oc < CONV_OUTPUT_CHANNELS; ++oc) {
+        const int sign = oc == 0 ? 1 : oc == 1 ? -1 : 0;
+        for (int ic = 0; ic < CONV_INPUT_CHANNELS; ++ic)
+          for (int k = 0; k < 9; ++k)
+            tensor.add_float_data(k == 4 ? static_cast<float>(sign * (ic + 1)) : 0.0F);
+      }
+    }
+    else {
+      BOOST_REQUIRE_EQUAL(tensor.name(), "b_conv");
+      for (int c = 0; c < CONV_OUTPUT_CHANNELS; ++c)
+        tensor.add_float_data(0.5F);
+    }
+  }
+  std::vector<float> residual(CONV_OUTPUT_CHANNELS * CONV_PLANE);
+  std::array<std::vector<float>, 2> ranks;
+  std::vector<float> sum;
+  std::vector<float> expected;
+  // 0.5 * sum(c*c) on channels 1..8 and 9..16, respectively.
+  const std::array<float, 3> signs{1, -1, 0};
+  for (std::size_t i = 0; i < residual.size(); ++i) {
+    const auto sign = signs[std::min<std::size_t>(i / CONV_PLANE, 2)];
+    residual[i] = i % 2 == 0 ? -1.0F : 2.0F;
+    ranks[0].push_back(sign * 102.0F);
+    ranks[1].push_back(sign * 646.0F);
+    sum.push_back(sign * 748.0F);
+    expected.push_back(std::max(0.0F, std::max(0.0F, sum.back() + 0.5F) + residual[i]));
+  }
+  const auto full = runOrt(source, {{"images", images}, {"residual", residual}},
+    {{"images", CONV_INPUT_SHAPE}, {"residual", CONV_OUTPUT_SHAPE}},
+    "predictions", CONV_OUTPUT_SHAPE, ORT_ENABLE_ALL);
+  BOOST_CHECK(full == expected);
+  for (const bool fusedBias : {false, true}) {
+    const auto hybrid = runHybridConv(source, images, residual, ORT_ENABLE_ALL, fusedBias);
+    BOOST_TEST_CONTEXT("synthesize bias " << fusedBias) {
+      BOOST_CHECK(hybrid.ranks[0] == ranks[0]);
+      BOOST_CHECK(hybrid.ranks[1] == ranks[1]);
+      BOOST_CHECK(hybrid.sum == sum);
+      BOOST_CHECK(hybrid.output == expected);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformMatchesTheFullConvModel)
+{
+  const auto source = loadConvFixture();
+  const auto frozen = readNpyFloats(ndnsf::test::testFixturePath("spec261/conv-input.npy"));
+  BOOST_REQUIRE_EQUAL(frozen.size(), (CONV_INPUT_CHANNELS + CONV_OUTPUT_CHANNELS) * CONV_PLANE);
+  const auto inputEnd = frozen.begin() + CONV_INPUT_CHANNELS * CONV_PLANE;
+  const std::vector<float> images(frozen.begin(), inputEnd);
+  const std::vector<float> residual(inputEnd, frozen.end());
+  const auto reference = referenceConvFp64(source, images, residual);
+  BOOST_TEST_CONTEXT("frozen oracle") {
+    const auto expected = readNpyFloats(ndnsf::test::testFixturePath("spec261/conv-oracle.npy"));
+    checkConvFp32Error(expected, reference);
+  }
+  for (const auto optimization : {ORT_DISABLE_ALL, ORT_ENABLE_ALL}) {
+    const auto full = runOrt(source, {{"images", images}, {"residual", residual}},
+      {{"images", CONV_INPUT_SHAPE}, {"residual", CONV_OUTPUT_SHAPE}},
+      "predictions", CONV_OUTPUT_SHAPE, optimization);
+    const auto hybrid = runHybridConv(source, images, residual, optimization);
+    BOOST_TEST_CONTEXT("full graph, ORT optimization " << optimization) {
+      checkConvFp32Error(full, reference);
+    }
+    BOOST_TEST_CONTEXT("hybrid graph, ORT optimization " << optimization) {
+      checkConvFp32Error(hybrid.output, reference);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformRejectsAnUnboundConv)
