@@ -271,6 +271,10 @@ public:
   encodeSegmentCompact(const CollectiveOperationManifestV1& manifest,
                        const NdnsfDataV1Segment& segment);
 
+  /** Encode a complete ordered operation using one validated manifest digest. */
+  static std::vector<ProviderGroupBytes>
+  encodeSegmentsCompact(const SealedCollectiveOperationV1& operation);
+
   static SealedCollectiveOperationV1
   decodeSegment(const ProviderGroupBytes& wire,
                 const std::string& expectedDataName = {});

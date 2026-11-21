@@ -12,6 +12,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
@@ -4789,6 +4790,50 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
                                  expected.second.begin(), expected.second.end());
   }
   BOOST_CHECK_EQUAL(bus->publishedCount(), 0u);
+
+  // An unavailable first partial must leave every later exact read unissued.
+  auto finiteRole = roleSpecFor(plan, entry.unitId, "finite-steps", assignment, "");
+  std::vector<NativeExecutionStepSpec> finiteSteps{step};
+  for (const auto* id : {"first-sum", "later-sum"}) {
+    NativeExecutionStepSpec sum;
+    sum.stepId = id;
+    sum.unitId = entry.unitId;
+    sum.operation = "SUM";
+    sum.inputSlots = {slot("local", "LOCAL_STEP"), slot("peer", "REMOTE_STEP")};
+    sum.inputSlots.front().producerStepId = step.stepId;
+    sum.inputSlots.front().producerSlotId = "total";
+    sum.inputSlots.back().producerStepId = "peer-call";
+    sum.inputSlots.back().producerSlotId = "partial";
+    sum.outputSlots = {slot(std::string(id) + "-value", "LOCAL_STEP")};
+    finiteSteps.push_back(std::move(sum));
+
+    const std::string dataName = "/fixture/peer/" + std::string(id);
+    DependencyEdge partial{id, "peer-unit", entry.unitId, dataName};
+    partial.operationKind = "TENSOR_PARTIAL";
+    partial.useNdnsfDataV1 = true;
+    partial.declaredByV3 = true;
+    partial.manifestDataName = dataName + "/manifest";
+    partial.producerStepId = "peer-call";
+    partial.producerSlotId = "partial";
+    partial.consumerStepId = id;
+    partial.consumerSlotId = "peer";
+    finiteRole.inputs.push_back(std::move(partial));
+  }
+  finiteRole.steps =
+    std::make_shared<const std::vector<NativeExecutionStepSpec>>(std::move(finiteSteps));
+  auto stoppedBus = std::make_shared<tests::PartialBus>();
+  auto finiteIo = std::make_shared<tests::CancellableBusDependencyIo>(stoppedBus);
+  stoppedBus->cancel(std::make_exception_ptr(std::runtime_error("first partial unavailable")));
+  auto stopped = worker.executePreparedAsync("finite-steps", std::move(finiteRole), finiteIo,
+    [runner] { return runner; }, inputs);
+  BOOST_REQUIRE(stopped.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+  BOOST_CHECK_EXCEPTION(stopped.get(), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()).find("first partial unavailable") != std::string::npos;
+  });
+  BOOST_CHECK_EQUAL(finiteIo->prefetchCalls.load(), 1u);
+  BOOST_CHECK_EQUAL(finiteIo->publishCalls.load(), 0u);
+  runner->releaseSessionState("finite-steps");
+
   auto missing = inputs;
   missing.erase("right");
   auto rejected = worker.executePreparedAsync("missing-entry-input",
@@ -4798,6 +4843,26 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
   BOOST_CHECK_THROW(rejected.get(), std::exception);
   runner->releaseSessionState("generic-entry");
   runner->releaseSessionState("missing-entry-input");
+
+  auto certifiedRole = roleSpecFor(plan, entry.unitId, "foreign-application-input", assignment, "");
+  DependencyEdge requestEdge;
+  requestEdge.scope = "application-input";
+  requestEdge.operationKind = "APPLICATION_INPUT";
+  requestEdge.declaredByV3 = true;
+  requestEdge.maxSegments = 1;
+  certifiedRole.inputs.push_back(requestEdge);
+  auto certifiedInput = inputs.at("left");
+  certifiedInput.name = requestEdge.scope;
+  certifiedInput.expectedSegments = 1;
+  certifiedInput.expectedBytes = certifiedInput.payload.size();
+  auto rejectedScope = worker.executePreparedAsync("foreign-application-input",
+    std::move(certifiedRole), io, [runner] { return runner; },
+    {{requestEdge.scope, certifiedInput}, {"right", inputs.at("right")}});
+  BOOST_REQUIRE(rejectedScope.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+  BOOST_CHECK_EXCEPTION(rejectedScope.get(), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()) == "DI_INPUT_APPLICATION_PORT_MISSING: right";
+  });
+  runner->releaseSessionState("foreign-application-input");
 
   // The same arithmetic model now traverses real source admission, native cold assembly,
   // cache reconstruction and registry creation. Whole-region slots explicitly name source
@@ -5124,6 +5189,331 @@ BOOST_AUTO_TEST_CASE(VersionTwoSumPreservesSharedMembersAcrossPortAliases)
                                     expected[member].end());
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(FiniteAttentionUsesIndependentGlobalQueryAndKeyStatistics)
+{
+  HybridScratch workspace("spec263-attention-stat");
+  constexpr float EPSILON = 0.125f;
+  constexpr float GLOBAL_WIDTH = 4;
+  const std::array<std::string, 2> ports{"q", "k"};
+  const std::array<std::int64_t, 2> lengths{2, 3};
+  const std::array<std::vector<float>, 2> activations{{
+    {1, -2, 4, 3,  2, 1, -5, 4},
+    {1, 1, 2, 3,  -3, 1, 1, -1,  2, -2, 7, 5},
+  }};
+  const auto portShape = [] (onnx::GraphProto& graph, const std::string& name,
+                              std::int64_t tokens, std::int64_t width, bool output) {
+    auto& value = *(output ? graph.add_output() : graph.add_input());
+    value.set_name(name);
+    auto& type = *value.mutable_type()->mutable_tensor_type();
+    type.set_elem_type(onnx::TensorProto::FLOAT);
+    type.mutable_shape()->add_dim()->set_dim_value(tokens);
+    type.mutable_shape()->add_dim()->set_dim_value(width);
+  };
+  const auto node = [] (onnx::GraphProto& graph, const char* operation,
+                        const std::vector<std::string>& inputs, const std::string& output) {
+    auto& op = *graph.add_node();
+    op.set_op_type(operation);
+    for (const auto& input : inputs) op.add_input(input);
+    op.add_output(output);
+  };
+  const auto scalar = [] (onnx::GraphProto& graph, const std::string& name, float value) {
+    auto& initializer = *graph.add_initializer();
+    initializer.set_name(name);
+    initializer.set_data_type(onnx::TensorProto::FLOAT);
+    initializer.add_float_data(value);
+  };
+
+  NativeExecutionPlan plan;
+  plan.serviceName = "/fixture/attention-stat";
+  plan.modelName = "attention-stat";
+  plan.roles = {"rank-0", "rank-1"};
+  plan.tensorDegree = 2;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.stageLayout = {{"attention", nativePlanningDigest("attention-source"), plan.roles}};
+  const auto slot = [] (std::string name, std::int64_t tokens, std::int64_t width,
+                        std::string source, std::string producer = {}, std::string port = {}) {
+    return NativeStepSlotSpec{std::move(name), "float32", {tokens, width},
+      nativePlanningDigest("float32/" + std::to_string(tokens) + "/" + std::to_string(width)),
+      std::move(source), std::move(producer), std::move(port)};
+  };
+  const auto statsStep = [&] (std::size_t rank) { return plan.roles[rank] + "/stats"; };
+  const auto statPort = [] (const std::string& port, std::size_t rank) {
+    if (port == "k") return port + "/squares";
+    return port + "/squares-" + std::to_string(rank);
+  };
+
+  const auto sourceNorm = [&] (const std::string& port, std::int64_t tokens, std::size_t rank) {
+    onnx::ModelProto source;
+    source.set_ir_version(9);
+    source.add_opset_import()->set_version(20);
+    auto& graph = *source.mutable_graph();
+    graph.set_name(port + "/original-rms");
+    portShape(graph, port, tokens, 4, false);
+    portShape(graph, port + "/normalized", tokens, 4, true);
+    const auto axesName = port + "/axes";
+    auto& axes = *graph.add_initializer();
+    axes.set_name(axesName);
+    axes.set_data_type(onnx::TensorProto::INT64);
+    axes.add_dims(1);
+    axes.add_int64_data(-1);
+    scalar(graph, port + "/epsilon", EPSILON);
+    auto& gamma = *graph.add_initializer();
+    gamma.set_name(port + "/gamma");
+    gamma.set_data_type(onnx::TensorProto::FLOAT);
+    gamma.add_dims(4);
+    for (float value : {0.75f, 0.75f, 1.25f, 1.25f}) gamma.add_float_data(value);
+    const auto squares = statPort(port, rank);
+    node(graph, "Mul", {port, port}, port + "/squared");
+    node(graph, "ReduceMean", {port + "/squared", axesName}, squares);
+    node(graph, "Add", {squares, port + "/epsilon"}, port + "/variance");
+    node(graph, "Sqrt", {port + "/variance"}, port + "/denominator");
+    node(graph, "Div", {port, port + "/denominator"}, port + "/unit");
+    node(graph, "Mul", {port + "/unit", port + "/gamma"}, port + "/normalized");
+    return source;
+  };
+  auto wrongAxis = sourceNorm("q", 2, 0);
+  wrongAxis.mutable_graph()->mutable_initializer(0)->set_int64_data(0, 0);
+  BOOST_CHECK_EXCEPTION(lowerNativeOnnxRmsNorm(wrongAxis, 0, 2, "q/global"),
+    std::invalid_argument, [] (const auto& error) {
+      return std::string(error.what()) == "RMSNorm statistics must reduce the channel axis";
+    });
+  const auto nativeSource = sourceNorm("q", 2, 0);
+  BOOST_CHECK_THROW(lowerNativeOnnxRmsNorm(nativeSource, 0, 2, "q/variance"),
+                    std::invalid_argument);
+  const auto lower = [&] (const std::string& port, std::int64_t tokens, std::size_t rank) {
+    auto source = sourceNorm(port, tokens, rank);
+    const auto global = port + "/global";
+    if (rank == 0) return lowerNativeOnnxRmsNorm(source, 0, 2, global);
+
+    std::vector<std::uint8_t> sidecar;
+    const auto appendScalar = [&] (auto value) {
+      const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+      sidecar.insert(sidecar.end(), bytes, bytes + sizeof(value));
+    };
+    for (auto& tensor : *source.mutable_graph()->mutable_initializer()) {
+      const auto offset = sidecar.size();
+      for (const auto value : tensor.int64_data()) appendScalar(value);
+      for (const auto value : tensor.float_data()) appendScalar(value);
+      tensor.clear_int64_data();
+      tensor.clear_float_data();
+      tensor.set_data_location(onnx::TensorProto::EXTERNAL);
+      for (const auto& [key, value] : std::map<std::string, std::string>{
+             {"location", "model.onnx.data"}, {"offset", std::to_string(offset)},
+             {"length", std::to_string(sidecar.size() - offset)}}) {
+        auto& field = *tensor.add_external_data();
+        field.set_key(key);
+        field.set_value(value);
+      }
+    }
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> reads;
+    auto lowered = lowerNativeOnnxRmsNorm(source, 2, 4, global,
+      [&] (const auto& path, std::uint64_t offset, std::uint64_t bytes) {
+        BOOST_CHECK_EQUAL(path, "model.onnx.data");
+        BOOST_REQUIRE_LE(offset, sidecar.size());
+        BOOST_REQUIRE_LE(bytes, sidecar.size() - offset);
+        reads.emplace_back(offset, bytes);
+        return std::vector<std::uint8_t>(sidecar.begin() + offset,
+                                         sidecar.begin() + offset + bytes);
+      });
+    const std::vector<std::pair<std::uint64_t, std::uint64_t>> expected{{0, 8}, {8, 4}, {20, 8}};
+    BOOST_CHECK(reads == expected);
+    return lowered;
+  };
+
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  std::array<std::shared_ptr<NativeEntryRunner>, 2> runners;
+  NativeProviderAssignment assignment;
+  for (std::size_t rank = 0; rank < 2; ++rank) {
+    const auto& role = plan.roles[rank];
+    assignment.providerByRole[role] = "/fixture/" + role;
+    std::vector<NativeSubgraphEntryContract> entries;
+    for (const bool produce : {true, false}) {
+      const auto id = produce ? statsStep(rank) : role + "/normalize";
+      auto call = callStep(id, role);
+      call.artifactEntry = id;
+      call.outputSlots.clear();
+      onnx::ModelProto model;
+      model.set_ir_version(9);
+      model.add_opset_import()->set_version(20);
+      auto& graph = *model.mutable_graph();
+      graph.set_name(id);
+      NativeSubgraphEntryContract entry;
+      entry.entryId = call.artifactEntry;
+      entry.unitId = role;
+      const auto input = [&] (const NativeStepSlotSpec& port, std::int64_t tokens,
+                               std::int64_t width, const std::string& name) {
+        portShape(graph, name, tokens, width, false);
+        entry.inputNames.push_back(name);
+        entry.inputSlotByGraphName[name] = port.slotId;
+        call.inputSlots.push_back(port);
+      };
+      const auto output = [&] (const std::string& port, std::int64_t tokens,
+                                std::int64_t width) {
+        portShape(graph, port, tokens, width, true);
+        entry.outputNames.push_back(port);
+        entry.outputSlotByGraphName[port] = port;
+        call.outputSlots.push_back(slot(port, tokens, width, "LOCAL_STEP"));
+      };
+      for (std::size_t index = 0; index < ports.size(); ++index) {
+        const auto& port = ports[index];
+        const auto tokens = lengths[index];
+        const auto local = port + "/local";
+        input(produce ? slot(port, tokens, 2, "EPOCH_INPUT")
+                      : slot(local, tokens, 2, "LOCAL_STEP", statsStep(rank), local),
+              tokens, 2, port);
+        const auto combined = port + "/global";
+        const auto lowered = lower(port, tokens, rank);
+        const auto& derived = (produce ? lowered.statistics : lowered.normalization).graph();
+        for (const auto& initializer : derived.initializer())
+          *graph.add_initializer() = initializer;
+        for (const auto& op : derived.node())
+          *graph.add_node() = op;
+        if (produce) {
+          // Retain the projected activation on its own rank across the exchange.
+          node(graph, "Identity", {port}, local);
+          output(local, tokens, 2);
+          output(derived.output(0).name(), tokens, 1);
+        }
+        else {
+          NativeExecutionStepSpec sum;
+          sum.stepId = role + "/sum-" + port;
+          sum.unitId = role;
+          sum.operation = "SUM";
+          for (std::size_t contributor = 0; contributor < 2; ++contributor) {
+            const auto local = contributor == rank;
+            const auto operand = slot("from-" + plan.roles[contributor], tokens, 1,
+              local ? "LOCAL_STEP" : "REMOTE_STEP", statsStep(contributor),
+              statPort(port, contributor));
+            sum.inputSlots.push_back(operand);
+            if (!local) {
+              NativeDependencySpec edge;
+              edge.producers = {plan.roles[contributor]};
+              edge.consumers = {role};
+              edge.tensors = {operand.producerSlotId};
+              edge.keyScope = role + "/peer-" + port;
+              edge.dependencyId = edge.keyScope;
+              edge.topicPrefix = "/NDNSF/DI/STATS";
+              edge.objectNameTemplate =
+                "{producerProvider}/NDNSF/DI/STATS/{sessionId}/{producerRole}/{keyScope}/{sequence}";
+              edge.operationKind = "TENSOR_PARTIAL";
+              edge.producerStepId = operand.producerStepId;
+              edge.producerSlotId = operand.producerSlotId;
+              edge.consumerStepId = sum.stepId;
+              edge.consumerSlotId = operand.slotId;
+              plan.dependencies.push_back(std::move(edge));
+            }
+          }
+          sum.outputSlots.push_back(slot(combined, tokens, 1, "LOCAL_STEP"));
+          input(slot(combined, tokens, 1, "LOCAL_STEP", sum.stepId, combined),
+                tokens, 1, combined);
+          plan.steps.push_back(std::move(sum));
+          output(derived.output(0).name(), tokens, 2);
+        }
+      }
+      std::string wire;
+      BOOST_REQUIRE(model.SerializeToString(&wire));
+      entry.relativeGraphPath = role + (produce ? "-stats.onnx" : "-normalize.onnx");
+      entry.graphDigest = nativePlanningDigest(wire);
+      std::ofstream file(workspace.root / entry.relativeGraphPath, std::ios::binary);
+      file.write(wire.data(), static_cast<std::streamsize>(wire.size()));
+      BOOST_REQUIRE(static_cast<bool>(file));
+      entries.push_back(std::move(entry));
+      plan.steps.push_back(std::move(call));
+    }
+    runners[rank] = std::make_shared<NativeEntryRunner>(std::move(entries),
+      [&] (const auto& spec) { return factory.create(spec); },
+      [&] (const auto& entry) {
+        NativeModelRunnerSpec spec;
+        spec.role = entry.entryId;
+        spec.kind = "onnx";
+        spec.backend = "onnxruntime-cpu";
+        spec.path = (workspace.root / entry.relativeGraphPath).string();
+        spec.metadata["forceOutputBundle"] = "true";
+        for (std::size_t index = 0; index < entry.inputNames.size(); ++index)
+          spec.metadata["inputScope." + std::to_string(index)] = entry.inputNames[index];
+        for (std::size_t index = 0; index < entry.outputNames.size(); ++index)
+          spec.metadata["outputScope." + std::to_string(index)] = entry.outputNames[index];
+        return spec;
+      });
+  }
+  // Both ranks publish their statistics before either can run its reductions.
+  std::stable_partition(plan.steps.begin(), plan.steps.end(), [&] (const auto& step) {
+    return step.stepId == statsStep(0) || step.stepId == statsStep(1);
+  });
+  BOOST_REQUIRE_NO_THROW(plan.validateSteps());
+  ProviderRoleWorker worker(2, 2, 8, std::chrono::seconds(5));
+  const auto bus = std::make_shared<tests::PartialBus>();
+  const auto io = std::make_shared<tests::BusDependencyIo>(bus);
+  std::array<std::future<ProviderRoleResult>, 2> results;
+  const auto shardInputs = [&] (std::size_t rank) {
+    std::map<std::string, TensorBundle> inputs;
+    for (std::size_t index = 0; index < ports.size(); ++index) {
+      NamedTensor tensor{ports[index], TensorElementType::Float32, {lengths[index], 2}, {}};
+      for (std::int64_t row = 0; row < lengths[index]; ++row) {
+        const auto* values = activations[index].data() + row * 4 + rank * 2;
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(values);
+        tensor.payload.insert(tensor.payload.end(), bytes, bytes + 2 * sizeof(float));
+      }
+      inputs[ports[index]] = makeEncodedTensorBundle(ports[index], {std::move(tensor)});
+    }
+    return inputs;
+  };
+  for (std::size_t rank = 0; rank < 2; ++rank) {
+    const auto& role = plan.roles[rank];
+    results[rank] = worker.executePreparedAsync("attention-stats",
+      roleSpecFor(plan, role, "attention-stats", assignment, ""), io,
+      [runner = runners[rank]] { return runner; }, shardInputs(rank));
+  }
+  for (std::size_t rank = 0; rank < 2; ++rank) {
+    BOOST_REQUIRE(results[rank].wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+    const auto result = results[rank].get();
+    for (std::size_t index = 0; index < ports.size(); ++index) {
+      const auto normalized = ports[index] + "/normalized";
+      const auto values = decodeTensorBundleViews(result.outputsByScope.at(normalized));
+      BOOST_REQUIRE_EQUAL(values.size(), 1u);
+      BOOST_REQUIRE(values.front().shape == std::vector<std::int64_t>({lengths[index], 2}));
+      BOOST_REQUIRE_EQUAL(values.front().payload.size(), lengths[index] * 2 * sizeof(float));
+      for (std::int64_t row = 0; row < lengths[index]; ++row) {
+        const float* full = activations[index].data() + row * 4;
+        double energy = 0;
+        double localEnergy = 0;
+        for (std::size_t channel = 0; channel < 4; ++channel) {
+          const double square = static_cast<double>(full[channel]) * full[channel];
+          energy += square;
+          if (channel / 2 == rank) localEnergy += square;
+        }
+        for (std::size_t channel = 0; channel < 2; ++channel) {
+          float observed;
+          std::memcpy(&observed, values.front().payload.data() + (row * 2 + channel) * sizeof(float),
+                      sizeof(observed));
+          const double scaled = full[rank * 2 + channel] * (rank == 0 ? 0.75 : 1.25);
+          BOOST_CHECK_SMALL(observed - scaled / std::sqrt(energy / GLOBAL_WIDTH + EPSILON), 1e-6);
+          BOOST_CHECK_GT(std::abs(observed - scaled / std::sqrt(localEnergy / 2 + EPSILON)), 1e-3);
+        }
+      }
+    }
+  }
+  BOOST_CHECK_EQUAL(bus->publishedCount(), 4u);
+  BOOST_CHECK_EQUAL(io->prefetchCalls.load(), 4u);
+
+  // Inject the genuine peer K statistic at the Q edge. It may not reach the
+  // query SUM or trigger a read for the next reduction.
+  const auto peerKeys = bus->published(plan.roles[1] + "/peer-k");
+  BOOST_REQUIRE(peerKeys);
+  const auto wrongBus = std::make_shared<tests::PartialBus>();
+  const auto wrongIo = std::make_shared<tests::BusDependencyIo>(wrongBus);
+  wrongBus->publish(plan.roles[1] + "/peer-q", *peerKeys);
+  auto rejected = worker.executePreparedAsync("attention-wrong-stat",
+    roleSpecFor(plan, plan.roles[1], "attention-wrong-stat", assignment, ""), wrongIo,
+    [runner = runners[1]] { return runner; }, shardInputs(1));
+  BOOST_REQUIRE(rejected.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+  BOOST_CHECK_EXCEPTION(rejected.get(), std::invalid_argument, [] (const auto& error) {
+    return std::string(error.what()) == "sealed single-value SUM operand differs from its port";
+  });
+  BOOST_CHECK_EQUAL(wrongIo->prefetchCalls.load(), 1u);
 }
 
 BOOST_AUTO_TEST_CASE(GenericMixedSourceEntriesMatchTheCompleteOriginalGraph)

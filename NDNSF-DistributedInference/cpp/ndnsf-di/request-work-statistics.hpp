@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace ndnsf::di {
@@ -21,6 +22,10 @@ enum class NativeWorkKind { LOCAL, WAIT, BACKEND, UNCLASSIFIED };
 
 enum class NativeTransferPoint {
   UNSPECIFIED, WORKER_INPUT, COORDINATOR_FETCH, OUTPUT_PUBLICATION
+};
+
+enum class NativeNetworkTransferKind {
+  RECEIVE, RECEIVE_FAILED, PUBLICATION, REPUBLICATION
 };
 
 struct NativeWorkClock
@@ -43,6 +48,9 @@ struct NativeWorkPhaseStatistics
 struct NativeWorkStatisticsSnapshot
 {
   bool complete = true;
+  bool phaseComplete = true;
+  std::size_t droppedTransfers = 0;
+  std::size_t invalidTransfers = 0;
   std::size_t droppedSpans = 0;
   std::size_t activeSpans = 0;
   std::map<std::string, NativeWorkPhaseStatistics> phases;
@@ -70,8 +78,27 @@ struct NativeWorkStatisticsSnapshot
     std::optional<std::size_t> localCopyBytes;
     std::optional<std::size_t> transportLocalCopyBytes;
     bool localDependency = false;
+    std::optional<std::int64_t> readySteadyNs;
   };
   std::vector<Transfer> transfers;
+
+  struct NetworkTotal
+  {
+    struct Measure
+    {
+      std::uint64_t samples = 0;
+      std::uint64_t total = 0;
+    };
+
+    std::uint64_t objects = 0;
+    Measure tensorBytes;
+    Measure dataWireBytes;
+    Measure interestCount;
+    Measure retryCount;
+  };
+  using NetworkKey = std::tuple<std::uint64_t, NativeNetworkTransferKind, std::string>;
+  std::map<NetworkKey, NetworkTotal> networkTransfers;
+  std::size_t droppedNetworkTransfers = 0;
 };
 
 /**
@@ -122,6 +149,14 @@ public:
                   std::int64_t admittedNs = 0,
                   NativeTransferPoint point = NativeTransferPoint::UNSPECIFIED,
                   std::int64_t outputReadyNs = 0) noexcept;
+
+  /** Fold one I/O-owner receipt regardless of detail sampling or worker handoff. */
+  void
+  observeNetworkTransfer(std::uint64_t epoch, NativeNetworkTransferKind kind,
+                         std::string_view transition, std::optional<std::size_t> tensorBytes,
+                         std::optional<std::size_t> dataWireBytes,
+                         std::optional<std::size_t> interestCount,
+                         std::optional<std::size_t> retryCount) noexcept;
 
 private:
   bool

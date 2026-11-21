@@ -574,6 +574,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.cpp',
         'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
         'NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.cpp',
+        'NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-rank-transfers.cpp',
         # Standalone Provider/ORT targets compile OnnxRuntimeModelRunner.cpp
         # directly; keep the resident-session implementation in the same
         # source closure instead of relying on a shared-library transitive
@@ -744,62 +745,28 @@ def build(bld):
                 linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    # Override the worker implementation only in the fault fixture. The exported
+    # worker definitions take precedence when the shared DI library creates it.
     bld.program(name='di-native-fault-provider',
                 target='di-native-fault-provider',
                 source=(["DI_NativeFaultProviderExecutable.cpp"] +
-                        di_native_session_sources +
-                        di_native_collaboration_sources +
-                        di_native_onnx_assembly_sources +
                         bld.path.parent.ant_glob([
-                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.cpp',
-                            'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
-                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp',
-                            'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.cpp',
-                            'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp',
-                            'ndn-service-framework/NDNSFMessages.cpp',
-                            'ndn-service-framework/ConfigManager.cpp',
-                            'ndn-service-framework/GenericSelectionTxnStore.cpp',
-                            'ndn-service-framework/ServiceProvider.cpp',
-                            'ndn-service-framework/ServiceUser.cpp',
-                            'ndn-service-framework/RuntimeStatusStore.cpp',
-                            'ndn-service-framework/CertificateBootstrap.cpp',
-                            'ndn-service-framework/HybridMessageCrypto.cpp',
-                            'ndn-service-framework/ExecutionLease.cpp',
-                            'ndn-service-framework/NetworkTelemetry.cpp',
-                            'ndn-service-framework/NetworkProbeRate.cpp',
-                            'ndn-service-framework/Stream.cpp',
-                            'ndn-service-framework/InvocationStream.cpp',
-                            'ndn-service-framework/StreamFacade.cpp',
-                            'ndn-service-framework/TimelineTrace.cpp',
-                            'ndn-service-framework/common.cpp',
-                            'ndn-service-framework/utils.cpp',
-                            'ndn-service-framework/ControllerVersion.cpp',
-                            'ndn-service-framework/PolicyRefreshCoordinator.cpp',
-                            'ndn-service-framework/PolicyStatus.cpp',
-                            'ndn-service-framework/RequestConfidentiality.cpp',
-                            'ndn-service-framework/RevocationState.cpp',
-                            'ndn-service-framework/CertificateBootstrap.cpp',
-                            'ndn-service-framework/CertificatePublisher.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp',
                         ])),
+                rpath=[runtime_libdir],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL ZLIB DL TOKENIZER_BRIDGE',
+                use='ndnsf-distributed-inference ndn-service-framework BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread', '-DNDNSF_DI_EXPERIMENT_FAULTS=1'],
-                linkflags=['-pthread'],
+                linkflags=['-pthread', '-rdynamic', '-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}' if bld.env.INSTALL_EXPERIMENT_FIXTURES else None)
 
     bld.program(name='di-native-onnxruntime-smoke',
                 target='di-native-onnxruntime-smoke',
-                source=(["DI_NativeOnnxRuntimeSmoke.cpp"] +
-                        di_native_session_sources +
-                        di_native_message_crypto_sources +
-                        di_native_onnx_assembly_sources +
-                        bld.path.parent.ant_glob([
-                            'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
-                        ])),
+                source=["DI_NativeOnnxRuntimeSmoke.cpp"],
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF OPENSSL ZLIB DL ndn-service-framework TOKENIZER_BRIDGE',
+                use='ndnsf-distributed-inference ndn-service-framework',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)

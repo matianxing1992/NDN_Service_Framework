@@ -1230,6 +1230,57 @@ ProviderGroupCoordinator::makeManifest(
   return manifest;
 }
 
+namespace {
+
+ProviderGroupBytes
+deriveOperationKeyWithDigest(
+  const ProviderGroupBytes& epochKey,
+  const GroupCapabilityV1& capability,
+  const CollectiveOperationManifestV1& manifest,
+  const std::string& digest)
+{
+  if (epochKey.size() != KEY_BYTES) {
+    throw std::invalid_argument("NDNSF_DATA_V1 epoch key must be 256 bits");
+  }
+  Bytes info;
+  appendString(info, "NDNSF_DATA_V1/OPERATION");
+  appendString(info, capability.capabilityDigest);
+  appendU64(info, capability.epoch);
+  appendU64(info, manifest.operationIndex);
+  appendString(info, manifest.operationKind);
+  appendString(info, manifest.producerRank);
+  appendString(info, manifest.sourceLayoutDigest);
+  appendString(info, manifest.targetLayoutDigest);
+  appendString(info, manifest.tensorDigest);
+  appendString(info, digest);
+  return hkdf32(epochKey, info);
+}
+
+ProviderGroupBytes
+deriveNonceWithDigest(
+  const GroupCapabilityV1& capability,
+  const CollectiveOperationManifestV1& manifest,
+  const std::string& manifestDigest,
+  const std::string& exactDataName,
+  std::uint64_t segmentNo)
+{
+  requireNonEmpty(exactDataName, "exactDataName");
+  Bytes input;
+  appendString(input, "NDNSF_DATA_V1/NONCE");
+  appendString(input, capability.capabilityDigest);
+  appendU64(input, capability.epoch);
+  appendU64(input, manifest.operationIndex);
+  appendString(input, manifest.producerRank);
+  appendString(input, manifest.tensorDigest);
+  appendString(input, manifestDigest);
+  appendString(input, exactDataName);
+  appendU64(input, segmentNo);
+  const auto digest = sha256(input);
+  return Bytes(digest.begin(), digest.begin() + NONCE_BYTES);
+}
+
+} // namespace
+
 SealedCollectiveOperationV1
 ProviderGroupCoordinator::sealOperation(
   const GroupOperationV1& operation,
@@ -1265,7 +1316,9 @@ ProviderGroupCoordinator::sealOperation(
                                plaintextSegments, createdAtMs);
   manifestWork.finish();
   NativeWorkScope keyWork(statistics, "tensor-operation-key-derive", NativeWorkKind::LOCAL);
-  const auto operationKey = deriveOperationKey(snapshot.key, m_capability, manifest);
+  const auto manifestDigest = manifest.digest();
+  const auto operationKey = deriveOperationKeyWithDigest(
+    snapshot.key, m_capability, manifest, manifestDigest);
   keyWork.finish();
   SealedCollectiveOperationV1 result;
   result.manifest = manifest;
@@ -1282,7 +1335,7 @@ ProviderGroupCoordinator::sealOperation(
     descriptor.operationKind = manifest.operationKind;
     descriptor.producerRank = manifest.producerRank;
     descriptor.tensorDigest = manifest.tensorDigest;
-    descriptor.manifestDigest = manifest.digest();
+    descriptor.manifestDigest = manifestDigest;
     descriptor.segmentNo = index;
     descriptor.segmentCount = manifest.segmentCount;
     descriptor.totalBytes = manifest.totalBytes;
@@ -1292,7 +1345,8 @@ ProviderGroupCoordinator::sealOperation(
     descriptorWork.finish();
     const auto& name = names[index];
     NativeWorkScope nonceWork(statistics, "tensor-nonce-derive", NativeWorkKind::LOCAL);
-    const auto nonce = deriveNonce(m_capability, manifest, name, index);
+    const auto nonce = deriveNonceWithDigest(
+      m_capability, manifest, manifestDigest, name, index);
     nonceWork.finish();
     NativeWorkScope sealWork(statistics, "tensor-segment-aead-seal", NativeWorkKind::LOCAL);
     result.segments.push_back(NdnsfCollectiveControl::sealWithNonce(
@@ -1483,18 +1537,15 @@ ProviderGroupCoordinator::encodeSegment(
   return wire;
 }
 
+namespace {
+
 ProviderGroupBytes
-ProviderGroupCoordinator::encodeSegmentCompact(
-  const CollectiveOperationManifestV1& manifest,
-  const NdnsfDataV1Segment& segment)
+encodeCompactSegment(const CollectiveOperationManifestV1& manifest,
+                     const NdnsfDataV1Segment& segment, const std::string& digest,
+                     const Bytes& digestBytes)
 {
-  manifest.validate();
-  if (manifest.externalSegmentDigests) {
-    throw std::invalid_argument(
-      "cannot compact-encode an external segment manifest");
-  }
   segment.validate();
-  if (segment.descriptor.manifestDigest != manifest.digest() ||
+  if (segment.descriptor.manifestDigest != digest ||
       segment.descriptor.segmentCount != manifest.segmentCount ||
       segment.descriptor.totalBytes != manifest.totalBytes ||
       segment.descriptor.segmentSize != manifest.segmentSize ||
@@ -1508,13 +1559,12 @@ ProviderGroupCoordinator::encodeSegmentCompact(
   catch (const std::exception&) {
     throw std::invalid_argument("NDNSF_DATA_V1 compact producer rank is not numeric");
   }
-  const auto manifestDigest = decodeHexDigest(manifest.digest());
   if (std::to_string(producerRank) != segment.descriptor.producerRank) {
     throw std::invalid_argument("NDNSF_DATA_V1 compact rank is not canonical");
   }
   Bytes wire;
   appendString(wire, COMPACT_SEGMENT_BUNDLE_MARKER);
-  wire.insert(wire.end(), manifestDigest.begin(), manifestDigest.end());
+  wire.insert(wire.end(), digestBytes.begin(), digestBytes.end());
   appendU64(wire, producerRank);
   appendU64(wire, segment.descriptor.segmentNo);
   appendBytes(wire, segment.nonce);
@@ -1525,6 +1575,48 @@ ProviderGroupCoordinator::encodeSegmentCompact(
     throw std::invalid_argument("NDNSF_DATA_V1 compact segment bundle exceeds bound");
   }
   return wire;
+}
+
+} // namespace
+
+ProviderGroupBytes
+ProviderGroupCoordinator::encodeSegmentCompact(
+  const CollectiveOperationManifestV1& manifest,
+  const NdnsfDataV1Segment& segment)
+{
+  manifest.validate();
+  if (manifest.externalSegmentDigests) {
+    throw std::invalid_argument(
+      "cannot compact-encode an external segment manifest");
+  }
+  const auto digest = manifest.digest();
+  return encodeCompactSegment(manifest, segment, digest, decodeHexDigest(digest));
+}
+
+std::vector<ProviderGroupBytes>
+ProviderGroupCoordinator::encodeSegmentsCompact(const SealedCollectiveOperationV1& operation)
+{
+  const auto& manifest = operation.manifest;
+  manifest.validate();
+  if (manifest.externalSegmentDigests) {
+    throw std::invalid_argument(
+      "cannot compact-encode an external segment manifest");
+  }
+  if (operation.segments.size() != manifest.segmentCount) {
+    throw std::invalid_argument("NDNSF_DATA_V1 compact batch segment count differs from manifest");
+  }
+  const auto digest = manifest.digest();
+  const auto digestBytes = decodeHexDigest(digest);
+  std::vector<ProviderGroupBytes> encoded;
+  encoded.reserve(operation.segments.size());
+  for (std::size_t index = 0; index < operation.segments.size(); ++index) {
+    const auto& segment = operation.segments[index];
+    if (segment.descriptor.segmentNo != index) {
+      throw std::invalid_argument("NDNSF_DATA_V1 compact batch has unordered segments");
+    }
+    encoded.push_back(encodeCompactSegment(manifest, segment, digest, digestBytes));
+  }
+  return encoded;
 }
 
 SealedCollectiveOperationV1
@@ -1897,21 +1989,8 @@ ProviderGroupCoordinator::deriveOperationKey(
   const GroupCapabilityV1& capability,
   const CollectiveOperationManifestV1& manifest)
 {
-  if (epochKey.size() != KEY_BYTES) {
-    throw std::invalid_argument("NDNSF_DATA_V1 epoch key must be 256 bits");
-  }
-  Bytes info;
-  appendString(info, "NDNSF_DATA_V1/OPERATION");
-  appendString(info, capability.capabilityDigest);
-  appendU64(info, capability.epoch);
-  appendU64(info, manifest.operationIndex);
-  appendString(info, manifest.operationKind);
-  appendString(info, manifest.producerRank);
-  appendString(info, manifest.sourceLayoutDigest);
-  appendString(info, manifest.targetLayoutDigest);
-  appendString(info, manifest.tensorDigest);
-  appendString(info, manifestDigestForTransport(manifest));
-  return hkdf32(epochKey, info);
+  return deriveOperationKeyWithDigest(epochKey, capability, manifest,
+                                      manifestDigestForTransport(manifest));
 }
 
 ProviderGroupBytes
@@ -1921,19 +2000,8 @@ ProviderGroupCoordinator::deriveNonce(
   const std::string& exactDataName,
   std::uint64_t segmentNo)
 {
-  requireNonEmpty(exactDataName, "exactDataName");
-  Bytes input;
-  appendString(input, "NDNSF_DATA_V1/NONCE");
-  appendString(input, capability.capabilityDigest);
-  appendU64(input, capability.epoch);
-  appendU64(input, manifest.operationIndex);
-  appendString(input, manifest.producerRank);
-  appendString(input, manifest.tensorDigest);
-  appendString(input, manifestDigestForTransport(manifest));
-  appendString(input, exactDataName);
-  appendU64(input, segmentNo);
-  const auto digest = sha256(input);
-  return Bytes(digest.begin(), digest.begin() + NONCE_BYTES);
+  return deriveNonceWithDigest(capability, manifest, manifestDigestForTransport(manifest),
+                               exactDataName, segmentNo);
 }
 
 } // namespace ndnsf::di

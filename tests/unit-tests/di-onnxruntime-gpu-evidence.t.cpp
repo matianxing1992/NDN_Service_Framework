@@ -810,6 +810,138 @@ BOOST_AUTO_TEST_CASE(UnrankedBoundaryInputSkipsSyntheticWarmupOnCpu)
   BOOST_CHECK(evidence->loadCompleted);
 }
 
+BOOST_AUTO_TEST_CASE(CpuTensorEntryUsesActualSplitSizesAfterDeferredWarmup)
+{
+  GraphMetadataFixture fixture;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  graph.set_name("typed-split-boundary");
+  const auto port = [] (onnx::ValueInfoProto& value, const char* name, int dtype, int extent) {
+    value.set_name(name);
+    auto& tensor = *value.mutable_type()->mutable_tensor_type();
+    tensor.set_elem_type(dtype);
+    tensor.mutable_shape()->add_dim()->set_dim_value(extent);
+  };
+  port(*graph.add_input(), "values", onnx::TensorProto::FLOAT, 4);
+  port(*graph.add_input(), "sizes", onnx::TensorProto::INT64, 2);
+  port(*graph.add_output(), "left", onnx::TensorProto::FLOAT, 2);
+  port(*graph.add_output(), "right", onnx::TensorProto::FLOAT, 2);
+  auto& split = *graph.add_node();
+  split.set_op_type("Split");
+  split.add_input("values");
+  split.add_input("sizes");
+  split.add_output("left");
+  split.add_output("right");
+  NativeModelRunnerSpec spec;
+  spec.role = "/Warmup/RankEntry";
+  spec.backend = "onnxruntime-cpu";
+  spec.path = fixture.write(model);
+  spec.metadata = {
+    {"forceOutputBundle", "true"},
+    {"evidence.providerName", "/test/provider/rank"},
+    {"evidence.providerBootId", "rank-boot"},
+    {"evidence.modelDigest", "sha256:" + std::string(64, '1')},
+    {"evidence.planDigest", "sha256:" + std::string(64, '2')},
+    {"evidence.artifactDigest", "sha256:" + std::string(64, '3')},
+    {"evidence.createdAtMs", "1"}};
+  BOOST_CHECK_EXCEPTION(OnnxRuntimeModelRunner{spec}, std::exception, [] (const auto& error) {
+    return std::string(error.what()).find("Cannot split") != std::string::npos;
+  });
+  spec.deferDependencyInputWarmup = true;
+  OnnxRuntimeModelRunner runner(spec);
+  const auto evidence = runner.executionEvidenceSnapshot();
+  BOOST_REQUIRE(evidence);
+  BOOST_CHECK(evidence->warmupDeferredDependencyInput);
+  BOOST_CHECK(!evidence->warmupCompleted);
+  BOOST_CHECK(evidence->warmupReady());
+  const auto restored = executionEvidenceFromJson(executionEvidenceToJson(*evidence));
+  BOOST_CHECK(restored.warmupDeferredDependencyInput);
+  BOOST_CHECK(restored.warmupReady());
+  const std::int64_t sizes[] = {2, 2};
+  const float values[] = {1, 2, 3, 4};
+  const auto encode = [] (const auto& source) {
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(source);
+    return std::vector<std::uint8_t>(bytes, bytes + sizeof(source));
+  };
+  RoleExecutionContext context;
+  context.sessionId = "typed-split";
+  context.role = spec.role;
+  context.inputsByScope["values"] = makeEncodedTensorBundle(
+    "values", {NamedTensor{"values", TensorElementType::Float32, {4}, encode(values)}});
+  context.inputsByScope["sizes"] = makeEncodedTensorBundle(
+    "sizes", {NamedTensor{"sizes", TensorElementType::Int64, {2}, encode(sizes)}});
+  const auto outputs = decodeOutput(runner.run(context));
+  BOOST_REQUIRE_EQUAL(outputs.size(), 2U);
+  for (const auto& output : outputs) {
+    const auto offset = output.name == "left" ? 0 : 2;
+    BOOST_REQUIRE(output.name == "left" || output.name == "right");
+    BOOST_REQUIRE_EQUAL(output.payload.size(), 2 * sizeof(float));
+    BOOST_CHECK_EQUAL(std::memcmp(output.payload.data(), values + offset, 2 * sizeof(float)), 0);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(CpuTensorEntryWaitsForFloatResizeScales)
+{
+  GraphMetadataFixture fixture;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  graph.set_name("resize-boundary");
+  const auto port = [] (onnx::ValueInfoProto& value, const char* name,
+                        std::initializer_list<int> shape) {
+    value.set_name(name);
+    auto& type = *value.mutable_type()->mutable_tensor_type();
+    type.set_elem_type(onnx::TensorProto::FLOAT);
+    for (const auto dim : shape) type.mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  port(*graph.add_input(), "image", {1, 1, 2, 2});
+  port(*graph.add_input(), "scales", {4});
+  port(*graph.add_output(), "output", {1, 1, 4, 4});
+  auto& resize = *graph.add_node();
+  resize.set_op_type("Resize");
+  resize.add_input("image");
+  resize.add_input("");
+  resize.add_input("scales");
+  resize.add_output("output");
+  NativeModelRunnerSpec spec;
+  spec.role = "/Warmup/ResizeEntry";
+  spec.backend = "onnxruntime-cpu";
+  spec.path = fixture.write(model);
+  spec.metadata["forceOutputBundle"] = "true";
+  BOOST_CHECK_EXCEPTION(OnnxRuntimeModelRunner{spec}, std::exception, [] (const auto& error) {
+    return std::string(error.what()).find("Scale value should be greater than 0") !=
+           std::string::npos;
+  });
+  spec.deferDependencyInputWarmup = true;
+  OnnxRuntimeModelRunner runner(spec);
+  const float image[] = {1, 1, 1, 1};
+  const float scales[] = {1, 1, 2, 2};
+  const auto encode = [] (const auto& source) {
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(source);
+    return std::vector<std::uint8_t>(bytes, bytes + sizeof(source));
+  };
+  RoleExecutionContext context;
+  context.sessionId = "float-resize";
+  context.role = spec.role;
+  context.inputsByScope["image"] = makeEncodedTensorBundle(
+    "image", {NamedTensor{"image", TensorElementType::Float32, {1, 1, 2, 2}, encode(image)}});
+  context.inputsByScope["scales"] = makeEncodedTensorBundle(
+    "scales", {NamedTensor{"scales", TensorElementType::Float32, {4}, encode(scales)}});
+  const auto result = decodeOutput(runner.run(context));
+  BOOST_REQUIRE_EQUAL(result.size(), 1U);
+  const std::vector<std::int64_t> shape{1, 1, 4, 4};
+  BOOST_CHECK(result.front().shape == shape);
+  BOOST_REQUIRE_EQUAL(result.front().payload.size(), 16 * sizeof(float));
+  for (std::size_t offset = 0; offset < result.front().payload.size(); offset += sizeof(float)) {
+    float value = 0;
+    std::memcpy(&value, result.front().payload.data() + offset, sizeof(value));
+    BOOST_CHECK_EQUAL(value, 1.0f);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(BorrowedOrtOutputsKeepAuxiliaryWireAndIndependentLifetime)
 {
   GraphMetadataFixture fixture;

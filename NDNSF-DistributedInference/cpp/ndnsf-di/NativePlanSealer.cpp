@@ -710,6 +710,8 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
 {
   auto phaseStarted = detail::nativePhaseStarted();
   const auto requiredCapabilities = nativePlanRequiredCapabilities(candidate);
+  if (proposal.context.distinctProviderPairs != nativeDistinctProviderPairs(candidate))
+    throw std::invalid_argument("placement constraints differ from the source candidate");
   const bool hasSharedPartials = std::any_of(executionPlan.dependencies.begin(),
     executionPlan.dependencies.end(), isSharedTensorPartial);
   if (hasSharedPartials) {

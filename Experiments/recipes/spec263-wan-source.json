@@ -1,0 +1,47 @@
+{
+  "transformer": {
+    "repository": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+    "revision": "b7f0d36dfbc20355d3184ad63c709d888cdb640f",
+    "files": {
+      "config.json": "0b093fa072e9ff28763febe9b964ee582f566733a6d6709deb9dfba1bde16b81",
+      "diffusion_pytorch_model.safetensors.index.json": "dcbcf3497134a3f50557ff069dd7d2c84b5c4d8c5932472f6bdb780fb4016589",
+      "diffusion_pytorch_model-00001-of-00002.safetensors": "6d011927dbd2cc8afe53d57abab04a8fd86f615d83324770d985fb058ece3a24",
+      "diffusion_pytorch_model-00002-of-00002.safetensors": "b92ec2309b1f239af6f746431815a881afcc938abb26a4f08d9a2fd6c892f872"
+    }
+  },
+  "text_encoder": {
+    "repository": "Wan-AI/Wan2.1-T2V-1.3B",
+    "revision": "37ec512624d61f7aa208f7ea8140a131f93afc9a",
+    "files": {
+      "models_t5_umt5-xxl-enc-bf16.pth": "7cace0da2b446bbbbc57d031ab6cf163a3d59b366da94e5afe36745b746fd81d",
+      "tokenizer/special_tokens_map.json": "7b8a9f5040adb67b5805abdfd42c1f8d0f3d0e711f10726580eb3789cd0ad61d",
+      "tokenizer/spiece.model": "e3909a67b780650b35cf529ac782ad2b6b26e6d1f849d3fbb6a872905f452458",
+      "tokenizer/tokenizer.json": "6e197b4d3dbd71da14b4eb255f4fa91c9c1f2068b20a2de2472967ca3d22602b",
+      "tokenizer/tokenizer_config.json": "ed9a3a8b0faa71a70a32847e0435fe036e6e112d4df4edb7bb48a921e344dc05"
+    },
+    "config_sha256": "4087b6192155a4643f6d29fd326c4610103130674011ef4d0a53f8bce5de967d",
+    "prompt": "A red paper boat floats across a quiet pond.",
+    "token_ids": [320, 4062, 10161, 53249, 91787, 281, 14104, 289, 47154, 76530, 274, 1]
+  },
+  "tools": {
+    "python": "3.11.13",
+    "torch": "2.8.0+cpu",
+    "diffusers": "0.35.2",
+    "accelerate": "1.10.1",
+    "transformers": "4.56.2",
+    "onnx": "1.19.0",
+    "onnxruntime": "1.26.0",
+    "safetensors": "0.6.2"
+  },
+  "numerical_bounds": {
+    "fp32_export": {"atol": 0.001, "rtol": 0.001},
+    "quantization_drift": {"atol": 0.4, "rtol": 0.25},
+    "same_mixed_source": {"atol": 0.001, "rtol": 0.001}
+  },
+  "input": {
+    "latent_shape": [1, 16, 1, 16, 16],
+    "latent_seed": 26327,
+    "timestep": 650,
+    "middle_blocks": [27, 29]
+  }
+}

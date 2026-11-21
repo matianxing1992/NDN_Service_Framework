@@ -7,6 +7,7 @@ namespace ndnsf::di {
 
 class NativePreparedPlanningTemplate;
 struct AutomaticOnnxContract;
+struct NativeOnnxNodeLayout;
 /** Exact legacy snapshot bytes, with verified immutable subtree reuse. */
 std::string nativePlacementObservationCanonicalJson(const NativeJson& snapshot,
   const NativePreparedPlanningTemplate* prepared = nullptr);
@@ -126,5 +127,16 @@ struct NativeRequestCatalog
 
   static NativeRequestCatalog load(const std::string& configurationJson,
     NativeCanonicalSource source, const NativeAssemblyControl& control);
+
+  /** Compute TP layouts during native catalog admission for source preflight.
+   * The returned catalog retains its configured execution mode. */
+  static NativeRequestCatalog loadWithTensorLayouts(const std::string& configurationJson,
+    NativeCanonicalSource source, const NativeAssemblyControl& control,
+    std::vector<NativeOnnxNodeLayout>& layouts);
+
+private:
+  static NativeRequestCatalog
+  loadImpl(const std::string& configurationJson, NativeCanonicalSource source,
+           const NativeAssemblyControl& control, std::vector<NativeOnnxNodeLayout>* layouts);
 };
 } // namespace ndnsf::di

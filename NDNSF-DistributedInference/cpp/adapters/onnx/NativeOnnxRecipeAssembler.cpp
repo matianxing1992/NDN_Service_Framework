@@ -2,6 +2,7 @@
 #include "automatic-onnx-model.hpp"
 #include "automatic-onnx-generation.hpp"
 #include "automatic-onnx-inference.hpp"
+#include "native-onnx-source-transform.hpp"
 #include "onnx-tensor-type.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-owned-initializer-file.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -3392,6 +3393,52 @@ parseNativeCanonicalMaterialManifest(const std::vector<std::uint8_t>& bytes)
   return result;
 }
 
+std::set<std::string>
+selectNativeCanonicalMaterialPayloads(const NativeCanonicalSource::MaterialManifest& manifest,
+  const std::vector<std::uint64_t>& nodeIndices,
+  const std::vector<std::string>& extraInitializers,
+  const std::function<void()>& requireActive)
+{
+  if (nodeIndices.empty() || manifest.templatePayloadId.empty())
+    throw std::invalid_argument("DI_CANONICAL_MATERIAL_SELECTION_EMPTY");
+  std::map<std::uint64_t, const NativeCanonicalSource::MaterialReference*> nodes;
+  std::map<std::string, const NativeCanonicalSource::MaterialReference*> initializers;
+  for (const auto& reference : manifest.references) {
+    requireActive();
+    if (reference.kind == "graph-node") {
+      if (reference.logicalName != "node/" + std::to_string(reference.nodeIndex) ||
+          !nodes.emplace(reference.nodeIndex, &reference).second)
+        throw std::invalid_argument("DI_CANONICAL_MATERIAL_NODE_IDENTITY_MISMATCH");
+    }
+    else if (reference.kind == "shared-initializer" &&
+             !initializers.emplace(reference.logicalName, &reference).second) {
+      throw std::invalid_argument("DI_CANONICAL_MATERIAL_INITIALIZER_IDENTITY_MISMATCH");
+    }
+  }
+  std::set<std::string> selected{manifest.templatePayloadId};
+  std::set<std::string> dependencies(extraInitializers.begin(), extraInitializers.end());
+  const auto include = [&] (const auto& reference) {
+    selected.insert(reference.payloadId);
+    selected.insert(reference.chunkPayloadIds.begin(), reference.chunkPayloadIds.end());
+  };
+  for (const auto index : nodeIndices) {
+    requireActive();
+    const auto node = nodes.find(index);
+    if (node == nodes.end())
+      throw std::runtime_error("DI_CANONICAL_MATERIAL_NODE_MISSING");
+    include(*node->second);
+    dependencies.insert(node->second->dependencies.begin(), node->second->dependencies.end());
+  }
+  for (const auto& name : dependencies) {
+    requireActive();
+    const auto initializer = initializers.find(name);
+    if (initializer == initializers.end())
+      throw std::runtime_error("DI_CANONICAL_MATERIAL_INITIALIZER_MISSING");
+    include(*initializer->second);
+  }
+  return selected;
+}
+
 namespace {
 std::vector<std::uint8_t>
 materializeCanonicalModel(NativeCanonicalSource& source,
@@ -4030,7 +4077,8 @@ inspectSourceGraphFacts(const NativeCanonicalSource& source,
                         const onnx::ModelProto& original,
                         const std::vector<TensorIndexEntry>& entries,
                         std::uint64_t materializedBudget,
-                        std::vector<AutomaticTensorContract>* automaticTensors = nullptr)
+                        std::vector<AutomaticTensorContract>* automaticTensors = nullptr,
+                        std::vector<NativeOnnxNodeLayout>* tensorLayouts = nullptr)
 {
   NativeOnnxGraphInspection result;
   result.canonicalIdentity = {sha256HexOf(graphFactsJson(original, entries)),
@@ -4316,6 +4364,8 @@ inspectSourceGraphFacts(const NativeCanonicalSource& source,
   sourceModel.graphDigest = result.graph.graphDigest;
   result.graph.validate(sourceModel);
   result.graphMetadataJson = nativeCanonicalJson(metadata);
+  if (tensorLayouts != nullptr)
+    *tensorLayouts = deriveNativeOnnxTwoRankLayouts(inferred, [&] { checkActive(control); });
   checkActive(control);
   return result;
 }
@@ -5111,9 +5161,10 @@ inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyContr
   return inspectAutomaticOnnxModel(openAutomaticOnnxSource(input.modelFile, control), control);
 }
 
-NativeOnnxGraphInspection
-inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
-  const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control)
+static NativeOnnxGraphInspection
+inspectNativeOnnxGraph(const NativeCanonicalSource& source,
+  const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control,
+  std::vector<NativeOnnxNodeLayout>* layouts)
 {
   expectedModel.validate();
   if (expectedModel.modelFormat != "onnx") fail("GRAPH_MODEL_FORMAT");
@@ -5123,7 +5174,26 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
     original, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr,
     &control, &source);
   return inspectSourceGraphFacts(source, expectedModel, control, original, entries,
-                                 materializedBudget);
+                                 materializedBudget, nullptr, layouts);
+}
+
+NativeOnnxGraphInspection
+inspectNativeOnnxTensorParallelGraph(const NativeCanonicalSource& source,
+  const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control,
+  std::vector<NativeOnnxNodeLayout>& layouts)
+{
+  std::vector<NativeOnnxNodeLayout> checkedLayouts;
+  auto result = inspectNativeOnnxGraph(source, expectedModel, control, &checkedLayouts);
+  result.graph.validate(expectedModel);
+  layouts = std::move(checkedLayouts);
+  return result;
+}
+
+NativeOnnxGraphInspection
+inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
+  const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control)
+{
+  return inspectNativeOnnxGraph(source, expectedModel, control, nullptr);
 }
 
 NativeOnnxGraphInspection

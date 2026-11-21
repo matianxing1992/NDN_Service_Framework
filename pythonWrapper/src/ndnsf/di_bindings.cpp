@@ -355,7 +355,9 @@ bindDistributedInference(py::module_& module)
     .def_readonly("request_id", &di::Result::requestId)
     .def_readonly("model_digest", &di::Result::modelDigest)
     .def_readonly("plan_digest", &di::Result::planDigest)
-    .def("matches_float32_tensor", &di::Result::matchesFloat32Tensor,
+    .def("matches_float32_tensor",
+         py::overload_cast<const std::string&, const std::vector<float>&, double>(
+           &di::Result::matchesFloat32Tensor, py::const_),
          py::arg("tensor_name"), py::arg("expected"), py::arg("tolerance"));
 
   py::class_<di::Event>(module, "Event")

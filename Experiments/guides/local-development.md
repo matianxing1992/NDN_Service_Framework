@@ -1,6 +1,6 @@
 # 本地构建、安装与依赖边界
 
-## 唯一构建树与六路编译
+## 本地构建树与并发
 
 NDNSF用根Waf。宿主复用 checkout 内两棵维护树：`build/`（普通构建、发布候选、全局安装）与
 `build-ASAN-UBSAN/`（ASAN/UBSAN 诊断与测试），各自持有独立的 Waf 配置/签名状态、对象文件与生成头文件，
@@ -9,11 +9,13 @@ NDNSF用根Waf。宿主复用 checkout 内两棵维护树：`build/`（普通构
 不另建按Spec命名的build/install树。
 
 ~~~bash
-scripts/build-safe.sh build --jobs=6
+scripts/build-safe.sh build
 scripts/install-global-target.sh --target ndnsf-distributed-inference
 ~~~
 
-六核开发机默认六路，无人为内存上限、无大源文件独占串行；
+物理内存不超过 12 GB 时默认并封顶四路，12 GB 以上且低于 100 GB 时默认并封顶六路，
+内存未知时沿用六路。至少 100 GB 时默认使用 `nproc`，允许显式指定正整数。
+构建沿用宿主内存限制和 Waf 并发调度；
 发生实际OOM或用户要求时才降低并发。保留进程组所有权、build锁和失败回收，
 不修改 MemorySwap 或系统 swap。`scripts/build-safe.sh` 负责构建锁和磁盘准入。
 

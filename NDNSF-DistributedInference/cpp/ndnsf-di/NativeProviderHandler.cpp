@@ -1986,8 +1986,7 @@ validateNativeProviderRuntimeReadiness(
   if (!evidence.loadCompleted) {
     return "DI_RUNTIME_MODEL_NOT_LOADED";
   }
-  if (!evidence.warmupCompleted &&
-      !(evidence.warmupSkippedUnrankedInput && evidence.deviceKind == "cpu")) {
+  if (!evidence.warmupReady()) {
     return "DI_RUNTIME_WARMUP_INCOMPLETE";
   }
   if (std::find(evidence.roles.begin(), evidence.roles.end(), expectedRole) ==
@@ -2114,7 +2113,25 @@ validateNativePreparedRunnerSpec(
         metadataValue(spec, {"tensorParallelSteps"}) != qwen::qwenTpStepDeclarationJson(roleSteps))
       return "DI_PROVIDER_ASSEMBLY_STEP_CONTRACT_MISMATCH";
   }
-  if (spec.entryContract || (!projection.plan.steps.empty() && !tensorParallelBackend)) {
+  bool sourceProgram = false;
+  try {
+    auto expected = spec;
+    expected.metadata.erase("sourceEntryProgram");
+    sourceProgram = detail::bindNativeSourceProgramEntries(projection, expected);
+    if (spec.sourceProgramDependencyEntries != expected.sourceProgramDependencyEntries ||
+        spec.deferDependencyInputWarmup)
+      return "DI_PROVIDER_SOURCE_PROGRAM_ENTRY_MISMATCH";
+    if (sourceProgram && metadataValue(spec, {"sourceEntryProgram"}) !=
+                         expected.metadata.at("sourceEntryProgram"))
+      return "DI_PROVIDER_SOURCE_PROGRAM_ENTRY_MISMATCH";
+    if (!sourceProgram && spec.metadata.count("sourceEntryProgram") != 0)
+      return "DI_PROVIDER_SOURCE_PROGRAM_ENTRY_MISMATCH";
+  }
+  catch (const std::exception&) {
+    return "DI_PROVIDER_SOURCE_PROGRAM_ENTRY_MISMATCH";
+  }
+  if (!sourceProgram &&
+      (spec.entryContract || (!projection.plan.steps.empty() && !tensorParallelBackend))) {
     try {
       auto expected = spec;
       expected.entryContract.reset();
@@ -3507,6 +3524,24 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                           executionSessionId,
                               assignment,
                               ctx.localProvider().toUri()));
+      if (selectionProjection && !authenticatedGeneration.enabled &&
+          roleSpec.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
+        const bool readsRequest = std::any_of(roleSpec.steps->begin(), roleSpec.steps->end(),
+          [] (const auto& step) {
+            return std::any_of(step.inputSlots.begin(), step.inputSlots.end(),
+              [] (const auto& slot) { return slot.source == "EPOCH_INPUT"; });
+          });
+        const auto requestEdge = std::find_if(roleSpec.inputs.begin(), roleSpec.inputs.end(),
+          [] (const auto& edge) { return edge.operationKind == "APPLICATION_INPUT"; });
+        if (readsRequest != (requestEdge != roleSpec.inputs.end()) ||
+            (readsRequest && std::count_if(roleSpec.inputs.begin(), roleSpec.inputs.end(),
+               [&] (const auto& edge) {
+                 return edge.operationKind == "APPLICATION_INPUT" ||
+                        edge.scope == requestEdge->scope;
+               }) != 1)) {
+          throw std::invalid_argument("V3 finite step plan has no unique application input binding");
+        }
+      }
       logProviderBoundaryStdout("ROLE_SPEC_READY", stageRequestId,
                                 ctx.localProvider().toUri(), role);
       const auto localWorkCurrent = [&ctx, state, executionAttempt] {
@@ -3643,8 +3678,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           protectedRuntime->withContentKey(epochMs(), [] (const auto&) {});
         };
       }
-      if (selectionProjection && authenticatedGeneration.enabled &&
-          !selectionProjection->conversationTurnBinding &&
+      if (selectionProjection && !selectionProjection->conversationTurnBinding &&
           ctx.assignment().scopeKeys.count(detail::NATIVE_CANCELLATION_SCOPE)) {
         executionCommitMutex = std::make_shared<std::mutex>();
         cancellationMonitor = std::make_unique<NativeCancellationMonitor>(ctx,
@@ -5115,7 +5149,24 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           std::size_t inputCount = 0;
           bool hasExactPartial = false;
           for (const auto& spec : localRoleSpecs) {
-            inputCount += spec.inputs.size();
+            if (spec.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
+              // Each local role can wait independently. Its unscoped inputs and the
+              // inputs of one active step bound its contribution to this pool.
+              std::map<std::string, std::size_t> inputsByStep;
+              std::size_t maxStepInputs = 0;
+              for (const auto& edge : spec.inputs) {
+                if (edge.consumerStepId.empty()) {
+                  ++inputCount;
+                }
+                else {
+                  maxStepInputs = std::max(maxStepInputs, ++inputsByStep[edge.consumerStepId]);
+                }
+              }
+              inputCount += maxStepInputs;
+            }
+            else {
+              inputCount += spec.inputs.size();
+            }
             hasExactPartial |= std::any_of(spec.inputs.begin(), spec.inputs.end(),
               [] (const auto& edge) {
                 return edge.operationKind == "TENSOR_PARTIAL" && edge.useNdnsfDataV1 &&

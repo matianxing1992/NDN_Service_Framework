@@ -49,6 +49,9 @@ struct NativeModelRunnerSpec
   // assembly/preparation; stripped from artifact-cache templates and rebound to each plan.
   // Immutable values only, without a request or authorization owner.
   std::shared_ptr<const NativeSubgraphEntryContract> entryContract;
+  // Rebound from the authenticated CALLs when the source program is opened.
+  std::vector<std::string> sourceProgramDependencyEntries{};
+  bool deferDependencyInputWarmup = false;
 };
 
 /** Immutable binding shared by observations from the same request and role. */

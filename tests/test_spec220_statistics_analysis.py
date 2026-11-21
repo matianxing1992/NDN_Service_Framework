@@ -251,6 +251,36 @@ class StructuredStatisticsAnalysis(unittest.TestCase):
             self.assertIsNone(row["outputReadyToFetchConsumedNs"])
             self.assertIsNone(row["outputReadyToWorkerAdmittedNs"])
 
+    def test_transport_readiness_has_independent_coverage(self):
+        records = self.records()
+        for record in records[1:]:
+            record["workStatistics"].update(complete=False, phaseComplete=False,
+                                            droppedTransfers=0, invalidTransfers=0)
+        records[1]["workStatistics"]["transfers"] = [self.transfer("output-publication")]
+        receiver = records[2]["workStatistics"]
+        receiver["transfers"] = [self.transfer("coordinator-fetch", readySteadyNs=350),
+                                 self.transfer("worker-input", readySteadyNs=350)]
+        receiver["networkTransferCoverage"] = "reported-io-receipts"
+        receiver["droppedNetworkTransfers"] = 0
+        receiver["networkTransfers"] = [{"kind": "receive", "objects": 1}]
+        result = self.analyze(records)
+        row = result["transfers"][0]
+        self.assertEqual(row["outputReadyToTransportReadyNs"], 50)
+        self.assertEqual(row["transportReadyToWorkerAdmittedNs"], 40)
+        inventory = next(x for x in result["workInventories"] if x["role"] == "stage1")
+        self.assertFalse(inventory["phaseComplete"])
+        self.assertTrue(inventory["transferDetailsComplete"])
+        self.assertEqual(inventory["networkTransfers"], receiver["networkTransfers"])
+
+        receiver["transfers"][0]["readySteadyNs"] = 349
+        row = self.analyze(records)["transfers"][0]
+        self.assertIsNone(row["outputReadyToTransportReadyNs"])
+        self.assertIn("transport-ready:CONFLICTING_RECEIPTS", row["reasons"])
+        receiver["droppedTransfers"] = 1
+        row = self.analyze(records)["transfers"][0]
+        self.assertIsNone(row["outputReadyToTransportReadyNs"])
+        self.assertIsNone(row["transportReadyToWorkerAdmittedNs"])
+
     def test_duplicate_requester_and_provider_are_not_double_counted(self):
         for index in (0, 1):
             records = self.records()

@@ -1775,6 +1775,9 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
           return keyChain == nullptr ? std::string{} :
             signAssemblyManifest(*keyChain, providerCert, bytes);
         };
+        const bool sourceProgram = keyChain != nullptr &&
+          bindNativeSourceProgramManifestAuthentication(projection, options, *keyChain,
+                                                        providerCert);
         if (!artifactCache) {
           logProviderPreparationProgress(projection, "ASSEMBLY_CALL_BEGIN",
                                          "canonical-onnx-no-cache");
@@ -1996,7 +1999,8 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
             if (!std::filesystem::is_regular_file(cachedModelPath))
               throw std::runtime_error("DI_PROVIDER_ARTIFACT_MATERIALIZATION_MISSING");
             validateNativeAssembledArtifactFiles(spec, options.cacheDir,
-              projection.assemblyContract().maxAssembledBytes, options.verifyCachedArtifactDigest,
+              projection.assemblyContract().maxAssembledBytes,
+              options.verifyCachedArtifactDigest || sourceProgram,
               [&control] { control.requireActive(); });
           }
           if (templateHit)

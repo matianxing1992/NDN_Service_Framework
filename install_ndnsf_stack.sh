@@ -31,6 +31,7 @@ REUSE_BUILD_DIR="${NDNSF_REUSE_BUILD_DIR:-0}"
 INSTALL_SYSTEM_PACKAGES=1
 INSTALL_TEST_PACKAGES=0
 INSTALL_DOC_PACKAGES=0
+INSTALL_MININDN=auto
 INSTALL_MININDN_PACKAGES=0
 INSTALL_YOLO_MININDN=0
 INSTALL_NFD_NLSR_PACKAGES=0
@@ -94,6 +95,8 @@ NFD_COMMIT="2b43d675e3fba37b5362fab0001ba542bb07b43b"
 # moving upstream branches or disturbs the installed ndn-cxx/NFD.
 MININDN_REPO_URL="https://github.com/named-data/mini-ndn.git"
 MININDN_COMMIT="73add71f860979426aef63136bf78ed525862e5c"
+MININET_REPO_URL="https://github.com/mininet/mininet.git"
+MININET_COMMIT="88f14e946a05cd0895e1a127bf89da9b3fb1d98b"
 MININDN_PSYNC_URL="https://github.com/named-data/PSync.git"
 MININDN_PSYNC_COMMIT="b65d6db9f6300a39e006c43f7a9a51d796a562a5"
 MININDN_NLSR_URL="https://github.com/named-data/NLSR.git"
@@ -132,11 +135,17 @@ Options:
   --install-system-packages Install common APT build packages (default).
   --no-system-packages     Do not install OS packages.
   --with-system-tests-deps Install test/documentation OS packages.
+  --with-minindn           Select the pinned Mini-NDN runtime (default for DI installs).
+  --without-minindn        Skip the Mini-NDN runtime during a normal install.
   --with-minindn-deps      Install Mini-NDN experiment OS packages.
   --with-yolo-minindn      Install the pinned two-node Mini-NDN + YOLO CPU profile.
-  --with-qwen-minindn      Check Qwen Mini-NDN prerequisites; do not download a model.
+  --with-qwen-minindn      Install the shared Mini-NDN runtime and native Qwen fixtures.
   --prepare-experiment PROFILE
                           Prepare inputs using an already installed prefix; no build or actor launch.
+                          Profiles: qwen06b-tp-cpu, qwen06b-pp-cpu-colocated,
+                          qwen06b-pp-cpu-distributed, qwen06b-single-cpu,
+                          qwen06b-wired-star-tp-cpu, qwen06b-wired-star-pp-cpu,
+                          qwen06b-wired-star-full-cpu.
   --asset-manifest FILE   SEALED model manifest for --prepare-experiment.
                           Prepare it first with Experiments/prepare-model-assets.py:
                             --recipe qwen3-0.6b-int4 --asset-root DIR
@@ -160,7 +169,9 @@ Options:
   --legacy-build-dir PATH  Validate/remove a pre-manifest build dir with --uninstall.
   --configure              Always run ./waf configure.
   --no-configure           Unsupported; configure is required for every install.
-  --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS, or CPU count above 100 GB RAM; otherwise 6).
+  --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS or the host RAM tier,
+                          4 up to 12 GB, 6 above 12 GB and below 100 GB or with unknown RAM,
+                          CPU count at 100 GB or more).
   NDNSF_TMPDIR=PATH        SDK temporary files (default: BUILD_DIR/tmp; native Waf uses ROOT/build).
   --with-examples          Pass --with-examples to Waf configure.
   --with-tests             Pass --with-tests to Waf configure.
@@ -281,14 +292,20 @@ while [[ $# -gt 0 ]]; do
       EXPERIMENT_NAMESPACE="$2"; shift 2 ;;
     --offline)
       EXPERIMENT_OFFLINE=1; shift ;;
+    --with-minindn)
+      INSTALL_MININDN=1
+      shift
+      ;;
+    --without-minindn)
+      INSTALL_MININDN=0
+      shift
+      ;;
     --with-minindn-deps)
       INSTALL_MININDN_PACKAGES=1
       shift
       ;;
     --with-yolo-minindn)
       INSTALL_YOLO_MININDN=1
-      INSTALL_MININDN_PACKAGES=1
-      INSTALL_NFD_NLSR_PACKAGES=1
       shift
       ;;
     --with-nfd-nlsr-deps)
@@ -378,7 +395,8 @@ done
 # Reject unsupported options before apt, dependency installation, or configure.
 if [[ -n "$PREPARE_EXPERIMENT" ]]; then
   case "$PREPARE_EXPERIMENT" in
-    qwen06b-tp-cpu|qwen06b-pp-cpu-colocated|qwen06b-pp-cpu-distributed|qwen06b-single-cpu) ;;
+    qwen06b-tp-cpu|qwen06b-pp-cpu-colocated|qwen06b-pp-cpu-distributed|qwen06b-single-cpu|\
+    qwen06b-wired-star-tp-cpu|qwen06b-wired-star-pp-cpu|qwen06b-wired-star-full-cpu) ;;
     *) echo "Unsupported experiment profile: $PREPARE_EXPERIMENT" >&2; exit 2 ;;
   esac
   [[ -n "$EXPERIMENT_ASSET_MANIFEST" &&
@@ -388,7 +406,8 @@ if [[ -n "$PREPARE_EXPERIMENT" ]]; then
   }
   if (( CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES || UNINSTALL_STACK || SOURCE_MODE ||
         QWEN_MININDN || INSTALL_YOLO_MININDN || FORCE_DEPENDENCIES || NATIVE_ONLY ||
-        ! RUN_SYSTEM_INSTALL )) || [[ -n "$PERSON_RUNTIME" ]] || ((${#WAF_CONFIGURE_ARGS[@]})); then
+        ! RUN_SYSTEM_INSTALL )) || [[ -n "$PERSON_RUNTIME" || "$INSTALL_MININDN" != auto ]] ||
+        ((${#WAF_CONFIGURE_ARGS[@]})); then
     echo '--prepare-experiment is an installed-input preparation action; do not combine it with build/install profiles' >&2
     exit 2
   fi
@@ -434,7 +453,7 @@ if (( FORCE_DEPENDENCIES && NO_DEPENDENCIES_REQUESTED )); then
   exit 2
 fi
 ndnsf_host_build_jobs_allowed "$JOBS" || {
-  echo '--jobs must be positive; host build counts above six require more than 100 GB total RAM (otherwise choose 1, 2, 4 or 6)' >&2
+  ndnsf_report_invalid_host_build_jobs
   exit 2
 }
 [[ "$REUSE_BUILD_DIR" == 0 || "$REUSE_BUILD_DIR" == 1 ]] || {
@@ -448,7 +467,8 @@ if [[ "$RUN_WAF_CONFIGURE" == "0" ]]; then
 fi
 if (( UNINSTALL_STACK )); then
   if (( PLAN_ONLY || CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES || FORCE_DEPENDENCIES ||
-        SOURCE_MODE || QWEN_MININDN || INSTALL_YOLO_MININDN )) || ((${#WAF_CONFIGURE_ARGS[@]})); then
+        SOURCE_MODE || QWEN_MININDN || INSTALL_YOLO_MININDN )) ||
+        [[ "$INSTALL_MININDN" != auto ]] || ((${#WAF_CONFIGURE_ARGS[@]})); then
     echo '--uninstall cannot be combined with install/configure options' >&2
     exit 2
   fi
@@ -514,6 +534,35 @@ done
 if [[ "$NATIVE_COMPONENT_PROFILE" != all ]] && (( QWEN_MININDN || INSTALL_YOLO_MININDN )); then
   echo 'Legacy MiniNDN profiles require --components all' >&2
   exit 2
+fi
+if (( QWEN_MININDN || INSTALL_YOLO_MININDN )) && [[ "$INSTALL_MININDN" == 0 ]]; then
+  echo 'The Qwen and YOLO MiniNDN profiles require the shared MiniNDN runtime' >&2
+  exit 2
+fi
+if [[ -n "$PERSON_RUNTIME" && "$INSTALL_MININDN" != auto ]]; then
+  echo 'MiniNDN options cannot be combined with --person-runtime' >&2
+  exit 2
+fi
+if [[ "$INSTALL_MININDN" == 1 ]] &&
+   (( CONFIGURE_ONLY || NDNCXX_ONLY || PROMOTE_NATIVE_STAGE || ! RUN_SYSTEM_INSTALL )); then
+  echo '--with-minindn requires an install or dependency check' >&2
+  exit 2
+fi
+if [[ "$INSTALL_MININDN" == auto ]]; then
+  INSTALL_MININDN=0
+  if (( QWEN_MININDN || INSTALL_YOLO_MININDN )); then
+    INSTALL_MININDN=1
+  elif (( NDNSF_INSTALL_DI && RUN_SYSTEM_INSTALL && ! CONFIGURE_ONLY && ! CHECK_DEPENDENCIES &&
+          ! NDNCXX_ONLY && ! UNINSTALL_STACK && ! PROMOTE_NATIVE_STAGE )) &&
+       [[ "$INSTALL_DEPENDENCIES" != 0 && -z "$PREPARE_EXPERIMENT$PERSON_RUNTIME" ]]; then
+    INSTALL_MININDN=1
+  fi
+fi
+if (( INSTALL_MININDN && ! CHECK_DEPENDENCIES )) && [[ "$INSTALL_DEPENDENCIES" != 0 ]]; then
+  INSTALL_MININDN_PACKAGES=1
+fi
+if (( INSTALL_YOLO_MININDN )); then
+  INSTALL_NFD_NLSR_PACKAGES=1
 fi
 
 run() {
@@ -1409,16 +1458,22 @@ stage_python_wheel_sources() {
 }
 
 prepare_installer_pip() {
-  local stage="$1" help
+  local stage="$1" help interpreter="$PYTHON_BIN"
   local -a clean=(env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1)
   pip_bootstrap_env=()
-  help="$("${clean[@]}" "$PYTHON_BIN" -m pip --isolated help install)"
+  if ! help="$("${clean[@]}" "$PYTHON_BIN" -m pip --isolated help install 2>/dev/null)"; then
+    # Focal's distro pip can fail before parsing options when a separately
+    # installed cryptography conflicts with its system pyOpenSSL.
+    echo '==> Bootstrapping pip without the system site packages'
+    run "$PYTHON_BIN" -I -m venv "$stage/bootstrap-venv"
+    interpreter="$stage/bootstrap-venv/bin/python"
+  fi
   if [[ "$help" == *--break-system-packages* ]]; then
     return
   fi
   # Ubuntu 20.04's apt pip rejects newer wheel tags and lacks the install
   # option used below. Keep the bootstrap private to this installer stage.
-  run_bounded "${clean[@]}" "$PYTHON_BIN" -m pip --isolated install \
+  run_bounded "${clean[@]}" "$interpreter" -m pip --isolated install \
     --no-cache-dir --no-deps --target "$stage" 'pip==25.0.1'
   pip_bootstrap_env=("PYTHONPATH=$stage")
 }
@@ -2402,10 +2457,15 @@ install_common_system_packages() {
     fi
     if [[ "$INSTALL_MININDN_PACKAGES" == "1" ]]; then
       packages+=(
-        mininet openvswitch-switch tcpdump iproute2 net-tools
+        openvswitch-switch tcpdump iproute2 net-tools
         python3-pyroute2 python3-networkx python3-matplotlib python3-igraph
-        python3-tqdm python3-joblib
+        python3-tqdm python3-joblib python3-packaging
       )
+      # Ubuntu 20.04's Mininet package uses Python 2. The shared runtime
+      # builds the pinned Python 3 Mininet and its native CLI from source.
+      if (( ! INSTALL_MININDN )); then
+        packages+=(mininet)
+      fi
     fi
     if [[ "$INSTALL_YOLO_MININDN" == "1" ]]; then
       packages+=(libbz2-dev)
@@ -2877,8 +2937,9 @@ build_fixed_minindn_waf_dependency() {
 
 build_fixed_minindn_infoedit() {
   local dir stage_root
-  if PATH="$SYSTEM_PATH:/usr/local/bin" command -v infoedit >/dev/null; then
-    echo '==> Reusing installed Mini-NDN prerequisite: infoedit'
+  if PATH="$SYSTEM_PATH:/usr/local/bin" command -v infoedit >/dev/null &&
+     PATH="$SYSTEM_PATH:/usr/local/bin" command -v infoconv >/dev/null; then
+    echo '==> Reusing installed Mini-NDN prerequisites: infoedit and infoconv'
     return 0
   fi
   dir="$(ensure_fixed_source_tree infoedit "$MININDN_INFOEDIT_URL" \
@@ -2893,6 +2954,7 @@ build_fixed_minindn_infoedit() {
     make -C "$dir" DESTDIR="$stage_root" \
       PREFIX="$GLOBAL_DEPENDENCY_PREFIX" install
   run make -C "$dir" clean
+  [[ -x "$stage_root/usr/local/bin/infoedit" && -x "$stage_root/usr/local/bin/infoconv" ]]
   preserve_existing_stage_targets "$stage_root/usr/local"
   install_manifest_tree "$stage_root/usr/local" "$GLOBAL_DEPENDENCY_PREFIX" \
     minindn:infoedit
@@ -3008,13 +3070,122 @@ install_native_test_python_support() (
   install_manifest_tree "$stage/tree" "$RUNTIME_PREFIX" ndnsf-test-python
 )
 
-install_yolo_minindn_profile() {
-  local python_tag torch_version torchvision_version python_ndn_version onnxruntime_python_version
-  local mini_prefix yolo_prefix
-  local mini_source source_copy stage_root mini_site yolo_site mini_stage yolo_stage
-  local model_stage topology profile_stage yolo_examples
+minindn_python_site() {
+  local python_tag
+  python_tag="$("$PYTHON_BIN" -I -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}")')"
+  printf '%s/ndnsf/mini-ndn/v0.7.0/%s/site-packages\n' "$GLOBAL_LIBRARY_DIR" "$python_tag"
+}
+
+check_minindn_runtime() {
+  local tool mini_site
+  for tool in mn mnexec ip tc ovs-vsctl nfd nfdc ndnsec infoedit infoconv; do
+    if ! PATH="/usr/local/bin:$SYSTEM_PATH" command -v "$tool" >/dev/null; then
+      echo "MiniNDN runtime command missing: $tool" >&2
+      return 1
+    fi
+  done
+  mini_site="$(minindn_python_site)"
+  if ! cmp -s "$(dirname -- "$mini_site")/source-commits" \
+       <(printf '%s\n' "$MININDN_COMMIT" "$MININET_COMMIT"); then
+    echo 'Pinned MiniNDN/Mininet installation receipt is missing or stale' >&2
+    return 1
+  fi
+  (
+    cd /
+    env -u PYTHONPATH -u PYTHONHOME "$PYTHON_BIN" -I -B - "$mini_site" "$QWEN_MININDN" <<'PY' || return 1
+from pathlib import Path
+import sys
+import minindn
+import mininet
+from minindn.apps.app_manager import AppManager
+from minindn.apps.nfd import Nfd
+from minindn.helpers.ndn_routing_helper import NdnRoutingHelper
+from minindn.minindn import Minindn
+from ndn.encoding import Name
+
+if sys.argv[2] == "1":
+    import cryptography
+
+expected = Path(sys.argv[1]).resolve()
+for module in (minindn, mininet):
+    origin = Path(module.__file__).resolve()
+    if expected not in origin.parents:
+        raise SystemExit(f"{module.__name__} loaded from {origin}, expected {expected}")
+print("MININDN_RUNTIME_IMPORTS_OK")
+PY
+    env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 \
+      "$GLOBAL_DEPENDENCY_PREFIX/bin/mn" --version
+  )
+}
+
+install_minindn_runtime() (
+  local mini_source mininet_source mini_site system_site stage_root mini_stage topology
   local -a pip_env pip_bootstrap_env=()
-  python_ndn_version="$(selected_python_ndn_version)"
+
+  check_minindn_ndn_base
+  mini_source="$(ensure_fixed_source_tree mini-ndn "$MININDN_REPO_URL" \
+    "$MININDN_COMMIT" | tail -n 1)"
+  mininet_source="$(ensure_fixed_source_tree mininet "$MININET_REPO_URL" \
+    "$MININET_COMMIT" | tail -n 1)"
+  if [[ "$FORCE_DEPENDENCIES" != 1 ]] && check_minindn_runtime >/dev/null 2>&1; then
+    echo '==> Reusing the pinned global MiniNDN runtime'
+    return 0
+  fi
+
+  build_fixed_minindn_infoedit
+
+  mini_site="$(minindn_python_site)"
+  # Debian's sysconfig purelib can differ from the directories scanned by site.
+  system_site="$("$PYTHON_BIN" -I - "$GLOBAL_DEPENDENCY_PREFIX" <<'PY'
+from pathlib import Path
+import site
+import sys
+
+prefix = Path(sys.argv[1])
+for value in site.getsitepackages():
+    directory = Path(value)
+    if prefix in directory.parents and prefix in directory.resolve().parents:
+        print(directory)
+        break
+else:
+    raise SystemExit("selected system Python has no global /usr/local site directory")
+PY
+)"
+  mkdir -p -- "$BUILD_DIR/install-staging"
+  stage_root="$(mktemp -d "$BUILD_DIR/install-staging/minindn.XXXXXXXX")"
+  trap 'rm -rf -- "$stage_root"' EXIT
+  mini_stage="$stage_root$mini_site"
+  mkdir -p -- "$mini_stage" "$stage_root/src/"{mini-ndn,mininet} \
+    "$stage_root$system_site" "$stage_root/usr/local/"{bin,etc/mini-ndn}
+
+  git -C "$mini_source" archive "$MININDN_COMMIT" | tar -xf - -C "$stage_root/src/mini-ndn"
+  git -C "$mininet_source" archive "$MININET_COMMIT" | tar -xf - -C "$stage_root/src/mininet"
+  prepare_installer_pip "$stage_root/pip"
+  pip_env=(env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 "${pip_bootstrap_env[@]}")
+  run "${pip_env[@]}" "$PYTHON_BIN" -m pip --isolated install \
+    --no-deps --no-build-isolation --no-compile --target "$mini_stage" \
+    "$stage_root/src/mini-ndn" "$stage_root/src/mininet"
+  mv -- "$mini_stage/bin/mn" "$stage_root/usr/local/bin/mn"
+  run_bounded make -C "$stage_root/src/mininet" "PYTHON=$PYTHON_BIN" CC=/usr/bin/cc \
+    "BINDIR=$stage_root/usr/local/bin" install-mnexec
+  run "${pip_env[@]}" "$PYTHON_BIN" -m pip --isolated install \
+    --no-cache-dir --no-compile --target "$mini_stage" \
+    "python-ndn==$(selected_python_ndn_version)"
+  printf '%s\n' "$mini_site" > "$stage_root$system_site/ndnsf-minindn.pth"
+  printf '%s\n' "$MININDN_COMMIT" "$MININET_COMMIT" > "$(dirname -- "$mini_stage")/source-commits"
+  while IFS= read -r -d '' topology; do
+    install -m 0644 "$topology" "$stage_root/usr/local/etc/mini-ndn/"
+  done < <(find "$stage_root/src/mini-ndn/topologies" -type f -name '*.conf' -print0)
+  [[ -x "$stage_root/usr/local/bin/mn" && -x "$stage_root/usr/local/bin/mnexec" &&
+     -f "$mini_stage/minindn/minindn.py" && -f "$mini_stage/mininet/net.py" ]]
+  install_manifest_tree "$stage_root/usr/local" "$GLOBAL_DEPENDENCY_PREFIX" minindn-runtime
+  check_minindn_runtime
+)
+
+install_yolo_minindn_profile() {
+  local python_tag torch_version torchvision_version onnxruntime_python_version
+  local yolo_prefix stage_root mini_site yolo_site yolo_stage model_stage profile_stage yolo_examples
+  local -a pip_env pip_bootstrap_env=()
 
   case "$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" in
     3.8)
@@ -3035,43 +3206,26 @@ install_yolo_minindn_profile() {
       ;;
   esac
 
-  check_minindn_ndn_base
+  # The legacy YOLO launcher runs NLSR and ndnping. Native Qwen and YOLO
+  # install exact routes through NFD and share the smaller runtime.
   ensure_minindn_boost_iostreams
   build_fixed_minindn_waf_dependency PSync "$MININDN_PSYNC_URL" \
     "$MININDN_PSYNC_COMMIT" 'pkg:PSync >= 0.5.0'
-  build_fixed_minindn_waf_dependency NLSR "$MININDN_NLSR_URL" \
-    "$MININDN_NLSR_COMMIT" nlsr
+  build_fixed_minindn_waf_dependency NLSR "$MININDN_NLSR_URL" "$MININDN_NLSR_COMMIT" nlsr
   build_fixed_minindn_waf_dependency ndn-tools "$MININDN_TOOLS_URL" \
     "$MININDN_TOOLS_COMMIT" ndnping ndnpingserver
   build_fixed_minindn_waf_dependency ndn-traffic-generator "$MININDN_TRAFFIC_URL" \
     "$MININDN_TRAFFIC_COMMIT" ndn-traffic-client
-  build_fixed_minindn_infoedit
 
-  mini_source="$(ensure_fixed_source_tree mini-ndn "$MININDN_REPO_URL" \
-    "$MININDN_COMMIT" | tail -n 1)"
-  source_copy="$(mktemp -d "$BUILD_DIR/minindn-python-source.XXXXXXXX")"
   mkdir -p -- "$BUILD_DIR/install-staging"
   stage_root="$(mktemp -d "$BUILD_DIR/install-staging/yolo-minindn.XXXXXXXX")"
-  mini_prefix="$GLOBAL_LIBRARY_DIR/ndnsf/mini-ndn/v0.7.0/$python_tag"
-  mini_site="$mini_prefix/site-packages"
+  mini_site="$(minindn_python_site)"
   yolo_prefix="torch-${torch_version//+/-}-ultralytics-$YOLO_ULTRALYTICS_VERSION"
   yolo_site="$GLOBAL_LIBRARY_DIR/ndnsf/yolo-minindn/$python_tag/$yolo_prefix/site-packages"
-  mini_stage="$stage_root/usr/local/${mini_site#/usr/local/}"
   yolo_stage="$stage_root/usr/local/${yolo_site#/usr/local/}"
-  mkdir -p -- "$mini_stage" "$yolo_stage"
+  mkdir -p -- "$yolo_stage"
   prepare_installer_pip "$stage_root/pip"
   pip_env=(env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 "${pip_bootstrap_env[@]}")
-
-  echo "==> Preparing the pinned Mini-NDN $MININDN_COMMIT Python package"
-  git -C "$mini_source" archive --format=tar "$MININDN_COMMIT" |
-    tar -xf - -C "$source_copy"
-  run "${pip_env[@]}" "$PYTHON_BIN" -m pip --isolated install \
-    --no-deps --no-build-isolation --no-compile --target "$mini_stage" "$source_copy"
-
-  echo "==> Installing python-ndn $python_ndn_version for the Mini-NDN experiments"
-  run "${pip_env[@]}" "$PYTHON_BIN" -m pip --isolated install \
-    --no-cache-dir --no-compile --target "$mini_stage" \
-    "python-ndn==$python_ndn_version"
 
   echo "==> Installing pinned CPU-only PyTorch and Ultralytics Python packages"
   run "${pip_env[@]}" "$PYTHON_BIN" -m pip --isolated install \
@@ -3102,12 +3256,6 @@ install_yolo_minindn_profile() {
     > "$stage_root/usr/local/share/ndnsf/yolo-minindn/python-site-paths"
   printf '%s\n' "$YOLO_MODEL_SHA256" \
     > "$stage_root/usr/local/share/ndnsf/yolo-minindn/yolo26n.sha256"
-
-  mkdir -p -- "$stage_root/usr/local/etc/mini-ndn"
-  while IFS= read -r -d '' topology; do
-    install -m 0644 "$topology" \
-      "$stage_root/usr/local/etc/mini-ndn/$(basename -- "$topology")"
-  done < <(find "$source_copy/topologies" -type f -name '*.conf' -print0)
 
   mkdir -p -- "$stage_root/usr/local/bin"
   cat > "$stage_root/usr/local/bin/ndnsf-yolo-minindn" <<'LAUNCHER'
@@ -3336,7 +3484,7 @@ PY
 LAUNCHER
   chmod 0755 "$stage_root/usr/local/bin/ndnsf-yolo-minindn"
 
-  echo '==> Installing Mini-NDN runtime, YOLO CPU packages, model cache, and launcher'
+  echo '==> Installing YOLO CPU packages, model cache, and launcher'
   preserve_existing_stage_targets "$stage_root/usr/local"
   install_manifest_tree "$stage_root/usr/local" "$GLOBAL_DEPENDENCY_PREFIX" \
     yolo-minindn-runtime
@@ -3370,7 +3518,7 @@ PY
   printf '%s  %s\n' "$YOLO_MODEL_SHA256" \
     "$GLOBAL_DEPENDENCY_PREFIX/share/ndnsf/models/yolo26n.pt" | sha256sum --check --status
   sudo_run ldconfig
-  rm -rf -- "$source_copy" "$stage_root"
+  rm -rf -- "$stage_root"
   echo '==> Mini-NDN/YOLO profile installed; start a real two-stage run with ndnsf-yolo-minindn'
 }
 
@@ -3735,33 +3883,6 @@ install_external_dependencies() {
   check_waf_inventory
 }
 
-check_qwen_minindn_prerequisites() {
-  local tool missing=0
-  for tool in mn; do
-    if ! PATH="$SYSTEM_PATH:/usr/local/bin" command -v "$tool" >/dev/null; then
-      echo "Qwen MiniNDN prerequisite missing: $tool (install the owning project first)" >&2
-      missing=1
-    fi
-  done
-  if ! (cd / && env -u PYTHONPATH -u PYTHONHOME "$PYTHON_BIN" -I -c \
-    'from minindn.minindn import Minindn; from minindn.helpers.ndn_routing_helper import NdnRoutingHelper; import mininet; import cryptography; import ndn.encoding'); then
-    echo 'Qwen MiniNDN requires MiniNDN and its Python dependencies installed for the system Python.' >&2
-    missing=1
-  fi
-  (( missing == 0 ))
-}
-
-check_qwen_nfd_prerequisites() {
-  local tool missing=0
-  for tool in nfd nfdc ndnsec; do
-    if ! PATH="$SYSTEM_PATH:/usr/local/bin" command -v "$tool" >/dev/null; then
-      echo "Qwen MiniNDN prerequisite missing after NFD installation: $tool" >&2
-      missing=1
-    fi
-  done
-  (( missing == 0 ))
-}
-
 check_qwen_installed_programs() {
   local program
   for program in bin/App_ServiceController bin/DI_NativeArtifactAuthority bin/DI_NativeRequester \
@@ -3847,17 +3968,24 @@ if (( PLAN_ONLY )); then
   fi
   echo 'MiniNDN/NFD/NLSR dependency flags and their source-build scope:'
   if (( INSTALL_MININDN_PACKAGES )); then
-    echo '  Mini-NDN profile: Mininet/OVS and Python prerequisites; NFD/ndn-cxx are reused.'
+    echo '  Mini-NDN OS prerequisites: Open vSwitch, traffic tools and Python packages.'
+  fi
+  if (( INSTALL_MININDN )); then
+    if (( CHECK_DEPENDENCIES )) || [[ "$INSTALL_DEPENDENCIES" == 0 ]]; then
+      echo '  Verify the installed global MiniNDN runtime.'
+    else
+      echo '  Install and check the shared global MiniNDN runtime.'
+    fi
+    echo "  Mini-NDN: $MININDN_REPO_URL @ $MININDN_COMMIT"
+    echo "  Mininet: $MININET_REPO_URL @ $MININET_COMMIT"
+    echo "  infoedit: $MININDN_INFOEDIT_URL @ $MININDN_INFOEDIT_COMMIT"
+    echo '  NFD, ndn-cxx, and ndnsec are reused, never rebuilt by this profile.'
   fi
   if (( INSTALL_YOLO_MININDN )); then
-    echo "  Mini-NDN: $MININDN_REPO_URL @ $MININDN_COMMIT"
     echo "  PSync: $MININDN_PSYNC_URL @ $MININDN_PSYNC_COMMIT"
     echo "  NLSR: $MININDN_NLSR_URL @ $MININDN_NLSR_COMMIT"
     echo "  ndn-tools: $MININDN_TOOLS_URL @ $MININDN_TOOLS_COMMIT"
     echo "  Traffic generator: $MININDN_TRAFFIC_URL @ $MININDN_TRAFFIC_COMMIT"
-    echo "  infoedit: $MININDN_INFOEDIT_URL @ $MININDN_INFOEDIT_COMMIT"
-    echo '  NFD, ndn-cxx, and ndnsec are reused, never rebuilt by this profile.'
-    echo '  MiniNet/OVS APT packages: mininet openvswitch-switch tcpdump iproute2 net-tools python3-pyroute2 python3-networkx python3-matplotlib python3-igraph python3-tqdm python3-joblib.'
     echo '  NDN source-build APT packages: libsystemd-dev libcap-dev libprotobuf-dev protobuf-compiler libsqlite3-dev libpcap-dev libsodium-dev.'
     python_minor="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
     case "$python_minor" in
@@ -3865,13 +3993,13 @@ if (( PLAN_ONLY )); then
       3.14) torch_plan='2.14.0+cpu / torchvision 0.29.0+cpu' ;;
       *) torch_plan="unsupported Python $python_minor" ;;
     esac
-  echo "  Python: $torch_plan; Ultralytics=$YOLO_ULTRALYTICS_VERSION."
+    echo "  Python: $torch_plan; Ultralytics=$YOLO_ULTRALYTICS_VERSION."
     echo "  Model: yolo26n.pt SHA256=$YOLO_MODEL_SHA256."
     echo '  Launcher: ndnsf-yolo-minindn; run-specific outputs and logs go under disk-backed scratch.'
     echo '  Inference topology: exactly two Mini-NDN hosts; controller/user share ucla with stage 0, and stage 1 runs on wustl.'
   fi
   if (( QWEN_MININDN )); then
-    echo 'Qwen MiniNDN: precheck network tools/Python; install examples and fixtures; check installed programs.'
+    echo 'Qwen MiniNDN: verify the shared runtime, then install and check the native examples and fixtures.'
     echo 'Models are separate inputs: no download, export, quantization, or inference is performed.'
   fi
   printf 'Waf configure options:'; printf ' %q' "${WAF_CONFIGURE_ARGS[@]}"; printf '\n'
@@ -3912,8 +4040,8 @@ fi
 echo "==> NDNSF stack install root: $ROOT"
 echo "==> Python: $PYTHON_BIN"
 require_host_profile
-if (( QWEN_MININDN )); then
-  check_qwen_minindn_prerequisites
+if (( DEPS_ONLY && INSTALL_MININDN )); then
+  lock_native_install
 fi
 if (( ! DEPS_ONLY && ! NDNCXX_ONLY && ! CHECK_DEPENDENCIES )); then
   if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
@@ -3934,6 +4062,9 @@ require_system_toolchain
 if [[ "$CHECK_DEPENDENCIES" == "1" ]]; then
   check_waf_inventory
   require_global_external_closure
+  if (( INSTALL_MININDN )); then
+    check_minindn_runtime
+  fi
   echo "==> Installed NDNSF global dependency closure is valid"
   exit 0
 fi
@@ -3984,8 +4115,12 @@ else
   check_waf_inventory
 fi
 
-if (( QWEN_MININDN )); then
-  check_qwen_nfd_prerequisites
+if (( INSTALL_MININDN )); then
+  if [[ "$INSTALL_DEPENDENCIES" == 1 ]]; then
+    install_minindn_runtime
+  else
+    check_minindn_runtime
+  fi
 fi
 
 if (( INSTALL_YOLO_MININDN )); then

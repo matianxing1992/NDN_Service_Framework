@@ -955,9 +955,11 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     plan.roles = {roleName};
     NativeProviderAssignment assignment;
     assignment.providerByRole[roleName] = consumerContext.localProvider().toUri();
+    // Pre-event exact reads require a request-owned pool so cancellation can
+    // drain them without blocking on a compatibility std::async future.
     auto coordinatorIo = std::make_shared<NdnsfCollaborationDependencyIo>(
       consumerContext, 5000, chunkSize, 60000, consumerCoordinator,
-      nullptr, prefetchWorkerCount);
+      nullptr, std::max<std::size_t>(1, prefetchWorkerCount));
     NativeEpochCoordinatorConfig config{
       runtime, plan, assignment, coordinatorIo};
     config.sessionId = "session-v3-coordinator";
@@ -1041,9 +1043,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     }
     BOOST_CHECK_EQUAL(error,
                       "native epoch token event admission was rejected");
-    if (prefetchWorkerCount != 0) {
-      BOOST_CHECK(!ndnsf::di::PrefetchWorkerOracle::post(*coordinatorIo, [] {}));
-    }
+    BOOST_CHECK(!ndnsf::di::PrefetchWorkerOracle::post(*coordinatorIo, [] {}));
     BOOST_CHECK_GE(manifestInterests.load(std::memory_order_acquire), 1U);
     BOOST_CHECK_GE(interestCountAtEvent.load(std::memory_order_acquire), 1U);
     BOOST_REQUIRE(!issuedSourceInterests.empty());
@@ -1520,6 +1520,23 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
       << " largest_wire=" << largestPacket);
   }
   BOOST_REQUIRE(reconstructed);
+  if (mode == "prefetch") {
+    BOOST_REQUIRE(reconstructed->transferObservation);
+    BOOST_CHECK(reconstructed->transferObservation->readySteadyNs.has_value());
+    const auto received = consumerWork->snapshot().networkTransfers;
+    const auto published = producerWork->snapshot().networkTransfers;
+    BOOST_REQUIRE_EQUAL(received.size(), 1U);
+    BOOST_REQUIRE_EQUAL(published.size(), 1U);
+    const auto& [receiveKey, receiveTotal] = *received.begin();
+    const auto& [publishKey, publishTotal] = *published.begin();
+    BOOST_CHECK(std::get<1>(receiveKey) == NativeNetworkTransferKind::RECEIVE);
+    BOOST_CHECK(std::get<1>(publishKey) == NativeNetworkTransferKind::PUBLICATION);
+    BOOST_CHECK_EQUAL(receiveTotal.objects, 1U);
+    BOOST_CHECK_EQUAL(publishTotal.objects, 1U);
+    BOOST_CHECK_EQUAL(receiveTotal.tensorBytes.total, publishTotal.tensorBytes.total);
+    BOOST_CHECK_GT(receiveTotal.dataWireBytes.total, 0U);
+    BOOST_CHECK_GT(publishTotal.dataWireBytes.total, 0U);
+  }
   if (observedSizing) {
     BOOST_CHECK(reconstructed->payload == original.payload);
     BOOST_CHECK_EQUAL(segmentNamesBeforeManifest, 0U);

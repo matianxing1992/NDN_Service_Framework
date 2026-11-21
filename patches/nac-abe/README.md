@@ -61,7 +61,7 @@ probe for `consumeWithCkAuthorization`. Waf reuses its configuration only when
 the cached runtime paths also match the installer's order.
 
 On a host with the OS build packages already installed, run
-`./install_ndnsf_stack.sh --deps-only --no-system-packages`,
+`./install_ndnsf_stack.sh --deps-only --no-system-packages --without-minindn`,
 `./install_ndnsf_stack.sh --check-dependencies`, then
 `./install_ndnsf_stack.sh --no-dependencies --no-system-packages`.
 Use `ldd -r` without loader environment overrides to confirm that the NDNSF

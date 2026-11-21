@@ -1,8 +1,11 @@
 #pragma once
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
+#include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -33,6 +36,13 @@ struct NativeSourceRegionBoundary
   std::map<std::string, NativeAssemblyTensorContractV3> outputs;
   std::string identityDigest;
 };
+
+/** Resolve the exact original graph frontier for a set of canonical node ordinals. */
+NativeSourceRegionBoundary
+inspectNativeSourceBoundary(const NativeGraphSnapshot& graph, const NativeJson& metadata,
+                            const std::set<std::uint64_t>& owned,
+                            const std::vector<std::string>& additionalOutputs,
+                            const std::function<void()>& requireActive);
 
 /** Source-checked recipe producer. Semantic node mappings come from the
  * authenticated adapter/catalog; ordinal equality is never assumed. The

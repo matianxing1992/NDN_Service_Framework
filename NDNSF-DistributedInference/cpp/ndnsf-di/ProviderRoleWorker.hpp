@@ -332,6 +332,9 @@ private:
     // that blocks in place holds the thread, and two units on one worker then hold each other:
     // the one that got the thread waits for a contribution only the other can publish.
     std::map<std::string, TensorBundle> producedSteps;
+    // Both are derived from the same sealed role, initial inputs and stable runner.
+    std::optional<std::map<std::string, std::size_t>> stepLastUse;
+    std::optional<std::string> exactForwardKey;
     // One record per sealed step's backend call, bounded by the template. Collected here because
     // the unit's runner snapshot only exposes the last call.
     std::vector<StepBackendTiming> stepBackendTimings;
@@ -350,6 +353,8 @@ private:
     // soon as that step finishes.
     std::map<std::string, std::map<std::string, TensorBundle>> stepCollectedInputs;
     std::size_t resumeStepIndex = 0;
+    std::optional<std::size_t> lastSampledSumStep;
+    bool inputsBound = false;
   };
 
   /** One suspended step, waiting for the single contribution it needs. */
@@ -397,6 +402,15 @@ private:
   void
   borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge& edge,
                          std::shared_future<TensorBundle> pending);
+
+  std::chrono::steady_clock::time_point
+  stepInputDeadline(const WorkItem& item) const;
+
+  void
+  checkStepInputCurrent(const WorkItem& item, const DependencyEdge& edge) const;
+
+  TensorBundle
+  admitFetchedStepInput(WorkItem& item, const DependencyEdge& edge, TensorBundle bundle);
 
   void
   scheduleWhenInputsReady(WorkItem item, std::vector<PendingInput> pendingInputs);

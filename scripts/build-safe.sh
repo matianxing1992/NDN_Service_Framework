@@ -55,7 +55,7 @@ elif [[ $1 == build || $1 == asan ]]; then
             esac
         fi
         if ! ndnsf_host_build_jobs_allowed "$build_jobs_value"; then
-            echo 'Positive host build job counts above six require more than 100 GB total RAM; otherwise use 1, 2, 4 or 6' >&2
+            ndnsf_report_invalid_host_build_jobs
             exit 2
         fi
         build_jobs=$build_jobs_value

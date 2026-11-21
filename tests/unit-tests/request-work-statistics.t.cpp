@@ -276,7 +276,7 @@ BOOST_AUTO_TEST_CASE(RequestAndThreadOwnershipAreBounded)
   BOOST_REQUIRE(statistics->snapshot().complete);
   NativeWorkStatistics other;
   BOOST_CHECK(other.snapshot().phases.empty());
-  constexpr auto observationBudget = (MAX_NATIVE_GENERATED_TOKENS + 1) * 128;
+  constexpr auto observationBudget = (MAX_NATIVE_GENERATED_TOKENS + 1) * 256;
   for (std::size_t i = 1; i < observationBudget; ++i) {
     const auto token = statistics->begin("worker", NativeWorkKind::LOCAL);
     statistics->finish(token);
@@ -472,9 +472,10 @@ BOOST_AUTO_TEST_CASE(ThreadRegistryCannotGrowBeyondItsRequestBound)
   NativeWorkStatistics statistics([] { return NativeWorkClock{1, 1}; });
   std::promise<void> release;
   auto ready = release.get_future().share();
-  std::vector<std::promise<void>> entered(33);
+  constexpr std::size_t threadBudget = 128;
+  std::vector<std::promise<void>> entered(threadBudget + 1);
   std::vector<std::thread> workers;
-  workers.reserve(33);
+  workers.reserve(entered.size());
   try {
     for (std::size_t i = 0; i < entered.size(); ++i) {
       workers.emplace_back([&, i] {
@@ -497,7 +498,13 @@ BOOST_AUTO_TEST_CASE(ThreadRegistryCannotGrowBeyondItsRequestBound)
   BOOST_CHECK(!result.complete);
   BOOST_CHECK_EQUAL(result.droppedSpans, 1U);
   BOOST_CHECK_EQUAL(result.activeSpans, 0U);
-  BOOST_CHECK_EQUAL(result.phases.at("worker").calls, 32U);
+  BOOST_CHECK_EQUAL(result.phases.at("worker").calls, threadBudget);
+  // This thread was never registered by the live-stack wave. It can reuse an
+  // idle slot even though the request already saw more than the thread bound.
+  const auto recovered = statistics.begin("worker", NativeWorkKind::LOCAL);
+  BOOST_REQUIRE_NE(recovered, 0U);
+  statistics.finish(recovered);
+  BOOST_CHECK_EQUAL(statistics.snapshot().phases.at("worker").calls, threadBudget + 1);
 }
 
 BOOST_AUTO_TEST_CASE(TransferMetadataRetainsMissingValuesAndRejectsInvalidIntervals)
@@ -528,11 +535,38 @@ BOOST_AUTO_TEST_CASE(TransferMetadataRetainsMissingValuesAndRejectsInvalidInterv
   statistics.observeTransfer(observation, 8, 20, 10);
   BOOST_CHECK(!statistics.snapshot().complete);
   BOOST_CHECK_EQUAL(statistics.snapshot().transfers.size(), 1U);
-  NativeWorkStatistics bounded;
+  BOOST_CHECK_EQUAL(statistics.snapshot().invalidTransfers, 1U);
+  NativeWorkClock now{10, 4};
+  NativeWorkStatistics bounded([&] { return now; });
+  const auto token = bounded.begin("work", NativeWorkKind::LOCAL);
   for (std::size_t i = 0; i < 8193; ++i)
     bounded.observeTransfer(observation, i, 1, 2);
-  BOOST_CHECK(!bounded.snapshot().complete);
-  BOOST_CHECK_EQUAL(bounded.snapshot().transfers.size(), 8192U);
+  bounded.observeNetworkTransfer(7, NativeNetworkTransferKind::RECEIVE, "PREFILL",
+                                 12, 100, 2, 0);
+  bounded.observeNetworkTransfer(7, NativeNetworkTransferKind::RECEIVE, "PREFILL",
+                                 16, 120, 3, 1);
+  bounded.observeNetworkTransfer(7, NativeNetworkTransferKind::RECEIVE_FAILED, {},
+                                 std::nullopt, std::nullopt, 1, 0);
+  now = {18, 9};
+  bounded.finish(token);
+  const auto saturated = bounded.snapshot();
+  BOOST_CHECK(!saturated.complete);
+  BOOST_CHECK(saturated.phaseComplete);
+  BOOST_CHECK_EQUAL(saturated.transfers.size(), 8192U);
+  BOOST_CHECK_EQUAL(saturated.droppedTransfers, 1U);
+  const auto saturatedWire = nativeParseJson(nativeWorkStatisticsToJson(saturated));
+  BOOST_CHECK_EQUAL(saturatedWire["phases"]["work"]["exclusiveWallNs"], 8);
+  BOOST_CHECK_EQUAL(saturatedWire["phases"]["work"]["exclusiveThreadCpuNs"], 5);
+  const auto& totals = saturatedWire.at("networkTransfers");
+  BOOST_REQUIRE_EQUAL(totals.size(), 2U);
+  BOOST_CHECK_EQUAL(totals[0]["transition"], "PREFILL");
+  BOOST_CHECK_EQUAL(totals[0]["objects"], 2);
+  BOOST_CHECK_EQUAL(totals[0]["dataWireBytes"]["observedTotal"], 220);
+  BOOST_CHECK_EQUAL(totals[0]["interestCount"]["observedTotal"], 5);
+  BOOST_CHECK_EQUAL(totals[1]["kind"], "receive-failed");
+  BOOST_CHECK_EQUAL(totals[1]["interestCount"]["observedTotal"], 1);
+  BOOST_CHECK(totals[1]["tensorBytes"]["observedTotal"].is_null());
+  BOOST_CHECK_EQUAL(saturated.droppedNetworkTransfers, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(TransferStringBudgetAndAdmissionOrderingAreBounded)
@@ -569,6 +603,7 @@ BOOST_AUTO_TEST_CASE(TransferPointsSeparateOutputReadinessFetchAndAdmission)
   statistics.observeTransfer(observation, 1, 10, 20, 0,
                              NativeTransferPoint::OUTPUT_PUBLICATION, 5);
   observation.direction = "receive";
+  observation.readySteadyNs = 19;
   statistics.observeTransfer(observation, 1, 12, 22, 0,
                              NativeTransferPoint::COORDINATOR_FETCH);
   statistics.observeTransfer(observation, 1, 0, 0, 25, NativeTransferPoint::WORKER_INPUT);
@@ -582,6 +617,9 @@ BOOST_AUTO_TEST_CASE(TransferPointsSeparateOutputReadinessFetchAndAdmission)
   BOOST_CHECK_EQUAL(wire["transfers"][0]["outputReadySteadyNs"], 5);
   BOOST_CHECK(wire["transfers"][0]["admittedSteadyNs"].is_null());
   BOOST_CHECK_EQUAL(wire["transfers"][1]["point"], "coordinator-fetch");
+  BOOST_CHECK_EQUAL(wire["transfers"][1]["readySteadyNs"], 19);
+  BOOST_CHECK_EQUAL(wire["transfers"][1]["finishedSteadyNs"], 22);
+  BOOST_CHECK(wire["transfers"][0]["readySteadyNs"].is_null());
   BOOST_CHECK(wire["transfers"][1]["outputReadySteadyNs"].is_null());
   BOOST_CHECK_EQUAL(wire["transfers"][2]["point"], "worker-input");
   BOOST_CHECK(wire["transfers"][2]["startedSteadyNs"].is_null());

@@ -33,6 +33,7 @@ formatExecutionEvidenceUpdateSummary(const ExecutionEvidence& evidence)
          << " warmupCompleted=" << (evidence.warmupCompleted ? "true" : "false")
          << " warmupSkippedUnrankedInput="
          << (evidence.warmupSkippedUnrankedInput ? "true" : "false")
+         << (evidence.warmupDeferredDependencyInput ? " warmupDeferredDependencyInput=true" : "")
          << " executionCompleted=" << (evidence.executionCompleted ? "true" : "false")
          << " exactForwardCacheHit=" << (evidence.exactForwardCacheHit ? "true" : "false")
          << " roles=" << evidence.roles.size()
@@ -69,6 +70,7 @@ hasSameExecutionEvidence(const ExecutionEvidence& left, const ExecutionEvidence&
          left.loadCompleted == right.loadCompleted &&
          left.warmupCompleted == right.warmupCompleted &&
          left.warmupSkippedUnrankedInput == right.warmupSkippedUnrankedInput &&
+         left.warmupDeferredDependencyInput == right.warmupDeferredDependencyInput &&
          left.gpuUuid == right.gpuUuid &&
          left.gpuUuids == right.gpuUuids &&
          left.providerProfilePath == right.providerProfilePath &&

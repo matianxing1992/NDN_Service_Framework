@@ -142,6 +142,252 @@ checkQwenPlannerMigration(NativeSplitCandidate& actual, const NativeJson& frozen
 
 BOOST_AUTO_TEST_SUITE(Spec182NativePlanning)
 
+BOOST_AUTO_TEST_CASE(NativeConvOutputShardsPreserveGroupsAndBiasWidth)
+{
+  onnx::ModelProto model;
+  auto& graph = *model.mutable_graph();
+  auto& node = *graph.add_node();
+  node.set_op_type("Conv");
+  node.add_input("images");
+  node.add_input("weight");
+  node.add_input("bias");
+  node.add_output("features");
+  auto& weight = *graph.add_initializer();
+  weight.set_name("weight");
+  weight.set_data_type(onnx::TensorProto::FLOAT);
+  for (const auto extent : {5, 2, 1, 1}) weight.add_dims(extent);
+  auto& bias = *graph.add_initializer();
+  bias.set_name("bias");
+  bias.set_data_type(onnx::TensorProto::FLOAT);
+  bias.add_dims(5);
+
+  const auto ordinary = inspectNativeOnnxConvOutputShards(model, node);
+  BOOST_TEST(ordinary[0].inputEnd == 2U);
+  BOOST_TEST(ordinary[1].inputBegin == 0U);
+  BOOST_TEST(ordinary[0].outputEnd == 3U);
+  BOOST_TEST(ordinary[1].outputBegin == 3U);
+  BOOST_TEST(ordinary[1].outputEnd == 5U);
+
+  auto& attr = *node.add_attribute();
+  attr.set_name("group");
+  attr.set_type(onnx::AttributeProto::INT);
+  attr.set_i(3);
+  BOOST_CHECK_THROW(inspectNativeOnnxConvOutputShards(model, node), std::invalid_argument);
+  weight.set_dims(0, 9);
+  BOOST_CHECK_THROW(inspectNativeOnnxConvOutputShards(model, node), std::invalid_argument);
+  bias.set_dims(0, 9);
+  const auto grouped = inspectNativeOnnxConvOutputShards(model, node);
+  BOOST_TEST(grouped[0].inputBegin == 0U);
+  BOOST_TEST(grouped[0].inputEnd == 4U);
+  BOOST_TEST(grouped[1].inputBegin == 4U);
+  BOOST_TEST(grouped[1].inputEnd == 6U);
+  BOOST_TEST(grouped[0].outputEnd == 6U);
+  BOOST_TEST(grouped[1].outputBegin == 6U);
+  BOOST_TEST(grouped[1].outputEnd == 9U);
+  BOOST_TEST(grouped[0].groups == 2U);
+  BOOST_TEST(grouped[1].groups == 1U);
+
+  for (int value = 0; value < 18; ++value) weight.add_float_data(value);
+  for (int value = 0; value < 9; ++value) bias.add_float_data(100 + value);
+  std::uint64_t sidecarOffset = 0;
+  auto invalid = grouped[1];
+  --invalid.inputBegin;
+  BOOST_CHECK_THROW(sliceNativeOnnxConvOutput(model, node, 1, invalid, {}, {}, sidecarOffset),
+                    std::invalid_argument);
+  for (std::size_t rank = 0; rank < grouped.size(); ++rank) {
+    auto local = model;
+    auto& localNode = *local.mutable_graph()->mutable_node(0);
+    sliceNativeOnnxConvOutput(local, localNode, rank, grouped[rank], {}, {}, sidecarOffset);
+    const auto& localWeight = local.graph().initializer(0);
+    const auto& localBias = local.graph().initializer(1);
+    const int outputOffset = rank == 0 ? 0 : 6;
+    const int outputWidth = rank == 0 ? 6 : 3;
+    BOOST_TEST(localNode.attribute(0).i() == (rank == 0 ? 2 : 1));
+    BOOST_TEST(localWeight.dims(0) == outputWidth);
+    BOOST_TEST(localWeight.dims(1) == 2);
+    BOOST_TEST(localBias.dims(0) == outputWidth);
+    std::string expectedWeight;
+    std::string expectedBias;
+    for (int channel = outputOffset; channel < outputOffset + outputWidth; ++channel) {
+      const float row[] = {static_cast<float>(2 * channel), static_cast<float>(2 * channel + 1)};
+      const auto value = static_cast<float>(100 + channel);
+      expectedWeight.append(reinterpret_cast<const char*>(row), sizeof(row));
+      expectedBias.append(reinterpret_cast<const char*>(&value), sizeof(value));
+    }
+    BOOST_CHECK(localWeight.raw_data() == expectedWeight);
+    BOOST_CHECK(localBias.raw_data() == expectedBias);
+  }
+  BOOST_TEST(sidecarOffset == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeAttentionHeadShardsPreserveContractionAndKeyAxis)
+{
+  onnx::ModelProto model;
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  const auto addValue = [&] (const char* name, const std::array<int, 4>& dims) {
+    auto& value = *graph.add_value_info();
+    value.set_name(name);
+    auto& tensor = *value.mutable_type()->mutable_tensor_type();
+    tensor.set_elem_type(onnx::TensorProto::FLOAT);
+    for (const int dim : dims) tensor.mutable_shape()->add_dim()->set_dim_value(dim);
+    return &tensor;
+  };
+  addValue("q", {1, 3, 7, 4});
+  auto* key = addValue("k", {1, 3, 4, 5});
+  addValue("scores", {1, 3, 7, 5});
+  addValue("probabilities", {1, 3, 7, 5});
+  auto& matmul = *graph.add_node();
+  matmul.set_op_type("MatMul");
+  matmul.add_input("q");
+  matmul.add_input("k");
+  matmul.add_output("scores");
+  const auto ranks = inspectNativeOnnxAttentionHeadShards(model, matmul);
+  BOOST_REQUIRE_EQUAL(ranks.size(), 2);
+  BOOST_TEST(ranks[0].first == 0);
+  BOOST_TEST(ranks[0].second == 2);
+  BOOST_TEST(ranks[1].first == 2);
+  BOOST_TEST(ranks[1].second == 3);
+  key->mutable_shape()->mutable_dim(2)->set_dim_value(5);
+  BOOST_CHECK_THROW(inspectNativeOnnxAttentionHeadShards(model, matmul), std::invalid_argument);
+
+  auto& softmax = *graph.add_node();
+  softmax.set_op_type("Softmax");
+  softmax.add_input("scores");
+  softmax.add_output("probabilities");
+  BOOST_CHECK(inspectNativeOnnxAttentionHeadShards(model, softmax) == ranks);
+  auto& axis = *softmax.add_attribute();
+  axis.set_name("axis");
+  axis.set_type(onnx::AttributeProto::INT);
+  axis.set_i(3);
+  BOOST_CHECK(inspectNativeOnnxAttentionHeadShards(model, softmax) == ranks);
+  axis.set_i(1);
+  BOOST_CHECK_THROW(inspectNativeOnnxAttentionHeadShards(model, softmax), std::invalid_argument);
+  axis.set_i(-1);
+  model.mutable_opset_import(0)->set_version(12);
+  BOOST_CHECK_THROW(inspectNativeOnnxAttentionHeadShards(model, softmax), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeReshapeLayoutRequiresWholeSourceSlabs)
+{
+  onnx::ModelProto model;
+  auto& graph = *model.mutable_graph();
+  const auto addValue = [&] (const char* name, std::initializer_list<int> dims) {
+    auto& value = *graph.add_value_info();
+    value.set_name(name);
+    auto& tensor = *value.mutable_type()->mutable_tensor_type();
+    tensor.set_elem_type(onnx::TensorProto::FLOAT);
+    for (const int dim : dims) tensor.mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  addValue("conv", {2, 256, 20, 20});
+  addValue("heads", {2, 2, 128, 400});
+  addValue("interleaved", {1, 4, 128, 400});
+  addValue("bad_size", {2, 2, 128, 399});
+  auto& node = *graph.add_node();
+  node.set_op_type("Reshape");
+  node.add_input("conv");
+  node.add_input("shape");
+  node.add_output("heads");
+  const auto headLayout = inspectNativeOnnxReshapeLayout(model, node, {1, 128});
+  BOOST_REQUIRE(headLayout.has_value());
+  BOOST_TEST(headLayout->axis == 1U);
+  BOOST_TEST(headLayout->split == 1U);
+  BOOST_CHECK(!inspectNativeOnnxReshapeLayout(model, node, {1, 127}));
+  BOOST_CHECK_THROW(inspectNativeOnnxReshapeLayout(model, node, {1, 256}), std::invalid_argument);
+  node.set_output(0, "interleaved");
+  BOOST_CHECK(!inspectNativeOnnxReshapeLayout(model, node, {1, 128}));
+  node.set_output(0, "bad_size");
+  BOOST_CHECK_THROW(inspectNativeOnnxReshapeLayout(model, node, {1, 128}), std::invalid_argument);
+  node.set_input(0, "heads");
+  node.set_output(0, "conv");
+  const auto channelLayout = inspectNativeOnnxReshapeLayout(model, node, {1, 1});
+  BOOST_REQUIRE(channelLayout.has_value());
+  BOOST_TEST(channelLayout->axis == 1U);
+  BOOST_TEST(channelLayout->split == 128U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeTwoRankLayoutMapsConcatToOriginalOperandIntervals)
+{
+  onnx::ModelProto model;
+  auto& graph = *model.mutable_graph();
+  const auto addValue = [] (auto& value, const char* name, int channels) {
+    value.set_name(name);
+    auto& tensor = *value.mutable_type()->mutable_tensor_type();
+    tensor.set_elem_type(onnx::TensorProto::FLOAT);
+    for (const int dim : {1, channels, 1, 1})
+      tensor.mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  addValue(*graph.add_input(), "images", 3);
+  const auto addConv = [&] (const char* weightName, const char* output, int channels) {
+    auto& weight = *graph.add_initializer();
+    weight.set_name(weightName);
+    weight.set_data_type(onnx::TensorProto::FLOAT);
+    for (const int dim : {channels, 3, 1, 1}) weight.add_dims(dim);
+    auto& node = *graph.add_node();
+    node.set_op_type("Conv");
+    node.add_input("images");
+    node.add_input(weightName);
+    node.add_output(output);
+    addValue(*graph.add_value_info(), output, channels);
+  };
+  addConv("w1", "a", 4);
+  addConv("w2", "b", 6);
+  auto& concat = *graph.add_node();
+  concat.set_op_type("Concat");
+  concat.add_input("a");
+  concat.add_input("b");
+  concat.add_output("combined");
+  auto& axis = *concat.add_attribute();
+  axis.set_name("axis");
+  axis.set_type(onnx::AttributeProto::INT);
+  axis.set_i(1);
+  addValue(*graph.add_value_info(), "combined", 10);
+  auto& activation = *graph.add_node();
+  activation.set_op_type("Sigmoid");
+  activation.add_input("combined");
+  activation.add_output("output");
+  addValue(*graph.add_output(), "output", 10);
+
+  const auto layouts = deriveNativeOnnxTwoRankLayouts(model);
+  BOOST_REQUIRE_EQUAL(layouts.size(), 4U);
+  const auto& pieces = layouts[2].concatPieces;
+  BOOST_REQUIRE_EQUAL(pieces.size(), 5U);
+  BOOST_TEST(pieces[1].producer == 1U);
+  BOOST_TEST(pieces[1].consumer == 0U);
+  BOOST_TEST(pieces[1].begin == 2U);
+  BOOST_TEST(pieces[1].outputBegin == 2U);
+  BOOST_TEST(pieces[3].input == 1U);
+  BOOST_TEST(pieces[3].producer == 0U);
+  BOOST_TEST(pieces[3].consumer == 1U);
+  BOOST_TEST(pieces[3].begin == 1U);
+  BOOST_TEST(pieces[3].end == 3U);
+  BOOST_TEST(pieces[3].outputBegin == 5U);
+  BOOST_TEST(layouts[3].outputs.at("output").split == 5U);
+  activation.set_op_type("Unsupported");
+  BOOST_CHECK_THROW(deriveNativeOnnxTwoRankLayouts(model), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(ResultOracleChecksShapeAndRelativeTolerance)
+{
+  const std::vector<float> actual{0.0005F, 100.0625F};
+  NamedTensor tensor{"flow", TensorElementType::Float32, {1, 2}, {}};
+  const auto* bytes = reinterpret_cast<const std::uint8_t*>(actual.data());
+  tensor.payload.assign(bytes, bytes + actual.size() * sizeof(float));
+  Result result;
+  result.payload = encodeTensorBundle({tensor});
+  const std::vector<float> reference{0.0F, 100.0F};
+  BOOST_CHECK(result.matchesFloat32Tensor("flow", reference, {1, 2}, 0.001, 0.001));
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", reference, {2, 1}, 0.001, 0.001));
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", reference, {1, 2}, 0.0001, 0.001));
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", reference, {1, 2}, 0.001, -0.001));
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", reference, {1, 2}, 0.001, 0.0));
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", reference, 0.001));
+  BOOST_CHECK(result.matchesFloat32Tensor("flow", reference, 0.1));
+  auto nonFinite = reference;
+  nonFinite[1] = std::numeric_limits<float>::infinity();
+  BOOST_CHECK(!result.matchesFloat32Tensor("flow", nonFinite, {1, 2}, 0.001, 0.001));
+}
+
 BOOST_AUTO_TEST_CASE(SourceInitializerAnnotationsDoNotDisableShapeInference)
 {
   for (const std::string mode : {"missing", "scalar", "known", "unresolved",
@@ -2513,6 +2759,55 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
   BOOST_CHECK_EQUAL(roles.size(), 1U);
 
   {
+    onnx::ModelProto onnxModel;
+    onnxModel.set_ir_version(9);
+    onnxModel.add_opset_import()->set_version(20);
+    auto& graph = *onnxModel.mutable_graph();
+    graph.set_name("multitensor-full");
+    const auto configurePort = [] (auto* port, const auto& name) {
+      port->set_name(name);
+      auto* type = port->mutable_type()->mutable_tensor_type();
+      type->set_elem_type(onnx::TensorProto::FLOAT);
+      type->mutable_shape()->add_dim()->set_dim_value(2);
+    };
+    configurePort(graph.add_input(), "latent");
+    configurePort(graph.add_input(), "conditioning");
+    configurePort(graph.add_output(), "result");
+    auto* add = graph.add_node();
+    add->set_op_type("Add");
+    add->add_input("latent");
+    add->add_input("conditioning");
+    add->add_output("result");
+
+    NativeCanonicalSource multiportSource;
+    const auto wire = onnxModel.SerializeAsString();
+    multiportSource.modelBytes.assign(wire.begin(), wire.end());
+    auto multiportDescriptor = descriptor;
+    multiportDescriptor.graphDigest =
+      inspectNativeOnnxSourceGraph(multiportSource, descriptor, control).graph.graphDigest;
+    auto multiport = configuration;
+    multiport["model"] = nativeParseJson(multiportDescriptor.canonicalJson());
+    multiport["source"]["digest"] = nativePlanningDigest(wire);
+    multiport["source"]["canonical_graph_digest"] =
+      canonicalOnnxSourceIdentity(multiportSource, control).graphDigest;
+    const auto full = NativeRequestCatalog::load(nativeCanonicalJson(multiport),
+                                                 multiportSource, control);
+    const auto plans = full.splitter->enumerate(full.model.descriptor, full.model.graph, {});
+    BOOST_REQUIRE_EQUAL(plans.size(), 1U);
+    const auto& step = plans.front().executionPlan.steps.front();
+    BOOST_REQUIRE_EQUAL(step.inputSlots.size(), 2U);
+    BOOST_CHECK_EQUAL(step.inputSlots[0].slotId, "latent");
+    BOOST_CHECK_EQUAL(step.inputSlots[1].slotId, "conditioning");
+    for (const auto& input : step.inputSlots) {
+      BOOST_CHECK_EQUAL(input.source, "EPOCH_INPUT");
+      BOOST_CHECK_EQUAL(input.dtype, "float32");
+      BOOST_CHECK(input.shape == decltype(input.shape){std::int64_t{2}});
+    }
+    BOOST_CHECK_EQUAL(step.outputSlots.front().slotId, "result");
+    BOOST_CHECK_NO_THROW(full.preparation->prepareRoles(full.model, plans.front(), requestControl));
+  }
+
+  {
     auto alias = configuration;
     alias["splitter"].erase("mode");
     alias["splitter"]["selection_mode"] = "full";
@@ -2765,11 +3060,9 @@ runOrt(const onnx::ModelProto& model, const std::map<std::string, std::vector<fl
   std::vector<Ort::Value> values;
   std::vector<const char*> names;
   for (const auto& item : inputs) {
-    const auto shape = shapes.at(item.first);
-    if (shape.size() != 4) throw std::runtime_error("unexpected rank");
-    const std::array<std::int64_t, 4> fixed{shape[0], shape[1], shape[2], shape[3]};
+    const auto& shape = shapes.at(item.first);
     values.push_back(Ort::Value::CreateTensor<float>(memory,
-      const_cast<float*>(item.second.data()), item.second.size(), fixed.data(), 4));
+      const_cast<float*>(item.second.data()), item.second.size(), shape.data(), shape.size()));
     names.push_back(item.first.c_str());
   }
   const char* outputName = output.c_str();
@@ -2951,6 +3244,1290 @@ checkConvFp32Error(const std::vector<float>& actual, const std::vector<ConvRefer
 }
 
 } // namespace
+
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceEntryProgramBindsOrderedCallsAndRank)
+{
+  NativeExecutionPlan plan;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.stageLayout = {{"middle", nativePlanningDigest("fixture-middle"), {"r0", "r1"}}};
+  const auto makeProgram = [&plan] (std::uint64_t rank) {
+    const std::string role = "r" + std::to_string(rank);
+    NativeOnnxSourceEntryProgramV1 program;
+    for (std::size_t block = 0; block < 2; ++block) {
+      const std::string tag = std::to_string(block);
+      NativeOnnxSourceEntryRecipeV1 entry;
+      auto& transform = entry.transform;
+      entry.entryId = role + "/ffn/" + tag;
+      transform.kind = "ffn-pair-partial";
+      transform.axis = "ffn-channel";
+      transform.node = "up-" + tag;
+      transform.downNode = "down-" + tag;
+      entry.sourceNodes = {transform.node, "gelu-" + tag, transform.downNode};
+      transform.weight = "up-weight-" + tag;
+      transform.downWeight = "down-weight-" + tag;
+      transform.input = "h" + tag;
+      transform.output = "h" + std::to_string(block + 1);
+      transform.extent = 7;
+      transform.begin = rank == 0 ? 0 : 4;
+      transform.end = rank == 0 ? 4 : 7;
+      NativeExecutionStepSpec call;
+      call.stepId = entry.entryId + "/call";
+      call.unitId = role;
+      call.operation = "CALL_SUBGRAPH";
+      call.artifactEntry = entry.entryId;
+      NativeStepSlotSpec port;
+      port.dtype = "float32";
+      port.shape = {std::int64_t{1}, std::int64_t{3}};
+      port.slotId = transform.input;
+      call.inputSlots.push_back(port);
+      port.slotId = transform.output;
+      call.outputSlots.push_back(port);
+      plan.steps.push_back(std::move(call));
+      program.entries.push_back(std::move(entry));
+    }
+    return program;
+  };
+  const auto left = makeProgram(0);
+  const auto right = makeProgram(1);
+  const auto wire = left.canonicalJson();
+  const auto parsed = NativeOnnxSourceEntryProgramV1::parse(wire);
+  BOOST_CHECK_EQUAL(parsed.canonicalJson(), wire);
+  BOOST_CHECK_NO_THROW(parsed.validateRank(plan, "r0", 0));
+  BOOST_CHECK_NO_THROW(right.validateRank(plan, "r1", 1));
+  BOOST_CHECK_THROW(parsed.validateRank(plan, "r0", 1), std::invalid_argument);
+  auto wrong = parsed;
+  std::swap(wrong.entries[0], wrong.entries[1]);
+  BOOST_CHECK_THROW(wrong.validateRank(plan, "r0", 0), std::invalid_argument);
+  wrong = parsed;
+  wrong.entries[1].transform.end = 3;
+  BOOST_CHECK_THROW(wrong.validateRank(plan, "r0", 0), std::invalid_argument);
+  wrong = parsed;
+  wrong.entries[1].sourceNodes[1] = wrong.entries[0].sourceNodes[1];
+  BOOST_CHECK_THROW(NativeOnnxSourceEntryProgramV1::parse(wrong.canonicalJson()),
+                    std::invalid_argument);
+  auto wrongPlan = plan;
+  wrongPlan.steps[1].inputSlots.front().shape[1] = std::string("unbound");
+  BOOST_CHECK_THROW(parsed.validateRank(wrongPlan, "r0", 0), std::invalid_argument);
+  wrongPlan.steps.erase(wrongPlan.steps.begin() + 1);
+  BOOST_CHECK_THROW(parsed.validateRank(wrongPlan, "r0", 0), std::invalid_argument);
+
+  NativeSplitCandidate candidate;
+  candidate.executionPlan = plan;
+  candidate.sourceTransformByRole = {{"r0", wire}, {"r1", right.canonicalJson()}};
+  const auto pairs = nativeDistinctProviderPairs(candidate);
+  BOOST_REQUIRE_EQUAL(pairs.size(), 1u);
+  BOOST_CHECK_EQUAL(pairs.front().first, "r0");
+  BOOST_CHECK_EQUAL(pairs.front().second, "r1");
+  const auto capabilities = nativePlanRequiredCapabilities(candidate);
+  BOOST_CHECK(std::find(capabilities.begin(), capabilities.end(),
+    NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1) != capabilities.end());
+  wrong = right;
+  wrong.entries[1].transform.downWeight = "foreign-weight";
+  candidate.sourceTransformByRole["r1"] = wrong.canonicalJson();
+  BOOST_CHECK_THROW(nativeDistinctProviderPairs(candidate), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeOnnxTensorEntryProgramBindsTypedPortsAndGappedRankOrdinals)
+{
+  NativeExecutionPlan plan;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.stageLayout = {{"source", nativePlanningDigest("fixture-source"), {"r0", "r1"}}};
+  NativeOnnxSourceEntryProgramV1 program;
+  program.tensorLayouts.resize(6);
+  for (const auto ordinal : {2U, 5U}) {
+    auto& call = plan.steps.emplace_back();
+    call.stepId = "r1/call/" + std::to_string(ordinal);
+    call.unitId = "r1";
+    call.operation = "CALL_SUBGRAPH";
+    call.artifactEntry = call.stepId;
+    call.sourceLayers = {ordinal, ordinal + 1};
+    NativeStepSlotSpec input;
+    input.slotId = "images";
+    input.dtype = "float32";
+    input.shape = {std::int64_t{4}};
+    NativeOnnxEntryPort inputBinding{"images", {}};
+    input.layoutDigest = inputBinding.layoutDigest(plan.stageLayout.front().sourceRegionDigest);
+    call.inputSlots.push_back(input);
+    auto output = input;
+    output.slotId = "shape-" + std::to_string(ordinal);
+    program.tensorLayouts[ordinal].outputs.emplace(output.slotId, NativeOnnxTwoRankLayout{0, 1});
+    output.dtype = "int64";
+    output.shape.clear();
+    NativeOnnxEntryPort outputBinding{output.slotId, {}};
+    output.layoutDigest = outputBinding.layoutDigest(plan.stageLayout.front().sourceRegionDigest);
+    call.outputSlots.push_back(output);
+    program.tensorPorts.emplace(input.slotId, std::move(inputBinding));
+    program.tensorPorts.emplace(output.slotId, std::move(outputBinding));
+    program.entries.push_back(NativeOnnxSourceEntryRecipeV1::fromTensorStep(call));
+  }
+  const auto parsed = NativeOnnxSourceEntryProgramV1::parse(program.canonicalJson());
+  BOOST_CHECK_NO_THROW(parsed.validateRank(plan, "r1", 1));
+  const std::vector<std::vector<std::uint64_t>> expected{{2}, {5}};
+  BOOST_CHECK(parsed.bindSourceOrdinals({2, 5}) == expected);
+  BOOST_CHECK_THROW(parsed.bindSourceOrdinals({2, 4}), std::invalid_argument);
+  plan.steps.back().outputSlots.front().dtype = "float32";
+  BOOST_CHECK_THROW(parsed.validateRank(plan, "r1", 1), std::invalid_argument);
+  plan.steps.back().outputSlots.front().dtype = "int64";
+  plan.steps.back().outputSlots.front().shape = {std::int64_t{1}};
+  BOOST_CHECK_THROW(parsed.validateRank(plan, "r1", 1), std::invalid_argument);
+  auto incorrect = parsed;
+  incorrect.tensorPorts.at("images").sourceName = "foreign";
+  BOOST_CHECK_THROW(incorrect.validate(), std::invalid_argument);
+  incorrect = parsed;
+  incorrect.tensorPorts.erase("images");
+  BOOST_CHECK_THROW(incorrect.validate(), std::invalid_argument);
+  NativeOnnxEntryPort slice{"images", NativeOnnxTransferRange{0, 2, 4}};
+  NativeTensorContract original{"images", "float32", {std::int64_t{4}}, 16};
+  auto slot = plan.steps.front().inputSlots.front();
+  slot.slotId = slice.slotId();
+  slot.shape[0] = std::int64_t{2};
+  BOOST_CHECK_NO_THROW(slice.validateSourceTensor(slot, original));
+  original.shape[0] = std::int64_t{3};
+  BOOST_CHECK_THROW(slice.validateSourceTensor(slot, original), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeOnnxAttentionEntryProgramBindsSourceAndRankPorts)
+{
+  NativeExecutionPlan plan;
+  plan.roles = {"r0", "r1"};
+  plan.tensorDegree = 2;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.stageLayout = {{"attention", nativePlanningDigest("attention-stage"), plan.roles}};
+  const auto slot = [] (std::string name, std::vector<std::int64_t> shape) {
+    NativeStepSlotSpec port;
+    port.slotId = std::move(name);
+    port.dtype = "float32";
+    port.shape.assign(shape.begin(), shape.end());
+    return port;
+  };
+  std::array<NativeOnnxSourceEntryProgramV1, 2> programs;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    NativeOnnxSourceEntryProgramV1 program;
+    for (bool qkv : {true, false}) {
+      NativeOnnxSourceEntryRecipeV1 entry;
+      entry.entryId = plan.roles[rank] + (qkv ? "/project" : "/heads");
+      entry.sourceNodes = qkv ? std::vector<std::string>{"onnx-node-0", "onnx-node-1"}
+                              : std::vector<std::string>{"onnx-node-2", "onnx-node-3"};
+      auto& transform = entry.transform;
+      transform.kind = qkv ? "attention-qkv" : "attention-heads";
+      transform.axis = "attention-head";
+      transform.node = entry.sourceNodes.front();
+      transform.begin = rank;
+      transform.end = rank + 1;
+      transform.extent = 2;
+      transform.headWidth = 32;
+      transform.attentionPorts = {"q", "k", "v"};
+      NativeExecutionStepSpec call;
+      call.stepId = entry.entryId + "/call";
+      call.artifactEntry = entry.entryId;
+      call.unitId = plan.roles[rank];
+      call.operation = "CALL_SUBGRAPH";
+      const std::vector<NativeStepSlotSpec> local{
+        slot("q", {1, 2, 32}), slot("k", {1, 3, 32}), slot("v", {1, 3, 32})};
+      if (qkv) {
+        call.inputSlots = {slot("hidden", {1, 2, 64}), slot("text", {1, 3, 64})};
+        call.outputSlots = local;
+      }
+      else {
+        call.inputSlots = local;
+        call.inputSlots.push_back(slot("mask", {1, 1, 2, 3}));
+        call.outputSlots = {slot("partial", {1, 2, 64})};
+      }
+      auto original = qkv ? transform.originalPorts(call.outputSlots, true)
+                          : transform.originalPorts(call.inputSlots, false);
+      for (std::size_t port = 0; port < 3; ++port) {
+        BOOST_CHECK_EQUAL(original[port].slotId, local[port].slotId);
+        BOOST_CHECK_EQUAL(std::get<std::int64_t>(original[port].shape.back()), 64);
+        BOOST_CHECK_EQUAL(std::get<std::int64_t>(original[port].shape[1]), port == 0 ? 2 : 3);
+      }
+      if (!qkv) BOOST_CHECK(original.back().shape == call.inputSlots.back().shape);
+      for (const auto& port : call.inputSlots) entry.inputPorts.push_back(port.slotId);
+      for (const auto& port : call.outputSlots) entry.outputPorts.push_back(port.slotId);
+      plan.steps.push_back(std::move(call));
+      program.entries.push_back(std::move(entry));
+    }
+    const auto canonical = program.canonicalJson();
+    auto parsed = NativeOnnxSourceEntryProgramV1::parse(canonical);
+    BOOST_CHECK_EQUAL(parsed.canonicalJson(), canonical);
+    BOOST_CHECK(parsed.bindSourceOrdinals({0, 1, 2, 3}) ==
+                (std::vector<std::vector<std::uint64_t>>{{0, 1}, {2, 3}}));
+    programs[rank] = std::move(parsed);
+  }
+  const auto& left = programs.front();
+  BOOST_CHECK_THROW(left.validateRank(plan, "r0", 0), std::invalid_argument);
+  for (const auto& role : plan.roles) {
+    auto& sum = plan.steps.emplace_back();
+    sum.stepId = role + "/sum";
+    sum.unitId = role;
+    sum.operation = "SUM";
+    sum.outputSlots = {slot("partial", {1, 2, 64})};
+    for (const auto& producer : plan.roles) {
+      auto& operand = sum.inputSlots.emplace_back(slot(producer, {1, 2, 64}));
+      operand.source = producer == role ? "LOCAL_STEP" : "REMOTE_STEP";
+      operand.producerStepId = producer + "/heads/call";
+      operand.producerSlotId = "partial";
+    }
+  }
+  for (std::size_t rank = 0; rank < 2; ++rank)
+    BOOST_CHECK_NO_THROW(programs[rank].validateRank(plan, plan.roles[rank], rank));
+  auto badPlan = plan;
+  badPlan.steps.front().outputSlots[0].shape.back() = std::int64_t{64};
+  BOOST_CHECK_THROW(left.validateRank(badPlan, "r0", 0), std::invalid_argument);
+  badPlan = plan;
+  badPlan.steps[1].inputSlots[1].slotId = "foreign-k";
+  BOOST_CHECK_THROW(left.validateRank(badPlan, "r0", 0), std::invalid_argument);
+  badPlan = plan;
+  std::swap(badPlan.steps.back().inputSlots[0], badPlan.steps.back().inputSlots[1]);
+  BOOST_CHECK_THROW(left.validateRank(badPlan, "r0", 0), std::invalid_argument);
+  badPlan = plan;
+  badPlan.steps.back().operation = "CALL_SUBGRAPH";
+  BOOST_CHECK_THROW(left.validateRank(badPlan, "r0", 0), std::invalid_argument);
+  BOOST_CHECK_THROW(left.validateRank(plan, "r1", 1), std::invalid_argument);
+  NativeSplitCandidate candidate;
+  candidate.executionPlan = plan;
+  candidate.sourceTransformByRole = {{"r0", left.canonicalJson()}};
+  const auto needed = nativePlanRequiredCapabilities(candidate);
+  BOOST_CHECK(std::find(needed.begin(), needed.end(), NATIVE_SOURCE_ATTENTION_ENTRY_CAPABILITY_V1)
+              != needed.end());
+}
+
+BOOST_AUTO_TEST_CASE(NativeOnnxSignedRmsEntriesShareOneAuthenticatedRegion)
+{
+  onnx::ModelProto model;
+  model.set_ir_version(9);
+  model.add_opset_import()->set_version(20);
+  auto& graph = *model.mutable_graph();
+  graph.set_name("sealed-source-rms");
+  for (auto* port : {graph.add_input(), graph.add_output()}) {
+    auto& type = *port->mutable_type()->mutable_tensor_type();
+    type.set_elem_type(onnx::TensorProto::FLOAT);
+    for (int dimension : {1, 2, 4}) type.mutable_shape()->add_dim()->set_dim_value(dimension);
+  }
+  graph.mutable_input(0)->set_name("q");
+  graph.mutable_output(0)->set_name("normalized");
+  auto& axes = *graph.add_initializer();
+  axes.set_name("axes");
+  axes.set_data_type(onnx::TensorProto::INT64);
+  axes.add_dims(1);
+  axes.add_int64_data(-1);
+  auto& epsilon = *graph.add_initializer();
+  epsilon.set_name("epsilon");
+  epsilon.set_data_type(onnx::TensorProto::FLOAT);
+  epsilon.add_float_data(0.125f);
+  auto& gamma = *graph.add_initializer();
+  gamma.set_name("gamma");
+  gamma.set_data_type(onnx::TensorProto::FLOAT);
+  gamma.add_dims(4);
+  for (float value : {0.75f, 0.5f, 1.25f, 1.5f}) gamma.add_float_data(value);
+  const auto add = [&] (const char* op, std::initializer_list<const char*> inputs, const char* out) {
+    auto& node = *graph.add_node();
+    node.set_name(out);
+    node.set_op_type(op);
+    for (const auto input : inputs) node.add_input(input);
+    node.add_output(out);
+  };
+  add("Mul", {"q", "q"}, "square");
+  add("ReduceMean", {"square", "axes"}, "stat");
+  add("Add", {"stat", "epsilon"}, "shift");
+  add("Sqrt", {"shift"}, "root");
+  add("Div", {"q", "root"}, "divided");
+  add("Mul", {"divided", "gamma"}, "normalized");
+
+  const std::vector<std::uint64_t> ordinals{0, 1, 2, 3, 4, 5};
+  const auto slot = [] (std::string name, std::int64_t width) {
+    NativeStepSlotSpec port;
+    port.slotId = std::move(name);
+    port.dtype = "float32";
+    port.shape = {std::int64_t{1}, std::int64_t{2}, width};
+    port.source = "LOCAL_STEP";
+    port.layoutDigest = nativePlanningDigest("rms-width-" + std::to_string(width));
+    return port;
+  };
+  NativeExecutionPlan plan;
+  plan.roles = {"r0", "r1"};
+  plan.tensorDegree = 2;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.stageLayout = {{"middle", nativePlanningDigest("rms-stage"), plan.roles}};
+  std::array<NativeOnnxSourceEntryProgramV1, 2> programs;
+  for (std::size_t rank = 0; rank < 2; ++rank) {
+    auto& program = programs[rank];
+    const auto& role = plan.roles[rank];
+    for (const bool computeStat : {true, false}) {
+      auto& entry = program.entries.emplace_back();
+      entry.entryId = role + (computeStat ? "/stat" : "/normalize");
+      for (auto ordinal : ordinals) entry.sourceNodes.push_back("onnx-node-" + std::to_string(ordinal));
+      auto& transform = entry.transform;
+      transform.kind = computeStat ? "attention-rms-stat" : "attention-rms-normalize";
+      transform.axis = "attention-head";
+      transform.node = entry.sourceNodes.front();
+      transform.input = "q";
+      transform.output = "normalized";
+      transform.statistic = "stat";
+      transform.globalStatistic = "global";
+      transform.begin = rank;
+      transform.end = rank + 1;
+      transform.extent = 2;
+      transform.headWidth = 2;
+      auto& call = plan.steps.emplace_back();
+      call.stepId = entry.entryId;
+      call.unitId = role;
+      call.artifactEntry = entry.entryId;
+      call.operation = "CALL_SUBGRAPH";
+      call.inputSlots = {slot("q", 2)};
+      call.inputSlots.front().source = "EPOCH_INPUT";
+      if (computeStat) {
+        call.outputSlots = {slot("stat", 1)};
+      }
+      else {
+        auto global = slot("global", 1);
+        global.source = "LOCAL_STEP";
+        global.producerStepId = role + "/sum";
+        global.producerSlotId = "global";
+        call.inputSlots.push_back(std::move(global));
+        call.outputSlots = {slot("normalized", 2)};
+      }
+      for (const auto& input : call.inputSlots) entry.inputPorts.push_back(input.slotId);
+      for (const auto& output : call.outputSlots) entry.outputPorts.push_back(output.slotId);
+    }
+    auto& sum = plan.steps.emplace_back();
+    sum.stepId = role + "/sum";
+    sum.unitId = role;
+    sum.operation = "SUM";
+    sum.outputSlots = {slot("global", 1)};
+    for (const auto& contributor : plan.roles) {
+      auto operand = slot(contributor, 1);
+      operand.producerStepId = contributor + "/stat";
+      operand.producerSlotId = "stat";
+      if (contributor != role) {
+        operand.source = "REMOTE_STEP";
+        NativeDependencySpec edge;
+        edge.producers = {contributor};
+        edge.consumers = {role};
+        edge.tensors = {operand.producerSlotId};
+        edge.keyScope = role + "/peer-stat";
+        edge.dependencyId = edge.keyScope;
+        edge.topicPrefix = "/NDNSF/DI/RMS";
+        edge.objectNameTemplate =
+          "{producerProvider}/NDNSF/DI/RMS/{sessionId}/{producerRole}/{keyScope}/{sequence}";
+        edge.operationKind = "TENSOR_PARTIAL";
+        edge.producerStepId = operand.producerStepId;
+        edge.producerSlotId = operand.producerSlotId;
+        edge.consumerStepId = sum.stepId;
+        edge.consumerSlotId = operand.slotId;
+        plan.dependencies.push_back(std::move(edge));
+      }
+      sum.inputSlots.push_back(std::move(operand));
+    }
+  }
+
+  const auto phaseOf = [] (const auto& step) {
+    if (step.operation == "SUM") return 1;
+    return step.stepId == step.unitId + "/stat" ? 0 : 2;
+  };
+  std::stable_sort(plan.steps.begin(), plan.steps.end(), [&] (const auto& left, const auto& right) {
+    return phaseOf(left) < phaseOf(right);
+  });
+  BOOST_REQUIRE_NO_THROW(plan.validateSteps());
+  const auto byStep = [] (auto& steps, const std::string& id) -> auto& {
+    const auto found = std::find_if(steps.begin(), steps.end(),
+      [&] (const auto& step) { return step.stepId == id; });
+    if (found == steps.end()) throw std::logic_error("fixture step is missing");
+    return *found;
+  };
+
+  NativeCanonicalSource original;
+  const auto wire = model.SerializeAsString();
+  original.modelBytes.assign(wire.begin(), wire.end());
+  const NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(15),
+                                       [] {}, 1U << 20, 2U << 20};
+  NativeCanonicalSource material;
+  material.materialManifest = deriveNativeCanonicalMaterialManifest(original, control);
+  material.materialPayloads = material.materialManifest->payloads;
+  const std::vector<std::int64_t> fullShape{1, 2, 4}, localShape{1, 2, 2}, statShape{1, 2, 1};
+  const std::vector<float> x{1, -2, 3, -4, 4, 3, -2, 1};
+  const auto originalOutput = runOrt(model, {{"q", x}}, {{"q", fullShape}}, "normalized",
+                                     fullShape, ORT_DISABLE_ALL);
+  std::array<onnx::ModelProto, 2> normalization;
+  std::array<std::vector<float>, 2> local;
+  std::vector<float> global(2);
+  for (std::size_t rank = 0; rank < 2; ++rank) {
+    const auto canonical = programs[rank].canonicalJson();
+    const auto parsed = NativeOnnxSourceEntryProgramV1::parse(canonical);
+    BOOST_CHECK_NO_THROW(parsed.validateRank(plan, plan.roles[rank], rank));
+    const auto windows = parsed.bindSourceOrdinals(ordinals);
+    BOOST_CHECK(windows == (std::vector<std::vector<std::uint64_t>>{ordinals, ordinals}));
+    BOOST_CHECK(parsed.sourceNodeCover() == parsed.entries.front().sourceNodes);
+    for (std::size_t token = 0; token < 2; ++token) {
+      const auto start = x.begin() + token * 4 + rank * 2;
+      local[rank].insert(local[rank].end(), start, start + 2);
+    }
+    for (std::size_t phase = 0; phase < 2; ++phase) {
+      const auto& entry = parsed.entries[phase];
+      const auto raw = materializeNativeOnnxEntrySource(material, entry, windows[phase],
+                                                       byStep(plan.steps, entry.entryId), control, {});
+      onnx::ModelProto admitted;
+      BOOST_REQUIRE(admitted.ParseFromArray(raw.modelBytes.data(), raw.modelBytes.size()));
+      auto derived = applyNativeOnnxSourceTransform(admitted, entry.transform);
+      if (phase == 0) {
+        const auto localStat = runOrt(derived, {{"q", local[rank]}}, {{"q", localShape}}, "stat",
+                                      statShape, ORT_DISABLE_ALL);
+        for (std::size_t index = 0; index < global.size(); ++index)
+          global[index] += localStat.at(index);
+      }
+      else {
+        normalization[rank] = std::move(derived);
+      }
+    }
+  }
+  for (std::size_t rank = 0; rank < 2; ++rank) {
+    const auto output = runOrt(normalization[rank], {{"q", local[rank]}, {"global", global}},
+      {{"q", localShape}, {"global", statShape}}, "normalized", localShape, ORT_DISABLE_ALL);
+    for (std::size_t token = 0; token < 2; ++token) {
+      for (std::size_t channel = 0; channel < 2; ++channel) {
+        BOOST_CHECK_SMALL(static_cast<double>(output.at(token * 2 + channel)) -
+                          originalOutput.at(token * 4 + rank * 2 + channel), 1e-6);
+      }
+    }
+  }
+  auto bad = programs.front();
+  bad.entries.back().sourceNodes[4] = "onnx-node-8";
+  BOOST_CHECK_THROW(bad.validate(), std::invalid_argument);
+  bad = programs.front();
+  bad.entries.pop_back();
+  BOOST_CHECK_THROW(bad.validate(), std::invalid_argument);
+  auto crossed = plan;
+  byStep(crossed.steps, "r0/sum").inputSlots[1].producerSlotId = "foreign-stat";
+  BOOST_CHECK_THROW(programs.front().validateRank(crossed, "r0", 0), std::invalid_argument);
+  crossed = plan;
+  byStep(crossed.steps, "r0/normalize").inputSlots[1].producerStepId = "r1/normalize";
+  BOOST_CHECK_THROW(programs.front().validateRank(crossed, "r0", 0), std::invalid_argument);
+  crossed = plan;
+  auto& normalizedInput = byStep(crossed.steps, "r0/normalize").inputSlots.front();
+  normalizedInput.source = "LOCAL_STEP";
+  normalizedInput.producerStepId = "foreign-projection";
+  normalizedInput.producerSlotId = "q";
+  BOOST_CHECK_THROW(programs.front().validateRank(crossed, "r0", 0), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceComponentKeepsOriginalBiasAndResidual)
+{
+  onnx::ModelProto model;
+  model.set_ir_version(9);
+  model.add_opset_import()->set_version(20);
+  auto& graph = *model.mutable_graph();
+  graph.set_name("source-finalize");
+  const std::vector<std::int64_t> dims{1, 2, 3};
+  for (auto* value : {graph.add_input(), graph.add_input(), graph.add_output()}) {
+    auto& type = *value->mutable_type()->mutable_tensor_type();
+    type.set_elem_type(onnx::TensorProto::FLOAT);
+    for (const auto dimension : dims) type.mutable_shape()->add_dim()->set_dim_value(dimension);
+  }
+  graph.mutable_input(0)->set_name("projection");
+  graph.mutable_input(1)->set_name("residual");
+  graph.mutable_output(0)->set_name("result");
+  auto& bias = *graph.add_initializer();
+  bias.set_name("output-bias");
+  bias.set_data_type(onnx::TensorProto::FLOAT);
+  bias.add_dims(3);
+  for (float value : {0.25f, -0.5f, 0.75f}) bias.add_float_data(value);
+  auto& gate = *graph.add_initializer();
+  gate.set_name("gate");
+  gate.set_data_type(onnx::TensorProto::FLOAT);
+  gate.add_float_data(0.5f);
+  const auto append = [&] (const char* op, const char* left, const char* right, const char* result) {
+    auto& node = *graph.add_node();
+    node.set_op_type(op);
+    node.add_input(left);
+    node.add_input(right);
+    node.add_output(result);
+  };
+  append("Add", "projection", "output-bias", "biased");
+  append("Mul", "biased", "gate", "gated");
+  append("Add", "gated", "residual", "result");
+
+  NativeCanonicalSource source;
+  const auto wire = model.SerializeAsString();
+  source.modelBytes.assign(wire.begin(), wire.end());
+  const NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(15),
+                                       [] {}, 1U << 20, 2U << 20};
+  NativeCanonicalSource material;
+  material.materialManifest = deriveNativeCanonicalMaterialManifest(source, control);
+  material.materialPayloads = material.materialManifest->payloads;
+  NativeOnnxSourceEntryRecipeV1 entry;
+  entry.entryId = "finalize";
+  entry.sourceNodes = {"onnx-node-0", "onnx-node-1", "onnx-node-2"};
+  entry.transform.node = entry.sourceNodes.front();
+  entry.transform.kind = "attention-source-component";
+  entry.transform = NativeOnnxSourceTransformV1::parse(entry.transform.canonicalJson());
+  const auto slot = [&] (const char* name) {
+    NativeStepSlotSpec value;
+    value.slotId = name;
+    value.dtype = "float32";
+    value.shape.assign(dims.begin(), dims.end());
+    return value;
+  };
+  NativeExecutionStepSpec call;
+  call.operation = "CALL_SUBGRAPH";
+  call.artifactEntry = entry.entryId;
+  call.inputSlots = {slot("projection"), slot("residual")};
+  call.outputSlots = {slot("result")};
+  const auto files = materializeNativeOnnxEntrySource(material, entry, {0, 1, 2}, call, control, {});
+  BOOST_REQUIRE_EQUAL(files.initializerBytes, 0u);
+  onnx::ModelProto rebuilt;
+  BOOST_REQUIRE(rebuilt.ParseFromArray(files.modelBytes.data(), files.modelBytes.size()));
+  const auto admitted = applyNativeOnnxSourceTransform(rebuilt, entry.transform);
+  const auto data = runOrt(admitted, {{"projection", {0, 2, -4, 8, 5, 1}},
+                                      {"residual", {1, 0, -1, 2, 3, 4}}},
+    {{"projection", dims}, {"residual", dims}}, "result", dims, ORT_DISABLE_ALL);
+  const std::vector<float> expected{1.125f, 0.75f, -2.625f, 6.125f, 5.25f, 4.875f};
+  BOOST_CHECK(data == expected);
+}
+
+BOOST_AUTO_TEST_CASE(NativeOnnxCrossAttentionTailKeepsCompleteHeadsAndMask)
+{
+  onnx::ModelProto source;
+  source.set_ir_version(9);
+  source.add_opset_import()->set_version(20);
+  auto& graph = *source.mutable_graph();
+  graph.set_name("cross-attention-tail");
+  const auto port = [] (onnx::ValueInfoProto& value, const std::string& name,
+                        const std::vector<std::int64_t>& dims) {
+    value.set_name(name);
+    auto& type = *value.mutable_type()->mutable_tensor_type();
+    type.set_elem_type(onnx::TensorProto::FLOAT);
+    for (const auto dim : dims) type.mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  std::map<std::string, std::vector<std::int64_t>> shapes{
+    {"q", {1, 2, 4}}, {"k", {1, 3, 4}}, {"v", {1, 3, 4}}, {"mask", {1, 1, 2, 3}}};
+  for (const auto& [name, dims] : shapes) port(*graph.add_input(), name, dims);
+  const std::vector<std::int64_t> outputShape{1, 2, 4};
+  port(*graph.add_output(), "y", outputShape);
+  const auto dims = [&] (const char* name, const std::vector<std::int64_t>& values) {
+    auto& tensor = *graph.add_initializer();
+    tensor.set_name(name);
+    tensor.set_data_type(onnx::TensorProto::INT64);
+    tensor.add_dims(values.size());
+    for (const auto dim : values) tensor.add_int64_data(dim);
+  };
+  dims("query-heads", {1, 2, 2, 2});
+  dims("key-heads", {1, 3, 2, 2});
+  dims("merge-shape", outputShape);
+  auto& scale = *graph.add_initializer();
+  scale.set_name("scale");
+  scale.set_data_type(onnx::TensorProto::FLOAT);
+  scale.add_float_data(0.5f);
+  auto& matrix = *graph.add_initializer();
+  matrix.set_name("O");
+  matrix.set_data_type(onnx::TensorProto::FLOAT);
+  matrix.add_dims(4);
+  matrix.add_dims(4);
+  for (int i = 0; i < 16; ++i) matrix.add_float_data(((i * 11) % 17 - 8) / 8.0f);
+
+  const auto op = [&] (const char* type, std::initializer_list<const char*> inputs,
+                       const char* output) -> onnx::NodeProto& {
+    auto& node = *graph.add_node();
+    node.set_name(output);
+    node.set_op_type(type);
+    for (const auto input : inputs) node.add_input(input);
+    node.add_output(output);
+    return node;
+  };
+  const auto transpose = [&] (const char* input, const char* output, bool keys) {
+    auto& attr = *op("Transpose", {input}, output).add_attribute();
+    attr.set_name("perm");
+    attr.set_type(onnx::AttributeProto::INTS);
+    for (const int dim : {0, 2, keys ? 3 : 1, keys ? 1 : 3}) attr.add_ints(dim);
+  };
+  op("Reshape", {"q", "query-heads"}, "qh");
+  op("Reshape", {"k", "key-heads"}, "kh");
+  op("Reshape", {"v", "key-heads"}, "vh");
+  transpose("qh", "qT", false);
+  transpose("kh", "kT", true);
+  transpose("vh", "vT", false);
+  op("MatMul", {"qT", "kT"}, "score");
+  op("Mul", {"score", "scale"}, "scaled");
+  op("Add", {"scaled", "mask"}, "masked");
+  auto& axis = *op("Softmax", {"masked"}, "probability").add_attribute();
+  axis.set_name("axis");
+  axis.set_type(onnx::AttributeProto::INT);
+  axis.set_i(-1);
+  op("MatMul", {"probability", "vT"}, "weighted");
+  transpose("weighted", "ordered", false);
+  op("Reshape", {"ordered", "merge-shape"}, "flattened");
+  op("MatMul", {"flattened", "O"}, "y");
+
+  const std::map<std::string, std::vector<float>> values{
+    {"q", {1, -2, 3, -4, 2, 3, 4, 5}},
+    {"k", {-1, 2, 3, -4, 2, -1, 1, 0, 3, 2, 0, -2}},
+    {"v", {2, 1, 8, 9, 3, 4, 10, 11, -5, 0, -9, -7}},
+    {"mask", {0, -8, 0, -9, 0, 0}},
+  };
+  const auto ref = runOrt(source, values, shapes, "y", outputShape, ORT_DISABLE_ALL);
+  NativeCanonicalSource original;
+  const auto wire = source.SerializeAsString();
+  original.modelBytes.assign(wire.begin(), wire.end());
+  const NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(15),
+                                       [] {}, 1U << 20, 2U << 20};
+  NativeCanonicalSource material;
+  material.materialManifest = deriveNativeCanonicalMaterialManifest(original, control);
+  material.materialPayloads = material.materialManifest->payloads;
+  NativeOnnxSourceEntryRecipeV1 entry;
+  entry.entryId = "rank-attention";
+  entry.transform.kind = "attention-heads";
+  entry.transform.axis = "attention-head";
+  entry.transform.node = "onnx-node-0";
+  entry.transform.attentionPorts = {"q", "k", "v"};
+  entry.transform.headWidth = 2;
+  entry.transform.extent = 2;
+  std::vector<std::uint64_t> ordinals;
+  for (int node = 0; node < graph.node_size(); ++node) {
+    ordinals.push_back(node);
+    entry.sourceNodes.push_back("onnx-node-" + std::to_string(node));
+  }
+  NativeExecutionStepSpec call;
+  call.operation = "CALL_SUBGRAPH";
+  call.artifactEntry = entry.entryId;
+  NativeStepSlotSpec output;
+  output.slotId = "y";
+  output.dtype = "float32";
+  output.shape.assign(outputShape.begin(), outputShape.end());
+  call.outputSlots.push_back(output);
+  std::vector<double> reduced(ref.size());
+  for (std::size_t rank = 0; rank < 2; ++rank) {
+    auto input = values;
+    auto localShapes = shapes;
+    for (const auto* name : {"q", "k", "v"}) {
+      localShapes.at(name).back() = 2;
+      const auto& full = values.at(name);
+      auto& shard = input.at(name);
+      shard.clear();
+      for (std::size_t index = rank * 2; index < full.size(); index += 4)
+        shard.insert(shard.end(), full.begin() + index, full.begin() + index + 2);
+    }
+    call.inputSlots.clear();
+    for (const auto& [name, shape] : localShapes) {
+      NativeStepSlotSpec slot;
+      slot.slotId = name;
+      slot.dtype = "float32";
+      slot.shape.assign(shape.begin(), shape.end());
+      call.inputSlots.push_back(std::move(slot));
+    }
+    entry.transform.begin = rank;
+    entry.transform.end = rank + 1;
+    entry.transform = NativeOnnxSourceTransformV1::parse(entry.transform.canonicalJson());
+    const auto raw = materializeNativeOnnxEntrySource(material, entry, ordinals, call, control, {});
+    onnx::ModelProto authenticated;
+    BOOST_REQUIRE(authenticated.ParseFromArray(raw.modelBytes.data(), raw.modelBytes.size()));
+    const auto local = applyNativeOnnxSourceTransform(authenticated, entry.transform);
+    const auto partial = runOrt(local, input, localShapes, "y", outputShape, ORT_DISABLE_ALL);
+    BOOST_REQUIRE_EQUAL(partial.size(), ref.size());
+    for (std::size_t index = 0; index < partial.size(); ++index) reduced[index] += partial[index];
+  }
+  for (std::size_t index = 0; index < ref.size(); ++index)
+    BOOST_CHECK_SMALL(reduced[index] - ref[index], 1e-5);
+
+  auto wrong = source;
+  for (auto& node : *wrong.mutable_graph()->mutable_node())
+    if (node.op_type() == "Softmax") node.mutable_attribute(0)->set_i(1);
+  BOOST_CHECK_EXCEPTION(lowerNativeOnnxAttentionHeads(wrong, "q", "k", "v", 0, 1),
+    std::invalid_argument, [] (const auto& error) {
+      return std::string(error.what()) == "attention operation must use its last axis";
+    });
+  auto wrongGeometry = entry.transform;
+  wrongGeometry.headWidth = 1;
+  wrongGeometry.extent = 4;
+  wrongGeometry.begin = 2;
+  wrongGeometry.end = 4;
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongGeometry), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformShardsPackedFfnProjections)
+{
+  onnx::ModelProto source;
+  source.set_ir_version(9);
+  source.add_opset_import()->set_version(20);
+  auto& contrib = *source.add_opset_import();
+  contrib.set_domain("com.microsoft");
+  contrib.set_version(1);
+  auto& graph = *source.mutable_graph();
+  graph.set_name("packed-ffn");
+  const auto port = [] (onnx::ValueInfoProto& value, const char* name, int width) {
+    value.set_name(name);
+    auto& type = *value.mutable_type()->mutable_tensor_type();
+    type.set_elem_type(onnx::TensorProto::FLOAT);
+    for (int dim : {1, 1, 1, width})
+      type.mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  port(*graph.add_input(), "x", 32);
+  port(*graph.add_output(), "y", 3);
+  const auto projection = [&] (const char* name, const char* input, const char* output,
+                               int k, int n, int seed) {
+    auto& node = *graph.add_node();
+    node.set_name(name);
+    node.set_op_type("MatMulNBits");
+    node.set_domain("com.microsoft");
+    node.add_input(input);
+    node.add_input(std::string(name) + ".weight");
+    node.add_input(std::string(name) + ".scale");
+    node.add_output(output);
+    for (const auto& [key, value] : std::map<std::string, int>{
+           {"K", k}, {"N", n}, {"bits", 4}, {"block_size", 32}, {"accuracy_level", 1}}) {
+      auto& attr = *node.add_attribute();
+      attr.set_name(key);
+      attr.set_type(onnx::AttributeProto::INT);
+      attr.set_i(value);
+    }
+    auto& packed = *graph.add_initializer();
+    packed.set_name(node.input(1));
+    packed.set_data_type(onnx::TensorProto::UINT8);
+    for (const auto dim : {n, k / 32, 16}) packed.add_dims(dim);
+    auto& scales = *graph.add_initializer();
+    scales.set_name(node.input(2));
+    scales.set_data_type(onnx::TensorProto::FLOAT);
+    scales.add_dims(n * k / 32);
+    std::string bytes;
+    for (int row = 0; row < n; ++row) {
+      for (int block = 0; block < k / 32; ++block) {
+        scales.add_float_data(static_cast<float>(1 + (row + seed + block) % 5) / 128);
+        for (int byte = 0; byte < 16; ++byte) {
+          const auto low = (row + block * 5 + byte * 3 + seed) % 16;
+          const auto high = (row * 3 + block * 3 + byte * 5 + seed + 1) % 16;
+          bytes.push_back(static_cast<char>(low | (high << 4)));
+        }
+      }
+    }
+    packed.set_raw_data(bytes);
+  };
+  projection("up", "x", "expanded", 32, 64, 2);
+  auto& gelu = *graph.add_node();
+  gelu.set_name("activation");
+  gelu.set_op_type("Gelu");
+  gelu.add_input("expanded");
+  gelu.add_output("activated");
+  projection("down", "activated", "y", 64, 3, 7);
+
+  NativeOnnxSourceTransformV1 transform;
+  transform.kind = "ffn-pair-partial";
+  transform.axis = "ffn-channel";
+  transform.node = "up";
+  transform.downNode = "down";
+  transform.input = "x";
+  transform.output = "y";
+  transform.weight = "up.weight";
+  transform.downWeight = "down.weight";
+  transform.extent = 64;
+  std::vector<float> x(32);
+  for (int i = 0; i < 32; ++i) x[i] = static_cast<float>((i * 9) % 17 - 8) / 16;
+  const auto run = [&] (const auto& model) {
+    return runOrt(model, {{"x", x}}, {{"x", {1, 1, 1, 32}}}, "y", {1, 1, 1, 3},
+                  ORT_DISABLE_ALL);
+  };
+  const auto weight = [&] (int pair, int row, int channel) {
+    const int blocks = pair == 0 ? 1 : 2;
+    const int block = row * blocks + channel / 32;
+    const auto& bytes = graph.initializer(pair * 2).raw_data();
+    const auto packed = static_cast<unsigned char>(bytes.at(block * 16 + (channel % 32) / 2));
+    const auto nibble = (packed >> ((channel % 2) * 4)) & 15;
+    return (nibble - 8) * static_cast<double>(graph.initializer(pair * 2 + 1).float_data(block));
+  };
+  const auto full = run(source);
+  BOOST_REQUIRE_EQUAL(full.size(), 3);
+  std::array<double, 3> sum{};
+  for (int rank = 0; rank < 2; ++rank) {
+    transform.begin = rank * 32;
+    transform.end = (rank + 1) * 32;
+    const auto derived = applyNativeOnnxSourceTransform(source, transform);
+    const auto& init = derived.graph().initializer();
+    BOOST_CHECK_EQUAL(init.Get(0).raw_data(),
+                      graph.initializer(0).raw_data().substr(rank * 32 * 16, 32 * 16));
+    std::string expectedDown;
+    for (int row = 0; row < 3; ++row) {
+      const auto block = row * 2 + rank;
+      expectedDown += graph.initializer(2).raw_data().substr(block * 16, 16);
+    }
+    BOOST_CHECK_EQUAL(init.Get(2).raw_data(), expectedDown);
+    const auto partial = run(derived);
+    BOOST_REQUIRE_EQUAL(partial.size(), sum.size());
+    for (int out = 0; out < 3; ++out) {
+      double expected = 0;
+      for (int channel = rank * 32; channel < (rank + 1) * 32; ++channel) {
+        double up = 0;
+        for (int in = 0; in < 32; ++in) up += x[in] * weight(0, channel, in);
+        expected += up * 0.5 * (1 + std::erf(up / std::sqrt(2))) * weight(1, out, channel);
+      }
+      BOOST_CHECK_SMALL(static_cast<double>(partial[out]) - expected, 1e-6);
+      sum[out] += partial[out];
+    }
+  }
+  for (std::size_t out = 0; out < sum.size(); ++out)
+    BOOST_CHECK_SMALL(sum[out] - full[out], 1e-6);
+  auto external = source;
+  std::vector<std::uint8_t> sidecar;
+  for (auto& tensor : *external.mutable_graph()->mutable_initializer()) {
+    const auto offset = sidecar.size();
+    if (tensor.data_type() == onnx::TensorProto::UINT8) {
+      sidecar.insert(sidecar.end(), tensor.raw_data().begin(), tensor.raw_data().end());
+    }
+    else {
+      for (float value : tensor.float_data()) {
+        std::array<std::uint8_t, sizeof(value)> bytes;
+        std::memcpy(bytes.data(), &value, bytes.size());
+        sidecar.insert(sidecar.end(), bytes.begin(), bytes.end());
+      }
+    }
+    tensor.clear_raw_data();
+    tensor.clear_float_data();
+    tensor.set_data_location(onnx::TensorProto::EXTERNAL);
+    for (const auto& [key, value] : std::map<std::string, std::string>{
+           {"location", "model.onnx.data"}, {"offset", std::to_string(offset)},
+           {"length", std::to_string(sidecar.size() - offset)}}) {
+      auto& field = *tensor.add_external_data();
+      field.set_key(key);
+      field.set_value(value);
+    }
+  }
+  std::vector<std::uint8_t> result;
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> reads;
+  applyNativeOnnxSourceTransform(external, transform,
+    [&] (const auto& path, std::uint64_t offset, std::uint64_t length) {
+      BOOST_CHECK_EQUAL(path, "model.onnx.data");
+      BOOST_REQUIRE_LE(offset, sidecar.size());
+      BOOST_REQUIRE_LE(length, sidecar.size() - offset);
+      reads.emplace_back(offset, length);
+      return std::vector<std::uint8_t>(sidecar.begin() + offset, sidecar.begin() + offset + length);
+    }, [&] (const auto& bytes) { result.insert(result.end(), bytes.begin(), bytes.end()); });
+  const std::vector<std::pair<std::uint64_t, std::uint64_t>> expectedReads{
+    {512, 512}, {1152, 128}, {1296, 16}, {1328, 16}, {1360, 16},
+    {1380, 4}, {1388, 4}, {1396, 4}};
+  BOOST_CHECK(reads == expectedReads);
+  BOOST_CHECK_EQUAL(result.size(), 700);
+  auto invalid = source;
+  invalid.mutable_graph()->mutable_node(0)->add_input("zero-points");
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(invalid, transform), std::invalid_argument);
+  invalid = source;
+  invalid.mutable_graph()->mutable_initializer(2)->mutable_raw_data()->pop_back();
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(invalid, transform), std::exception);
+  ++transform.begin;
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, transform), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformShardsBothFfnProjections)
+{
+  onnx::ModelProto source;
+  source.set_ir_version(9);
+  source.add_opset_import()->set_version(20);
+  auto& graph = *source.mutable_graph();
+  graph.set_name("paired-ffn");
+  const auto port = [] (onnx::ValueInfoProto& value, const std::string& name, int width) {
+    value.set_name(name);
+    auto* type = value.mutable_type()->mutable_tensor_type();
+    type->set_elem_type(onnx::TensorProto::FLOAT);
+    for (int dim : {1, 1, 1, width})
+      type->mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  port(*graph.add_input(), "x", 3);
+  port(*graph.add_output(), "y", 4);
+  const auto weight = [&] (const std::string& name, const std::vector<int>& shape,
+                           const std::vector<float>& values) {
+    auto& tensor = *graph.add_initializer();
+    tensor.set_name(name);
+    tensor.set_data_type(onnx::TensorProto::FLOAT);
+    for (const auto dim : shape) tensor.add_dims(dim);
+    for (const auto value : values) tensor.add_float_data(value);
+  };
+  std::vector<float> w1(3 * 7), w2(7 * 4), b1(7);
+  for (int i = 0; i < 21; ++i) w1[i] = static_cast<float>(i - 10) / 16;
+  for (int i = 0; i < 28; ++i) w2[i] = static_cast<float>((i * 11) % 23 - 11) / 16;
+  for (int i = 0; i < 7; ++i) b1[i] = static_cast<float>(i - 3) / 8;
+  weight("W1", {3, 7}, w1);
+  weight("W2", {7, 4}, w2);
+  weight("b1", {7}, b1);
+  const auto op = [&] (const char* name, const char* opType,
+                       std::initializer_list<const char*> inputs, const char* output) {
+    auto* node = graph.add_node();
+    node->set_name(name);
+    node->set_op_type(opType);
+    for (const auto input : inputs) node->add_input(input);
+    node->add_output(output);
+    return node;
+  };
+  op("up", "MatMul", {"x", "W1"}, "expanded");
+  op("bias", "Add", {"expanded", "b1"}, "biased");
+  auto* approximate = op("activation", "Gelu", {"biased"}, "activated")->add_attribute();
+  approximate->set_name("approximate");
+  approximate->set_type(onnx::AttributeProto::STRING);
+  approximate->set_s("tanh");
+  op("down", "MatMul", {"activated", "W2"}, "y");
+
+  NativeOnnxSourceTransformV1 transform;
+  transform.kind = "ffn-pair-partial";
+  transform.axis = "ffn-channel";
+  transform.node = "up";
+  transform.downNode = "down";
+  transform.input = "x";
+  transform.output = "y";
+  transform.weight = "W1";
+  transform.downWeight = "W2";
+  transform.bias = "b1";
+  transform.extent = 7;
+  const std::vector<float> x{0.5f, -0.25f, 0.75f};
+  const auto run = [&] (const auto& model) {
+    return runOrt(model, {{"x", x}}, {{"x", {1, 1, 1, 3}}}, "y", {1, 1, 1, 4},
+                  ORT_DISABLE_ALL);
+  };
+  const auto full = run(source);
+  std::array<double, 4> sum{};
+  for (const auto& [begin, end] : nativeConvInputChannelRanges(7, 2)) {
+    transform.begin = begin;
+    transform.end = end;
+    const auto admitted = NativeOnnxSourceTransformV1::parse(transform.canonicalJson());
+    const auto derived = applyNativeOnnxSourceTransform(source, admitted);
+    BOOST_CHECK_EQUAL(derived.graph().initializer(0).dims(1), end - begin);
+    BOOST_CHECK_EQUAL(derived.graph().initializer(1).dims(0), end - begin);
+    BOOST_CHECK_EQUAL(derived.graph().initializer(2).dims(0), end - begin);
+    const auto partial = run(derived);
+    BOOST_REQUIRE_EQUAL(partial.size(), sum.size());
+    for (std::size_t out = 0; out < sum.size(); ++out) {
+      double expected = 0;
+      for (auto channel = begin; channel < end; ++channel) {
+        double up = b1[channel];
+        for (std::size_t in = 0; in < x.size(); ++in)
+          up += static_cast<double>(x[in]) * w1[in * 7 + channel];
+        const auto gelu = up * 0.5 * (1 + std::tanh(std::sqrt(2.0 / std::acos(-1.0)) *
+                                                  (up + 0.044715 * up * up * up)));
+        expected += gelu * w2[channel * 4 + out];
+      }
+      BOOST_CHECK_SMALL(static_cast<double>(partial[out]) - expected, 1e-6);
+      sum[out] += partial[out];
+    }
+  }
+  BOOST_REQUIRE_EQUAL(full.size(), sum.size());
+  for (std::size_t out = 0; out < sum.size(); ++out)
+    BOOST_CHECK_SMALL(sum[out] - full[out], 1e-6);
+
+  auto externalGraph = source;
+  auto& external = *externalGraph.mutable_graph();
+  external.mutable_node()->DeleteSubrange(1, 1);
+  external.mutable_node(1)->set_input(0, "expanded");
+  external.mutable_initializer()->DeleteSubrange(2, 1);
+  constexpr std::uint64_t EXTENT = 524296;
+  constexpr auto HALF = EXTENT / 2;
+  constexpr auto MATRIX1_BYTES = 3 * EXTENT * 4;
+  const auto setStorage = [&] (int index, std::uint64_t start, std::uint64_t length) {
+    auto& tensor = *external.mutable_initializer(index);
+    tensor.clear_float_data();
+    tensor.set_data_location(onnx::TensorProto::EXTERNAL);
+    const auto set = [&] (const char* key, const std::string& value) {
+      auto* field = tensor.add_external_data();
+      field->set_key(key);
+      field->set_value(value);
+    };
+    set("location", "model.onnx.data");
+    set("offset", std::to_string(start));
+    set("length", std::to_string(length));
+  };
+  external.mutable_initializer(0)->set_dims(1, EXTENT);
+  external.mutable_initializer(1)->set_dims(0, EXTENT);
+  setStorage(0, 0, MATRIX1_BYTES);
+  setStorage(1, MATRIX1_BYTES, EXTENT * 4 * 4);
+  auto externalTransform = transform;
+  externalTransform.bias.clear();
+  externalTransform.extent = EXTENT;
+  externalTransform.begin = HALF;
+  externalTransform.end = EXTENT;
+  constexpr auto UP_BYTES = 3 * HALF * 4;
+  std::uint64_t emitted = 0;
+  std::uint64_t largestRead = 0;
+  const auto streamed = applyNativeOnnxSourceTransform(externalGraph, externalTransform,
+    [&] (const auto& path, std::uint64_t offset, std::uint64_t length) {
+      BOOST_CHECK_EQUAL(path, "model.onnx.data");
+      largestRead = std::max(largestRead, length);
+      const auto expected = emitted < UP_BYTES
+        ? (emitted / (HALF * 4) * EXTENT + HALF) * 4 + emitted % (HALF * 4)
+        : MATRIX1_BYTES + HALF * 4 * 4 + emitted - UP_BYTES;
+      BOOST_CHECK_EQUAL(offset, expected);
+      return std::vector<std::uint8_t>(length, 11);
+    }, [&] (const auto& bytes) { emitted += bytes.size(); });
+  BOOST_CHECK_EQUAL(largestRead, 1U << 20);
+  BOOST_CHECK_EQUAL(emitted, UP_BYTES + HALF * 4 * 4);
+  BOOST_CHECK_EQUAL(streamed.graph().initializer(0).external_data(1).value(), "0");
+  BOOST_CHECK_EQUAL(streamed.graph().initializer(1).external_data(1).value(),
+                    std::to_string(UP_BYTES));
+
+  auto wrongWeight = transform;
+  wrongWeight.downWeight = "other";
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongWeight), std::invalid_argument);
+  auto wrongAxis = transform;
+  wrongAxis.axis = "input-channel";
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongAxis), std::invalid_argument);
+  auto wrongRange = transform;
+  wrongRange.begin = wrongRange.end;
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongRange), std::invalid_argument);
+  auto unsupported = source;
+  auto* foreignActivation = unsupported.mutable_graph()->mutable_node(2);
+  foreignActivation->set_op_type("Relu");
+  foreignActivation->clear_attribute();
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(unsupported, transform), std::invalid_argument);
+  auto openBoundary = source;
+  *openBoundary.mutable_graph()->add_output() = graph.output(0);
+  openBoundary.mutable_graph()->mutable_output(1)->set_name("activated");
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(openBoundary, transform), std::invalid_argument);
+
+  op("prefix", "Identity", {"x"}, "hidden");
+  for (int i = graph.node_size() - 1; i > 0; --i)
+    graph.mutable_node()->SwapElements(i, i - 1);
+  graph.mutable_node(1)->set_input(0, "hidden");
+  graph.mutable_node(4)->set_output(0, "partial");
+  const std::vector<float> b2{0.125f, -0.25f, 0.5f, -0.625f};
+  weight("b2", {4}, b2);
+  op("suffix", "Add", {"partial", "b2"}, "y");
+  const auto biasedFull = run(source);
+  for (std::size_t out = 0; out < sum.size(); ++out)
+    BOOST_CHECK_SMALL(sum[out] + b2[out] - biasedFull[out], 1e-6);
+
+  NativeCanonicalSource canonicalSource;
+  const auto modelWire = source.SerializeAsString();
+  canonicalSource.modelBytes.assign(modelWire.begin(), modelWire.end());
+  auto descriptor = model("fixture", "PairedFFN", digest("ffn-placeholder"));
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 4 * 1024 * 1024, 4 * 1024 * 1024};
+  const auto inspected = inspectNativeOnnxSourceGraph(canonicalSource, descriptor, control);
+  descriptor.graphDigest = inspected.graph.graphDigest;
+  const auto identity = canonicalOnnxSourceIdentity(canonicalSource, control);
+  const NativeJson configuration{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    {"legacy_yolo_retired", false},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/ffn"},
+      {"digest", nativePlanningDigest(canonicalSource.modelBytes.data(),
+                                      canonicalSource.modelBytes.size())},
+      {"model_manifest_digest", digest("ffn-manifest")},
+      {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest("ffn-profile")},
+      {"assembler_descriptor_digest", digest("ffn-assembler")}, {"backend_abi", "fixture-abi"},
+      {"precision", descriptor.precision}, {"quantization", "none"}, {"layout", "NCHW"},
+      {"padding", "none"}, {"protection_epoch", "epoch-1"}, {"max_source_bytes", 4194304},
+      {"max_assembled_bytes", 4194304}, {"max_nodes", 100}}},
+    {"publication", {{"artifact_root", "/fixture/ffn/artifacts"}}},
+    {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"mode", "hybrid"},
+      {"roles", {"Prefix", "Rank0", "Rank1", "Suffix"}},
+      {"boundary_node", "onnx-node-1"}, {"ffn_down_node", "onnx-node-4"},
+      {"input_ingress_role", "Prefix"}, {"result_egress_role", "Suffix"}}}
+  };
+  const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration),
+                                                  canonicalSource, control);
+  BOOST_REQUIRE(loaded.splitter);
+  const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph, {});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto& candidate = candidates.front();
+  BOOST_CHECK_EQUAL(candidate.executionPlan.stageLayout.size(), 3U);
+  BOOST_CHECK_EQUAL(candidate.roleNodeIdsByRole.at("Rank0").size(), 4U);
+  BOOST_CHECK(candidate.roleNodeIdsByRole.at("Rank0") == candidate.roleNodeIdsByRole.at("Rank1"));
+  BOOST_REQUIRE_EQUAL(candidate.sourceTransformByRole.size(), 2U);
+  const auto requirements = nativePlanRequiredCapabilities(candidate);
+  BOOST_CHECK(std::find(requirements.begin(), requirements.end(),
+                        NATIVE_FFN_PAIR_CAPABILITY_V1) != requirements.end());
+  const auto pairs = nativeDistinctProviderPairs(candidate);
+  BOOST_REQUIRE_EQUAL(pairs.size(), 1U);
+  BOOST_CHECK_EQUAL(pairs.front().first, "Rank0");
+  BOOST_CHECK_EQUAL(pairs.front().second, "Rank1");
+  const auto rank0 = NativeOnnxSourceTransformV1::parse(candidate.sourceTransformByRole.at("Rank0"));
+  const auto rank1 = NativeOnnxSourceTransformV1::parse(candidate.sourceTransformByRole.at("Rank1"));
+  BOOST_CHECK_EQUAL(rank0.end, 4U);
+  BOOST_CHECK_EQUAL(rank1.begin, 4U);
+  BOOST_CHECK_EQUAL(rank1.end, 7U);
+  BOOST_CHECK_EQUAL(*candidate.requirementsByRole.at("Rank0").weightBytes, 128U);
+  BOOST_CHECK_EQUAL(*candidate.requirementsByRole.at("Rank1").weightBytes, 96U);
+  BOOST_CHECK_EQUAL(*candidate.requirementsByRole.at("Suffix").weightBytes, 16U);
+  const NativeRequestControl request{"/fixture/ffn/request", 1,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
+  const auto roles = loaded.preparation->prepareRoles(loaded.model, candidate, request);
+  BOOST_REQUIRE_EQUAL(roles.size(), 4U);
+  for (const auto& role : roles) BOOST_CHECK_NO_THROW(validateNativeAssembly(role));
+  const auto plannedRank = std::find_if(roles.begin(), roles.end(), [] (const auto& role) {
+    return role.selectedRole == "Rank1";
+  });
+  BOOST_REQUIRE(plannedRank != roles.end());
+  BOOST_CHECK(!plannedRank->artifactCoordinate.empty());
+  BOOST_CHECK_EQUAL(plannedRank->expectedInputs.at(0).name, "hidden");
+  BOOST_CHECK_EQUAL(plannedRank->expectedOutputs.at(0).name, "partial");
+  auto wrongRank = *plannedRank;
+  wrongRank.tensorParallelRank = 0;
+  BOOST_CHECK_THROW(validateNativeAssembly(wrongRank), std::invalid_argument);
+
+  // Build a second source window with a different FFN width. The prefix result
+  // feeds both the middle stage and a real suffix bypass.
+  graph.mutable_initializer()->RemoveLast();
+  weight("scale", {3}, {0.5f, 1.25f, -0.75f});
+  graph.mutable_node(0)->set_op_type("Mul");
+  graph.mutable_node(0)->add_input("scale");
+  weight("W3", {4, 5}, std::vector<float>(20, 0.25f));
+  weight("W4", {5, 3}, std::vector<float>(15, -0.125f));
+  op("up-next", "MatMul", {"partial", "W3"}, "expanded-next");
+  op("activation-next", "Gelu", {"expanded-next"}, "activated-next");
+  op("down-next", "MatMul", {"activated-next", "W4"}, "next");
+  for (int i = 5; i + 1 < graph.node_size(); ++i)
+    graph.mutable_node()->SwapElements(i, i + 1);
+  auto* suffix = graph.mutable_node(graph.node_size() - 1);
+  suffix->set_input(0, "next");
+  suffix->set_input(1, "hidden");
+  graph.mutable_output(0)->mutable_type()->mutable_tensor_type()->mutable_shape()
+    ->mutable_dim(3)->set_dim_value(3);
+
+  const auto multiWire = source.SerializeAsString();
+  canonicalSource.modelBytes.assign(multiWire.begin(), multiWire.end());
+  const auto multiInspection = inspectNativeOnnxSourceGraph(canonicalSource, descriptor, control);
+  descriptor.graphDigest = multiInspection.graph.graphDigest;
+  auto multiConfig = configuration;
+  multiConfig["model"] = nativeParseJson(descriptor.canonicalJson());
+  multiConfig["source"]["digest"] = nativePlanningDigest(multiWire);
+  multiConfig["source"]["canonical_graph_digest"] = multiInspection.canonicalIdentity.graphDigest;
+  auto& split = multiConfig["splitter"];
+  split.erase("boundary_node");
+  split.erase("ffn_down_node");
+  split["ffn_windows"] = {{{"up_node", "onnx-node-1"}, {"down_node", "onnx-node-4"}},
+                           {{"up_node", "onnx-node-5"}, {"down_node", "onnx-node-7"}}};
+  const auto multi = NativeRequestCatalog::load(nativeCanonicalJson(multiConfig),
+                                                 canonicalSource, control);
+  const auto multiCandidates = multi.splitter->enumerate(multi.model.descriptor, multi.model.graph, {});
+  BOOST_REQUIRE_EQUAL(multiCandidates.size(), 1U);
+  const auto& composed = multiCandidates.front();
+  BOOST_REQUIRE_EQUAL(composed.executionPlan.stageLayout.size(), 3U);
+  BOOST_CHECK_EQUAL(composed.executionPlan.stageLayout.at(1).degree(), 2U);
+  BOOST_CHECK_EQUAL(composed.executionPlan.steps.size(), 9U);
+  BOOST_CHECK_EQUAL(composed.executionPlan.dependencies.size(), 7U);
+  BOOST_CHECK_EQUAL(*composed.requirementsByRole.at("Rank0").weightBytes, 212U);
+  BOOST_CHECK_EQUAL(*composed.requirementsByRole.at("Rank1").weightBytes, 152U);
+  const auto bypass = std::find_if(composed.executionPlan.dependencies.begin(),
+    composed.executionPlan.dependencies.end(), [] (const auto& edge) {
+      return edge.producerStepId == "Prefix/RUN" && edge.producerSlotId == "hidden" &&
+             edge.consumerStepId == "Suffix/RUN" && edge.consumerSlotId == "hidden";
+    });
+  BOOST_REQUIRE(bypass != composed.executionPlan.dependencies.end());
+  const auto nextCall = std::find_if(composed.executionPlan.steps.begin(),
+    composed.executionPlan.steps.end(), [] (const auto& step) {
+      return step.stepId == "Rank1/RUN/1";
+    });
+  BOOST_REQUIRE(nextCall != composed.executionPlan.steps.end());
+  BOOST_CHECK_EQUAL(nextCall->inputSlots.front().producerStepId, "Rank1/SUM/0");
+  const auto multiRoles = multi.preparation->prepareRoles(multi.model, composed, request);
+  BOOST_REQUIRE_EQUAL(multiRoles.size(), 4U);
+  const auto rejectsSourceProgram = [&] (auto candidate, const std::string& expected) {
+    candidate.candidateDigest = candidate.computedDigest();
+    BOOST_CHECK_EXCEPTION(multi.preparation->prepareRoles(multi.model, candidate, request),
+      std::invalid_argument, [&] (const auto& error) { return error.what() == expected; });
+  };
+  const auto bypassIndex = std::distance(composed.executionPlan.dependencies.begin(), bypass);
+  auto omitted = composed;
+  omitted.executionPlan.dependencies.erase(omitted.executionPlan.dependencies.begin() + bypassIndex);
+  auto& suffixInputs = omitted.executionPlan.steps.back().inputSlots;
+  suffixInputs.erase(std::remove_if(suffixInputs.begin(), suffixInputs.end(), [] (const auto& slot) {
+    return slot.slotId == "hidden";
+  }), suffixInputs.end());
+  rejectsSourceProgram(omitted, "source program outer CALL differs from its canonical frontier");
+  auto wrongLineage = composed;
+  auto& incoming = wrongLineage.executionPlan.steps.back().inputSlots;
+  auto input = std::find_if(incoming.begin(), incoming.end(), [] (const auto& slot) {
+    return slot.slotId == "hidden";
+  });
+  BOOST_REQUIRE(input != incoming.end());
+  input->producerStepId = "Rank0/SUM/1";
+  input->producerSlotId = "next";
+  auto& wrongBypass = wrongLineage.executionPlan.dependencies.at(bypassIndex);
+  wrongBypass.producers = {"Rank0"};
+  wrongBypass.producerStepId = input->producerStepId;
+  wrongBypass.producerSlotId = input->producerSlotId;
+  wrongBypass.tensors = {input->producerSlotId};
+  rejectsSourceProgram(wrongLineage, "source program outer CALL changes source tensor lineage");
+  auto wrongTerminal = composed;
+  wrongTerminal.resultEgressRole = "Rank0";
+  rejectsSourceProgram(wrongTerminal, "source program terminal owner does not produce the model output");
+  auto strippedRecipe = composed;
+  strippedRecipe.sourceTransformByRole.clear();
+  rejectsSourceProgram(strippedRecipe, "source program role is missing its entry recipe");
+  for (const auto& role : multiRoles) {
+    BOOST_TEST_CONTEXT(role.selectedRole) {
+      validateNativeAssembly(role);
+      if (role.selectedRole == "Rank0" || role.selectedRole == "Rank1") {
+        const auto expected = "program-" + nativePlanningDigest(role.sourceTransformV1).substr(7);
+        BOOST_CHECK(ndn::Name(role.artifactCoordinate)[-1] == ndn::name::Component(expected));
+      }
+    }
+  }
+
+  NativeCanonicalSource materials;
+  materials.materialManifest = deriveNativeCanonicalMaterialManifest(canonicalSource, control);
+  materials.materialPayloads = materials.materialManifest->payloads;
+  const std::vector<float> hidden{x[0] * 0.5f, x[1] * 1.25f, x[2] * -0.75f};
+  auto activation = hidden;
+  for (std::size_t index = 0; index < 2; ++index) {
+    std::vector<float> reduced;
+    for (const auto& role : multiRoles) {
+      if (role.sourceTransformV1.empty()) continue;
+      const auto program = NativeOnnxSourceEntryProgramV1::parse(role.sourceTransformV1);
+      const auto ordinals = program.bindSourceOrdinals(role.nodeIndices);
+      const auto& entry = program.entries.at(index);
+      const auto call = std::find_if(composed.executionPlan.steps.begin(),
+        composed.executionPlan.steps.end(), [&] (const auto& step) {
+          return step.unitId == role.selectedRole && step.artifactEntry == entry.entryId;
+        });
+      BOOST_REQUIRE(call != composed.executionPlan.steps.end());
+      const auto files = materializeNativeOnnxEntrySource(materials, entry, ordinals.at(index),
+        *call, control, [] (const auto&) { BOOST_FAIL("fixture uses inline initializers"); });
+      onnx::ModelProto materialized;
+      BOOST_REQUIRE(materialized.ParseFromArray(files.modelBytes.data(), files.modelBytes.size()));
+      auto derived = lowerNativeMaterializedFfnEntry(std::move(materialized), entry.transform,
+                                                      ordinals.at(index));
+      const std::vector<std::int64_t> inShape{1, 1, 1, static_cast<std::int64_t>(activation.size())};
+      const std::vector<std::int64_t> outShape{1, 1, 1, index == 0 ? 4 : 3};
+      const auto partialResult = runOrt(derived, {{entry.transform.input, activation}},
+        {{entry.transform.input, inShape}}, entry.transform.output, outShape, ORT_DISABLE_ALL);
+      if (reduced.empty()) reduced.resize(partialResult.size());
+      BOOST_REQUIRE_EQUAL(partialResult.size(), reduced.size());
+      for (std::size_t i = 0; i < reduced.size(); ++i)
+        reduced[i] += partialResult[i];
+
+      if (index == 0) {
+        auto missing = materials;
+        missing.materialPayloads.erase(std::remove_if(missing.materialPayloads.begin(),
+          missing.materialPayloads.end(), [] (const auto& payload) {
+            return payload.payloadId == "node-1";
+          }), missing.materialPayloads.end());
+        BOOST_CHECK_EXCEPTION(materializeNativeOnnxEntrySource(missing, entry, ordinals.at(index),
+          *call, control, {}), std::runtime_error, [] (const auto& error) {
+            return std::string(error.what()) == "DI_CANONICAL_SOURCE_ENTRY_MATERIAL_MISSING";
+          });
+        auto misplaced = role;
+        std::swap(misplaced.nodeIndices[0], misplaced.nodeIndices[1]);
+        BOOST_CHECK_THROW(validateNativeAssembly(misplaced), std::invalid_argument);
+      }
+    }
+    activation = std::move(reduced);
+  }
+  const auto fullMulti = runOrt(source, {{"x", x}}, {{"x", {1, 1, 1, 3}}}, "y", {1, 1, 1, 3},
+                                ORT_DISABLE_ALL);
+  BOOST_REQUIRE_EQUAL(activation.size(), fullMulti.size());
+  BOOST_REQUIRE_EQUAL(activation.size(), hidden.size());
+  for (std::size_t i = 0; i < activation.size(); ++i)
+    BOOST_CHECK_SMALL(activation[i] + hidden[i] - fullMulti[i], 1e-6f);
+
+  auto fullConfig = multiConfig;
+  fullConfig["splitter"] = {{"kind", "ONNX_SOURCE"}, {"mode", "full"}, {"roles", {"Prefix"}},
+    {"input_ingress_role", "Prefix"}, {"result_egress_role", "Prefix"}};
+  const auto fullCatalog = NativeRequestCatalog::load(nativeCanonicalJson(fullConfig),
+                                                        canonicalSource, control);
+  const auto dense = fullCatalog.splitter->enumerate(fullCatalog.model.descriptor,
+                                                     fullCatalog.model.graph, {});
+  BOOST_REQUIRE_EQUAL(dense.size(), 1U);
+  BOOST_CHECK_EQUAL(*dense.front().requirementsByRole.at("Prefix").weightBytes, 376U);
+  BOOST_CHECK_NO_THROW(fullCatalog.preparation->prepareRoles(fullCatalog.model, dense.front(),
+                                                            request));
+
+  std::swap(split["ffn_windows"][0], split["ffn_windows"][1]);
+  BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(multiConfig),
+                                              canonicalSource, control), std::invalid_argument);
+}
 
 BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformPreservesExactConvAndResidual)
 {

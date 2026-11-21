@@ -416,6 +416,8 @@ void publish(const std::shared_ptr<ProviderArtifactCache::Shared>& shared,
     // A whole-region entry is bound to the current sealed step/state contract, not to the
     // reusable material identity. Preparation reconstructs it after every artifact lease.
     metadataOnly->entryContract.reset();
+    metadataOnly->sourceProgramDependencyEntries.clear();
+    metadataOnly->deferDependencyInputWarmup = false;
     metadataOnly->lifetime.reset();
     metadataOnly->protectedResidentUse.reset();
     // A protected artifact is backed by the immutable ciphertext file written

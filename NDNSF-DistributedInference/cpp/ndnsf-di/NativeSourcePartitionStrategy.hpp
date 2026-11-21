@@ -2,6 +2,7 @@
 #define NDNSF_DI_NATIVE_SOURCE_PARTITION_STRATEGY_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 
 #include <optional>
 #include <string>
@@ -14,6 +15,27 @@ enum class NativeSourcePartitionMode
   FULL,
   COMPONENT,
   HYBRID,
+  TENSOR_PARALLEL,
+};
+
+struct NativeOnnxTensorStepPlan;
+/** Verified facts for one contiguous pair of FFN projections. */
+struct NativeSourceFfnWindow
+{
+  NativeOnnxSourceTransformV1 transform;
+  std::vector<std::string> nodes;
+  std::vector<std::int64_t> inputShape;
+  std::vector<std::int64_t> outputShape;
+  std::uint64_t weightBytes = 0;
+};
+
+/** One canonical source window and the original typed frontier of its derived CALL. */
+struct NativeSourceBlockEntry
+{
+  NativeOnnxSourceEntryRecipeV1 recipe;
+  std::vector<NativeTensorContract> inputs;
+  std::vector<NativeTensorContract> outputs;
+  std::uint64_t initializerBytes = 0;
 };
 
 /** Declarative mode and source boundary for a generic ONNX source plan. */
@@ -41,13 +63,20 @@ struct NativeSourcePartitionProfile
   std::vector<std::int64_t> convStrides;
   std::vector<std::int64_t> convDilations;
   std::optional<std::uint64_t> suffixWeightBytes;
+  std::map<std::string, std::uint64_t> denseWeightBytesByRole;
+  std::vector<NativeSourceFfnWindow> ffnWindows;
+  std::optional<std::uint64_t> ffnPrefixWeightBytes;
+  std::string suffixNode;
+  std::vector<NativeSourceBlockEntry> blockEntries;
+  std::vector<NativeSourceBlockEntry> outerEntries;
+  std::shared_ptr<const NativeOnnxTensorStepPlan> tensorPlan;
 };
 
 /**
  * Build full, component and hybrid candidates from verified source facts.
  *
- * Full and component are ordinary source regions. Hybrid reserves a
- * degree-two Conv stage and derives its executable roles from source transforms.
+ * Full and component use ordinary source regions. Hybrid lowers a selected
+ * degree-two Conv or paired projection region between single-role stages.
  */
 class NativeSourcePartitionStrategy final : public NativeModelSplitStrategy,
                                              public CooperativeModelSplitStrategy
@@ -69,6 +98,10 @@ public:
     const ExtensionControl& control) const override;
 
 private:
+  void buildBlockSteps(NativeSplitCandidate& candidate,
+                       const NativeGraphSnapshot& graph,
+                       const ExtensionControl* control) const;
+
   std::vector<NativeSplitCandidate> enumerateImpl(
     const NativeModelDescriptor& model,
     const NativeGraphSnapshot& graph,

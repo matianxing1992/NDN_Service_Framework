@@ -6,10 +6,11 @@ set -euo pipefail
 # dependency repair, configure, and Python binding installation.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/host-build-jobs.sh"
 STORAGE="$ROOT/scripts/build-storage.py"
 BUILD_DIR="$ROOT/build"
 TARGET=""
-JOBS="${NDNSF_BUILD_JOBS:-4}"
+JOBS="${NDNSF_BUILD_JOBS:-$(ndnsf_default_host_build_jobs)}"
 SYSTEM_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 SEEN_BUILD_DIR=0
 SEEN_TARGET=0
@@ -26,7 +27,7 @@ install Python bindings.
 Options:
   --build-dir PATH  Existing ordinary Waf tree (default: checkout/build).
   --target NAME     One Waf target name; commas are rejected.
-  --jobs N          Build parallelism (default: NDNSF_BUILD_JOBS or 4).
+  --jobs N          Build parallelism (default: NDNSF_BUILD_JOBS or the host RAM tier).
   -h, --help        Show this help.
 
 ONNX Runtime is an external global SDK at /opt/onnxruntime, not a Waf target.
@@ -77,7 +78,10 @@ done
 [[ -n "$TARGET" ]] || die "--target is required"
 [[ "$TARGET" != *,* ]] || die "exactly one target is allowed; commas are not accepted"
 [[ "$TARGET" != */* && "$TARGET" != *..* ]] || die "target must be a Waf name, not a path"
-[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer"
+ndnsf_host_build_jobs_allowed "$JOBS" || {
+  ndnsf_report_invalid_host_build_jobs
+  exit 2
+}
 
 case "$TARGET" in
   onnxruntime|onnxruntime-cpu|libonnxruntime.so|libonnxruntime.so.*)

@@ -293,7 +293,8 @@ parentCheckpoint(const ptree& root, const std::filesystem::path& base)
 }
 
 std::vector<std::int64_t>
-integerArray(const ptree& value, const std::string& key)
+integerArray(const ptree& value, const std::string& key,
+             const std::string& failure = "NATIVE_STREAM_ORACLE_FAILED")
 {
   try {
     std::vector<std::int64_t> result;
@@ -308,7 +309,7 @@ integerArray(const ptree& value, const std::string& key)
     return result;
   }
   catch (const std::exception& error) {
-    throw std::runtime_error(std::string("NATIVE_STREAM_ORACLE_FAILED: ") + error.what());
+    throw std::runtime_error(failure + ": " + error.what());
   }
 }
 
@@ -1444,7 +1445,27 @@ run(int argc, char** argv)
                   << " NATIVE_STREAM_EVENTS=" << observedEvents << '\n';
     }
     else {
-      result = handle.result();
+      while (true) {
+        if (interrupted) {
+          handle.cancel();
+          runtime->close();
+          if (!runtime->drain(std::chrono::seconds(6)))
+            throw std::runtime_error("NATIVE_REQUEST_CANCEL_DRAIN_TIMEOUT");
+          std::cout << "NATIVE_REQUEST_CANCEL_DRAINED request=" << handle.id() << std::endl;
+          throw std::runtime_error("NATIVE_REQUEST_INTERRUPTED");
+        }
+        try {
+          result = handle.result(std::chrono::milliseconds(100));
+          break;
+        }
+        catch (const DiError& error) {
+          if (error.code() != "LOCAL_WAIT_TIMEOUT") throw;
+          if (handle.status() != RequestStatus::Pending) {
+            result = handle.result(std::chrono::milliseconds(0));
+            break;
+          }
+        }
+      }
     }
     if (streaming && !terminalSeen)
       throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
@@ -1455,8 +1476,19 @@ run(int argc, char** argv)
       const auto tolerance = oracle->get<double>("tolerance", 1e-5);
       const auto rowWidth = oracle->get<std::uint64_t>("row_width", 0);
       const bool detections = oracle->get<bool>("detections", false);
+      const auto shape = oracle->get_child_optional("shape");
+      const auto absolute = oracle->get_optional<double>("atol");
+      const auto relative = oracle->get_optional<double>("rtol");
       bool matched = false;
-      if (detections) {
+      if (shape || oracle->count("atol") || oracle->count("rtol")) {
+        if (!shape || !absolute || !relative || detections || rowWidth != 0 ||
+            oracle->count("tolerance"))
+          throw std::runtime_error(
+            "NATIVE_NUMERICAL_ORACLE_FAILED: shape, atol and rtol require elementwise comparison");
+        matched = result.matchesFloat32Tensor(tensor, expected,
+          integerArray(*oracle, "shape", "NATIVE_NUMERICAL_ORACLE_FAILED"), *absolute, *relative);
+      }
+      else if (detections) {
         matched = result.matchesFloat32Detections(
           tensor, expected, rowWidth == 0 ? 6 : rowWidth,
           oracle->get<double>("coordinate_tolerance", 1e-2),

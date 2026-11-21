@@ -198,7 +198,12 @@ def test_installer_defaults_to_host_memory_policy():
     assert result.returncode == 0
     total_bytes = int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines()
                            if line.startswith('MemTotal:'))) * 1024
-    expected = subprocess.check_output(['nproc'], text=True).strip() if total_bytes > 100_000_000_000 else '6'
+    if total_bytes <= 12_000_000_000:
+        expected = "4"
+    elif total_bytes < 100_000_000_000:
+        expected = "6"
+    else:
+        expected = subprocess.check_output(["nproc"], text=True).strip()
     assert result.stdout == expected
 
 
@@ -265,6 +270,22 @@ ensure_minindn_boost_iostreams
 ''', env=dict(os.environ, TEST_BOOST_LIBRARY=str(tmp_path)))
     assert result.returncode != 0
     assert "Reusing Boost" not in result.stdout
+
+
+def test_minindn_repairs_missing_infoconv_even_if_infoedit_is_installed():
+    result = shell(DEFINITIONS + '''
+command() {
+    case "$*" in
+        "-v infoedit") return 0 ;;
+        "-v infoconv") return 1 ;;
+        *) builtin command "$@" ;;
+    esac
+}
+ensure_fixed_source_tree() { echo "REPAIR:$1" >&2; return 23; }
+build_fixed_minindn_infoedit
+''')
+    assert result.returncode == 23, result.stderr
+    assert "REPAIR:infoedit" in result.stderr
 
 
 def test_native_prefix_drives_waf_and_receipt(tmp_path):
@@ -595,6 +616,7 @@ def test_private_test_python_uses_the_selected_manifest_root(tmp_path):
     scratch.mkdir()
     result = shell(DEFINITIONS + '''
 sudo_run() { "$@"; }
+prepare_installer_pip() { pip_bootstrap_env=(); }
 env() {
   if [[ "${*: -1}" == 'import cryptography' ]]; then return 0; fi
   command env "$@"
@@ -747,8 +769,43 @@ def test_qwen_profile_plan_is_offline_and_enables_installed_examples():
     assert result.returncode == 0, result.stderr
     for flag in ("--with-examples", "--with-tests", "--install-experiment-fixtures"):
         assert flag in result.stdout
-    assert "no download, export, quantization, or inference" in result.stdout
+    assert "Mini-NDN:" in result.stdout
+    assert "Mininet:" in result.stdout
+    assert "Ultralytics=" not in result.stdout
+    assert "yolo26n.pt" not in result.stdout
     assert "NDNSF stack install root" not in result.stdout
+
+
+@pytest.mark.parametrize("flags, enabled", [
+    ((), True),
+    (("--source", "--deps-only"), True),
+    (("--components", "core"), False),
+    (("--components", "repo"), False),
+    (("--components", "core", "--with-minindn"), True),
+    (("--configure-only",), False),
+    (("--no-system-install",), False),
+    (("--check-dependencies",), False),
+    (("--no-dependencies",), False),
+    (("--without-minindn",), False),
+])
+def test_minindn_plan_matches_host_install_scope(tmp_path, flags, enabled):
+    deps = tmp_path / "deps"
+    result = shell(SCRIPT.read_text(), "--plan", "--deps-dir", str(deps), *flags)
+    assert result.returncode == 0, result.stderr
+    assert ("Mini-NDN:" in result.stdout) == enabled
+    assert ("Mininet:" in result.stdout) == enabled
+    assert "Ultralytics=" not in result.stdout
+    assert "yolo26n.pt" not in result.stdout
+    assert not deps.exists()
+
+
+def test_yolo_plan_layers_yolo_over_the_shared_minindn_runtime():
+    result = shell(SCRIPT.read_text(), "--with-yolo-minindn", "--plan")
+    assert result.returncode == 0, result.stderr
+    assert "Mini-NDN:" in result.stdout
+    assert "Mininet:" in result.stdout
+    assert "Ultralytics=" in result.stdout
+    assert "yolo26n.pt" in result.stdout
 
 
 @pytest.mark.parametrize("mode", ["--deps-only", "--configure-only", "--check-dependencies", "--no-system-install"])
@@ -758,30 +815,45 @@ def test_qwen_profile_rejects_partial_install(mode):
     assert "requires a complete system installation" in result.stderr
 
 
-def test_qwen_prerequisite_failure_stops_before_system_packages():
+@pytest.mark.parametrize("profile", [(), ("--with-qwen-minindn",), ("--with-yolo-minindn",)])
+def test_minindn_install_failure_stops_before_waf_and_yolo_profile(profile):
     stubs = '''
 require_host_profile() { :; }
-check_qwen_minindn_prerequisites() { echo PREREQUISITE_FAILURE >&2; return 1; }
-install_common_system_packages() { echo UNEXPECTED_APT; }
+require_system_toolchain() { :; }
+install_common_system_packages() { echo OS_PACKAGES; }
+install_host_sdk_prerequisites() { :; }
+prepare_build_dir() { :; }
+lock_native_install() { :; }
+native_stage() { :; }
+install_external_dependencies() { echo NDN_DEPS; }
+install_minindn_runtime() { echo MININDN_FAILED >&2; return 48; }
+install_yolo_minindn_profile() { echo UNEXPECTED_YOLO; }
+run_waf_clean() { echo UNEXPECTED_WAF; }
 '''
-    result = shell(DEFINITIONS + stubs + MAIN, "--with-qwen-minindn")
-    assert result.returncode != 0
-    assert "PREREQUISITE_FAILURE" in result.stderr
-    assert "UNEXPECTED_APT" not in result.stdout
+    result = shell(DEFINITIONS + stubs + MAIN, *profile)
+    assert result.returncode == 48, result.stderr
+    assert "MININDN_FAILED" in result.stderr
+    assert result.stdout.index("OS_PACKAGES") < result.stdout.index("NDN_DEPS")
+    assert "UNEXPECTED" not in result.stdout
 
 
 @pytest.mark.parametrize(
-    "mode, expected, forbidden",
+    "flags, expected, forbidden",
     [
-        ("--with-qwen-minindn", ("libgtest-dev",),
-         ("doxygen", "graphviz", "mininet", "openvswitch-switch", "tcpdump")),
-        ("--with-minindn-deps", ("mininet", "openvswitch-switch", "tcpdump"),
+        ((), ("openvswitch-switch", "tcpdump", "python3-joblib"),
+         ("libgtest-dev", "doxygen", "graphviz", "mininet")),
+        (("--with-qwen-minindn",), ("libgtest-dev", "openvswitch-switch", "python3-joblib"),
+         ("doxygen", "graphviz", "mininet")),
+        (("--without-minindn", "--with-minindn-deps"), ("mininet", "openvswitch-switch", "tcpdump"),
          ("libgtest-dev", "doxygen", "graphviz")),
-        ("--with-system-tests-deps", ("libgtest-dev", "doxygen", "graphviz"), ()),
+        (("--without-minindn", "--with-system-tests-deps"),
+         ("libgtest-dev", "doxygen", "graphviz"), ("mininet", "openvswitch-switch")),
+        (("--no-dependencies", "--with-minindn"), (),
+         ("mininet", "openvswitch-switch", "tcpdump", "python3-joblib")),
     ],
 )
 def test_profiles_install_only_selected_test_and_doc_packages(
-    tmp_path, mode, expected, forbidden
+    tmp_path, flags, expected, forbidden
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -795,9 +867,9 @@ sudo_run() { printf 'SUDO:%s\\n' "$*"; }
 select_global_boost() { return 0; }
 install_common_system_packages
 '''
-    result = shell(DEFINITIONS + stubs, mode, env=env)
+    result = shell(DEFINITIONS + stubs, *flags, env=env)
     assert result.returncode == 0, result.stderr
-    install = next(line for line in result.stdout.splitlines() if "apt-get install" in line)
+    install = shlex.split(next(line for line in result.stdout.splitlines() if "apt-get install" in line))
     for package in expected:
         assert package in install
     for package in forbidden:
@@ -1032,21 +1104,33 @@ def test_force_and_no_dependencies_conflict_before_side_effects():
         assert 'cannot be combined' in result.stderr
 
 
-def test_deps_only_stops_before_waf_and_python():
+@pytest.mark.parametrize("flags, minindn", [
+    ((), True),
+    (("--without-minindn",), False),
+    (("--components", "core"), False),
+    (("--components", "core", "--with-minindn"), True),
+])
+def test_deps_only_installs_selected_dependencies_without_waf_or_public_packages(flags, minindn):
     stubs = '''
 require_system_toolchain() { :; }
 require_host_profile() { :; }
 install_common_system_packages() { :; }
+lock_native_install() { :; }
 check_waf_inventory() { :; }
 require_global_external_closure() { return 1; }
 source_field() { echo https://example.invalid/repo.git; }
 install_external_dependencies() { echo DEPS_ONLY_OK; }
+install_minindn_runtime() { echo MININDN_INSTALL; }
+install_yolo_minindn_profile() { echo UNEXPECTED_YOLO; }
 run_waf_clean() { echo UNEXPECTED_WAF; }
 pip_install() { echo UNEXPECTED_PIP; }
 '''
-    result = shell(DEFINITIONS + stubs + MAIN, '--source', '--deps-only')
+    result = shell(DEFINITIONS + stubs + MAIN, '--source', '--deps-only', *flags)
     assert result.returncode == 0, result.stderr
     assert 'DEPS_ONLY_OK' in result.stdout
+    assert result.stdout.count('MININDN_INSTALL') == int(minindn)
+    if minindn:
+        assert result.stdout.index('DEPS_ONLY_OK') < result.stdout.index('MININDN_INSTALL')
     assert 'UNEXPECTED' not in result.stdout
 
 
@@ -1056,10 +1140,12 @@ def test_default_uses_per_dependency_resolver_without_closure_identity_gate(sour
 require_host_profile() { :; }
 install_common_system_packages() { :; }
 require_system_toolchain() { :; }
+lock_native_install() { :; }
 source_field() { echo https://example.invalid/repo.git; }
 require_global_external_closure() { echo UNEXPECTED_WHOLE_CLOSURE_GATE; return 1; }
 check_waf_inventory() { echo UNEXPECTED_WAF_INVENTORY_GATE; return 1; }
 install_external_dependencies() { echo PER_DEPENDENCY_RESOLVER; }
+install_minindn_runtime() { :; }
 '''
     result = shell(DEFINITIONS + stubs + MAIN, *source_args, '--deps-only')
     assert result.returncode == 0, result.stderr
@@ -1073,10 +1159,12 @@ def test_force_dependencies_routes_to_dependency_resolver():
 require_host_profile() { :; }
 install_common_system_packages() { :; }
 require_system_toolchain() { :; }
+lock_native_install() { :; }
 source_field() { echo https://example.invalid/repo.git; }
 require_global_external_closure() { echo UNEXPECTED_REUSE; }
 check_waf_inventory() { :; }
 install_external_dependencies() { echo SOURCE_INSTALL; }
+install_minindn_runtime() { :; }
 '''
     result = shell(DEFINITIONS + stubs + MAIN, '--force-dependencies', '--deps-only')
     assert result.returncode == 0, result.stderr
@@ -1084,25 +1172,31 @@ install_external_dependencies() { echo SOURCE_INSTALL; }
     assert 'UNEXPECTED_REUSE' not in result.stdout
 
 
-def test_no_dependencies_reuses_global_closure_without_source_receipts():
+@pytest.mark.parametrize("flags", [(), ("--with-minindn",)])
+def test_no_dependencies_reuses_global_closure_without_source_receipts(flags):
     stubs = '''
 require_host_profile() { :; }
 install_common_system_packages() { :; }
 require_system_toolchain() { :; }
+lock_native_install() { :; }
 source_field() { echo https://example.invalid/repo.git; }
 require_global_external_closure() { echo GLOBAL_CLOSURE_OK; }
 check_waf_inventory() { echo WAF_INVENTORY_OK; }
 require_source_receipts() { echo UNEXPECTED_SOURCE_RECEIPT_CHECK; return 99; }
 install_external_dependencies() { echo UNEXPECTED_SOURCE_INSTALL; }
+install_minindn_runtime() { echo UNEXPECTED_MININDN_INSTALL; }
+check_minindn_runtime() { echo MININDN_CHECK; }
 '''
-    result = shell(DEFINITIONS + stubs + MAIN, '--no-dependencies', '--deps-only')
+    result = shell(DEFINITIONS + stubs + MAIN, '--no-dependencies', '--deps-only', *flags)
     assert result.returncode == 0, result.stderr
     assert 'GLOBAL_CLOSURE_OK' in result.stdout
     assert 'WAF_INVENTORY_OK' in result.stdout
+    assert ('MININDN_CHECK' in result.stdout) == bool(flags)
     assert 'UNEXPECTED' not in result.stdout
 
 
-def test_check_dependencies_only_requires_verified_installed_closure():
+@pytest.mark.parametrize("flags", [(), ("--with-minindn",)])
+def test_check_dependencies_only_requires_verified_installed_closure(flags):
     stubs = '''
 require_host_profile() { :; }
 require_system_toolchain() { :; }
@@ -1112,11 +1206,14 @@ require_global_external_closure() { echo GLOBAL_CLOSURE_OK; }
 require_source_receipts() { echo UNEXPECTED_SOURCE_RECEIPT_CHECK; return 99; }
 install_common_system_packages() { echo UNEXPECTED_APT; }
 install_external_dependencies() { echo UNEXPECTED_SOURCE_INSTALL; }
+install_minindn_runtime() { echo UNEXPECTED_MININDN_INSTALL; }
+check_minindn_runtime() { echo MININDN_CHECK; }
 '''
-    result = shell(DEFINITIONS + stubs + MAIN, '--check-dependencies')
+    result = shell(DEFINITIONS + stubs + MAIN, '--check-dependencies', *flags)
     assert result.returncode == 0, result.stderr
     assert 'GLOBAL_CLOSURE_OK' in result.stdout
     assert 'WAF_INVENTORY_OK' in result.stdout
+    assert ('MININDN_CHECK' in result.stdout) == bool(flags)
     assert 'Installed NDNSF global dependency closure is valid' in result.stdout
     assert 'UNEXPECTED' not in result.stdout
 
@@ -1247,9 +1344,11 @@ def test_bootstrap_installs_os_before_toolchain_check():
     require_host_profile() { echo PROFILE; }
     install_common_system_packages() { echo PACKAGES; }
     require_system_toolchain() { echo TOOLS; }
+    lock_native_install() { :; }
     require_global_external_closure() { return 1; }
     source_field() { echo https://example.invalid/repo.git; }
 install_external_dependencies() { echo SOURCES; }
+install_minindn_runtime() { :; }
 '''
     result = shell(DEFINITIONS + stubs + MAIN, '--deps-only')
     assert result.returncode == 0, result.stderr
@@ -1280,6 +1379,7 @@ def test_pip_builds_wheels_then_privileged_noneditable_install(with_onnx_adapter
 NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture
 NDNSF_GLOBAL_NATIVE_DIGESTS='{"fixture":"digest"}'
 stage_python_wheel_sources() { shift; PYTHON_WHEEL_INPUTS=("$@"); }
+prepare_installer_pip() { pip_bootstrap_env=(); }
 run() { printf 'BUILD:%s\\n' "$*"; touch "$wheel_dir/test.whl"; }
 sudo_run() { printf 'INSTALL:%s\\n' "$*"; }
 manifest_tool() { printf 'MANIFEST:%s\n' "$*"; }
@@ -1349,6 +1449,36 @@ printf 'PIP_ENV:%s\\n' "${pip_bootstrap_env[*]}"
     else:
         assert f"--target {stage} pip==25.0.1" in result.stdout
         assert f"PIP_ENV:PYTHONPATH={stage}" in result.stdout
+
+
+def test_installer_bootstraps_pip_in_private_venv_when_system_pip_cannot_start(tmp_path):
+    python = tmp_path / "python"
+    python.write_text("#!/bin/sh\nexit 78\n")
+    python.chmod(0o755)
+    stage = tmp_path / "private-pip"
+    venv = stage / "bootstrap-venv"
+    result = shell(DEFINITIONS + "\nPYTHON_BIN=" + shlex.quote(str(python)) + "\n" + '''
+run() {
+    printf 'BOOTSTRAP:%s\\n' "$*"
+    if [[ $2 == -I && $3 == -m && $4 == venv ]]; then
+        mkdir -p "$5/bin"
+        printf '#!/bin/sh\\nexit 0\\n' > "$5/bin/python"
+        chmod 755 "$5/bin/python"
+    fi
+}
+prepare_installer_pip ''' + shlex.quote(str(stage)) + '''
+printf 'PIP_ENV:%s\\n' "${pip_bootstrap_env[*]}"
+''')
+    assert result.returncode == 0, result.stderr
+    venv_create, pip_install = [
+        shlex.split(line[len("BOOTSTRAP:"):]) for line in result.stdout.splitlines()
+        if line.startswith("BOOTSTRAP:")
+    ]
+    assert venv_create == [str(python), "-I", "-m", "venv", str(venv)]
+    assert str(venv / "bin/python") in pip_install
+    assert "--system-site-packages" not in venv_create
+    assert pip_install[-3:] == ["--target", str(stage), "pip==25.0.1"]
+    assert f"PIP_ENV:PYTHONPATH={stage}\n" in result.stdout
 
 
 def test_native_only_stops_before_public_python_wheels(tmp_path):

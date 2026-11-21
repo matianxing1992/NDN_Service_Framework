@@ -5,6 +5,7 @@ This creates credentials and configuration, then runs read-only cluster check.
 It never starts actors, copies an earlier deployment, or grants runtime permission.
 """
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -32,6 +33,11 @@ TP_PROFILE = "qwen06b-tp-cpu"
 PIPELINE_PROFILES = ("qwen06b-pp-cpu-colocated", "qwen06b-pp-cpu-distributed",
                      "qwen06b-single-cpu")
 PIPELINE_PROFILE_FILE = "profiles/qwen06b-pp-cpu.json"
+WIRED_PROFILE = "profiles/qwen06b-wired-star-cpu.json"
+WIRED_SINGLE = "qwen06b-wired-star-full-cpu"
+WIRED_TP = "qwen06b-wired-star-tp-cpu"
+WIRED_VARIANTS = (WIRED_TP, "qwen06b-wired-star-pp-cpu", WIRED_SINGLE)
+WIRED_FULL_CATALOG = "fixtures/native-deployment/qwen06b-full-catalog.json"
 PREPARATION_RESOURCES = (
     "prepare-native-deployment.py", "model_assets.py", "native_probe_validation_links.py",
     "TigerCluster/runtime/processes.py", "profiles/qwen06b-tp-cpu.json",
@@ -54,7 +60,7 @@ def write_json(path, value):
         stream.write("\n")
 
 
-def installed_inputs(prefix):
+def installed_inputs(prefix, profile_resources=()):
     """Early delivery check against the installer's existing receipt, before key creation."""
     receipt = prefix / "share/ndnsf/stack-install-manifest.json"
     ledger = read_json(receipt, max_bytes=64 * 1024 * 1024)
@@ -64,7 +70,7 @@ def installed_inputs(prefix):
     paths += [prefix / "libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker"]
     paths += [prefix / "lib" / name for name in (
         "libndn-service-framework.so", "libndnsf-distributed-inference.so")]
-    paths += [prefix / "share/ndnsf/Experiments" / name for name in PREPARATION_RESOURCES]
+    paths += [prefix / "share/ndnsf/Experiments" / name for name in (*PREPARATION_RESOURCES, *profile_resources)]
     if (prefix / 'libexec/ndnsf-python') in (prefix / 'bin/ndnsf-di').resolve().parents:
         paths.append(prefix / 'libexec/ndnsf-python/pyvenv.cfg')
     for path in paths:
@@ -237,6 +243,34 @@ def apply_pipeline_layout(catalog, layout, graph_row, weight_row, generation_opt
     return roles
 
 
+def prepare_provider_signer(prefix, ndnsec, identity, rsa_metadata, home, inputs, env, root):
+    key_id = "ecdsa-signing"
+    signing_key = identity + "/KEY/" + key_id
+    request = home / "ecdsa-request.cert"
+    request.write_bytes(run(
+        [ndnsec, "key-gen", "-n", "-t", "e", "--keyid", key_id, identity],
+        env, root, binary=True))
+    set_default = [ndnsec, "set-default", "-k"]
+    run([*set_default, rsa_metadata["keyName"]], env, root)
+    certificate = inputs / (home.name + "-ecdsa.cert")
+    not_before = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    certificate.write_bytes(run(
+        [ndnsec, "cert-gen", "-s", identity, "-i", "rsa-issuer", "-S", not_before, "-r", request],
+        env, root, binary=True))
+    run([ndnsec, "cert-install", "-K", "-f", certificate], env, root)
+    check = [prefix / "bin/ndnsf-identity-check", "--credential-metadata", home, identity]
+    try:
+        run([*set_default, signing_key], env, root)
+        metadata = json.loads(run(check, env, root))
+    finally:
+        run([*set_default, rsa_metadata["keyName"]], env, root)
+    if (metadata["identity"] != identity or
+            metadata["keyName"] != signing_key or
+            json.loads(run(check, env, root)) != rsa_metadata):
+        raise ValueError("DEPLOYMENT_PROVIDER_SIGNING_CERTIFICATE_MISMATCH")
+    return metadata
+
+
 def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, namespace,
             install_receipt, ndnsec, openssl, env, resources, interpreter, facilities):
     inputs = root / "inputs"
@@ -252,8 +286,26 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
     catalog = read_json(contained_file(resources, profile["catalog"]))
     generation_options = read_json(contained_file(resources, profile["generationOptions"]))
     graph_row, weight_row = recipe["files"]["canonicalGraph"], recipe["files"]["canonicalWeights"]
-    base_role = catalog["splitter"]["roles"][0]
-    if layout is None:
+    splitter = catalog["splitter"]
+    base_role = splitter["roles"][0]
+    wired = profile["id"] in WIRED_VARIANTS
+    tensor_parallel = layout is None and (not wired or profile["id"] == WIRED_TP)
+    if wired:
+        actor_nodes = profile["actorNodes"]
+        node_names = profile["nodes"]
+        provider_count = profile["providers"]
+        if tensor_parallel and provider_count == 2 and splitter["tensor_degrees"] == [2] \
+                and len(splitter["roles"]) == 1:
+            roles = [base_role + "/Tensor/Rank/" + str(rank) for rank in range(provider_count)]
+        elif not tensor_parallel and splitter["tensor_degrees"] == [1] * provider_count \
+                and len(splitter["roles"]) == provider_count:
+            roles = splitter["roles"]
+        else:
+            raise ValueError("DEPLOYMENT_PROFILE_SPLITTER_UNSUPPORTED")
+        stage_providers = range(provider_count)
+        provider_nodes = [actor_nodes["provider-" + str(index)] for index in stage_providers]
+        topology_resource = profile["topology"]
+    elif layout is None:
         roles = [base_role + "/Tensor/Rank/" + str(rank) for rank in range(2)]
         provider_nodes = ["control", "worker"]
         stage_providers = [0, 1]
@@ -271,9 +323,15 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
         provider_roles["provider-" + str(index)].append(role)
     identities = {name: namespace + "/" + name
                   for name in ("controller", "authority", "requester", "repo", *provider_roles)}
+    if not wired:
+        actor_nodes = dict.fromkeys(identities, "control")
+        actor_nodes.update(zip(provider_roles, provider_nodes))
+        node_names = dict.fromkeys(["control", *provider_nodes])
+    if set(actor_nodes) != set(identities) or not set(actor_nodes.values()) <= set(node_names):
+        raise ValueError("DEPLOYMENT_PROFILE_ACTOR_NODES_INVALID")
     network = dict(group=namespace + "/group", service=namespace + "/inference",
                    artifact_service=namespace + "/artifact-grants", repo_service=namespace + "/repo-service")
-    certificates, metadata, homes = {}, {}, {}
+    certificates, metadata, homes, offer_signers = {}, {}, {}, {}
     for actor, identity in identities.items():
         home = credentials / actor
         home.mkdir(mode=0o700)
@@ -287,6 +345,11 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
         if metadata[actor]["identity"] != identity:
             raise ValueError("DEPLOYMENT_CREDENTIAL_IDENTITY_MISMATCH")
         homes[actor] = home
+        if actor in provider_roles:
+            offer_signers[actor] = metadata[actor]
+            if profile.get("providerSigning") == "ecdsa":
+                offer_signers[actor] = prepare_provider_signer(
+                    prefix, ndnsec, identity, metadata[actor], home, inputs, actor_env, root)
     authority_key = ed25519_key(openssl, homes["authority"] / "grant", env, root)
     requester_key = ed25519_key(openssl, homes["requester"] / "requester", env, root)
     content_key = homes["authority"] / "content-key.bin"
@@ -325,19 +388,22 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
             "conversation-retention-ms": profile["budgets"]["conversationRetentionMs"],
             "statistics-file": str(root / "statistics" / (actor + ".jsonl")),
             "roles": ",".join(actor_roles)}
+        if wired:
+            parameters[actor]["capture-complete-kv-state"] = False
     trust = inputs / "trust-schema.conf"
     trust.write_text(render_anchored_probe_validation_schema(
         namespace, certificates.values(), sync_prefix=network["group"]))
     topology = inputs / "topology.conf"
     shutil.copyfile(contained_file(resources, topology_resource), topology)
     policy = inputs / "controller-policy.info"
-    policy.write_text(policy_text(identities, network, provider_roles, base_role if layout is None else None))
+    policy.write_text(policy_text(identities, network, provider_roles,
+                                  base_role if tensor_parallel else None))
     model = profile["model"]
     service = dict(model=model["name"], modelFamily=model["family"], modelFormat="onnx",
                    modelRepository=model["repository"], modelRevision=model["revision"],
                    dtype=model["precision"], quantization=model["quantization"],
                    runtimeBackend="onnxruntime",
-                   plannerKind="native-qwen-tensor-parallel" if layout is None else "native-qwen-layer",
+                   plannerKind="native-qwen-tensor-parallel" if tensor_parallel else "native-qwen-layer",
                    roles=roles, dependencies=[])
     plan_path, service_manifest = inputs / "plan.json", inputs / "service-manifest.json"
     write_json(plan_path, {"version": 2, "services": [dict(service, service=network["service"],
@@ -393,10 +459,9 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
         input_layout_digest=profile["requestIdentities"]["inputLayout"], security_policy_digest=security_digest,
         tokenizer_digest="sha256:" + recipe["files"]["tokenizer"]["sha256"])
     actors = []
-    provider_node_map = dict(zip(provider_roles, provider_nodes))
     for actor, identity in identities.items():
         kind = "provider" if actor in provider_roles else "artifact-authority" if actor == "authority" else actor
-        actors.append(dict(id=actor, kind=kind, identity=identity, node=provider_node_map.get(actor, "control"),
+        actors.append(dict(id=actor, kind=kind, identity=identity, node=actor_nodes[actor],
             credential_home=str(homes[actor]), external=False,
             resources=dict(cpus=len(provider_roles.get(actor, ())) or 1, gpu_devices=[], allow_sharing=True),
             parameters=parameters.get(actor, {})))
@@ -408,7 +473,8 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
             model_content_digest=catalog["model"]["content_digest"], canonical_source_digest="sha256:" + graph_row["sha256"],
             initializer_object_digest="sha256:" + weight_row["sha256"], artifact_profile_digest=catalog["recipe"]["artifact_profile_digest"])})
     admission_entries = [dict(provider=identities[actor], service=network["service"], signerKeyId=offers[actor][2],
-        keyLocatorPrefix=metadata[actor]["keyName"], certificateName=metadata[actor]["certificateName"])
+        keyLocatorPrefix=offer_signers[actor]["keyName"],
+        certificateName=offer_signers[actor]["certificateName"])
         for actor in provider_roles]
     requester = dict(schema="ndnsf-di-native-requester-v1", catalog=catalog, request=request, turns=turns,
         model_input=dict(mode="source", repo_target=dict(repo_node=identities["repo"], provider_identity=identities["repo"],
@@ -429,15 +495,14 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
             journal=dict(identity="qwen-cpu-continuous-generation", state_root=str(root / "journal"),
                 quota_bytes=profile["budgets"]["journalBytes"], keys=[dict(id="active", file=str(journal_key))]),
             turn=dict(mode="FULL_CONTEXT", retention_duration_ms=profile["budgets"]["conversationRetentionMs"])))
-    if layout is not None:
+    if layout is not None or wired:
         requester["fixed_placement"] = {"role_providers": {
             role: identities[actor] for actor, actor_roles in provider_roles.items() for role in actor_roles}}
-    nodes = dict.fromkeys(["control", *provider_nodes])
     config = dict(schema="ndnsf-di-deployment-v1", deployment_id=profile["id"] + "-" + secrets.token_hex(4),
         release=dict(prefix=str(prefix), manifest=str(install_receipt)),
         platform=dict(kind="minindn", topology=str(topology), topology_sha256="sha256:" + file_digest(topology)),
         nodes=[dict(id=name, host=name, cpus=6, gpu_devices=[], nfd=dict(mode="managed",
-            socket=str(root / "sockets" / (name + ".sock")), address="127.0.0.1", port=6363)) for name in nodes],
+            socket=str(root / "sockets" / (name + ".sock")), address="127.0.0.1", port=6363)) for name in node_names],
         actors=actors, network=network,
         security=dict(trust_schema=str(trust), controller_certificate=str(certificates["controller"]), controller_policy=str(policy)),
         storage=dict(state_root=str(root / "state"), evidence_root=str(root / "evidence"), scratch_root=str(root / "scratch"),
@@ -464,6 +529,7 @@ print(json.dumps(_inspect_trust_resources(load_deployment(sys.argv[1]),30)))
         new_tokens=rendering["inputTokens"], output_budget=rendering["maxNewTokens"], expected_committed_prefix=rendering["expectedCommittedPrefix"]))
     write_json(root / "preparation-receipt.json", dict(schema="ndnsf-deployment-preparation-v1",
         status="CONFIGURATION_AND_NATIVE_INPUTS_CHECKED", namespace=namespace, profile=profile["id"],
+        provider_signing=profile.get("providerSigning", "rsa"),
         asset_manifest=str(asset_manifest), asset_manifest_sha256=file_digest(asset_manifest),
         deployment_sha256=file_digest(output), install_manifest_sha256=file_digest(install_receipt),
         platform_facilities=facilities, actors_launched=False,
@@ -477,7 +543,9 @@ def interrupted(signum, frame):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", required=True, choices=(TP_PROFILE, *PIPELINE_PROFILES))
+    parser.add_argument("--profile", required=True, choices=(TP_PROFILE, *PIPELINE_PROFILES, *WIRED_VARIANTS))
+    parser.add_argument("--provider-signing", choices=("rsa", "ecdsa"), default="rsa",
+                        help="use separate ECDSA signing certificates in the wired TP profile")
     parser.add_argument("--prefix", required=True, type=Path)
     parser.add_argument("--asset-manifest", required=True, type=Path)
     parser.add_argument("--work-root", required=True, type=Path)
@@ -488,6 +556,8 @@ def main(argv=None):
     owned = False
     root = args.work_root.absolute()
     try:
+        if args.provider_signing == "ecdsa" and args.profile != WIRED_TP:
+            raise ValueError("DEPLOYMENT_ECDSA_REQUIRES_WIRED_TP_PROFILE")
         if re.fullmatch(r"/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+", args.namespace) is None:
             raise ValueError("DEPLOYMENT_NAMESPACE_INVALID")
         if not args.prefix.is_absolute() or not args.asset_manifest.is_absolute() or not args.work_root.is_absolute():
@@ -504,10 +574,29 @@ def main(argv=None):
             raise ValueError("DEPLOYMENT_PERSISTENT_WORK_ROOT_REQUIRED: conversation journal")
         prefix = args.prefix.resolve(strict=True)
         resources = prefix / "share/ndnsf/Experiments"
-        receipt = installed_inputs(prefix)
+        extra = ()
+        if args.profile in WIRED_VARIANTS:
+            extra = (WIRED_PROFILE, "Topology/spec270-wired-star.conf",
+                     WIRED_FULL_CATALOG if args.profile == WIRED_SINGLE
+                     else "fixtures/native-deployment/qwen06b-pp14-catalog.json")
+        receipt = installed_inputs(prefix, extra)
         recipe = read_json(resources / "recipes/qwen3-0.6b-int4.json")
         assets = validate_manifest(args.asset_manifest, recipe)
-        profile, layout = load_profile(resources, args.profile)
+        if extra:
+            profile = read_json(contained_file(resources, WIRED_PROFILE))
+            layout = None
+            profile.update(id=args.profile, catalog=profile.pop("catalogs")[args.profile])
+            if args.profile == WIRED_SINGLE:
+                profile["providers"] = 1
+                del profile["actorNodes"]["provider-1"]
+            if (profile["topology"] not in extra or
+                    any(profile[field] not in (*extra, *PREPARATION_RESOURCES)
+                        for field in ("catalog", "generationOptions"))):
+                raise ValueError("DEPLOYMENT_PROFILE_RESOURCE_UNVERIFIED")
+        else:
+            profile, layout = load_profile(resources, args.profile)
+        if args.provider_signing == "ecdsa":
+            profile["providerSigning"] = args.provider_signing
         for field in ("catalog", "generationOptions"):
             contained_file(resources, profile[field])
         tool_path = str(prefix / "bin") + ":/usr/local/bin:/usr/bin:/bin"
@@ -517,6 +606,7 @@ def main(argv=None):
             raise ValueError("DEPLOYMENT_TOOL_MISSING: ndnsec and OpenSSL are required")
         if args.plan:
             print(json.dumps(dict(profile=args.profile, prefix=str(prefix), work_root=str(root),
+                provider_signing=args.provider_signing,
                 namespace=args.namespace, asset_manifest=str(args.asset_manifest),
                 steps=["ndnsec isolated actor identities", "OpenSSL isolated Ed25519 keys", "native prompt encoding",
                        "render anchored trust and native configuration", "installed cluster check"], actors_launched=False)))

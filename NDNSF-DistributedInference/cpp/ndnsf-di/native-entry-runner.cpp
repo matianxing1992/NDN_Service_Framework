@@ -12,6 +12,60 @@
 
 namespace ndnsf::di {
 
+std::filesystem::path
+nativeSourceEntryGraphPath(const std::filesystem::path& root, std::size_t index)
+{
+  return index == 0 ? root / "model.onnx" :
+                      root / ("entry-" + std::to_string(index)) / "model.onnx";
+}
+
+std::string
+encodeNativeSourceEntryFiles(const std::vector<NativeSourceEntryFiles>& entries)
+{
+  auto values = NativeJson::array();
+  for (const auto& entry : entries) {
+    values.push_back({{"entryId", entry.entryId}, {"graphDigest", entry.graphDigest},
+                      {"graphBytes", entry.graphBytes},
+                      {"initializerDigest", entry.initializerDigest},
+                      {"initializerBytes", entry.initializerBytes}});
+  }
+  return nativeCanonicalJson(values);
+}
+
+std::vector<NativeSourceEntryFiles>
+decodeNativeSourceEntryFiles(const std::string& wire)
+{
+  const auto values = nativeParseJson(wire);
+  if (!values.is_array() || values.size() < 2)
+    throw std::invalid_argument("source artifact must contain multiple entries");
+  const auto isDigest = [] (const std::string& value) {
+    return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
+      std::all_of(value.begin() + 7, value.end(), [] (char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+      });
+  };
+  std::vector<NativeSourceEntryFiles> entries;
+  std::set<std::string> ids;
+  for (const auto& value : values) {
+    if (!value.is_object() || !value.at("graphBytes").is_number_unsigned() ||
+        !value.at("initializerBytes").is_number_unsigned())
+      throw std::invalid_argument("source artifact has an invalid entry file size");
+    NativeSourceEntryFiles entry{value.at("entryId").get<std::string>(),
+      value.at("graphDigest").get<std::string>(), value.at("graphBytes").get<std::uint64_t>(),
+      value.at("initializerDigest").get<std::string>(),
+      value.at("initializerBytes").get<std::uint64_t>()};
+    if (entry.entryId.empty() || !ids.insert(entry.entryId).second || !entry.graphBytes ||
+        !isDigest(entry.graphDigest) ||
+        (entry.initializerBytes ? !isDigest(entry.initializerDigest) :
+                                  !entry.initializerDigest.empty()))
+      throw std::invalid_argument("source artifact has an invalid entry file identity");
+    entries.push_back(std::move(entry));
+  }
+  if (encodeNativeSourceEntryFiles(entries) != nativeCanonicalJson(values))
+    throw std::invalid_argument("source artifact has unknown entry file fields");
+  return entries;
+}
+
 void
 NativeSubgraphEntryContract::validate() const
 {
@@ -234,9 +288,7 @@ NativeEntryRunner::executionEvidenceSnapshot() const
     const auto evidence = child->second->executionEvidenceSnapshot();
     if (!evidence || !evidence->loadCompleted || !evidence->realCompute ||
         evidence->cpuFallbackUsed ||
-        (!evidence->warmupCompleted &&
-         !(evidence->runnerKind == RunnerKind::OnnxRuntimeCpu &&
-           evidence->warmupSkippedUnrankedInput)) ||
+        !evidence->warmupReady() ||
         std::find(evidence->roles.begin(), evidence->roles.end(), entry.entryId) ==
           evidence->roles.end())
       return std::nullopt;
@@ -254,6 +306,8 @@ NativeEntryRunner::executionEvidenceSnapshot() const
     unit->warmupCompleted = unit->warmupCompleted && evidence->warmupCompleted;
     unit->warmupSkippedUnrankedInput =
       unit->warmupSkippedUnrankedInput || evidence->warmupSkippedUnrankedInput;
+    unit->warmupDeferredDependencyInput =
+      unit->warmupDeferredDependencyInput || evidence->warmupDeferredDependencyInput;
   }
   if (!unit) return std::nullopt;
   // The Provider assigned a unit role, not an entry id, so the aggregate answers under the
@@ -562,7 +616,30 @@ NativeEntryRunner::run(const RoleExecutionContext& ctx)
     // make the child report that input as missing even though the step supplied it, so the
     // bundle is narrowed to the one tensor this graph input needs. A slot whose bundle
     // already names the tensor, or a raw payload, is passed through untouched.
-    if (isEncodedTensorBundle(value->second.payload)) {
+    if (value->second.localTensors) {
+      const auto views = decodeTensorBundleViews(value->second);
+      const auto byName = [&views] (const std::string& name) {
+        return std::find_if(views.begin(), views.end(), [&name] (const auto& tensor) {
+          return tensor.name == name;
+        });
+      };
+      auto selected = byName(graphInput);
+      if (selected == views.end()) selected = byName(bound->second);
+      if (selected != views.end() && (views.size() != 1 || selected->name != graphInput)) {
+        auto local = std::make_shared<LocalTensorBundle>();
+        local->owner = value->second.localTensors->owner;
+        local->tensors.push_back(*selected);
+        local->tensors.front().name = graphInput;
+        TensorBundle narrowed;
+        narrowed.name = graphInput;
+        narrowed.expectedBytes = tensorBundleWireSize(*local);
+        narrowed.localTensors = std::move(local);
+        narrowed.transferObservation = value->second.transferObservation;
+        child.inputsByScope.emplace(graphInput, std::move(narrowed));
+        continue;
+      }
+    }
+    else if (isEncodedTensorBundle(value->second.payload)) {
       // The bundle names its tensor after the slot only when the slot carries exactly one
       // value; a vector-valued slot names each member. So both the graph input name and the
       // slot id are legitimate keys, and the graph input name is preferred because that is

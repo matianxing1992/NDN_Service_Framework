@@ -49,15 +49,16 @@ namespace {
 
 /** Send one request to a known Provider and wait for its response.
  *
- * Declared here and defined near the end of this file; the data path's manifest read and the
- * owner listing both use it. */
+ * The packet-set publication and owner operations both use this path. */
 std::vector<uint8_t>
 requestTargetedReply(ndn_service_framework::ServiceUser& user,
                      const ndn::Name& providerIdentity,
                      const ndn::Name& serviceName,
                      const std::vector<uint8_t>& payload,
                      int timeoutMs,
-                     const std::function<void()>& requireCurrent);
+                     const std::function<void()>& requireCurrent,
+                     const char* timeoutError = "repo-request-timeout: Provider request timed out",
+                     const char* failurePrefix = "");
 
 struct BoundUserFace
 {
@@ -1109,58 +1110,10 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   const auto provider = ndn::Name(target.providerIdentity);
   const auto servicePrefix = ndn::Name(target.servicePrefix);
   noteStage("prepare-producer");
-  // Ask the named Provider directly, the way the engine's own publication does and the way
-  // this framework's targeted invocation works; the collaboration-ACK path never reaches a
-  // Repo that does not publish those messages.
-  // Same rule as the grant: the handlers may outlive this frame, so their state is heap
-  // owned and captured by value.
-  struct InsertState {
-    std::mutex mutex;
-    std::condition_variable arrived;
-    bool done = false;
-    std::vector<uint8_t> payload;
-    std::string failure;
-  };
-  auto insertState = std::make_shared<InsertState>();
-  writer.RequestService(
-    std::vector<ndn::Name>{provider},
-    makeRepoServiceName(servicePrefix, "INSERT"),
-    RepoClientCompat::makeRequest(encoded), std::max(1, remaining()),
-    [insertState] (const ndn::Name&) {
-      std::lock_guard<std::mutex> guard(insertState->mutex);
-      insertState->failure = "repo-original-publication-insert-timeout";
-      insertState->done = true;
-      insertState->arrived.notify_all();
-    },
-    [insertState] (const ndn_service_framework::ResponseMessage& response) {
-      std::lock_guard<std::mutex> guard(insertState->mutex);
-      if (response.getStatus()) {
-        const auto& payload = response.getPayload();
-        insertState->payload.assign(payload.begin(), payload.end());
-      }
-      else {
-        insertState->failure = response.getErrorInfo();
-      }
-      insertState->done = true;
-      insertState->arrived.notify_all();
-    },
-    ndn_service_framework::tlv::FirstResponding);
-  {
-    std::unique_lock<std::mutex> lock(insertState->mutex);
-    while (!insertState->done) {
-      current();
-      if (insertState->arrived.wait_for(lock, std::chrono::milliseconds(20),
-                                        [&] { return insertState->done; })) {
-        break;
-      }
-      if (std::chrono::steady_clock::now() >= deadline)
-        throw std::runtime_error("repo-original-publication-insert-timeout");
-    }
-  }
-  if (!insertState->failure.empty())
-    throw std::runtime_error("repo-original-publication-insert-not-confirmed: " +
-                             insertState->failure);
-  const auto status = parseOperationStatusJson(toString(insertState->payload));
+  const auto insertReply = requestTargetedReply(writer, provider,
+    makeRepoServiceName(servicePrefix, "INSERT"), encoded, remaining(), current,
+    "repo-original-publication-insert-timeout", "repo-original-publication-insert-not-confirmed: ");
+  const auto status = parseOperationStatusJson(toString(insertReply));
   noteStage("insert");
   if (status.operationId != request.operationId || status.operation != "INSERT" ||
       status.state != "DONE" || ndn::Name(status.objectName) != ndn::Name(request.reference.objectName))
@@ -3832,7 +3785,8 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
                      const ndn::Name& serviceName,
                      const std::vector<uint8_t>& payload,
                      int timeoutMs,
-                     const std::function<void()>& requireCurrent)
+                     const std::function<void()>& requireCurrent,
+                     const char* timeoutError, const char* failurePrefix)
 {
   struct ReplyState
   {
@@ -3841,35 +3795,67 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
     bool done = false;
     std::vector<uint8_t> payload;
     std::string failure;
+    std::exception_ptr startFailure;
   };
+  struct DispatchState
+  {
+    std::mutex mutex;
+    bool abandoned = false;
+  };
+  if (user.isOnIoThread())
+    throw std::logic_error("repo-request-on-io-thread: blocking request cannot run on the Face");
   // A caller that has already cancelled must not put a request on the wire.
   if (requireCurrent)
     requireCurrent();
   auto state = std::make_shared<ReplyState>();
-  user.RequestService(
-    std::vector<ndn::Name>{providerIdentity}, serviceName,
-    RepoClientCompat::makeRequest(payload), std::max(1, timeoutMs),
-    [state] (const ndn::Name&) {
-      std::lock_guard<std::mutex> guard(state->mutex);
-      state->failure = "repo-request-timeout: Provider request timed out";
-      state->done = true;
-      state->arrived.notify_all();
-    },
-    [state] (const ndn_service_framework::ResponseMessage& response) {
-      std::lock_guard<std::mutex> guard(state->mutex);
-      if (response.getStatus()) {
-        const auto& bytes = response.getPayload();
-        state->payload.assign(bytes.begin(), bytes.end());
-      }
-      else {
-        state->failure = response.getErrorInfo();
-      }
-      state->done = true;
-      state->arrived.notify_all();
-    },
-    ndn_service_framework::tlv::FirstResponding);
+  auto dispatch = std::make_shared<DispatchState>();
   const auto deadline = std::chrono::steady_clock::now() +
     std::chrono::milliseconds(std::max(1, timeoutMs));
+  // Drain an in-flight start before the caller can release its User. A queued
+  // start that loses this race must not dereference the User or publish.
+  auto abandon = ndn::make_scope_exit([&] {
+    std::lock_guard<std::mutex> guard(dispatch->mutex);
+    dispatch->abandoned = true;
+  });
+  user.postToIo([userPtr = &user, state, dispatch, providerIdentity, serviceName,
+                 request = RepoClientCompat::makeRequest(payload), deadline, timeoutError,
+                 failurePrefix] () mutable {
+    std::lock_guard<std::mutex> startGuard(dispatch->mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (dispatch->abandoned || now >= deadline)
+      return;
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    try {
+      userPtr->RequestService(
+        std::vector<ndn::Name>{providerIdentity}, serviceName, std::move(request),
+        std::max(1, static_cast<int>(remaining.count())),
+        [state, timeoutError] (const ndn::Name&) {
+          std::lock_guard<std::mutex> guard(state->mutex);
+          state->failure = timeoutError;
+          state->done = true;
+          state->arrived.notify_all();
+        },
+        [state, failurePrefix] (const ndn_service_framework::ResponseMessage& response) {
+          std::lock_guard<std::mutex> guard(state->mutex);
+          if (response.getStatus()) {
+            const auto& bytes = response.getPayload();
+            state->payload.assign(bytes.begin(), bytes.end());
+          }
+          else {
+            state->failure = failurePrefix + response.getErrorInfo();
+          }
+          state->done = true;
+          state->arrived.notify_all();
+        },
+        ndn_service_framework::tlv::FirstResponding);
+    }
+    catch (...) {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->startFailure = std::current_exception();
+      state->done = true;
+      state->arrived.notify_all();
+    }
+  });
   std::unique_lock<std::mutex> lock(state->mutex);
   while (!state->done) {
     if (requireCurrent)
@@ -3879,8 +3865,10 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
       break;
     }
     if (std::chrono::steady_clock::now() >= deadline)
-      throw std::runtime_error("repo-request-timeout: Provider request timed out");
+      throw std::runtime_error(timeoutError);
   }
+  if (state->startFailure)
+    std::rethrow_exception(state->startFailure);
   if (!state->failure.empty())
     throw std::runtime_error(state->failure);
   return state->payload;

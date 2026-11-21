@@ -361,6 +361,19 @@ NativeFixedProviderPlacement::identity() const
   return m_identity;
 }
 
+template<typename Lookup>
+static bool
+providerRespectsPeerSeparation(const NativeOfferBindingContext& context, const std::string& role,
+                                const std::string& provider, const Lookup& lookup)
+{
+  for (const auto& [first, second] : context.distinctProviderPairs) {
+    if ((role == first && lookup(second) == provider) ||
+        (role == second && lookup(first) == provider))
+      return false;
+  }
+  return true;
+}
+
 NativeRolePlacementProposalV3
 NativeFixedProviderPlacement::proposeRolesImpl(
   const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
@@ -383,6 +396,11 @@ NativeFixedProviderPlacement::proposeRolesImpl(
     const auto fixed = m_providerByRole.find(key);
     if (fixed == m_providerByRole.end())
       throw NativeNoFeasiblePlacement("fixed placement has no Provider for role " + key);
+    if (!providerRespectsPeerSeparation(context, key, fixed->second, [&] (const auto& peer) {
+          const auto match = m_providerByRole.find(peer);
+          return match == m_providerByRole.end() ? std::string{} : match->second;
+        }))
+      throw NativeNoFeasiblePlacement("fixed placement puts tensor peers on the same Provider");
     const auto admitted = std::find_if(offers.begin(), offers.end(), [&fixed] (const auto& item) {
       return item.observation().provider == fixed->second;
     });
@@ -492,6 +510,11 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRolesImpl(
     for (const auto& admitted : offers) {
       if (control) control->requireActive();
       const auto& offer = admitted.observation();
+      if (!providerRespectsPeerSeparation(context, key, offer.provider, [&] (const auto& peer) {
+            const auto match = result.providerByRole.find(peer);
+            return match == result.providerByRole.end() ? std::string{} : match->second;
+          }))
+        continue;
       const auto v4Offer = v4OfferByProvider.find(offer.provider);
       const auto eligible = feasibleChoices(role, offer, context.requiredExecutionCapabilities,
         nowMs, control,
@@ -582,6 +605,13 @@ void validateRolePlacementReferences(
   }
   if (chosenRoles.size() != preparedRoles.size() || proposal.providerByRole.size() != preparedRoles.size())
     throw std::invalid_argument("V3 proposal role cover differs from prepared roles");
+  for (const auto& [first, second] : proposal.context.distinctProviderPairs) {
+    const auto a = proposal.providerByRole.find(first);
+    const auto b = proposal.providerByRole.find(second);
+    if (a == proposal.providerByRole.end() || b == proposal.providerByRole.end() ||
+        a->second == b->second)
+      throw std::invalid_argument("placement does not separate the required tensor peers");
+  }
   std::set<std::string> seenRoles;
   std::set<std::pair<std::string, std::string>> usedDevices;
   std::map<std::pair<std::string, std::string>, std::uint64_t> reservedMemory;
@@ -1710,6 +1740,11 @@ NativeRolePlacementProposalV3 NativeObservationAwarePlacementV4::proposeRolesImp
       for (const auto& admitted : offers) {
         requireV4SearchActive(control);
         const auto& offer = admitted.observation();
+        if (!providerRespectsPeerSeparation(context, roleKey, offer.provider, [&] (const auto& peer) {
+              const auto match = state.assignments.find(peer);
+              return match == state.assignments.end() ? std::string{} : match->second.provider;
+            }))
+          continue;
         const auto feasible = feasibleChoices(role, offer,
           context.requiredExecutionCapabilities, nowMs, nullptr);
         for (const auto& choice : feasible) {

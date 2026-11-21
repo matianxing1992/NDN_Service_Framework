@@ -15,14 +15,17 @@ namespace ndnsf::di {
 namespace {
 
 constexpr std::size_t MAX_PHASES = 128;
-// Bound total observation work across the native generation budget. Completed
-// spans are folded immediately; live storage retains its separate bounds.
-constexpr std::size_t MAX_SPANS = (MAX_NATIVE_GENERATED_TOKENS + 1) * MAX_PHASES;
+// Exact tensor transport can record many packet spans for the same phase.
+// Keep a separate work budget for repeated observations.
+constexpr std::size_t MAX_SPANS = (MAX_NATIVE_GENERATED_TOKENS + 1) * 256;
 constexpr std::size_t MAX_COUNTERS = 128;
-constexpr std::size_t MAX_THREADS = 32;
+// Qwen TP alone uses a prefetch lane per input edge (56 partials per rank).
+// Request, Face and compute threads can hold observation frames concurrently.
+constexpr std::size_t MAX_THREADS = 128;
 constexpr std::size_t MAX_DEPTH = 32;
 constexpr std::size_t MAX_TRANSFERS = 8192;
 constexpr std::size_t MAX_TRANSFER_METADATA_BYTES = 4U << 20;
+constexpr std::size_t MAX_NETWORK_TOTALS = (MAX_NATIVE_GENERATED_TOKENS + 1) * 4;
 
 NativeWorkClock
 readClock()
@@ -109,7 +112,6 @@ NativeWorkStatistics::begin(std::string_view phaseName, NativeWorkKind kind,
     if (phase.empty() || phase.size() > 96 || m_nextToken > MAX_SPANS ||
         (found == m_statistics.phases.end() && m_statistics.phases.size() >= MAX_PHASES) ||
         (found != m_statistics.phases.end() && found->second.kind != kind) ||
-        (stack == m_stacks.end() && m_stacks.size() >= MAX_THREADS) ||
         (stack != m_stacks.end() && stack->second.size() >= MAX_DEPTH)) {
       m_statistics.complete = false;
       ++m_statistics.droppedSpans;
@@ -120,6 +122,16 @@ NativeWorkStatistics::begin(std::string_view phaseName, NativeWorkKind kind,
       m_statistics.complete = false;
       ++m_statistics.droppedSpans;
       return 0;
+    }
+    if (stack == m_stacks.end() && m_stacks.size() >= MAX_THREADS) {
+      const auto idle = std::find_if(m_stacks.begin(), m_stacks.end(),
+        [] (const auto& entry) { return entry.second.empty(); });
+      if (idle == m_stacks.end()) {
+        m_statistics.complete = false;
+        ++m_statistics.droppedSpans;
+        return 0;
+      }
+      m_stacks.erase(idle);
     }
     if (found == m_statistics.phases.end()) {
       NativeWorkPhaseStatistics statistics;
@@ -229,7 +241,9 @@ NativeWorkStatistics::snapshot() const
   std::lock_guard<std::mutex> lock(m_mutex);
   auto result = m_statistics;
   result.activeSpans = m_frames.size();
-  result.complete = result.complete && result.activeSpans == 0;
+  result.phaseComplete = result.complete && result.activeSpans == 0;
+  result.complete = result.phaseComplete && result.droppedTransfers == 0 &&
+                    result.invalidTransfers == 0 && result.droppedNetworkTransfers == 0;
   return result;
 }
 
@@ -307,15 +321,15 @@ NativeWorkStatistics::observeTransfer(const StageTransferObservation& observatio
         observation.direction.size() > 32 || observation.phase.size() > 64 ||
         (startedNs > 0 && finishedNs > 0 && finishedNs < startedNs) ||
         (admittedNs > 0 && finishedNs > 0 && admittedNs < finishedNs) ||
-        (outputReadyNs > 0 && startedNs > 0 && outputReadyNs > startedNs) ||
-        m_statistics.transfers.size() >= MAX_TRANSFERS) {
-      m_statistics.complete = false;
+        (outputReadyNs > 0 && startedNs > 0 && outputReadyNs > startedNs)) {
+      ++m_statistics.invalidTransfers;
       return;
     }
     const auto bytes = observation.plannedDataName.size() + observation.direction.size() +
       observation.phase.size();
-    if (bytes > MAX_TRANSFER_METADATA_BYTES - m_transferMetadataBytes) {
-      m_statistics.complete = false;
+    if (m_statistics.transfers.size() >= MAX_TRANSFERS ||
+        bytes > MAX_TRANSFER_METADATA_BYTES - m_transferMetadataBytes) {
+      ++m_statistics.droppedTransfers;
       return;
     }
     m_statistics.transfers.push_back({observation.plannedDataName, observation.direction,
@@ -324,13 +338,54 @@ NativeWorkStatistics::observeTransfer(const StageTransferObservation& observatio
       startedNs, finishedNs, admittedNs, point, outputReadyNs,
       observation.transportPayloadBytes, observation.metadataBytes,
       observation.localCopyBytes, observation.transportLocalCopyBytes,
-      observation.localDependency});
+      observation.localDependency, observation.readySteadyNs});
     m_transferMetadataBytes += bytes;
   }
   catch (...) {
     try {
       std::lock_guard<std::mutex> lock(m_mutex);
-      m_statistics.complete = false;
+      ++m_statistics.droppedTransfers;
+    }
+    catch (...) {
+    }
+  }
+}
+
+void
+NativeWorkStatistics::observeNetworkTransfer(
+  std::uint64_t epoch, NativeNetworkTransferKind kind, std::string_view transition,
+  std::optional<std::size_t> tensorBytes, std::optional<std::size_t> dataWireBytes,
+  std::optional<std::size_t> interestCount, std::optional<std::size_t> retryCount) noexcept
+{
+  try {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto& totals = m_statistics.networkTransfers;
+    const auto phase = transition == "PREFILL" || transition == "DECODE" ||
+      transition == "CHECKPOINT_FINALIZE" ? transition : "unknown";
+    NativeWorkStatisticsSnapshot::NetworkKey key(epoch, kind, phase);
+    auto found = totals.find(key);
+    if (epoch > MAX_NATIVE_GENERATED_TOKENS ||
+        (found == totals.end() && totals.size() >= MAX_NETWORK_TOTALS)) {
+      ++m_statistics.droppedNetworkTransfers;
+      return;
+    }
+    auto updated = found == totals.end() ? NativeWorkStatisticsSnapshot::NetworkTotal{}
+                                         : found->second;
+    const auto fold = [] (auto& measure, std::optional<std::size_t> value) {
+      return !value || (add(measure.samples, 1) && add(measure.total, *value));
+    };
+    if (!add(updated.objects, 1) || !fold(updated.tensorBytes, tensorBytes) ||
+        !fold(updated.dataWireBytes, dataWireBytes) ||
+        !fold(updated.interestCount, interestCount) || !fold(updated.retryCount, retryCount)) {
+      ++m_statistics.droppedNetworkTransfers;
+      return;
+    }
+    totals.insert_or_assign(std::move(key), updated);
+  }
+  catch (...) {
+    try {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      ++m_statistics.droppedNetworkTransfers;
     }
     catch (...) {
     }
@@ -372,7 +427,9 @@ std::string
 nativeWorkStatisticsToJson(const NativeWorkStatisticsSnapshot& statistics)
 {
   NativeJson result{{"schema", "ndnsf-di-work-statistics-v1"},
-    {"complete", statistics.complete}, {"droppedSpans", statistics.droppedSpans},
+    {"complete", statistics.complete}, {"phaseComplete", statistics.phaseComplete},
+    {"droppedTransfers", statistics.droppedTransfers},
+    {"invalidTransfers", statistics.invalidTransfers}, {"droppedSpans", statistics.droppedSpans},
     {"activeSpans", statistics.activeSpans}, {"coverage", "instrumented-phases"},
     {"localWorkComplete", false}, {"phases", NativeJson::object()},
     {"counts", NativeJson::object()}, {"transfers", NativeJson::array()},
@@ -408,21 +465,48 @@ nativeWorkStatisticsToJson(const NativeWorkStatisticsSnapshot& statistics)
       {"retryCount", optionalValue(transfer.retryCount)},
       {"startedSteadyNs", clockValue(transfer.startedSteadyNs)},
       {"finishedSteadyNs", clockValue(transfer.finishedSteadyNs)},
+      {"readySteadyNs", optionalValue(transfer.readySteadyNs)},
       {"admittedSteadyNs", clockValue(transfer.admittedSteadyNs)},
       {"outputReadySteadyNs", clockValue(transfer.outputReadySteadyNs)}});
   }
+  result["networkTransfers"] = NativeJson::array();
+  result["networkTransferCoverage"] = "reported-io-receipts";
+  result["droppedNetworkTransfers"] = statistics.droppedNetworkTransfers;
+  const auto measureJson = [] (const auto& measure) {
+    return NativeJson{{"samples", measure.samples},
+                      {"observedTotal", measure.samples != 0 ? NativeJson(measure.total)
+                                                            : NativeJson(nullptr)}};
+  };
+  for (const auto& [key, total] : statistics.networkTransfers) {
+    const auto& [epoch, kind, phase] = key;
+    const auto kindName = [kind] {
+      switch (kind) {
+        case NativeNetworkTransferKind::RECEIVE: return "receive";
+        case NativeNetworkTransferKind::RECEIVE_FAILED: return "receive-failed";
+        case NativeNetworkTransferKind::PUBLICATION: return "publication";
+        case NativeNetworkTransferKind::REPUBLICATION: return "republication";
+      }
+      return "unknown";
+    }();
+    result["networkTransfers"].push_back(NativeJson{
+      {"inferenceEpoch", epoch}, {"kind", kindName}, {"transition", phase},
+      {"objects", total.objects}, {"tensorBytes", measureJson(total.tensorBytes)},
+      {"dataWireBytes", measureJson(total.dataWireBytes)},
+      {"interestCount", measureJson(total.interestCount)},
+      {"retryCount", measureJson(total.retryCount)}});
+  }
   for (const auto& [name, value] : statistics.counts)
-    result["counts"][name] = statistics.complete ? NativeJson(value) : NativeJson(nullptr);
+    result["counts"][name] = statistics.phaseComplete ? NativeJson(value) : NativeJson(nullptr);
   const auto phaseJson = [&] (const NativeWorkPhaseStatistics& phase) {
     return NativeJson{
       {"kind", kindName(phase.kind)}, {"calls", phase.calls},
-      {"firstStartedSteadyNs", statistics.complete && phase.firstStartedSteadyNs
+      {"firstStartedSteadyNs", statistics.phaseComplete && phase.firstStartedSteadyNs
         ? NativeJson(*phase.firstStartedSteadyNs) : NativeJson(nullptr)},
-      {"lastFinishedSteadyNs", statistics.complete && phase.lastFinishedSteadyNs
+      {"lastFinishedSteadyNs", statistics.phaseComplete && phase.lastFinishedSteadyNs
         ? NativeJson(*phase.lastFinishedSteadyNs) : NativeJson(nullptr)},
-      {"exclusiveWallNs", statistics.complete ? NativeJson(phase.exclusiveWallNs)
+      {"exclusiveWallNs", statistics.phaseComplete ? NativeJson(phase.exclusiveWallNs)
                                                : NativeJson(nullptr)},
-      {"exclusiveThreadCpuNs", statistics.complete && phase.exclusiveThreadCpuNs
+      {"exclusiveThreadCpuNs", statistics.phaseComplete && phase.exclusiveThreadCpuNs
         ? NativeJson(*phase.exclusiveThreadCpuNs) : NativeJson(nullptr)}};
   };
   for (const auto& [name, phase] : statistics.phases)

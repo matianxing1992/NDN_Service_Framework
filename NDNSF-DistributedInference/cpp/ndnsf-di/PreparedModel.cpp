@@ -18,26 +18,37 @@
 #include <utility>
 
 namespace ndnsf::di {
+namespace {
 
-bool Result::matchesFloat32Tensor(const std::string& tensorName,
-                                  const std::vector<float>& expected,
-                                  double tolerance) const
+bool
+matchesFloat32Payload(const std::vector<std::uint8_t>& payload, const std::string& tensorName,
+                      const std::vector<float>& expected,
+                      const std::vector<std::int64_t>* expectedShape,
+                      double absoluteTolerance, double relativeTolerance)
 {
-  if (tensorName.empty() || expected.empty() || !std::isfinite(tolerance) || tolerance < 0.0)
+  if (tensorName.empty() || expected.empty() ||
+      !std::isfinite(absoluteTolerance) || absoluteTolerance < 0.0 ||
+      !std::isfinite(relativeTolerance) || relativeTolerance < 0.0)
     return false;
   try {
-    const auto tensors = decodeTensorBundle(payload);
-    const auto& tensor = findTensor(tensors, tensorName);
+    const auto tensors = decodeTensorBundleViews(payload);
+    const auto match = std::find_if(tensors.begin(), tensors.end(), [&] (const auto& tensor) {
+      return tensor.name == tensorName;
+    });
+    if (match == tensors.end()) return false;
+    const auto& tensor = *match;
     if (tensor.elementType != TensorElementType::Float32 ||
-        tensor.payload.size() != expected.size() * sizeof(float))
+        tensor.payload.size() / sizeof(float) != expected.size() ||
+        (expectedShape != nullptr && tensor.shape != *expectedShape))
       return false;
     for (std::size_t i = 0; i < expected.size(); ++i) {
-      if (!std::isfinite(expected[i]))
-        return false;
+      const double reference = expected[i];
+      if (!std::isfinite(reference)) return false;
       float actual = 0.0F;
       std::memcpy(&actual, tensor.payload.data() + i * sizeof(float), sizeof(float));
-      if (!std::isfinite(actual) ||
-          std::fabs(static_cast<double>(actual) - expected[i]) > tolerance)
+      const double limit = absoluteTolerance + relativeTolerance * std::fabs(reference);
+      if (!std::isfinite(actual) || !std::isfinite(limit) ||
+          std::fabs(static_cast<double>(actual) - reference) > limit)
         return false;
     }
     return true;
@@ -45,6 +56,24 @@ bool Result::matchesFloat32Tensor(const std::string& tensorName,
   catch (const std::exception&) {
     return false;
   }
+}
+
+} // namespace
+
+bool
+Result::matchesFloat32Tensor(const std::string& tensorName, const std::vector<float>& expected,
+                             double tolerance) const
+{
+  return matchesFloat32Payload(payload, tensorName, expected, nullptr, tolerance, 0.0);
+}
+
+bool
+Result::matchesFloat32Tensor(const std::string& tensorName, const std::vector<float>& expected,
+                             const std::vector<std::int64_t>& expectedShape,
+                             double absoluteTolerance, double relativeTolerance) const
+{
+  return matchesFloat32Payload(payload, tensorName, expected, &expectedShape,
+                               absoluteTolerance, relativeTolerance);
 }
 
 bool Result::matchesFloat32Detections(const std::string& tensorName,

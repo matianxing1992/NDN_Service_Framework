@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
@@ -2327,6 +2328,15 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     throw std::invalid_argument("Selection tensor shard version mismatch");
   if (!fixedAssignment)
     validateNativeQwenTensorAssembly(projection.assemblyContract(), projection.plan.stageLayout);
+  const auto& sourceRecipe = projection.assemblyContract().sourceTransformV1;
+  if (!sourceRecipe.empty() && nativeParseJson(sourceRecipe).value("schema", std::string{}) ==
+      NATIVE_SOURCE_ENTRY_PROGRAM_V1) {
+    const auto& assembly = projection.assemblyContract();
+    const auto program = NativeOnnxSourceEntryProgramV1::parse(sourceRecipe);
+    if (projection.generationContract.enabled)
+      throw std::invalid_argument("source entry program requires stateless execution");
+    program.validateRank(projection.plan, assembly.selectedRole, assembly.tensorParallelRank);
+  }
   projection.dataflow = fixedAssignment
     ? bindFixedTemplateDataflow(typedDataflow, projection, *fixedAssignment->executionTemplate())
     : dataflowFromV3Json(*dataflow);
@@ -4318,12 +4328,68 @@ void validateAssemblyEncoding(const NativeSelectionRoleV3& role)
 
 void validateNativeAssembly(const NativeSelectionRoleV3& role)
 {
+  bool ffnPair = false;
   if (!role.sourceTransformV1.empty()) {
     const auto transform = nativeParseJson(role.sourceTransformV1);
-    if (!transform.is_object() ||
-        transform.value("schema", std::string{}) != "source_transform_v1" ||
-        transform.value("kind", std::string{}).empty())
+    if (!transform.is_object())
       throw std::invalid_argument("role source transform is invalid");
+    const auto schema = transform.value("schema", std::string{});
+    const auto kind = transform.value("kind", std::string{});
+    const bool entryProgram = schema == NATIVE_SOURCE_ENTRY_PROGRAM_V1;
+    if (!entryProgram && (schema != "source_transform_v1" || kind.empty()))
+      throw std::invalid_argument("role source transform is invalid");
+    ffnPair = kind == "ffn-pair-partial" || entryProgram;
+    if (ffnPair) {
+      if (role.adapterId == "qwen" || role.tensorParallelDegree != 2 ||
+          role.tensorParallelRank >= 2 || role.tensorShardV1.empty())
+        throw std::invalid_argument("role paired FFN geometry is incomplete");
+      struct SourceAxis
+      {
+        std::string name;
+        std::uint64_t begin;
+        std::uint64_t end;
+        std::uint64_t extent;
+      };
+      const auto fromLegacy = [&] (const NativeOnnxSourceTransformV1& recipe) {
+        const auto ranges = nativeConvInputChannelRanges(recipe.extent, 2);
+        if (ranges[role.tensorParallelRank] != std::make_pair(recipe.begin, recipe.end))
+          throw std::invalid_argument("role source axis differs from its rank");
+        return SourceAxis{recipe.axis, recipe.begin, recipe.end, recipe.extent};
+      };
+      const auto sourceAxis = [&] {
+        if (!entryProgram)
+          return fromLegacy(NativeOnnxSourceTransformV1::parse(role.sourceTransformV1));
+        const auto program = NativeOnnxSourceEntryProgramV1::parse(role.sourceTransformV1);
+        (void)program.bindSourceOrdinals(role.nodeIndices);
+        if (!program.tensorLayouts.empty()) {
+          const auto firstConv = std::find_if(program.tensorLayouts.begin(),
+            program.tensorLayouts.end(),
+            [] (const auto& layout) { return layout.convolution.has_value(); });
+          if (firstConv == program.tensorLayouts.end())
+            throw std::invalid_argument("source entry program has no sharded Conv geometry");
+          const auto& geometry = *firstConv->convolution;
+          const auto& local = geometry.at(role.tensorParallelRank);
+          if (geometry.front().outputBegin != 0 ||
+              geometry.front().outputEnd != geometry.back().outputBegin)
+            throw std::invalid_argument("source Conv rank axes do not cover the output");
+          return SourceAxis{"conv-output-channel", local.outputBegin, local.outputEnd,
+                            geometry.back().outputEnd};
+        }
+        // Legacy stage axes describe the first sharded entry, after any
+        // replicated source components such as a block's input LayerNorm.
+        const auto firstShard = std::find_if(program.entries.begin(), program.entries.end(),
+          [] (const auto& entry) { return entry.transform.extent != 0; });
+        if (firstShard == program.entries.end())
+          throw std::invalid_argument("source entry program has no sharded geometry");
+        return fromLegacy(firstShard->transform);
+      }();
+      const auto shard = parseNativeTensorShardV1(role.tensorShardV1);
+      const auto& axes = shard.at("axes");
+      if (axes.size() != 1 || axes[0].at("axis") != sourceAxis.name ||
+          axes[0].at("begin") != sourceAxis.begin || axes[0].at("end") != sourceAxis.end ||
+          axes[0].at("extent") != sourceAxis.extent)
+        throw std::invalid_argument("role source axis differs from its rank recipe");
+    }
   }
   if (!role.tensorShardV1.empty()) {
     // A source-transformed ONNX rank carries its own channel-slice geometry in
@@ -4345,7 +4411,7 @@ void validateNativeAssembly(const NativeSelectionRoleV3& role)
   }
   // Authenticate the equal-Qwen case too. Otherwise removing both the shard
   // field and its Selection version can retain an explicit recipe's cache key.
-  if (!role.automaticContractDigest.empty() ||
+  if (ffnPair || !role.automaticContractDigest.empty() ||
       (role.adapterId == "qwen" && role.tensorParallelDegree >= 2)) {
     const auto canonical = canonicalNativeOnnxRecipeJson(role);
     const auto canonicalDigest = nativePlanningDigest(canonical);
