@@ -416,6 +416,10 @@ approval again or hide an exception in a special-case branch.
   consumes them. Reuse the existing owner directory. Check Git visibility for
   each required input and register it with the corresponding build or install
   target when that entry point needs it.
+  - Put MiniMUAS application tests, scenario launchers, fixtures, and run results
+    in the MiniMUAS repository. NDNSF owns SDK, binding and protocol tests that
+    execute without MiniMUAS. Track SDK-facing design and link to MiniMUAS run
+    evidence from the relevant NDNSF Spec.
   - Put native unit cases in `tests/unit-tests/`, native integration cases in
     `tests/integration-tests/`, installed SDK consumers in `tests/installed-api/`,
     and MiniNDN regression launchers in `tests/minindn/`. Register native targets

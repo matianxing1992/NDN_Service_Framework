@@ -294,14 +294,14 @@ printf 'LEDGER=%s\\n' "$INSTALL_MANIFEST"
     assert "LEDGER=" + str(prefix / "share/ndnsf/stack-install-manifest.json") in result.stdout
 
 
-def test_installed_runtime_rpath_orders_release_before_sdk_and_deduplicates():
+def test_installed_runtime_rpath_orders_selected_nac_sdk_first_and_deduplicates():
     result = shell(DEFINITIONS + '''
 NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture
 native_runtime_rpath
 ''', '--prefix', '/opt/ndnsf-fixture')
     assert result.returncode == 0, result.stderr
-    assert result.stdout == ('/opt/ndnsf-fixture/lib:'
-                             '/usr/local/ndnsf-sdk/nac-abe/fixture/lib:/usr/local/lib')
+    assert result.stdout == ('/usr/local/ndnsf-sdk/nac-abe/fixture/lib:'
+                             '/opt/ndnsf-fixture/lib:/usr/local/lib')
     default = shell(DEFINITIONS + '''
 NAC_SDK_PREFIX=/usr/local
 native_runtime_rpath
@@ -448,6 +448,8 @@ install_common_system_packages
         assert "SUDO:" not in result.stdout
     else:
         assert "protobuf-compiler" in result.stdout
+        assert "rsync" in result.stdout
+        assert "unzip" in result.stdout
     assert "gtkmm" not in result.stdout
     assert "gstreamer" not in result.stdout
 
@@ -464,6 +466,8 @@ install_common_system_packages
     for package in ("gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad",
                     "gstreamer1.0-libav"):
         assert package in result.stdout
+    for package in ("libopencv-dev", "python3-aiohttp", "ffmpeg"):
+        assert package not in result.stdout
 
 
 @pytest.mark.parametrize("profile", ["core", "repo", "di", "all"])
@@ -893,13 +897,21 @@ build_waf_dependency ndn-svs libndn-svs invalid-url 0.1
     assert not (output / 'install-stage').exists()
 
 
-def test_install_refreshes_loader_before_python_and_limits_jobs(tmp_path):
+@pytest.mark.parametrize("tracking_installed", [True, False])
+def test_install_refreshes_loader_before_python_and_limits_jobs(tmp_path, tracking_installed):
     prefix = tmp_path / 'runtime'
     library_dir = prefix / 'lib'
     library_dir.mkdir(parents=True)
     for name in ('libndn-service-framework.so', 'libndnsf-distributed-inference.so',
                  'libndnsf-distributed-repo.a'):
         (library_dir / name).touch()
+    if tracking_installed:
+        for name in ('bin/UavTrackingNode', 'lib/libndnsf-uav-tracking.so',
+                     'lib/pkgconfig/ndnsf-uav-tracking.pc',
+                     'include/ndnsf/uav/UavObservationSource.hpp'):
+            artifact = prefix / name
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.touch()
     stubs = '''
 PYTHON_BIN=/bin/echo
 select_nac_sdk() { NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture; }
@@ -924,6 +936,11 @@ run() { printf 'RUN:%s\\n' "$*"; }
              'GLOBAL_DEPENDENCY_PREFIX=' + shlex.quote(str(prefix)) + '\n' +
              'RUNTIME_LIBRARY_DIR=' + shlex.quote(str(library_dir)) + '\n' + stubs)
     result = shell(DEFINITIONS + stubs + MAIN, "--no-dependencies", "--jobs", "2")
+    if not tracking_installed:
+        assert result.returncode == 1
+        assert 'Installed tracking SDK file missing:' in result.stderr
+        assert 'PIP:' not in result.stdout
+        return
     assert result.returncode == 0, result.stderr
     assert "WAF:-j2" in result.stdout
     install = next(shlex.split(line[4:]) for line in result.stdout.splitlines()

@@ -22,6 +22,11 @@ configure.sh是兼容包装，保留configure-only语义。--plan/--dry-run不�
 
 ## SDK closure
 
+在受支持的 Ubuntu 主机上，默认 `all` 安装交付 MiniMUAS 使用的 NDNSF 跟踪 SDK、
+原生程序和系统 Python 绑定。MiniMUAS 独立构建，通过
+`pkg-config ndnsf-uav-tracking` 选择已安装 SDK。OpenCV 开发包、aiohttp、
+FFmpeg、模型、场景录像和运行身份均由 MiniMUAS 应用部署准备。
+
 普通OS开发包、NDN库、ONNX full-protobuf、ONNX Runtime C++ SDK和tokenizer bridge
 是不同的依赖边界。pip onnx或numpy成功不证明C++ SDK齐全。
 缺receipt、错误Boost ABI或装载旧库应修实际闭包，不伪造回执/放宽比较。

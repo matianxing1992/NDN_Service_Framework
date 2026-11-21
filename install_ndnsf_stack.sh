@@ -1493,6 +1493,8 @@ run_waf_clean() {
   refresh_global_pkg_config_path
   local -a waf_args=("$@")
   local profile=stack-native-build
+  local runtime_rpath
+  runtime_rpath="$(native_runtime_rpath)"
   # Only an explicitly requested private-SDK driver needs an ndn-cxx source pin.
   local ndncxx_source_tree="${NDNSF_NDN_CXX_SOURCE_TREE:-}"
   if [[ "${waf_args[0]:-}" == "configure" ]]; then
@@ -1503,7 +1505,8 @@ run_waf_clean() {
     [[ -z "$NAC_SDK_PREFIX" ]] || waf_args+=("--nac-abe-prefix=$NAC_SDK_PREFIX")
     if [[ "$RUN_WAF_CONFIGURE" == auto ]] &&
         "$PYTHON_BIN" "$BUILD_STORAGE" configured --build-dir "$NATIVE_BUILD_DIR" \
-          --cxx "${CXX:-}" -- "${waf_args[@]:1}" "--onnx-prefix=$GLOBAL_ONNX_PREFIX"; then
+          --cxx "${CXX:-}" --runtime-rpath "$runtime_rpath" \
+          -- "${waf_args[@]:1}" "--onnx-prefix=$GLOBAL_ONNX_PREFIX"; then
       echo "==> Reusing configured Waf state in $NATIVE_BUILD_DIR"
       return 0
     fi
@@ -1527,7 +1530,7 @@ run_waf_clean() {
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
     NM=/usr/bin/nm STRIP=/usr/bin/strip \
     NDNSF_LIBRARY_DIR="$RUNTIME_LIBRARY_DIR" \
-    NDNSF_RUNTIME_RPATH="$(native_runtime_rpath)" \
+    NDNSF_RUNTIME_RPATH="$runtime_rpath" \
     NDNSF_NDN_CXX_SOURCE_TREE="$ndncxx_source_tree" \
     "$PYTHON_BIN" ./waf \
     --out="$NATIVE_BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" "${waf_args[@]}"
@@ -2344,13 +2347,16 @@ install_common_system_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     echo "==> Installing common Debian/Ubuntu build packages"
     local packages=(
-      build-essential binutils git pkg-config cmake python3 python3-pip wget curl \
+      build-essential binutils git pkg-config cmake python3 python3-pip wget curl unzip \
       python3-dev python3-setuptools python3-wheel python3-venv \
       autoconf automake libtool m4 bison flex libfl-dev ninja-build \
       libgmp-dev libssl-dev \
       libsqlite3-dev libpcap-dev libsodium-dev zlib1g-dev \
       liblog4cxx-dev sqlite3 libprotobuf-dev protobuf-compiler
     )
+    if (( NDNSF_INSTALL_DI && ! NATIVE_ONLY )); then
+      packages+=(rsync)
+    fi
     # The pinned host toolchain is GCC 10; a fresh 20.04 install ships GCC 9.
     if [[ "$HOST_UBUNTU_VERSION" == "20.04" ]]; then
       packages+=(gcc-10 g++-10)
@@ -3578,7 +3584,17 @@ install_host_sdk_prerequisites() {
     local source_dir="$workspace/onnx-$onnx_version-source"
     local install_stage="$workspace/onnx-$onnx_version-stage"
     build_dir="$workspace/onnx-$onnx_version-build"
-    run git clone --depth=1 --no-tags --branch "$onnx_ref" "$onnx_url" "$source_dir"
+    if [[ -e "$source_dir" || -L "$source_dir" ]]; then
+      [[ ! -L "$source_dir" && -d "$source_dir/.git" &&
+         "$(git -C "$source_dir" remote get-url origin)" == "$onnx_url" &&
+         -z "$(git -C "$source_dir" status --porcelain --untracked-files=all)" ]] || {
+        echo "Cannot reuse ONNX source checkout: $source_dir" >&2
+        return 1
+      }
+      echo "==> Reusing ONNX source checkout: $source_dir"
+    else
+      run git clone --depth=1 --no-tags --branch "$onnx_ref" "$onnx_url" "$source_dir"
+    fi
     actual_commit="$(git -C "$source_dir" rev-parse HEAD)"
     [[ "$actual_commit" == "$onnx_commit" ]] || {
       echo "ONNX source commit $actual_commit differs from the host SDK lock $onnx_commit" >&2
@@ -4008,7 +4024,13 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
     native_runtime_programs+=("$RUNTIME_PREFIX/bin/NDNSF_RepoPacketServer"
       "$RUNTIME_PREFIX/bin/DistributedRepoServer")
   fi
-  if (( NDNSF_INSTALL_UAV )) && [[ -f "$RUNTIME_PREFIX/bin/UavTrackingNode" ]]; then
+  if (( NDNSF_INSTALL_UAV )); then
+    for tracking_file in bin/UavTrackingNode lib/libndnsf-uav-tracking.so \
+      lib/pkgconfig/ndnsf-uav-tracking.pc include/ndnsf/uav/UavObservationSource.hpp; do
+      [[ -f "$RUNTIME_PREFIX/$tracking_file" ]] || {
+        echo "Installed tracking SDK file missing: $RUNTIME_PREFIX/$tracking_file" >&2; exit 1;
+      }
+    done
     native_runtime_targets+=("$RUNTIME_PREFIX/bin/UavTrackingNode")
   fi
   "$PYTHON_BIN" "$SOURCE_HELPER" check-runtime --lock "$LOCK_FILE" --name NAC-ABE \
@@ -4060,11 +4082,14 @@ pip_install "$ROOT/pythonWrapper" "$ROOT/NDNSF-DistributedRepo/pythonWrapper" \
   "${python_adapter_packages[@]}"
 
 echo "==> Running Python import smoke checks"
-run env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 "$PYTHON_BIN" -I - <<'PY'
+run env -u PYTHONPATH -u PYTHONHOME -u LD_LIBRARY_PATH PYTHONNOUSERSITE=1 \
+  "$PYTHON_BIN" -I - "$NDNSF_INSTALL_UAV" "$RUNTIME_LIBRARY_DIR" <<'PY'
 import ndnsf
 import py_repoclient
 import ndnsf_distributed_inference
 from pathlib import Path
+import subprocess
+import sys
 for module in (ndnsf, py_repoclient, ndnsf_distributed_inference):
     path = Path(module.__file__).resolve()
     assert str(path).startswith('/usr/local/'), (module.__name__, path)
@@ -4079,6 +4104,16 @@ manifest = py_repoclient.make_manifest(
 )
 assert manifest.sha256
 assert ndnsf_distributed_inference.GenericRepoClient is py_repoclient.RepoClient
+if sys.argv[1] == "1":
+    from ndnsf import _ndnsf
+
+    loaded = subprocess.check_output(["/usr/bin/ldd", _ndnsf.__file__], text=True)
+    for library in ("libndnsf-uav-tracking.so", "libndn-service-framework.so.0.1.0"):
+        expected = (Path(sys.argv[2]) / library).resolve(strict=True)
+        paths = [Path(fields[2]).resolve() for fields in map(str.split, loaded.splitlines())
+                 if len(fields) >= 3 and fields[:2] == [library, "=>"]]
+        if paths != [expected]:
+            raise SystemExit(f"Installed ndnsf binding resolved {library} to {paths}, expected {expected}")
 print("NDNSF_STACK_INSTALL_SMOKE_OK")
 PY
 

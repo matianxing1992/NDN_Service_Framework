@@ -48,13 +48,20 @@ def configured(args):
     try:
         lock = waf_cache_values(build / ".lock-waf_linux_build",
                                 {"argv", "files", "hash", "out_dir", "top_dir"})
-        cache = waf_cache_values(build / "c4che/_cache.py", {"CXX", "sanitize_di"})
+        cache = waf_cache_values(build / "c4che/_cache.py", {"CXX", "sanitize_di", "LINKFLAGS"})
         if lock["out_dir"] != str(build) or lock["top_dir"] != str(source_root):
             return False
         if cache.get("sanitize_di") or (not args.source_dir and not (build / "config.hpp").is_file()):
             return False
         if args.cxx and Path(cache["CXX"][0]).resolve() != Path(args.cxx).resolve():
             return False
+        if args.runtime_rpath is not None:
+            prefix = "-Wl,-rpath,"
+            expected = [prefix + path for path in args.runtime_rpath.split(os.pathsep) if path]
+            cached = [flag for flag in cache.get("LINKFLAGS", [])
+                      if isinstance(flag, str) and flag.startswith(prefix)]
+            if cached != expected:
+                return False
         signature = 0
         for source in lock["files"]:
             signature = hashlib.md5(repr((signature, Path(source).read_bytes())).encode()).digest()
@@ -363,12 +370,28 @@ def verify_install(args):
                 with program.open("rb") as stream:
                     native = stream.read(4) == b"\x7fELF"
                 if native:
+                    loader_env = env
+                    if program.name == "UavTrackingNode":
+                        # The node must find its installed SDK without a search-path override.
+                        loader_env = {key: value for key, value in env.items()
+                                      if key != "LD_LIBRARY_PATH"}
                     probe = subprocess.run(["/usr/bin/ldd", str(program)], cwd=workspace,
-                                           env=env, timeout=30, text=True, capture_output=True)
+                                           env=loader_env, timeout=30, text=True, capture_output=True)
                     if "not found" in probe.stdout or (
                             probe.returncode and "not a dynamic executable" not in probe.stderr):
                         raise ValueError(f"installed loader check failed for {program}: "
                                          f"{probe.stdout}{probe.stderr}")
+                    if program.name == "UavTrackingNode":
+                        resolved = {fields[0]: Path(fields[2]).resolve()
+                                    for line in probe.stdout.splitlines()
+                                    for fields in [line.split()]
+                                    if len(fields) >= 3 and fields[1] == "=>"}
+                        for library in ("libndnsf-uav-tracking.so",
+                                        "libndn-service-framework.so.0.1.0"):
+                            expected = (prefix / "lib" / library).resolve(strict=True)
+                            if resolved.get(library) != expected:
+                                raise ValueError(f"{program} resolved {library} to "
+                                                 f"{resolved.get(library)}, expected {expected}")
     print(f"Verified {checked} installed files against {stage}")
 
 
@@ -445,6 +468,7 @@ def main():
     configuration.add_argument("--build-dir", required=True)
     configuration.add_argument("--source-dir")
     configuration.add_argument("--cxx")
+    configuration.add_argument("--runtime-rpath")
     configuration.add_argument("options", nargs=argparse.REMAINDER)
     gate = commands.add_parser("run")
     gate.add_argument("--build-dir", required=True)
