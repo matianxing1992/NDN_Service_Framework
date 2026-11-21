@@ -6,6 +6,7 @@
 #include <fstream>
 #include <limits>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 using namespace ndnsf::di;
@@ -247,6 +248,33 @@ BOOST_AUTO_TEST_CASE(CancellationAfterPayloadWritePreservesPreviousFile)
     BOOST_CHECK_EQUAL(read(file), "previous");
     BOOST_CHECK_EQUAL(std::distance(std::filesystem::directory_iterator(directory.path),
                                    std::filesystem::directory_iterator{}), 1);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ProcessExitOnEitherSideOfExchangeKeepsActiveFile)
+{
+  Directory directory;
+  const auto file = directory.path / "role.kv";
+  for (const auto stage : {NativeCheckpointExportStage::BeforeRename,
+                           NativeCheckpointExportStage::BeforeDirectorySync}) {
+    write(file, "previous");
+    const auto child = ::fork();
+    BOOST_REQUIRE_GE(child, 0);
+    if (child == 0) {
+      NativeCheckpointExportOptions options;
+      options.beforeStage = [stage](auto actual) { if (actual == stage) ::_exit(73); };
+      try { nativeExportPrivatePortableKvCheckpoint(file, sample(), limits(), options); }
+      catch (...) { ::_exit(2); }
+      ::_exit(3);
+    }
+    int result = 0;
+    BOOST_REQUIRE_EQUAL(::waitpid(child, &result, 0), child);
+    BOOST_REQUIRE(WIFEXITED(result));
+    BOOST_REQUIRE_EQUAL(WEXITSTATUS(result), 73);
+    if (stage == NativeCheckpointExportStage::BeforeRename)
+      BOOST_CHECK_EQUAL(read(file), "previous");
+    else
+      BOOST_CHECK_NO_THROW(nativeReadPrivatePortableKvCheckpoint(file, limits()));
   }
 }
 

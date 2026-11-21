@@ -95,6 +95,8 @@ public:
               std::to_string(++s_sequence)))
   {
     std::filesystem::create_directories(m_root);
+    std::filesystem::permissions(m_root, std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::replace);
     write("trust.conf",
           "; Local test trust schema\n"
           "rule\n"

@@ -67,6 +67,37 @@ struct FileDescriptor
   ~FileDescriptor() { ::close(value); }
 };
 
+std::filesystem::path
+canonicalSlot(const std::filesystem::path& file)
+{
+  const auto parent = file.has_parent_path() ? file.parent_path() : std::filesystem::path(".");
+  return std::filesystem::canonical(parent) / file.filename();
+}
+
+void
+lockHandleOutput(const std::filesystem::path& destination, FileDescriptor& lock)
+{
+  require(!destination.empty() && !destination.filename().empty() &&
+          destination.filename() != "." && destination.filename() != ".." &&
+          destination.extension() != ".lock");
+  const auto path = destination.has_parent_path() ? destination.parent_path() :
+                                                    std::filesystem::path(".");
+  FileDescriptor parent{::open(path.c_str(),
+    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+  struct stat status{};
+  require(parent.value >= 0 && ::fstat(parent.value, &status) == 0 &&
+          status.st_uid == ::geteuid() && (status.st_mode & 0022) == 0);
+  const auto lockName = destination.filename().string() + ".lock";
+  lock.value = ::openat(parent.value, lockName.c_str(),
+    O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+  require(lock.value >= 0 && ::fstat(lock.value, &status) == 0 &&
+          S_ISREG(status.st_mode) && status.st_uid == ::geteuid() && status.st_nlink == 1 &&
+          (status.st_mode & 07777) == 0600);
+  if (::flock(lock.value, LOCK_EX | LOCK_NB) != 0)
+    throw std::runtime_error(errno == EWOULDBLOCK ? "DI_STORED_MODEL_HANDLE_OUTPUT_BUSY" :
+                                                      "DI_STORED_MODEL_HANDLE_OUTPUT_LOCK_FAILED");
+}
+
 std::string
 digest(const std::uint8_t* bytes, std::size_t size)
 {
@@ -205,6 +236,8 @@ void
 nativeExportStoredModelHandle(const NativeStoredModelHandle& handle,
                               const std::filesystem::path& destination)
 {
+  FileDescriptor lock{-1};
+  lockHandleOutput(destination, lock);
   handle.validate();
   // Only nonsecret metadata passes through JSON. Key bytes are written directly.
   const auto metadata = nativeCanonicalJson(NativeJson{
@@ -291,12 +324,10 @@ decodeHandleBody(const std::vector<std::uint8_t>& body)
   return handle;
 }
 
-} // namespace
-
 void
-nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
-                                    const std::filesystem::path& destination,
-                                    const NativeFileProtectionKey& protection)
+writeSealedStoredModelHandle(const NativeStoredModelHandle& handle,
+                             const std::filesystem::path& destination,
+                             const NativeFileProtectionKey& protection)
 {
   handle.validate();
   require(!protection.keyId.empty() && protection.keyId.size() <= 64 &&
@@ -322,6 +353,18 @@ nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
     writeAll(fd, reinterpret_cast<const std::uint8_t*>(prefix.data()), prefix.size());
     writeAll(fd, sealed.data(), sealed.size());
   });
+}
+
+} // namespace
+
+void
+nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
+                                    const std::filesystem::path& destination,
+                                    const NativeFileProtectionKey& protection)
+{
+  FileDescriptor lock{-1};
+  lockHandleOutput(destination, lock);
+  writeSealedStoredModelHandle(handle, destination, protection);
 }
 
 namespace {
@@ -706,8 +749,13 @@ public:
     std::optional<NativeStoredModelHandle> existingHandle;
     if (m_output != nullptr) {
       const auto& destination = m_output->path;
-      require(!destination.empty() && destination != m_path && destination != m_stage &&
-              destination != std::filesystem::path(m_path.string() + ".lock"));
+      require(!destination.empty() && !destination.filename().empty() &&
+              destination.filename() != "." && destination.filename() != "..");
+      const auto slot = canonicalSlot(destination);
+      const auto lockPath = std::filesystem::path(slot.string() + ".lock");
+      for (const auto& reserved : {m_path, m_stage, std::filesystem::path(m_path.string() + ".lock")})
+        require(slot != canonicalSlot(reserved) && lockPath != canonicalSlot(reserved));
+      lockHandleOutput(destination, m_outputLock);
       if (::lstat(destination.c_str(), &status) == 0)
         existingHandle = nativeOpenStoredModelHandle(destination, nativeFileKeyResolverFromKeyRing());
       else
@@ -867,7 +915,7 @@ public:
     if (m_output != nullptr) {
       m_io.requireCurrent();
       require(ready());
-      nativeExportSealedStoredModelHandle(m_handle, m_output->path, m_output->protection);
+      writeSealedStoredModelHandle(m_handle, m_output->path, m_output->protection);
     }
   }
   std::size_t objectCount() const { return m_metadata.at("objects").size(); }
@@ -1213,7 +1261,7 @@ private:
   NativeStoredModelPacketIo m_io;
   const NativeStoredModelHandleOutput* m_output;
   bool m_requireProtection;
-  FileDescriptor m_parent{-1}, m_lock{-1};
+  FileDescriptor m_parent{-1}, m_lock{-1}, m_outputLock{-1};
   NativeStoredModelHandle m_handle;
   ndn::Name m_prefix;
   NativeJson m_metadata;

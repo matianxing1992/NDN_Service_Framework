@@ -21,6 +21,7 @@
 #include <mutex>
 #include <thread>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <type_traits>
 #include <unistd.h>
 
@@ -420,8 +421,37 @@ BOOST_AUTO_TEST_CASE(PreparationJournalSurvivesKeyRotation)
   BOOST_CHECK_THROW(repository.publish(nullptr, journal, prefix, false, &unavailableOutput),
                     std::runtime_error);
   BOOST_CHECK(!std::filesystem::exists(unavailableHandle));
-  BOOST_CHECK_EQUAL(journalHeader(journal), "NDNSF-DI-MODEL-PREPARATION-v4");
+  BOOST_CHECK_EQUAL(journalHeader(journal), "NDNSF-DI-MODEL-PREPARATION-v3");
   BOOST_CHECK_EQUAL(repository.writes.size(), writes);
+  const auto readHandleWire = [&] {
+    std::ifstream input(sealedHandle, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), {});
+  };
+  const auto previousWire = readHandleWire();
+  BOOST_REQUIRE(!previousWire.empty());
+  auto interrupted = repository.io();
+  interrupted.requireCurrent = [&] {
+    if (journalHeader(journal) == "NDNSF-DI-MODEL-PREPARATION-v4")
+      ::_exit(73);
+  };
+  interrupted.commit = [] (auto, const auto&) { ::_exit(74); };
+  const auto child = ::fork();
+  BOOST_REQUIRE_GE(child, 0);
+  if (child == 0) {
+    try {
+      repository.publish(&interrupted, journal, prefix, false, &output);
+    }
+    catch (...) {
+      ::_exit(75);
+    }
+    ::_exit(76);
+  }
+  int status = 0;
+  BOOST_REQUIRE_EQUAL(::waitpid(child, &status, 0), child);
+  BOOST_REQUIRE(WIFEXITED(status));
+  BOOST_REQUIRE_EQUAL(WEXITSTATUS(status), 73);
+  BOOST_CHECK_EQUAL(journalHeader(journal), "NDNSF-DI-MODEL-PREPARATION-v4");
+  BOOST_CHECK(readHandleWire() == previousWire);
   const auto recovered = repository.publish(nullptr, journal, prefix, false, &output);
   BOOST_CHECK(recovered.handle.masterKey == original.handle.masterKey);
   BOOST_CHECK(recovered.handle.rootName == original.handle.rootName);
@@ -1364,6 +1394,55 @@ BOOST_AUTO_TEST_CASE(PreparationOwnsItsWriterLockAndRecoversBeforeJournalCommit)
     BOOST_CHECK_EQUAL(resumed.objectCount, 3U);
     BOOST_CHECK(!std::filesystem::exists(file.path.string() + ".object"));
   }
+}
+
+BOOST_AUTO_TEST_CASE(DifferentJournalsCannotPublishToTheSameHandle)
+{
+  PrivateFile fixture;
+  const auto ring = fixture.directory / "ring";
+  writeKeyRing(ring, {{"key-a", std::string(64, 'a')}});
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  struct RingCleanup { ~RingCleanup() { ::unsetenv("NDNSF_FILE_KEYRING"); } } cleanup;
+  const auto protection = nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(protection);
+  const NativeStoredModelHandleOutput output{fixture.directory / "model.handle", *protection};
+  const auto first = fixture.directory / "first.journal";
+  const auto second = fixture.directory / "second.journal";
+  const auto legacy = fixture.directory / "legacy.handle";
+  PacketRepository source;
+  const auto legacyModel = source.publish();
+  nativeExportStoredModelHandle(legacyModel.handle, legacy);
+  PacketRepository winner, competitor;
+  const auto linkedParent = fixture.directory / "linked-parent";
+  std::filesystem::create_directory_symlink(fixture.directory, linkedParent);
+  const NativeStoredModelHandleOutput linked{linkedParent / "model.handle", *protection};
+  BOOST_CHECK_THROW(competitor.publish(nullptr, second, {}, false, &linked), std::runtime_error);
+  BOOST_CHECK(competitor.writes.empty());
+  BOOST_CHECK_EQUAL(competitor.sourceReads, 0U);
+  BOOST_CHECK(!std::filesystem::exists(second));
+  auto port = winner.io();
+  bool attempted = false;
+  port.requireCurrent = [&] {
+    if (!attempted && std::filesystem::exists(first)) {
+      attempted = true;
+      BOOST_CHECK(!std::filesystem::exists(output.path));
+      const auto outputBusy = [] (const std::runtime_error& error) {
+        return std::string_view(error.what()) == "DI_STORED_MODEL_HANDLE_OUTPUT_BUSY";
+      };
+      BOOST_CHECK_EXCEPTION(competitor.publish(nullptr, second, {}, false, &output),
+                            std::runtime_error, outputBusy);
+      BOOST_CHECK_EXCEPTION(nativeImportLegacyStoredModelHandle(legacy, output.path,
+        legacyModel.handle.rootName, legacyModel.handle.rootWireDigest, *protection),
+        std::runtime_error, outputBusy);
+    }
+  };
+  const auto result = winner.publish(&port, first, {}, false, &output);
+  BOOST_CHECK(attempted);
+  BOOST_CHECK(competitor.writes.empty());
+  BOOST_CHECK_EQUAL(competitor.sourceReads, 0U);
+  BOOST_CHECK(!std::filesystem::exists(second));
+  BOOST_CHECK(nativeOpenStoredModelHandle(output.path, nativeFileKeyResolverFromKeyRing())
+    .rootName == result.handle.rootName);
 }
 
 BOOST_AUTO_TEST_CASE(PreparationRejectsSymlinkStateAndLockBeforeSourceReads)
