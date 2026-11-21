@@ -255,6 +255,9 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
   // path never has to be re-derived from an id.
   child.path = root->second + "/" + entry.relativeGraphPath;
   child.metadata = parent.metadata;
+  const auto coordinate = parent.metadata.find("artifactCoordinate." + entry.entryId);
+  if (coordinate != parent.metadata.end())
+    child.metadata["artifactCoordinate"] = coordinate->second;
   // The parent's passthrough list describes the whole role's boundary: values its role
   // publishes by carrying an input through. A single entry publishes only what its own
   // contract says, and the parent already handles an entry-level passthrough through

@@ -2315,6 +2315,8 @@ NativePlannedRequest planNativeRequestImpl(
           const auto& offered = recipientKeys->offer(provider).observation();
           const auto expires = std::min({wireDeadlineMs, core.expiresAtMs,
                                          grant->expiresAtMs, offered.expiresAtMs});
+          invocation.modelKeyPath = nativeModelPathFacts(model.descriptor,
+            invocation.plan.modelFamily, invocation.selectedRoleContract().quantization);
           const auto table = runtime.modelObjectKeyPublisher(core.artifacts, invocation, *fixed,
             recipient, offered.bootEpoch, expires, control);
           if (!table.success || !table.servingLease)

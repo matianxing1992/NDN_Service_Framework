@@ -659,12 +659,20 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
         const auto request = onCoreIo(user, [user, serviceName] {
           return user->prepareServiceRequest(serviceName);
         }, &control);
+        const auto useId = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+          {"schema", "ndnsf-di-current-root-control-v1"},
+          {"service", serviceName},
+          {"requestId", control.requestId},
+          {"attempt", control.attempt},
+          {"rootDigest", nativePlanningDigest(wire)}}));
         ndn_service_framework::LargeDataPublishOptions options;
-        options.retention = ndn_service_framework::EncryptedLargeDataRetention::Durable;
-        options.publicationIdentity = nativePlanningDigest(
-          "ndnsf-di/current-root-control/v1/" + nativePlanningDigest(wire));
+        // The invocation retains a serving lease. Only model objects outlive that lease.
         options.contentName = publicationContentName(model, "di-canonical-root");
+        options.contentName->kind = ndn_service_framework::ContentDataKind::Assignment;
+        options.contentName->semanticRole =
+          ndn_service_framework::ContentSemanticRole::AuthorizationManifest;
         options.contentName->label = "authorization-manifest.json";
+        options.contentName->useId = useId.substr(7);
         return user->publishEncryptedLargeDataFromWorker(request,
           std::vector<std::uint8_t>(wire.begin(), wire.end()), "di-current-root-control",
           ndn::DEFAULT_FRESHNESS_PERIOD, options, [control] { control.requireActive(); });

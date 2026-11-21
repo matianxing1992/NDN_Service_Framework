@@ -970,7 +970,6 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     addObject("fixture-model-payload", true);
     return storedFixtures.emplace(fault, std::move(fixture)).first->second;
   };
-  std::vector<ndn::Name> storedKeyTableNames;
   const auto attachStoredKeyTable = [&] (const std::string& fullWire,
                                          bool useWrongRecipientKey,
                                          bool injectPublisherFailure = false,
@@ -982,6 +981,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     projection.plan.modelName = "spec222-stored-key-fixture";
     const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
     BOOST_REQUIRE(fixed);
+    projection.modelKeyPath = NativeModelPathFacts{"fixture-llm", "0.6b", "int4", "test-r1"};
 
     const auto& fixture = storedFixture(objectFault);
     NativeArtifactBinding artifacts;
@@ -1094,7 +1094,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
           request.serviceName = serviceName;
           request.requestId = ndn::Name(projection.requestId);
           ndn_service_framework::LargeDataPublishOptions options;
-          options.contentName = nativeFixedRoleSourceContentName(projection, *fixed);
+          options.contentName = nativeCapsuleContentName(projection, *fixed, true);
           return user->publishEncryptedLargeDataFromWorker(request,
             std::vector<std::uint8_t>(wire.begin(), wire.end()), "di-stored-model-object-keys",
             ndn::DEFAULT_FRESHNESS_PERIOD, options, [control] { control.requireActive(); });
@@ -1129,8 +1129,6 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
       std::rethrow_exception(pumpFailure);
     const auto publication = publishResult.get();
     BOOST_REQUIRE(publication.success);
-    storedKeyTableNames.push_back(publication.encryptedDataName);
-
     auto reference = NativeJson{
       {"schema", "ndnsf-di-stored-model-object-keys-reference-v1"},
       {"dataName", publication.encryptedDataName.toUri(ndn::name::UriFormat::CANONICAL)},
@@ -1139,6 +1137,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
       {"context", context}};
     auto wire = nativeParseJson(fullWire);
     wire["model_object_keys"] = std::move(reference);
+    wire["model_key_path"] = {"fixture-llm", "0.6b", "int4", "test-r1"};
     return nativeCanonicalJson(wire);
   };
   const auto makeFacade = [&] {
@@ -1193,6 +1192,11 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   auto facade = makeFacade();
   environment.enableProductionIngressForTest();
   auto registration = facade.serve({serviceName.toUri(), {"/Backbone"}});
+  const auto stopFacade = ndn::make_scope_exit([&] {
+    registration.close();
+    facade.stop();
+    (void)facade.drain(std::chrono::seconds(2));
+  });
   environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
   const auto ackKey = environment.provider().prepareHybridSendKeyForTest(
     serviceName, "ACK");
@@ -1213,20 +1217,21 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   std::atomic<unsigned> modelKeyTableInterests{0};
   unsigned fixedSourcePublications = 0;
   const auto fixedSourcePrefix = ndn::Name(requesterName).append("NDNSF-DI").append("assignment");
+  const auto capsulePrefix = ndn::Name(requesterName).append("NDNSF-DI").append("key-capsule");
   auto modelKeyTablePrefix = requesterName;
   modelKeyTablePrefix.append("NDNSF").append("LARGE-DATA");
   const ndn::signal::ScopedConnection sourceInterestObserver = environment.providerFace().onSendInterest.connect(
     [&fixedSourceInterests, &roleSourceInterests, &modelKeyTableInterests,
-     &fixedSourcePrefix, &modelKeyTablePrefix, &storedKeyTableNames] (
+     &fixedSourcePrefix, &modelKeyTablePrefix, &capsulePrefix] (
         const ndn::Interest& interest) {
-      if (std::find(interest.getName().begin(), interest.getName().end(),
-                    ndn::name::Component("ROLE")) != interest.getName().end())
-        roleSourceInterests.fetch_add(1, std::memory_order_relaxed);
-      if (fixedSourcePrefix.isPrefixOf(interest.getName()))
+      const auto& name = interest.getName();
+      if (fixedSourcePrefix.isPrefixOf(name)) {
         fixedSourceInterests.fetch_add(1, std::memory_order_relaxed);
-      if (modelKeyTablePrefix.isPrefixOf(interest.getName()) ||
-          std::any_of(storedKeyTableNames.begin(), storedKeyTableNames.end(),
-            [&] (const ndn::Name& name) { return name.isPrefixOf(interest.getName()); }))
+        if (std::find(name.begin(), name.end(), ndn::name::Component("role")) != name.end() ||
+            std::find(name.begin(), name.end(), ndn::name::Component("ROLE")) != name.end())
+          roleSourceInterests.fetch_add(1, std::memory_order_relaxed);
+      }
+      if (modelKeyTablePrefix.isPrefixOf(name) || capsulePrefix.isPrefixOf(name))
         modelKeyTableInterests.fetch_add(1, std::memory_order_relaxed);
     });
   const auto referenceAssignment = [&] (const std::string& fullWire) {
@@ -1254,11 +1259,12 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
         std::vector<std::uint8_t>(sourceWire.begin(), sourceWire.end()), "spec200-fixed-role",
         ndn::DEFAULT_FRESHNESS_PERIOD, true, publicationOptions);
       BOOST_REQUIRE(publication.success);
-      const auto expectedLogical = ndn::Name(fixedSourcePrefix).append("model")
-        .append(ndn_service_framework::makeNamingLabelComponent(projection.plan.modelName))
-        .append("ROLE").append(ndn_service_framework::makeNamingLabelComponent(fixed->roleOwner()->selectedRole))
-        .append(ndn_service_framework::makeNamingDigestComponent(nativePlanningDigest(sourceWire).substr(7)));
+      const auto expectedLogical = ndn::Name(fixedSourcePrefix)
+        .append("generic-onnx").append("unspecified").append("unspecified")
+        .append("revision").append("unspecified").append("role")
+        .append("name=/Backbone").append("rep");
       BOOST_CHECK(publication.encryptedDataName.getPrefix(expectedLogical.size()) == expectedLogical);
+      BOOST_CHECK_EQUAL(publication.encryptedDataName.at(-2).value_size(), 32U);
       BOOST_REQUIRE(publication.servingLease);
       ++fixedSourcePublications;
       source = userFixedRoles.rememberSource(requesterName.toUri(), serviceName.toUri(), *fixed,
@@ -1470,7 +1476,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   if (includeStoredKeyTable) {
     mutations.insert(mutations.begin(), -5);
     mutations.insert(mutations.begin(), -4);
-    for (const auto mutation : {15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27})
+    for (const auto mutation : {15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30})
       mutations.push_back(mutation);
   }
   unsigned expectedRuns = 1;
@@ -1497,6 +1503,10 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     // appended component would be interpreted as a service suffix.
     requestId = ndn::Name("/di-provider-reject-" + std::to_string(mutation));
     const auto requestIdForCall = requestId;
+    const auto releaseExpected = ndn::make_scope_exit([&] {
+      std::lock_guard<std::mutex> lock(storedReads->mutex);
+      storedReads->expectedByRequest.erase(requestIdForCall.toUri());
+    });
     const auto projectionProvider = mutation == 0
       ? ndn::Name("/spec185/other-provider") : providerName;
     const auto projectionEpoch = (mutation == 1 || mutation == 4)
@@ -1506,7 +1516,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     assignmentProjection = providerProjection(
       projectionProvider, requestId, planDigest, artifactDigest,
       projectionEpoch, issuedGrant.grantName, projectionGrantDigest);
-    if (mutation < 0 || (mutation >= 11 && mutation <= 27)) {
+    if (mutation < 0 || (mutation >= 11 && mutation <= 30)) {
       auto warmGrantRequest = grantRequest;
       warmGrantRequest.requestId = requestId.toUri();
       const auto warmGrant = NativeArtifactGrantIssuer(issuerConfig).issue(
@@ -1577,6 +1587,26 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
       withExpiredScope.at("model_object_keys").at("context")["expiresAtMs"] = std::uint64_t{1};
       assignmentProjection = nativeCanonicalJson(withExpiredScope);
     }
+    if (mutation == 28 || mutation == 29) {
+      auto wrongKind = nativeParseJson(attachStoredKeyTable(assignmentProjection, false));
+      auto& table = wrongKind.at("model_object_keys");
+      const ndn::Name name(table.at("dataName").get<std::string>());
+      const auto offset = requesterName.size();
+      BOOST_REQUIRE_EQUAL(name.size(), offset + 14);
+      const auto replacement = mutation == 28
+        ? ndn::Name(name.getPrefix(offset + 8)).append("canonical")
+            .append(name.getSubName(offset + 9))
+        : ndn::Name(name.getPrefix(offset + 1)).append("assignment")
+            .append(name.getSubName(offset + 2, 5)).append("role")
+            .append(ndn::name::Component("name=/Backbone")).append(name.getSubName(offset + 11));
+      table["dataName"] = replacement.toUri(ndn::name::UriFormat::CANONICAL);
+      assignmentProjection = nativeCanonicalJson(wrongKind);
+    }
+    if (mutation == 30) {
+      auto wrongPath = nativeParseJson(attachStoredKeyTable(assignmentProjection, false));
+      wrongPath.at("model_key_path").at(3) = "different-revision";
+      assignmentProjection = nativeCanonicalJson(wrongPath);
+    }
     if (mutation == 3) {
       auto expired = nativeParseJson(assignmentProjection);
       expired["deadline_ms"] = nowMs - 1;
@@ -1608,9 +1638,9 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
         source["data_name"] = original.getPrefix(offset + 1).append("input")
           .append(original.getSubName(offset + 2)).toUri();
       if (mutation == 9)
-        source["data_name"] = original.getPrefix(offset + 5)
+        source["data_name"] = original.getPrefix(offset + 8)
           .append(ndn_service_framework::makeNamingLabelComponent("wrong-role"))
-          .append(original.getSubName(offset + 6)).toUri();
+          .append(original.getSubName(offset + 9)).toUri();
       if (mutation == 10)
         source["plaintext_digest"] = "sha256:" + std::string(64, 'f');
       assignmentProjection = nativeCanonicalJson(mixed);
@@ -1760,12 +1790,17 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
                           "Provider: " + providerFailure + "; User: " + rejectionFailure);
       BOOST_CHECK_EQUAL(fixedSourceInterests.load(std::memory_order_relaxed), sourceInterestsBefore);
     }
-    if (mutation >= 7 && mutation <= 10) {
+    if (mutation >= 7 && mutation <= 9) {
       BOOST_CHECK_MESSAGE(providerFailure.find("fixed source Producer, role or plaintext name commitment mismatch") != std::string::npos,
                           "Provider: " + providerFailure + "; User: " + rejectionFailure);
       BOOST_CHECK_EQUAL(roleSourceInterests.load(std::memory_order_relaxed), roleSourceInterestsBefore);
     }
-    if (mutation == 11 || mutation == 12 || mutation == 14 || mutation == 27) {
+    if (mutation == 10) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("fixed source fetch or plaintext commitment failed") !=
+                            std::string::npos, providerFailure);
+      BOOST_CHECK_GT(roleSourceInterests.load(std::memory_order_relaxed), roleSourceInterestsBefore);
+    }
+    if (mutation == 11 || mutation == 12 || mutation == 14 || mutation == 27 || mutation == 30) {
       BOOST_CHECK_MESSAGE(providerFailure.find("DI_MODEL_OBJECT_KEYS_INVALID") != std::string::npos,
                           "Provider: " + providerFailure + "; User: " + rejectionFailure);
       BOOST_CHECK_EQUAL(fixedSourceInterests.load(std::memory_order_relaxed), sourceInterestsBefore);
@@ -1829,6 +1864,14 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
       BOOST_CHECK_MESSAGE(providerFailure.find("capsule table name differs from the current model or use") !=
                             std::string::npos, providerFailure);
       BOOST_CHECK_EQUAL(modelKeyTableInterests.load(std::memory_order_relaxed), modelKeyTableInterestsBefore);
+      BOOST_CHECK_EQUAL(storedReads->attempts.load(std::memory_order_relaxed), storedReadAttemptsBefore);
+    }
+    if (mutation == 28 || mutation == 29) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("capsule table name does not match its source kind") !=
+                            std::string::npos, providerFailure);
+      BOOST_CHECK_EQUAL(modelKeyTableInterests.load(std::memory_order_relaxed),
+                        modelKeyTableInterestsBefore);
+      BOOST_CHECK_EQUAL(fixedSourceInterests.load(std::memory_order_relaxed), sourceInterestsBefore);
       BOOST_CHECK_EQUAL(storedReads->attempts.load(std::memory_order_relaxed), storedReadAttemptsBefore);
     }
     if (useFixedReferences && (mutation == 1 || mutation == 4)) {
@@ -2462,10 +2505,10 @@ BOOST_AUTO_TEST_CASE(StoredModelKeyTableCountLimitRejectsBeforePublication)
   NativeRequestControl control{requestId.toUri(), 1,
     std::chrono::steady_clock::now() + std::chrono::seconds(10),
     [cancelled] { return cancelled->load(std::memory_order_relaxed); }};
-  const auto contentName = nativeFixedRoleSourceContentName(projection, *fixed);
+  const auto contentName = nativeCapsuleContentName(projection, *fixed, true);
   const auto expectedName = contentName.contentPrefix(
     environment.user().getName(), digest.substr(7));
-  const auto expectedDataPrefix = expectedName.getPrefix(expectedName.size() - 1);
+  const auto expectedDataPrefix = expectedName;
   std::atomic<unsigned> publications{0};
   const auto publicationObserver = environment.userFace().onSendData.connect(
     [&] (const ndn::Data& data) {

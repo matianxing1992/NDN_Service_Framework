@@ -598,7 +598,7 @@ BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
     "\"state\":\"ACTIVE\"}";
   const auto rootPayload = std::vector<std::uint8_t>(rootJson.begin(), rootJson.end());
   const auto rootDigest = digest(rootPayload);
-  const auto projection = makeProjection(
+  auto projection = makeProjection(
     rootDigest, profileDigest, graphDigest, initializerDigest);
 
   ScopedEnv pythonPath(
@@ -633,6 +633,9 @@ BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
   options.signManifest = [] (const std::string&) {
     return std::string("fixture-signature-v1");
   };
+  const std::string coordinate = "/pp/stage/0/layers/0/2/entry/region/profile/whole";
+  projection.assembly.artifactCoordinate = coordinate;
+  projection.selectedRole.artifactCoordinate = coordinate;
   std::vector<std::string> progressPhases;
   bool progressRangeValid = true;
   options.reportProgress = [&progressPhases, &progressRangeValid](
@@ -646,8 +649,14 @@ BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
   BOOST_CHECK_EQUAL(first.metadata.at("assembledFrom"),
                     "canonical-root-post-selection");
   BOOST_CHECK_EQUAL(first.metadata.at("modelManifestDigest"), rootDigest);
+  BOOST_CHECK_EQUAL(first.metadata.at("artifactCoordinate"), coordinate);
   const auto second = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
   BOOST_CHECK_EQUAL(second.path, first.path);
+  BOOST_CHECK_EQUAL(second.metadata.at("artifactCoordinate"), coordinate);
+  std::ifstream manifestInput(std::filesystem::path(first.path).parent_path() / "manifest.json");
+  BOOST_REQUIRE(manifestInput);
+  BOOST_CHECK_EQUAL(NativeJson::parse(manifestInput).at("artifactCoordinate").get<std::string>(),
+                    coordinate);
   BOOST_CHECK(std::filesystem::is_regular_file(second.path));
   BOOST_REQUIRE(!progressPhases.empty());
   BOOST_CHECK(progressRangeValid);

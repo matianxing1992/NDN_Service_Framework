@@ -1,8 +1,13 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
+
+#include <ndn-cxx/name.hpp>
+
 #include <cctype>
 #include <limits>
+#include <optional>
 #include <regex>
 #include <set>
 
@@ -15,6 +20,83 @@ bool digest(const std::string& s)
       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
     });
 }
+
+std::string
+assembledArtifactCoordinate(const NativeSplitCandidate& candidate,
+                            const NativeSelectionRoleV3& role,
+                            const std::vector<std::uint64_t>& planningIndices,
+                            const std::set<std::uint64_t>& layers, bool wholeGraph,
+                            const std::optional<qwen::QwenTpRankRange>& uniformSlice)
+{
+  const auto& plan = candidate.executionPlan;
+  const auto stage = std::find_if(plan.stageLayout.begin(), plan.stageLayout.end(),
+    [&](const auto& value) {
+      return std::find(value.unitRoleIds.begin(), value.unitRoleIds.end(), role.role) !=
+             value.unitRoleIds.end();
+    });
+  const auto roleIndex = std::distance(plan.roles.begin(),
+    std::find(plan.roles.begin(), plan.roles.end(), role.role));
+  const auto stageIndex = stage == plan.stageLayout.end() ? roleIndex :
+    std::distance(plan.stageLayout.begin(), stage);
+  // V1 step plans have one logical stage whose roles are the tensor ranks.
+  const auto stageCount = plan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V1 ? 1U :
+    plan.stageLayout.empty() ? plan.roles.size() : plan.stageLayout.size();
+  const bool sharded = !candidate.tensorIdentityByRole.empty() ||
+    std::any_of(candidate.tensorDegreesByRole.begin(), candidate.tensorDegreesByRole.end(),
+      [](const auto& value) { return value.second > 1; });
+  const bool hybrid = sharded && stageCount > 1;
+  const auto decimal = [](auto value) { return std::to_string(value); };
+  ndn::Name coordinate;
+  if (candidate.splitter.name == "native-automatic-onnx-stage") {
+    if (planningIndices.empty())
+      throw std::invalid_argument("automatic artifact has no source nodes");
+    const auto begin = planningIndices.front();
+    const auto end = planningIndices.back() + 1;
+    const bool prefix = begin == 0;
+    if (stageCount != 2 || end - begin != planningIndices.size() ||
+        (prefix ? role.role != candidate.inputIngressRole
+                : role.role != candidate.resultEgressRole))
+      throw std::invalid_argument("automatic artifact has an invalid source cut");
+    coordinate.append("graph").append("automatic").append("cut")
+      .append(decimal(prefix ? end : begin)).append("side").append(prefix ? "prefix" : "suffix");
+  }
+  else if (!layers.empty() && (hybrid || role.tensorParallelDegree > 1 || !wholeGraph)) {
+    if (hybrid)
+      coordinate.append("hybrid").append("stage").append(decimal(stageIndex));
+    else if (role.tensorParallelDegree > 1)
+      coordinate.append("tp");
+    else
+      coordinate.append("pp").append("stage").append(decimal(stageIndex));
+    coordinate.append("layers").append(decimal(*layers.begin())).append(decimal(*layers.rbegin() + 1));
+    if (hybrid || role.tensorParallelDegree > 1)
+      coordinate.append("degree").append(decimal(std::max<std::uint64_t>(1, role.tensorParallelDegree)))
+        .append("rank").append(decimal(role.tensorParallelRank));
+  }
+  else if (wholeGraph) {
+    coordinate.append("graph").append("full");
+  }
+  else {
+    coordinate.append("graph").append("semantic").append("component")
+      .append(ndn::name::Component(role.role));
+  }
+
+  auto slice = uniformSlice;
+  if (!role.tensorShardV1.empty()) {
+    const auto shard = parseNativeTensorShardV1(role.tensorShardV1);
+    const auto& axes = shard.at("axes");
+    if (axes.size() != 2 || axes[0].at("axis") != "ffn-channel" || axes[1].at("axis") != "kv-group")
+      throw std::invalid_argument("Qwen artifact has invalid shard coordinates");
+    slice = qwen::QwenTpRankRange{
+      axes[1].at("begin").get<std::uint64_t>(), axes[1].at("end").get<std::uint64_t>(),
+      axes[0].at("begin").get<std::uint64_t>(), axes[0].at("end").get<std::uint64_t>()};
+  }
+  const auto profile = slice ? "kv-" + decimal(slice->kvBegin) + "-" + decimal(slice->kvEnd) +
+    "-ffn-" + decimal(slice->ffnBegin) + "-" + decimal(slice->ffnEnd) :
+    role.tensorParallelDegree > 1 ? "uniform" : "whole";
+  coordinate.append("entry").append("region").append("profile").append(profile);
+  return coordinate.toUri(ndn::name::UriFormat::ALTERNATE);
+}
+
 std::string roleKind(std::string name)
 {
   std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
@@ -344,6 +426,7 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
   const auto initializers = metadata.at("initializers").get<std::vector<std::string>>();
   const auto postprocessing = nativeParseJson(candidate.postprocessingJson);
   const std::regex layerPattern("layer-([0-9]+)");
+  std::optional<qwen::QwenTpShape> qwenShape;
   std::vector<NativeSelectionRoleV3> result;
   for (const auto& name : candidate.executionPlan.roles) {
     control.requireActive();
@@ -485,6 +568,21 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
           role.tensorParallelDegree = degree;
           role.tensorParallelRank = rank;
         }
+        std::optional<qwen::QwenTpRankRange> uniformSlice;
+        if (role.adapterId == "qwen" && role.tensorParallelDegree > 1 && role.tensorShardV1.empty()) {
+          if (!qwenShape) {
+            const auto totalLayers = std::count_if(m_model.graph.topologicalOrder.begin(),
+              m_model.graph.topologicalOrder.end(),
+              [&](const auto& node) { return std::regex_match(node, layerPattern); });
+            qwenShape = qwen::deriveQwenTpShapeFromGraphMetadata(m_sourceGraph.graphMetadataJson,
+              static_cast<std::uint64_t>(totalLayers));
+          }
+          const auto ranges = qwen::resolveQwenTpRankRanges(*qwenShape,
+            std::vector<std::uint64_t>(role.tensorParallelDegree, 1));
+          uniformSlice = ranges.at(role.tensorParallelRank);
+        }
+        role.artifactCoordinate = assembledArtifactCoordinate(candidate, role, planningIndices,
+          layers, owned.size() == m_sourceGraph.nodeNames.size(), uniformSlice);
         role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
       }
       result.push_back(std::move(role));

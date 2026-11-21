@@ -3541,6 +3541,45 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
   BOOST_REQUIRE_EQUAL(loaded.planningCache->candidates.size(), 1u);
   const auto& prepared = loaded.planningCache->candidates.front();
   BOOST_REQUIRE_EQUAL(prepared.roles.size(), 3u);
+  auto pipelineConfiguration = configuration;
+  auto& pp = pipelineConfiguration["splitter"];
+  pp["tensor_degrees"] = {1, 1};
+  pp.erase("rank_artifact_digests_by_role");
+  const auto pipeline = NativeRequestCatalog::load(
+    nativeCanonicalJson(pipelineConfiguration), source, control);
+  const auto& pipelineRoles = pipeline.planningCache->candidates.front().roles;
+  BOOST_REQUIRE_EQUAL(pipelineRoles.size(), 2U);
+  BOOST_CHECK_EQUAL(pipelineRoles.front().artifactCoordinate,
+                    "/pp/stage/0/layers/0/1/entry/region/profile/whole");
+  BOOST_CHECK_EQUAL(pipelineRoles.back().artifactCoordinate,
+                    "/pp/stage/1/layers/1/4/entry/region/profile/whole");
+
+  auto tensorConfiguration = configuration;
+  auto& tp = tensorConfiguration["splitter"];
+  tp["roles"] = {"first"};
+  tp["layer_ranges"] = {{0, 4}};
+  tp["tensor_degrees"] = {2};
+  tp["result_egress_role"] = "first";
+  for (auto* key : {"artifact_digests_by_role", "weight_bytes_by_role", "resources_by_role"})
+    tp[key].erase("last");
+  for (auto* key : {"state_inputs", "state_outputs"}) {
+    auto& states = tensorConfiguration[key];
+    states["first"].update(states.at("last"));
+    states.erase("last");
+  }
+  tensorConfiguration["model"]["graph_digest"] =
+    "sha256:6fb60cae9ba37ebd9963f5ffd65e070ae563b8d5b85f97eb6409b8a0793ccaef";
+  const auto tensor = NativeRequestCatalog::load(
+    nativeCanonicalJson(tensorConfiguration), source, control);
+  const auto& tensorRoles = tensor.planningCache->candidates.front().roles;
+  BOOST_REQUIRE_EQUAL(tensorRoles.size(), 2U);
+  for (std::size_t rank = 0; rank < tensorRoles.size(); ++rank) {
+    const ndn::Name coordinate(tensorRoles[rank].artifactCoordinate);
+    BOOST_CHECK(coordinate.getPrefix(-4) ==
+      ndn::Name("/tp/layers/0/4/degree/2/rank").append(std::to_string(rank)));
+  }
+  BOOST_CHECK_EQUAL(pipeline.model.canonicalSourceDigest, loaded.model.canonicalSourceDigest);
+  BOOST_CHECK_EQUAL(tensor.model.canonicalSourceDigest, loaded.model.canonicalSourceDigest);
   const NativeRequestControl regionControl{"/fixture/source-region", 1, control.deadline, {}};
   const auto& stages = prepared.candidate.executionPlan.stageLayout;
   BOOST_REQUIRE_EQUAL(stages.size(), 2u);
@@ -4087,6 +4126,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
     for (std::size_t i = 0; i < warm.roles.size(); ++i) {
       BOOST_CHECK_EQUAL(warm.roles[i].recipeDigest, prepared.roles[i].recipeDigest);
       BOOST_CHECK_EQUAL(warm.roles[i].tensorShardV1, prepared.roles[i].tensorShardV1);
+      BOOST_CHECK_EQUAL(warm.roles[i].artifactCoordinate, prepared.roles[i].artifactCoordinate);
     }
     const auto& units = prepared.candidate.executionPlan.stageLayout.front().unitRoleIds;
     BOOST_REQUIRE_EQUAL(units.size(), expectedKvEnds.size());
@@ -4187,6 +4227,25 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
   }
   for (const auto& role : prepared.roles) {
     BOOST_CHECK_EQUAL(!role.tensorShardV1.empty(), expectedKvRanges.count(role.role) != 0);
+    if (const auto expected = expectedKvRanges.find(role.role); expected != expectedKvRanges.end()) {
+      const auto begin = expected->second.first;
+      const auto end = expected->second.second;
+      // The fixture's 384 output channels are split in blocks of 32 per KV head.
+      const auto profile = "/entry/region/profile/kv-" + std::to_string(begin) + "-" +
+        std::to_string(end) + "-ffn-" + std::to_string(32 * begin) + "-" + std::to_string(32 * end);
+      BOOST_CHECK_EQUAL(role.artifactCoordinate, "/hybrid/stage/0/layers/0/1/degree/" +
+        std::to_string(firstRankWeights.size()) + "/rank/" +
+        std::to_string(role.tensorParallelRank) + profile);
+    }
+    else if (role.tensorParallelDegree > 1) {
+      const auto kv = shape.kvHeads / role.tensorParallelDegree;
+      const auto ffn = shape.ffn / role.tensorParallelDegree;
+      const auto rank = role.tensorParallelRank;
+      const auto profile = "kv-" + std::to_string(rank * kv) + "-" +
+        std::to_string((rank + 1) * kv) + "-ffn-" + std::to_string(rank * ffn) + "-" +
+        std::to_string((rank + 1) * ffn);
+      BOOST_CHECK(ndn::Name(role.artifactCoordinate).at(-1) == ndn::name::Component(profile));
+    }
     auto projection = stageWindowProjection(executionPlan);
     projection.provider = options.providerIdentity;
     projection.fixedProviderByRole.clear();
@@ -4262,6 +4321,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
                           std::invalid_argument);
       }
       const auto cold = prepareNativeCanonicalOnnxRole(fetchers, assemblyProjection, options);
+      BOOST_CHECK_EQUAL(cold.metadata.at("artifactCoordinate"), role.artifactCoordinate);
       const auto cacheDir = std::filesystem::path(cold.path).parent_path();
       const auto leaf = role.recipeDigest.substr(7);
       BOOST_CHECK_EQUAL(cacheDir.filename().string(), role.tensorShardV1.empty() ?
@@ -4269,6 +4329,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
       const auto beforeReopen = sourceFetches;
       const auto reopened = tryLoadNativeCanonicalOnnxRoleFromCache(projection, options);
       BOOST_REQUIRE(reopened);
+      BOOST_CHECK_EQUAL(reopened->metadata.at("artifactCoordinate"), role.artifactCoordinate);
       if (!role.tensorShardV1.empty()) {
         std::ifstream manifestInput(cacheDir / "manifest.json");
         BOOST_REQUIRE(static_cast<bool>(manifestInput));
@@ -4349,6 +4410,20 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
       for (const auto& entry : entries) {
         actualEntries.insert(entry.entryId);
         BOOST_CHECK_EQUAL(entry.unitId, role.selectedRole);
+        const auto roleCoordinate = ndn::Name(role.artifactCoordinate);
+        const auto entryKey = "artifactCoordinate." + entry.entryId;
+        const auto entryCoordinate = ndn::Name(cold.metadata.at(entryKey));
+        BOOST_CHECK_EQUAL(reopened->metadata.at(entryKey), cold.metadata.at(entryKey));
+        BOOST_CHECK(entryCoordinate.getPrefix(-4) == roleCoordinate.getPrefix(-4));
+        if (entry.kind == "ATTN" || entry.kind == "MLP") {
+          const std::string label = entry.kind == "ATTN" ? "attn-" : "mlp-";
+          BOOST_CHECK(entryCoordinate[-3] == ndn::name::Component(label + std::to_string(entry.layer)));
+          BOOST_CHECK(entryCoordinate[-1] == roleCoordinate[-1]);
+        }
+        else {
+          BOOST_CHECK(entryCoordinate[-3] == ndn::name::Component(entry.kind == "INIT" ? "init" : "head"));
+          BOOST_CHECK(entryCoordinate[-1] == ndn::name::Component("whole"));
+        }
         if (entry.kind == "INIT") BOOST_CHECK(first);
         else if (entry.kind == "HEAD") {
           BOOST_CHECK(!first);

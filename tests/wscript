@@ -1344,6 +1344,7 @@ def build(bld):
         'ProtectedRuntime.cpp', 'NativeProtectedProvider.cpp', 'NativeRequestEnvelope.cpp']
     bld.program(target='../compact-control-asan', name='compact-control-asan',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-cross-provider-group.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp'),

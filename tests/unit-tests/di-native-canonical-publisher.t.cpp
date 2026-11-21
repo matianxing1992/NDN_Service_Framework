@@ -1353,6 +1353,19 @@ BOOST_AUTO_TEST_CASE(GeneratedMultiLayerModelSplitsAndAssemblesWithCleanup)
   BOOST_REQUIRE_EQUAL(roles.size(), 2U);
   BOOST_REQUIRE_EQUAL(roles[0].nodeIndices.size(), 3U);
   BOOST_REQUIRE_EQUAL(roles[1].nodeIndices.size(), 1U);
+  BOOST_CHECK_EQUAL(roles[0].artifactCoordinate,
+                    "/graph/semantic/component/%2Frole%2F0/entry/region/profile/whole");
+  BOOST_CHECK_EQUAL(roles[1].artifactCoordinate,
+                    "/graph/semantic/component/%2Frole%2F1/entry/region/profile/whole");
+  auto automatic = candidate;
+  automatic.splitter.name = "native-automatic-onnx-stage";
+  automatic.candidateDigest = automatic.computedDigest();
+  const auto automaticRoles = preparer.prepare(inspected, automatic, requestControl);
+  BOOST_REQUIRE_EQUAL(automaticRoles.size(), 2U);
+  BOOST_CHECK_EQUAL(automaticRoles[0].artifactCoordinate,
+                    "/graph/automatic/cut/3/side/prefix/entry/region/profile/whole");
+  BOOST_CHECK_EQUAL(automaticRoles[1].artifactCoordinate,
+                    "/graph/automatic/cut/3/side/suffix/entry/region/profile/whole");
   auto foreignState = candidate;
   foreignState.roleStateOutputsByRole[firstRole] = {
     {"Y", "float32", {std::int64_t{1}, std::int64_t{2}}, std::uint64_t{8}}};

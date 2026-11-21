@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantTypes.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-automatic-shape-seed.hpp"
 #include "ndn-service-framework/PublishedContentName.hpp"
 
@@ -90,6 +91,8 @@ struct NativeSelectionRoleV3
   std::uint64_t tensorParallelDegree = 0;
   std::uint64_t tensorParallelRank = 0;
   std::string tensorShardV1;
+  // Source-prepared coordinate for the assembled role's local record.
+  std::string artifactCoordinate;
   std::string automaticContractDigest;
 };
 
@@ -188,6 +191,8 @@ struct NativeSelectionProjectionV3
   std::string fixedRoleReference;
   // Current invocation's protected model-key table reference; never fixed state.
   std::optional<NativeJson> modelObjectKeys;
+  // Model-path coordinates selected by the requester for the current capsule table.
+  std::optional<NativeModelPathFacts> modelKeyPath;
   // Provider-local, nonsecret stored-publication/key fingerprint. Set only
   // after current grant and recipient-key admission; serializers omit it.
   std::string storedModelCacheIdentity;

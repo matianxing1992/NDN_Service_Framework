@@ -768,6 +768,8 @@ void
 bindNativeRunnerOutputScopes(const NativeSelectionProjectionV3& projection,
                              NativeModelRunnerSpec& spec)
 {
+  if (!projection.assemblyContract().artifactCoordinate.empty())
+    spec.metadata["artifactCoordinate"] = projection.assemblyContract().artifactCoordinate;
   const auto roleSpec = roleSpecFromSelectionProjectionV3(
     projection, projection.provider);
   if (projection.dataflow.terminalResponseOwner) {
@@ -3781,6 +3783,9 @@ prepareNativeCanonicalOnnxRole(
              << jsonEscape(options.providerIdentity);
     if (!projection.assemblyContract().tensorShardV1.empty())
       manifest << ",\"tensorShardV1\":" << jsonEscape(projection.assemblyContract().tensorShardV1);
+    if (!projection.assemblyContract().artifactCoordinate.empty())
+      manifest << ",\"artifactCoordinate\":"
+               << jsonEscape(projection.assemblyContract().artifactCoordinate);
     if (hasExternalInitializer) {
       manifest << ",\"assembledModelBytes\":" << graphBytes
                << ",\"externalInitializerBytes\":" << materializedFiles.initializerBytes

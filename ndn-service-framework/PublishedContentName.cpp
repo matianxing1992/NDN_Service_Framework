@@ -39,10 +39,10 @@ bool isModelCoordinateKind(ContentDataKind kind)
     kind == ContentDataKind::Assignment;
 }
 
-/** N4 rows that name a `<ModelPath>`; a fixed assignment and a plain input do not carry one. */
+/** N4 rows that name a `<ModelPath>`. */
 bool roleNeedsModelPath(ContentSemanticRole role)
 {
-  return role != ContentSemanticRole::None && role != ContentSemanticRole::FixedAssignment &&
+  return role != ContentSemanticRole::None &&
     role != ContentSemanticRole::SemanticInput && role != ContentSemanticRole::BlobObject;
 }
 

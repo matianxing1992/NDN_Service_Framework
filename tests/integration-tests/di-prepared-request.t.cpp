@@ -2727,7 +2727,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   const auto encryptedRepoObjects = repoOwner.repo->list();
   BOOST_CHECK(std::any_of(encryptedRepoObjects.begin(), encryptedRepoObjects.end(),
     [] (const auto& manifest) {
-      return manifest.objectType == "encrypted-large-data-envelope";
+      return manifest.objectType == "original-packet-set" && !manifest.publicationIdentity.empty();
     }));
 #endif
   const auto package = ndnsf::di::DiPreparedModelTestAccess::package(prepared);
@@ -2749,7 +2749,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   NativeProviderOfferV3Config offerConfig;
   offerConfig.provider = providerName;
   offerConfig.service = serviceName;
-  offerConfig.bootEpoch = providerName + ":" + providerBootId;
+  offerConfig.bootEpoch = providerBootId;
   offerConfig.signerKeyId = offerKeyId;
   offerConfig.acceptedRoles = roles;
   offerConfig.backends = {"onnxruntime-cpu"};

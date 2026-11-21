@@ -427,7 +427,7 @@ nativeModelObjectKeyContext(const NativeSelectionProjectionV3& projection,
        projection.ackClosedDigest, projection.offerDigest, projection.grantDigest,
        projection.securityPolicySnapshotDigest, role.modelManifestDigest, role.artifactDigest,
        role.graphDigest}) requireDigest(digest);
-  return NativeJson{{"schema", "ndnsf-di-model-object-key-context-v1"},
+  NativeJson context{{"schema", "ndnsf-di-model-object-key-context-v1"},
     {"requester", requester.toUri(ndn::name::UriFormat::CANONICAL)},
     {"service", service.toUri(ndn::name::UriFormat::CANONICAL)},
     {"provider", ndn::Name(projection.provider).toUri(ndn::name::UriFormat::CANONICAL)},
@@ -443,6 +443,11 @@ nativeModelObjectKeyContext(const NativeSelectionProjectionV3& projection,
     {"graphDigest", role.graphDigest}, {"protectionEpoch", role.protectionEpoch},
     {"recipientCertificate", certificate.toUri(ndn::name::UriFormat::CANONICAL)},
     {"recipientPublicKeyDigest", publicKeyDigest}, {"expiresAtMs", expiresAtMs}};
+  if (projection.modelKeyPath) {
+    const auto& path = *projection.modelKeyPath;
+    context["modelPath"] = {path.family, path.size, path.quantization, path.revisionLabel};
+  }
+  return context;
 }
 
 ndn_service_framework::LargeDataPublishResult

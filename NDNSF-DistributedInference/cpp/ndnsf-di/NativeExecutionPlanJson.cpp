@@ -132,6 +132,8 @@ void visitRoleFields(const NativeSelectionRoleV3& value, Sink&& sink)
   }
   if (!value.tensorShardV1.empty())
     sink("tensor_shard_v1", value.tensorShardV1);
+  if (!value.artifactCoordinate.empty())
+    sink("artifact_coordinate", value.artifactCoordinate);
   sink("merge_kind", value.mergeKind);
   sink("postprocess_identity", value.postprocessIdentity);
   sink("postprocess_output_name", value.postprocessOutputName);
@@ -683,6 +685,19 @@ validateSelectionRoleFields(const NativeSelectionRoleV3& role,
        role.expectedOutputs.front().name != role.postprocessOutputName ||
        role.expectedOutputs.front().dtype != "float32"))
     throw std::invalid_argument("V3 native postprocess role has invalid CPU or tensor contracts");
+  if (!role.artifactCoordinate.empty()) {
+    if (validNativePostprocess || role.artifactCoordinate.size() > 512)
+      throw std::invalid_argument("invalid assembled artifact coordinate");
+    const ndn::Name coordinate(role.artifactCoordinate);
+    if (coordinate.size() < 6 || coordinate.toUri(ndn::name::UriFormat::ALTERNATE) !=
+        role.artifactCoordinate || coordinate[-4] != ndn::name::Component("entry") ||
+        coordinate[-3] != ndn::name::Component("region") ||
+        coordinate[-2] != ndn::name::Component("profile") ||
+        std::any_of(coordinate.begin(), coordinate.end(), [](const auto& component) {
+          return component.type() != ndn::tlv::GenericNameComponent || component.value_size() == 0;
+        }))
+      throw std::invalid_argument("invalid assembled artifact coordinate");
+  }
   if (hasAssemblyIdentity && (validNativePostprocess ? !completeNativeIdentity :
       (!completeAssemblyIdentity || !completeAssemblyRecipe))) {
     throw std::invalid_argument(
@@ -732,6 +747,7 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
   role.tensorParallelDegree = node.get<std::uint64_t>("tensor_parallel_degree", 0);
   role.tensorParallelRank = node.get<std::uint64_t>("tensor_parallel_rank", 0);
   role.tensorShardV1 = node.get<std::string>("tensor_shard_v1", "");
+  role.artifactCoordinate = node.get<std::string>("artifact_coordinate", "");
   role.mergeKind = node.get<std::string>("merge_kind", "");
   role.postprocessIdentity = node.get<std::string>(
     "postprocess_identity", "");
@@ -763,6 +779,7 @@ sameAssembly(const NativeSelectionRoleV3& left,
          left.tensorParallelDegree == right.tensorParallelDegree &&
          left.tensorParallelRank == right.tensorParallelRank &&
          left.tensorShardV1 == right.tensorShardV1 &&
+         left.artifactCoordinate == right.artifactCoordinate &&
          left.automaticContractDigest == right.automaticContractDigest &&
           (!compareRecipe || left.recipeDigest == right.recipeDigest) &&
          left.roleKind == right.roleKind && left.adapterId == right.adapterId &&
@@ -1715,6 +1732,9 @@ void restoreSelectionRoleShapes(NativeSelectionRoleV3& role, const NativeJson& n
     if (node.contains("tensor_shard_v1") &&
         (!node.at("tensor_shard_v1").is_string() || role.tensorShardV1.empty()))
       throw std::invalid_argument("missing or invalid typed tensor_shard_v1");
+    if (node.contains("artifact_coordinate") &&
+        (!node.at("artifact_coordinate").is_string() || role.artifactCoordinate.empty()))
+      throw std::invalid_argument("invalid typed assembled artifact coordinate");
     const auto restore = [&node] (auto& contracts, const char* key) {
       if (contracts.empty()) return;
       if (!node.contains(key) || !node.at(key).is_array() ||
@@ -2331,6 +2351,24 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     projection.protectedKvRestore = typedRoot.at("protected_kv_restore");
   if (typedRoot.contains("model_object_keys"))
     projection.modelObjectKeys = typedRoot.at("model_object_keys");
+  if (typedRoot.contains("model_key_path")) {
+    const auto& path = typedRoot.at("model_key_path");
+    if (!projection.modelObjectKeys || !path.is_array() || path.size() != 4 ||
+        !std::all_of(path.begin(), path.end(), [](const auto& component) {
+          return component.is_string();
+        }))
+      throw std::invalid_argument("invalid Selection model key path");
+    ndn_service_framework::PublishedContentName content;
+    content.kind = ndn_service_framework::ContentDataKind::ModelFile;
+    content.semanticRole = ndn_service_framework::ContentSemanticRole::ModelManifest;
+    content.modelFamily = path[0].get<std::string>();
+    content.modelSize = path[1].get<std::string>();
+    content.quantization = path[2].get<std::string>();
+    content.sourceRevisionLabel = path[3].get<std::string>();
+    (void)content.modelPathComponents();
+    projection.modelKeyPath = NativeModelPathFacts{
+      content.modelFamily, content.modelSize, content.quantization, content.sourceRevisionLabel};
+  }
   if (projection.conversationStateReference) {
     if (!projection.conversationTurnBinding ||
         projection.conversationStateReference->conversationId !=
@@ -3128,6 +3166,10 @@ NativeJson selectionInvocationFields(const NativeSelectionProjectionV3& value,
   if (value.conversationTurnBinding) root["conversation_turn_binding"] = jsonValue(*value.conversationTurnBinding);
   if (value.protectedKvRestore) root["protected_kv_restore"] = *value.protectedKvRestore;
   if (value.modelObjectKeys) root["model_object_keys"] = *value.modelObjectKeys;
+  if (value.modelKeyPath) {
+    const auto& path = *value.modelKeyPath;
+    root["model_key_path"] = {path.family, path.size, path.quantization, path.revisionLabel};
+  }
   if (value.hasGrantBinding) {
     root["grant_binding"] = {{"provider", value.provider}, {"request_id", value.requestId},
       {"attempt", value.attempt}, {"plan_core_digest", value.planCoreDigest},
@@ -3651,6 +3693,20 @@ void validateFixedRoleSource(const NativeFixedRoleSourceV1& source)
       source.plaintextSize > (4U << 20))
     throw std::invalid_argument("fixed role source identity or bounds are invalid");
 }
+
+bool
+matchesLegacyFixedRoleName(const ndn::Name& name, std::size_t offset,
+                           const std::string& role, const std::string& digest)
+{
+  return name.size() == offset + 10 &&
+    name[offset] == ndn::name::Component("NDNSF-DI") &&
+    name[offset + 1] == ndn::name::Component("assignment") &&
+    name[offset + 2] == ndn::name::Component("model") &&
+    name[offset + 4] == ndn::name::Component("ROLE") &&
+    ndn_service_framework::matchesNamingLabelComponent(name[offset + 5], role) &&
+    name[offset + 6] == ndn_service_framework::makeNamingDigestComponent(digest.substr(7)) &&
+    name[offset + 7] == ndn::name::Component("PROTECTED");
+}
 } // namespace
 
 void nativeValidateFixedRoleSourceProducer(const NativeFixedRoleSourceV1& source,
@@ -3661,13 +3717,17 @@ void nativeValidateFixedRoleSourceProducer(const NativeFixedRoleSourceV1& source
   const ndn::Name name(source.dataName);
   const auto inferred = ndn_service_framework::ProtectedBlobManifest::inferDataProducer(name);
   const auto offset = producer.size();
-  if (producer.empty() || !inferred || *inferred != producer || name.size() != offset + 10 ||
-      name[offset] != ndn::name::Component("NDNSF-DI") ||
-      name[offset + 1] != ndn::name::Component("assignment") ||
-      name[offset + 2] != ndn::name::Component("model") ||
-      name[offset + 4] != ndn::name::Component("ROLE") ||
-      !ndn_service_framework::matchesNamingLabelComponent(name[offset + 5], role) ||
-      name[offset + 6] != ndn_service_framework::makeNamingDigestComponent(source.plaintextDigest.substr(7)))
+  // The protected manifest authenticates the representation tail and model coordinates.
+  // The caller separately checks the reference's plaintext commitment before installing the role.
+  const bool semantic = name.size() == offset + 12 &&
+    name[offset] == ndn::name::Component("NDNSF-DI") &&
+    name[offset + 1] == ndn::name::Component("assignment") &&
+    name[offset + 5] == ndn::name::Component("revision") &&
+    name[offset + 7] == ndn::name::Component("role") &&
+    ndn_service_framework::matchesNamingLabelComponent(name[offset + 8], role) &&
+    name[offset + 9] == ndn::name::Component("rep");
+  if (producer.empty() || !inferred || *inferred != producer ||
+      (!semantic && !matchesLegacyFixedRoleName(name, offset, role, source.plaintextDigest)))
     throw std::invalid_argument("fixed source Producer, role or plaintext name commitment mismatch");
 }
 
@@ -3710,8 +3770,8 @@ nativeValidateModelObjectKeyTableName(const NativeFixedRoleSourceV1& source,
       name[offset + 12].type() == ndn::tlv::GenericNameComponent &&
       name[offset + 12].value_size() == 32 &&
       name[offset + 13] == ndn::name::Component("DATA")) {
-    const auto facts = nativeModelPathFacts(projection.plan.modelName, std::string(),
-      projection.plan.modelFamily, std::string());
+    const auto facts = projection.modelKeyPath.value_or(nativeModelPathFacts(
+      projection.plan.modelName, std::string(), projection.plan.modelFamily, std::string()));
     const auto modelPath = ndn::Name().append(facts.family).append(facts.size)
       .append(facts.quantization).append("revision").append(facts.revisionLabel);
     if (name.getSubName(offset + 2, modelPath.size()) != modelPath ||
@@ -3721,7 +3781,9 @@ nativeValidateModelObjectKeyTableName(const NativeFixedRoleSourceV1& source,
     return;
   }
   // A capsule published before this shape keeps its assignment name and stays readable.
-  nativeValidateFixedRoleSourceProducer(source, requester, projection.selectedRoleContract().selectedRole);
+  if (!matchesLegacyFixedRoleName(name, offset, projection.selectedRoleContract().selectedRole,
+                                  source.plaintextDigest))
+    throw std::invalid_argument("capsule table name does not match its source kind");
 }
 
 ndn_service_framework::PublishedContentName nativeFixedRoleSourceContentName(
@@ -3731,12 +3793,19 @@ ndn_service_framework::PublishedContentName nativeFixedRoleSourceContentName(
     throw std::invalid_argument("fixed source metadata differs from its execution owner");
   ndn_service_framework::PublishedContentName content;
   content.kind = ndn_service_framework::ContentDataKind::Assignment;
+  content.semanticRole = ndn_service_framework::ContentSemanticRole::FixedAssignment;
   content.label = fixed.roleOwner()->selectedRole;
   content.modelName = projection.plan.modelName;
   const auto& modelIdentity = fixed.roleOwner()->modelManifestDigest;
   if (modelIdentity.size() != 71 || modelIdentity.compare(0, 7, "sha256:") != 0)
     throw std::invalid_argument("fixed role source lacks verified model identity");
   content.modelIdentity = modelIdentity.substr(7);
+  const auto facts = nativeModelPathFacts(projection.plan.modelName, std::string(),
+    projection.plan.modelFamily, std::string());
+  content.modelFamily = facts.family;
+  content.modelSize = facts.size;
+  content.quantization = facts.quantization;
+  content.sourceRevisionLabel = facts.revisionLabel;
   content.encode();
   return content;
 }
@@ -3754,8 +3823,8 @@ nativeCapsuleContentName(const NativeSelectionProjectionV3& projection,
   content.modelName = projection.plan.modelName;
   const auto& modelIdentity = fixed.roleOwner()->modelManifestDigest;
   content.modelIdentity = modelIdentity.substr(7);
-  const auto facts = nativeModelPathFacts(projection.plan.modelName, std::string(),
-    projection.plan.modelFamily, std::string());
+  const auto facts = projection.modelKeyPath.value_or(nativeModelPathFacts(
+    projection.plan.modelName, std::string(), projection.plan.modelFamily, std::string()));
   content.modelFamily = facts.family;
   content.modelSize = facts.size;
   content.quantization = facts.quantization;

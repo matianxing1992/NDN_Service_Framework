@@ -2270,9 +2270,7 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
       const auto wire = nativeFixedRoleAssignmentV1ToJson(fixed);
       const auto digest = nativePlanningDigest(wire);
       auto name = nativeFixedRoleSourceContentName(projection, fixed)
-        .contentPrefix(ndn::Name(observedRuntime.requesterIdentity), digest.substr(7));
-      name.append("PROTECTED")
-        .append(ndn_service_framework::makeNamingDigestComponent(std::string(64, 'a')))
+        .representationPrefix(ndn::Name(observedRuntime.requesterIdentity), std::string(64, 'a'))
         .append("DATA");
       return NativeFixedRoleSourceV1{name.toUri(ndn::name::UriFormat::CANONICAL), digest,
         wire.size(), std::make_shared<int>(1)};

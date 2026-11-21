@@ -704,7 +704,6 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
   BOOST_CHECK_EQUAL(changedCatalog.model.descriptor.modelDigest(),
                     loaded.model.descriptor.modelDigest());
   for (const bool interrupted : {false, true}) {
-    const auto prefix = ndn::Name("/model-preparer/models").appendVersion(interrupted ? 5 : 4);
     const auto state = privateDirectory.path / (interrupted ? "partial" : "ready");
     auto initialIo = writerIo;
     if (interrupted) {
@@ -712,27 +711,30 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
         writerIo.commit(std::move(wires), digest);
         throw std::runtime_error("lost commit reply");
       };
-      BOOST_CHECK_THROW(nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
-        stored.handle.repository, prefix, loaded, nativeCanonicalJson(storedConfiguration),
-        initialIo, state), std::runtime_error);
+      BOOST_REQUIRE_EXCEPTION(nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
+        stored.handle.repository, {}, loaded, nativeCanonicalJson(storedConfiguration),
+        initialIo, state), std::runtime_error, [] (const std::runtime_error& error) {
+          return std::string(error.what()) == "lost commit reply";
+        });
     }
     else {
       BOOST_CHECK_NO_THROW(nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
-        stored.handle.repository, prefix, loaded, nativeCanonicalJson(storedConfiguration),
+        stored.handle.repository, {}, loaded, nativeCanonicalJson(storedConfiguration),
         initialIo, state));
     }
     const auto packetsBeforeMismatch = originalPackets.size();
     BOOST_CHECK_THROW(nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
-      stored.handle.repository, prefix, changedCatalog, nativeCanonicalJson(changedConfiguration),
+      stored.handle.repository, {}, changedCatalog, nativeCanonicalJson(changedConfiguration),
       writerIo, state), std::exception);
     BOOST_CHECK_EQUAL(originalPackets.size(), packetsBeforeMismatch);
     const auto recovered = nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
-      stored.handle.repository, prefix, loaded, nativeCanonicalJson(storedConfiguration),
+      stored.handle.repository, {}, loaded, nativeCanonicalJson(storedConfiguration),
       writerIo, state);
+    BOOST_CHECK(nativeStoredModelSemanticPrefix(recovered.handle.rootName.getPrefix(-1)));
     BOOST_CHECK_NO_THROW(nativeOpenStoredPreparedModel(recovered.handle, storedIo, control));
     const auto packetsBeforeReadyHit = originalPackets.size();
     const auto readyHit = nativePublishStoredPreparedModel(storedKeys, stored.handle.producer,
-      stored.handle.repository, prefix, loaded, nativeCanonicalJson(storedConfiguration),
+      stored.handle.repository, {}, loaded, nativeCanonicalJson(storedConfiguration),
       writerIo, state);
     BOOST_CHECK_EQUAL(readyHit.handle.rootWireDigest, recovered.handle.rootWireDigest);
     BOOST_CHECK_EQUAL(readyHit.wireBytes, 0);
@@ -1930,6 +1932,15 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift
       {"candidate_digest", oracle.at("registered_digest")}, {"semantic_partition", oracle.at("partition")}
     }})}}}};
   const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
+  BOOST_REQUIRE(loaded.planningCache);
+  BOOST_REQUIRE_EQUAL(loaded.planningCache->candidates.size(), 1U);
+  const auto& preparedRoles = loaded.planningCache->candidates.front().roles;
+  BOOST_REQUIRE_EQUAL(preparedRoles.size(), 3U);
+  BOOST_CHECK_EQUAL(preparedRoles[0].artifactCoordinate,
+                    "/graph/semantic/component/Front/entry/region/profile/whole");
+  BOOST_CHECK_EQUAL(preparedRoles[1].artifactCoordinate,
+                    "/graph/semantic/component/Branch/entry/region/profile/whole");
+  BOOST_CHECK(preparedRoles[2].artifactCoordinate.empty());
   auto profiledConfiguration = configuration;
   const auto transferProfile = NativeJson{{"schema", "ndnsf-di-request-transfer-profile-v1"},
     {"source_digest", configuration.at("source").at("digest")},

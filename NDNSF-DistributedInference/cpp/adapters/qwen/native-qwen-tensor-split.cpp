@@ -5,6 +5,7 @@
 
 #include <onnx/onnx_pb.h>
 
+#include <ndn-cxx/name.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -3840,6 +3841,24 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
       "DI_NATIVE_ASSEMBLY_ENTRY_SET_REJECTED: " + problem);
   }
   requireRankAssemblyActive(&tableControl);
+  const auto coordinate = spec.metadata.find("artifactCoordinate");
+  if (coordinate != spec.metadata.end()) {
+    const ndn::Name region(coordinate->second);
+    const auto stem = region.getPrefix(-4).append("entry");
+    for (const auto& entry : table) {
+      const bool layerEntry = entry.kind == "ATTN" || entry.kind == "MLP";
+      if (layerEntry && (entry.layer < layerBegin || entry.layer >= layers))
+        throw std::invalid_argument("tensor-parallel entry lies outside its artifact region");
+      const auto label = entry.kind == "ATTN" ? "attn-" + std::to_string(entry.layer) :
+                         entry.kind == "MLP" ? "mlp-" + std::to_string(entry.layer) :
+                         entry.kind == "INIT" ? "init" : "head";
+      auto name = stem;
+      name.append(label).append("profile");
+      name.append(layerEntry ? region.at(-1) : ndn::name::Component("whole"));
+      spec.metadata["artifactCoordinate." + entry.entryId] =
+        name.toUri(ndn::name::UriFormat::ALTERNATE);
+    }
+  }
   spec.metadata["tensorParallelEntries"] = qwenTpEntryTableJson(table);
   // The parent locates its children relative to this directory.
   spec.metadata["tensorParallelEntryRoot"] = modelPath.parent_path().string();
