@@ -2344,13 +2344,16 @@ install_common_system_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     echo "==> Installing common Debian/Ubuntu build packages"
     local packages=(
-      build-essential binutils git pkg-config cmake python3 python3-pip wget curl \
+      build-essential binutils git pkg-config cmake python3 python3-pip wget curl unzip \
       python3-dev python3-setuptools python3-wheel python3-venv \
       autoconf automake libtool m4 bison flex libfl-dev ninja-build \
       libgmp-dev libssl-dev \
       libsqlite3-dev libpcap-dev libsodium-dev zlib1g-dev \
       liblog4cxx-dev sqlite3 libprotobuf-dev protobuf-compiler
     )
+    if (( NDNSF_INSTALL_DI && ! NATIVE_ONLY )); then
+      packages+=(rsync)
+    fi
     # The pinned host toolchain is GCC 10; a fresh 20.04 install ships GCC 9.
     if [[ "$HOST_UBUNTU_VERSION" == "20.04" ]]; then
       packages+=(gcc-10 g++-10)
@@ -2358,9 +2361,6 @@ install_common_system_packages() {
     if (( NDNSF_INSTALL_UAV )); then
       packages+=(libgtkmm-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev libjpeg-dev
                  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav)
-      if (( NDNSF_INSTALL_DI && ! NATIVE_ONLY )); then
-        packages+=(libopencv-dev python3-aiohttp)
-      fi
       for test_option in "${WAF_CONFIGURE_ARGS[@]}"; do
         if [[ "$test_option" == --with-tests ]]; then
           packages+=(xvfb xauth)
@@ -3581,7 +3581,17 @@ install_host_sdk_prerequisites() {
     local source_dir="$workspace/onnx-$onnx_version-source"
     local install_stage="$workspace/onnx-$onnx_version-stage"
     build_dir="$workspace/onnx-$onnx_version-build"
-    run git clone --depth=1 --no-tags --branch "$onnx_ref" "$onnx_url" "$source_dir"
+    if [[ -e "$source_dir" || -L "$source_dir" ]]; then
+      [[ ! -L "$source_dir" && -d "$source_dir/.git" &&
+         "$(git -C "$source_dir" remote get-url origin)" == "$onnx_url" &&
+         -z "$(git -C "$source_dir" status --porcelain --untracked-files=all)" ]] || {
+        echo "Cannot reuse ONNX source checkout: $source_dir" >&2
+        return 1
+      }
+      echo "==> Reusing ONNX source checkout: $source_dir"
+    else
+      run git clone --depth=1 --no-tags --branch "$onnx_ref" "$onnx_url" "$source_dir"
+    fi
     actual_commit="$(git -C "$source_dir" rev-parse HEAD)"
     [[ "$actual_commit" == "$onnx_commit" ]] || {
       echo "ONNX source commit $actual_commit differs from the host SDK lock $onnx_commit" >&2
@@ -4092,7 +4102,6 @@ manifest = py_repoclient.make_manifest(
 assert manifest.sha256
 assert ndnsf_distributed_inference.GenericRepoClient is py_repoclient.RepoClient
 if sys.argv[1] == "1":
-    import aiohttp
     from ndnsf import _ndnsf
 
     loaded = subprocess.check_output(["/usr/bin/ldd", _ndnsf.__file__], text=True)

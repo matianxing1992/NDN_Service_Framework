@@ -448,6 +448,8 @@ install_common_system_packages
         assert "SUDO:" not in result.stdout
     else:
         assert "protobuf-compiler" in result.stdout
+        assert "rsync" in result.stdout
+        assert "unzip" in result.stdout
     assert "gtkmm" not in result.stdout
     assert "gstreamer" not in result.stdout
 
@@ -464,6 +466,8 @@ install_common_system_packages
     for package in ("gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad",
                     "gstreamer1.0-libav"):
         assert package in result.stdout
+    for package in ("libopencv-dev", "python3-aiohttp", "ffmpeg"):
+        assert package not in result.stdout
 
 
 @pytest.mark.parametrize("profile", ["core", "repo", "di", "all"])
