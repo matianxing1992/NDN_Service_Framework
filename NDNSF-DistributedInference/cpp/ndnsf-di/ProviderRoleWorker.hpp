@@ -211,6 +211,10 @@ completeStageTransferObservation(const DependencyEdge& edge,
                                  TensorBundle& bundle,
                                  const std::string& direction);
 
+/** Record the sender side of a committed in-process transfer. */
+void
+markLocalDependencyPublication(const DependencyEdge& edge, const TensorBundle& bundle) noexcept;
+
 class ProviderRoleWorker
 {
 public:

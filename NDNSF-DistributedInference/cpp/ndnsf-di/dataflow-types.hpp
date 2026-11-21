@@ -24,6 +24,8 @@ namespace ndnsf::di {
 // including the planner from this shared value header.
 struct NativeExecutionStepSpec;
 class AutomaticOnnxRequestBinding;
+class LocalDependencyDelivery;
+class LocalPipelineDependencyIo;
 
 // A value held in this process as typed host tensors rather than as an encoded
 // bundle. It is defined beside the codec because it borrows `NamedTensorView`;
@@ -47,6 +49,8 @@ struct TensorBundle
   // Runtime-only observation shared between the worker result and the
   // dependency transport. It is never serialized into the tensor bundle.
   mutable std::shared_ptr<StageTransferObservation> transferObservation;
+  // In-process admission of this value for one sealed consumer edge.
+  std::shared_ptr<const LocalDependencyDelivery> localDelivery = {};
 };
 
 /** Adapter-certified tensor-layout transition at one pipeline boundary. */
@@ -150,6 +154,29 @@ struct DependencyEdge
   std::string publicRequestId;
 };
 
+/** Evidence of one local delivery admitted by both endpoints of a pipeline edge. */
+class LocalDependencyDelivery final
+{
+  friend class LocalPipelineDependencyIo;
+  friend void validateAdmittedTensorBundleForEdge(const DependencyEdge&, const TensorBundle&);
+
+  explicit LocalDependencyDelivery(const DependencyEdge& edge);
+  LocalDependencyDelivery(const LocalDependencyDelivery&) = delete;
+
+  bool matches(const DependencyEdge& edge) const noexcept;
+
+  const std::string m_requestId;
+  const std::uint64_t m_attempt;
+  const std::string m_planDigest;
+  const std::string m_scope;
+  const std::string m_producerRole;
+  const std::string m_consumerRole;
+  const std::string m_plannedDataName;
+  const std::string m_endpointDigest;
+  const std::string m_executionObjectDigest;
+  const std::uint64_t m_round;
+};
+
 /** Fail closed unless a dependency bundle is complete for its sealed edge.
  * V3 uses the runtime manifest's concrete segment/byte counts, while legacy
  * edges may retain zero as an unspecified count. */
@@ -157,6 +184,10 @@ void
 validateTensorBundleForEdge(const DependencyEdge& edge,
                             const TensorBundle& bundle,
                             bool requireReconstructed = true);
+
+/** Adopt a verified wire bundle or a local delivery for this exact consumer edge. */
+void
+validateAdmittedTensorBundleForEdge(const DependencyEdge& edge, const TensorBundle& bundle);
 
 /** Transport identity for one consumer edge, taken from a certified projection.
  *

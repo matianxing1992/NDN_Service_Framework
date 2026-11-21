@@ -323,7 +323,8 @@ NativeWorkStatistics::observeTransfer(const StageTransferObservation& observatio
       observation.wireBytes, observation.interestCount, observation.retryCount,
       startedNs, finishedNs, admittedNs, point, outputReadyNs,
       observation.transportPayloadBytes, observation.metadataBytes,
-      observation.localCopyBytes, observation.transportLocalCopyBytes});
+      observation.localCopyBytes, observation.transportLocalCopyBytes,
+      observation.localDependency});
     m_transferMetadataBytes += bytes;
   }
   catch (...) {
@@ -402,6 +403,7 @@ nativeWorkStatisticsToJson(const NativeWorkStatisticsSnapshot& statistics)
       {"metadataBytes", optionalValue(transfer.metadataBytes)},
       {"localCopyBytes", optionalValue(transfer.localCopyBytes)},
       {"transportLocalCopyBytes", optionalValue(transfer.transportLocalCopyBytes)},
+      {"localDependency", transfer.localDependency},
       {"interestCount", optionalValue(transfer.interestCount)},
       {"retryCount", optionalValue(transfer.retryCount)},
       {"startedSteadyNs", clockValue(transfer.startedSteadyNs)},

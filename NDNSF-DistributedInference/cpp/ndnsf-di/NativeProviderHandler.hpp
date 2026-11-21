@@ -34,8 +34,7 @@ struct NativeProtectedKvCheckpointLimitsV1;
 /**
  * Request-local monotonicity gate for authenticated conversation controls.
  * The provider receives the complete request-scoped history on each poll, so
- * duplicate history and late lower sequence numbers must be distinguished
- * before payload/state processing.
+ * validate the active role/turn binding before advancing its replay state.
  */
 class NativeProviderControlSequenceGuard
 {
@@ -45,7 +44,14 @@ public:
     Accepted,
     Duplicate,
     Reordered,
+    Unbound,
   };
+
+  Decision
+  observeBound(std::uint64_t sequence, bool bindingMatches)
+  {
+    return bindingMatches ? observe(sequence) : Decision::Unbound;
+  }
 
   Decision
   observe(std::uint64_t sequence)

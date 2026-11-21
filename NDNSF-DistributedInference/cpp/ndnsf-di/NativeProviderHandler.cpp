@@ -24,6 +24,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "local-pipeline-dependency-io.hpp"
 #include "request-work-statistics.hpp"
 
 #include "ndn-service-framework/utils.hpp"
@@ -924,6 +925,44 @@ makeNativeProviderTimeoutBudget(const NativeProviderHandlerConfig& config)
   };
 }
 
+bool
+isLocalPipelineDispatch(const ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+                        const NativeSelectionProjectionV3& projection)
+{
+  const auto& dispatch = ctx.assignment().localDispatchRoles;
+  const auto& plan = projection.plan;
+  if (!dispatch || dispatch->size() != 2 || plan.roles.size() != 2 ||
+      !projection.generationContract.enabled || !projection.dataflow.endpointRange ||
+      plan.tensorDegree != 1 || plan.executionPolicy != "DATA_DRIVEN_V2")
+    return false;
+  auto roles = plan.roles;
+  std::sort(roles.begin(), roles.end());
+  if (roles != *dispatch) return false;
+
+  const NativeDependencySpec* activation = nullptr;
+  const NativeDependencySpec* feedback = nullptr;
+  for (const auto& dependency : plan.dependencies) {
+    if (dependency.producers.size() != 1 || dependency.consumers.size() != 1) return false;
+    if (dependency.operationKind == "TOKEN_FEEDBACK" &&
+        dependency.producers == dependency.consumers)
+      continue;
+    if (!dependency.redistributions.empty()) return false;
+    if (dependency.operationKind == "ACTIVATION" || dependency.operationKind == "PIPELINE") {
+      if (activation != nullptr) return false;
+      activation = &dependency;
+    }
+    else if (dependency.operationKind == "TOKEN_FEEDBACK") {
+      if (feedback != nullptr) return false;
+      feedback = &dependency;
+    }
+    else {
+      return false;
+    }
+  }
+  return activation && feedback && activation->producers != activation->consumers &&
+         activation->producers == feedback->consumers && activation->consumers == feedback->producers;
+}
+
 class NativeProviderHandlerState
 {
 public:
@@ -976,6 +1015,13 @@ public:
           const auto now = static_cast<uint64_t>(
             std::max<long long>(0, epochMs()));
           executionLeaseTable->cleanupExpired(now);
+          {
+            std::lock_guard<std::mutex> completedLock(executionLeaseMutex);
+            for (auto it = completedRolesByLease.begin(); it != completedRolesByLease.end();) {
+              if (it->second.deadline <= now) it = completedRolesByLease.erase(it);
+              else ++it;
+            }
+          }
           lock.lock();
         }
       });
@@ -1004,6 +1050,24 @@ public:
     }
   }
 
+  std::shared_ptr<LocalDependencyAttempt>
+  localDependencyAttempt(const std::shared_ptr<const std::vector<std::string>>& dispatch,
+                         const std::string& identity, std::size_t slots, std::size_t bytes)
+  {
+    std::lock_guard<std::mutex> lock(localDependencyMutex);
+    for (auto it = localDependencies.begin(); it != localDependencies.end();) {
+      if (it->first.expired()) it = localDependencies.erase(it);
+      else ++it;
+    }
+    const auto existing = localDependencies.find(dispatch);
+    if (existing != localDependencies.end()) return existing->second;
+    if (localDependencies.size() >= 128)
+      throw std::length_error("DI_LOCAL_DEPENDENCY_ATTEMPT_CAPACITY");
+    auto attempt = std::make_shared<LocalDependencyAttempt>(identity, slots, bytes);
+    localDependencies.emplace(dispatch, attempt);
+    return attempt;
+  }
+
   void
   completeExecutionLease(
     ndn_service_framework::ProviderExecutionLeaseTable* table,
@@ -1012,6 +1076,7 @@ public:
     const std::string& requesterName,
     const std::string& role,
     std::size_t expectedRoles,
+    std::uint64_t deadline,
     bool completedLocalPlan)
   {
     if (table == nullptr || leaseId.empty()) {
@@ -1021,9 +1086,10 @@ public:
     {
       std::lock_guard<std::mutex> lock(executionLeaseMutex);
       auto& completed = completedRolesByLease[leaseId];
-      completed.insert(role);
+      completed.deadline = deadline;
+      completed.roles.insert(role);
       shouldRelease = completedLocalPlan ||
-        completed.size() >= std::max<std::size_t>(1, expectedRoles);
+        completed.roles.size() >= std::max<std::size_t>(1, expectedRoles);
       if (shouldRelease) {
         completedRolesByLease.erase(leaseId);
       }
@@ -1053,9 +1119,17 @@ public:
   bool executionLeaseCleanupStop = false;
   std::thread executionLeaseCleanupThread;
   std::vector<ExecutionEvidence> executionEvidence;
+  struct LeaseCompletion
+  {
+    std::set<std::string> roles;
+    std::uint64_t deadline = 0;
+  };
   std::mutex executionLeaseMutex;
-  std::map<std::string, std::set<std::string>> completedRolesByLease;
+  std::map<std::string, LeaseCompletion> completedRolesByLease;
   ExecutionAttemptAuthority attemptAuthority;
+  std::mutex localDependencyMutex;
+  std::map<std::weak_ptr<const std::vector<std::string>>, std::shared_ptr<LocalDependencyAttempt>,
+           std::owner_less<>> localDependencies;
 };
 
 void
@@ -2644,6 +2718,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
     std::string activatedRequester;
     std::string activatedRole;
     std::size_t expectedProviderRoles = 1;
+    std::uint64_t activatedLeaseDeadline = 0;
     bool completedLocalPlan = false;
     bool executionStopped = false;
     bool selectionObserved = false;
@@ -2656,6 +2731,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
     bool conversationPromotionStaged = false;
     bool conversationPromotionCommitted = false;
     std::optional<ConversationStateStore::ExecutionAdmission> conversationAdmission;
+    std::shared_ptr<LocalDependencyAttempt> localAttempt;
+    std::optional<ExecutionAttemptKey> localAttemptAuthority;
+    bool localDispatchSucceeded = false;
+    bool localDependencyRoute = false;
     std::unique_ptr<NativeKvRestoreAdmission> kvRestore;
     std::uint64_t recoveryActivationExpiresAtMs = 0;
     std::unique_ptr<NativeCancellationMonitor> cancellationMonitor;
@@ -2667,8 +2746,22 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                     activatedRequester,
                                     activatedRole,
                                     expectedProviderRoles,
+                                    activatedLeaseDeadline,
                                     completedLocalPlan);
       activatedLeaseId.clear();
+    };
+    BOOST_SCOPE_EXIT_ALL(&) {
+      if (localAttempt) {
+        try {
+          if (!localDispatchSucceeded && localAttemptAuthority)
+            state->attemptAuthority.cancel(*localAttemptAuthority);
+          localAttempt->finishRole(ctx.role(), localDispatchSucceeded);
+          completeExecutionLease();
+        }
+        catch (...) {
+          // Scope exit must preserve the already reported work failure.
+        }
+      }
     };
     std::optional<std::string> reportedFailure;
     const auto failInvocation = [&] (const std::string& reason) {
@@ -3074,6 +3167,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ? selectionProjection->plan : state->plan;
       const auto authenticatedGeneration =
         generationConfigFromAuthenticatedRequest(config, selectionProjection);
+      const bool localPipelineDispatch = selectionProjection &&
+        isLocalPipelineDispatch(ctx, *selectionProjection);
       const std::string requestPlanDigest = selectionProjection
         ? selectionProjection->planDigest : config.planDigest;
       selectionObserved = selectionProjection.has_value();
@@ -3232,6 +3327,29 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         logProviderBoundaryStdout("EXECUTION_BINDING_DONE", stageRequestId,
                                   ctx.localProvider().toUri(), role);
       }
+      std::string localDependencyIdentity;
+      if (localPipelineDispatch) {
+        if (ctx.assignment().localDispatchHandlerThreads < 2)
+          throw std::runtime_error("DI_LOCAL_DEPENDENCY_HANDLER_CAPACITY");
+        if (!protectedRuntime || !groupCoordinator || !groupCoordinator->hasCapability())
+          throw std::runtime_error("DI_LOCAL_DEPENDENCY_AUTHORITY_MISSING");
+        const auto& projection = *selectionProjection;
+        const auto& range = *projection.dataflow.endpointRange;
+        if (range.epochCount > std::numeric_limits<std::size_t>::max() / 2)
+          throw std::length_error("DI_LOCAL_DEPENDENCY_EPOCH_RANGE");
+        const auto groupDigest = groupCoordinator->capability().capabilityDigest;
+        localDependencyIdentity = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+          {"requester", ctx.requesterName().toUri()}, {"service", ctx.assignment().service.toUri()},
+          {"request", projection.requestId}, {"attempt", projection.attempt},
+          {"plan", projection.planDigest}, {"selection", ctx.assignment().selectionDigest},
+          {"group", groupDigest},
+          {"lease", nativeProviderFieldValue(assignmentFields, {"executionLeaseId"})},
+          {"epoch_count", range.epochCount}, {"operation_stride", range.operationStride}}));
+        localAttemptAuthority = executionAttempt;
+        localAttempt = state->localDependencyAttempt(ctx.assignment().localDispatchRoles,
+          localDependencyIdentity, 2 * range.epochCount,
+          std::min<std::uint64_t>(groupCoordinator->capability().maxInflightBytes, 64ULL << 20));
+      }
       if (config.executionLeaseTable != nullptr) {
         const auto& fields = assignmentFields;
         const auto leaseId = nativeProviderFieldValue(fields, {"executionLeaseId"});
@@ -3277,15 +3395,16 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
         logProviderBoundaryStdout("LEASE_ACTIVATION_BEGIN", stageRequestId,
                                   ctx.localProvider().toUri(), role);
+        const auto proposedDeadline = now + std::max<uint64_t>(1, config.executionLeaseHardDeadlineMs);
         const auto activated = config.executionLeaseTable->validateAndActivate(
           leaseId,
           providerEpoch,
           binding,
           "activate:" + transactionId,
           now,
-          now + std::max<uint64_t>(1, config.executionLeaseHardDeadlineMs));
-        if (!activated.status) {
-          failInvocation(activated.reasonCode);
+          localAttempt ? localAttempt->leaseDeadline(proposedDeadline) : proposedDeadline);
+        if (!activated.status || activated.lease.executionDeadlineMs <= now) {
+          failInvocation(activated.status ? "LEASE_EXPIRED" : activated.reasonCode);
           return;
         }
         logProviderBoundaryStdout("LEASE_ACTIVATION_DONE", stageRequestId,
@@ -3294,10 +3413,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         activatedProviderEpoch = providerEpoch;
         activatedRequester = binding.requesterName;
         activatedRole = role;
+        activatedLeaseDeadline = activated.lease.executionDeadlineMs;
+        if (localPipelineDispatch) expectedProviderRoles = 2;
         if (!providerRoleCountText.empty()) {
           try {
-            expectedProviderRoles = std::max<std::size_t>(
+            const auto declaredRoles = std::max<std::size_t>(
               1, static_cast<std::size_t>(std::stoull(providerRoleCountText)));
+            if (localPipelineDispatch && declaredRoles != expectedProviderRoles)
+              throw std::invalid_argument("co-located lease must name both roles");
+            expectedProviderRoles = declaredRoles;
           }
           catch (const std::exception&) {
             completeExecutionLease();
@@ -3385,6 +3509,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                               ctx.localProvider().toUri()));
       logProviderBoundaryStdout("ROLE_SPEC_READY", stageRequestId,
                                 ctx.localProvider().toUri(), role);
+      const auto localWorkCurrent = [&ctx, state, executionAttempt] {
+        return ctx.hasCurrentWorkAuthority() &&
+               (!executionAttempt || state->attemptAuthority.isAuthoritative(*executionAttempt)) &&
+               std::chrono::steady_clock::now() < ctx.assignment().workDeadline &&
+               (!ctx.isStreamed() || !ctx.streamCancelled());
+      };
+      if (localAttempt) {
+        localAttempt->attach(role, localDependencyIdentity,
+                             selectionProjection->deviceBinding.mode == "CPU",
+                             ctx.assignment().workDeadline);
+        localDependencyRoute = localAttempt->awaitRoute(localWorkCurrent);
+      }
       if (selectionProjection && selectionProjection->conversationTurnBinding &&
           selectionProjection->conversationTurnBinding->serviceName !=
             ctx.assignment().service.toUri()) {
@@ -3394,8 +3530,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       }
       if (selectionProjection && selectionProjection->conversationTurnBinding) {
         const auto& turn = *selectionProjection->conversationTurnBinding;
-        conversationAdmission = state->runtime.tryAcquireConversationExecution(
-          ctx.requesterName().toUri(), ctx.assignment().service.toUri(), turn.conversationId);
+        const auto acquire = [&] {
+          return state->runtime.tryAcquireConversationExecution(
+            ctx.requesterName().toUri(), ctx.assignment().service.toUri(), turn.conversationId);
+        };
+        conversationAdmission = localAttempt
+          ? localAttempt->acquireConversationUse(acquire) : acquire();
         if (!conversationAdmission) {
           completeExecutionLease();
           failInvocation("PROVIDER_CONVERSATION_SAVE_FENCED");
@@ -4115,7 +4255,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         // needed to cross a trust boundary.
         io = std::make_shared<LocalDependencyIo>();
       }
-      completedLocalPlan = localFullPlan;
+      completedLocalPlan = localFullPlan && !localAttempt;
       std::map<std::string, TensorBundle> initialInputs;
       const bool hasApplicationInput = selectionProjection &&
         std::any_of(roleSpec.inputs.begin(), roleSpec.inputs.end(),
@@ -4343,6 +4483,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           io = std::make_shared<SelfFeedbackDependencyIo>(
             io, std::make_shared<LocalDependencyIo>());
         }
+        if (localDependencyRoute) {
+          io = std::make_shared<LocalPipelineDependencyIo>(localAttempt, io, protectedRuntime,
+            groupCoordinator, executionSessionId, role, ctx.localProvider().toUri(),
+            localWorkCurrent, workStatistics);
+        }
         NativeEpochCoordinatorConfig coordinatorConfig{
           state->runtime, executionPlan, assignment, io};
         coordinatorConfig.sessionId = executionSessionId;
@@ -4431,7 +4576,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               return projected;
             };
         }
-        coordinatorConfig.executionGuard = executionGuard;
+        coordinatorConfig.executionGuard = localDependencyRoute
+          ? std::function<void()>{[&] {
+              if (!localWorkCurrent()) throw std::runtime_error("DI_LOCAL_DEPENDENCY_WORK_EXPIRED");
+              if (executionGuard) executionGuard();
+            }}
+          : executionGuard;
         coordinatorConfig.executionCommitMutex = executionCommitMutex;
         coordinatorConfig.finalResponseScope = config.finalResponseScope;
         coordinatorConfig.maxEpochs = authenticatedGeneration.maxEpochs;
@@ -4774,13 +4924,6 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   logControl("rejected", {}, "producer_binding", item.sequence);
                   continue;
                 }
-                const auto sequenceDecision = controlSequenceGuard.observe(item.sequence);
-                if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Duplicate) {
-                  continue;
-                }
-                if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Reordered) {
-                  continue;
-                }
                 ConversationPromotionControl control;
                 try {
                   control = parseConversationPromotionControl(item.payload);
@@ -4789,16 +4932,21 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   logControl("rejected", {}, "malformed", item.sequence);
                   continue;
                 }
-                if (control.conversationId != turn.conversationId ||
-                    control.parentContextEpoch != turn.parentContextEpoch ||
-                    control.successorContextEpoch != turn.successorContextEpoch ||
-                    control.serviceName != turn.serviceName ||
-                    control.planRoleMapDigest != turn.planRoleMapDigest ||
-                    control.roleName != finalized.role ||
-                    control.receiptDigest != receipt.computedDigest() ||
-                    control.expiresAtMs > receipt.expiresAtMs ||
-                    control.expiresAtMs <= now) {
+                const bool bindingMatches = control.conversationId == turn.conversationId &&
+                  control.parentContextEpoch == turn.parentContextEpoch &&
+                  control.successorContextEpoch == turn.successorContextEpoch &&
+                  control.serviceName == turn.serviceName &&
+                  control.planRoleMapDigest == turn.planRoleMapDigest &&
+                  control.roleName == finalized.role &&
+                  control.receiptDigest == receipt.computedDigest() &&
+                  control.expiresAtMs <= receipt.expiresAtMs && control.expiresAtMs > now;
+                const auto sequenceDecision = controlSequenceGuard.observeBound(
+                  item.sequence, bindingMatches);
+                if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Unbound) {
                   logControl("rejected", control.action, "binding_or_expiry", item.sequence);
+                  continue;
+                }
+                if (sequenceDecision != NativeProviderControlSequenceGuard::Decision::Accepted) {
                   continue;
                 }
                 logControl("received", control.action, "authenticated", item.sequence);
@@ -5128,7 +5276,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         executionGuard();
         protectedRuntime->complete();
       }
-      if (executionAttempt && !state->attemptAuthority.complete(*executionAttempt)) {
+      if (localAttempt) {
+        localAttempt->markComputed(role);
+        if (sealedTerminalOwner.value_or(false)) localAttempt->awaitComputed(localWorkCurrent);
+      }
+      if (executionAttempt && (!localAttempt || sealedTerminalOwner.value_or(false)) &&
+          !state->attemptAuthority.complete(*executionAttempt)) {
         std::ostringstream record;
         record << "NDNSF_DI_EXECUTION_ATTEMPT"
                << " decision=reject"
@@ -5240,6 +5393,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           }
         }
         if (requestStatistics) requestStatistics->completionAdmitted = true;
+        localDispatchSucceeded = true;
       }
       else {
         if (terminalRole) {
@@ -5296,6 +5450,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ctx.completeRole();
           if (kvRestore) kvRestore->retain = true;
           if (requestStatistics) requestStatistics->completionAdmitted = true;
+          localDispatchSucceeded = true;
         }
       }
     }

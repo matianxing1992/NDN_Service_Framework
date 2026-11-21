@@ -603,6 +603,10 @@ namespace ndn_service_framework{
                 DependencyTransportOptions dependencyTransport;
                 std::map<CollaborationRole, std::vector<ndn::Name>> selectedRoleProviders;
                 std::optional<CollaborationAdmissionLimits> admissionLimits;
+                // Shared only by roles parsed from one local Selection dispatch.
+                // This runtime evidence does not grant any role permission.
+                std::shared_ptr<const std::vector<CollaborationRole>> localDispatchRoles;
+                std::size_t localDispatchHandlerThreads = 0;
             };
 
             struct CollaborationData

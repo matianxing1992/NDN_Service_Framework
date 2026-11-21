@@ -20,6 +20,10 @@ namespace ndnsf::di {
 
 struct PrefetchWorkerOracle;
 
+std::size_t
+validateLocalPipelineOperation(const DependencyEdge& edge, const std::string& provider,
+                               const GroupCapabilityV1& capability);
+
 class NdnsfCollaborationDependencyIo : public DependencyIo,
                                      public PromptCancellableDependencyIo
 {

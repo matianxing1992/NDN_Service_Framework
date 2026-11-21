@@ -42,6 +42,7 @@ struct StageTransferObservation
   std::optional<std::size_t> retryCount;
   std::optional<std::size_t> localCopyBytes;
   std::optional<std::size_t> transportLocalCopyBytes;
+  bool localDependency = false;
 };
 
 inline std::string

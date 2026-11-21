@@ -73,6 +73,49 @@ validateTensorBundleForEdge(const DependencyEdge& edge,
   }
 }
 
+LocalDependencyDelivery::LocalDependencyDelivery(const DependencyEdge& edge)
+  : m_requestId(edge.requestId)
+  , m_attempt(edge.attemptEpoch)
+  , m_planDigest(edge.planDigest)
+  , m_scope(edge.scope)
+  , m_producerRole(edge.producerRole)
+  , m_consumerRole(edge.consumerRole)
+  , m_plannedDataName(edge.plannedDataName)
+  , m_endpointDigest(edge.endpointDigest)
+  , m_executionObjectDigest(edge.executionObjectDigest)
+  , m_round(edge.round)
+{
+  if (!edge.declaredByV3 || m_requestId.empty() || m_attempt == 0 || m_planDigest.empty() ||
+      m_scope.empty() || m_producerRole.empty() || m_consumerRole.empty() ||
+      m_producerRole == m_consumerRole || m_plannedDataName.empty() ||
+      m_endpointDigest.empty() || m_executionObjectDigest.empty()) {
+    throw std::invalid_argument("local dependency requires a sealed consumer edge");
+  }
+}
+
+bool
+LocalDependencyDelivery::matches(const DependencyEdge& edge) const noexcept
+{
+  return edge.declaredByV3 && edge.requestId == m_requestId && edge.attemptEpoch == m_attempt &&
+         edge.planDigest == m_planDigest && edge.scope == m_scope &&
+         edge.producerRole == m_producerRole && edge.consumerRole == m_consumerRole &&
+         edge.plannedDataName == m_plannedDataName && edge.endpointDigest == m_endpointDigest &&
+         edge.executionObjectDigest == m_executionObjectDigest && edge.round == m_round;
+}
+
+void
+validateAdmittedTensorBundleForEdge(const DependencyEdge& edge, const TensorBundle& bundle)
+{
+  if (bundle.localDelivery) {
+    if (!bundle.localDelivery->matches(edge) || bundle.expectedBytes == 0 ||
+        bundle.payload.empty() != static_cast<bool>(bundle.localTensors)) {
+      throw std::runtime_error("local dependency delivery does not match the sealed edge: " +
+                               edge.scope);
+    }
+  }
+  validateTensorBundleForEdge(edge, bundle, !bundle.localDelivery);
+}
+
 AsyncDataflowRuntime::AsyncDataflowRuntime(std::size_t workerCount)
 {
   if (workerCount == 0) {

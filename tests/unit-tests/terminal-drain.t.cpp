@@ -163,6 +163,30 @@ BOOST_AUTO_TEST_CASE(ControlSequenceGuardAcceptsInitialZero)
   BOOST_CHECK_EQUAL(guard.reorderedCount(), 0U);
 }
 
+BOOST_AUTO_TEST_CASE(ColocatedConversationControlsKeepSeparateReplayState)
+{
+  using Guard = NativeProviderControlSequenceGuard;
+  Guard roleA;
+  Guard roleB;
+
+  // Both roles see the same history. B's COMMIT arrives before A's lower sequence.
+  BOOST_CHECK(roleA.observeBound(7, false) == Guard::Decision::Unbound);
+  BOOST_CHECK(roleB.observeBound(7, true) == Guard::Decision::Accepted);
+  BOOST_CHECK(roleA.observeBound(6, true) == Guard::Decision::Accepted);
+  BOOST_CHECK(roleB.observeBound(6, false) == Guard::Decision::Unbound);
+
+  BOOST_CHECK(roleA.observeBound(6, true) == Guard::Decision::Duplicate);
+  BOOST_CHECK(roleA.observeBound(5, true) == Guard::Decision::Reordered);
+  BOOST_CHECK(roleA.observeBound(99, false) == Guard::Decision::Unbound);
+  BOOST_CHECK(roleA.observeBound(8, true) == Guard::Decision::Accepted);
+  BOOST_CHECK(roleB.observeBound(8, false) == Guard::Decision::Unbound);
+  BOOST_CHECK(roleB.observeBound(9, true) == Guard::Decision::Accepted);
+  BOOST_CHECK_EQUAL(roleA.duplicateCount(), 1U);
+  BOOST_CHECK_EQUAL(roleA.reorderedCount(), 1U);
+  BOOST_CHECK_EQUAL(roleB.duplicateCount(), 0U);
+  BOOST_CHECK_EQUAL(roleB.reorderedCount(), 0U);
+}
+
 BOOST_AUTO_TEST_CASE(HealthyFinalizeFollowsDurableJournalAndClosesEarly)
 {
   for (unsigned repeat = 0; repeat != 20; ++repeat) {

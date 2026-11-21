@@ -453,6 +453,26 @@ logDependencyStageMarker(const char* status,
 
 } // namespace
 
+std::size_t
+validateLocalPipelineOperation(const DependencyEdge& edge, const std::string& provider,
+                               const GroupCapabilityV1& capability)
+{
+  const auto& operation = capability.operation(edge.collectiveOperationIndex);
+  const auto rank = producerRankForEdge(capability, edge);
+  const auto* member = memberForRank(capability, rank);
+  if (member == nullptr || member->provider != provider || !edge.useNdnsfDataV1 ||
+      edge.producerProvider != provider || operation.kind != edge.operationKind ||
+      edge.consumerRoles != std::vector<std::string>{edge.consumerRole} ||
+      std::find(operation.producerRanks.begin(), operation.producerRanks.end(), rank) ==
+        operation.producerRanks.end() ||
+      std::find(operation.consumerRanks.begin(), operation.consumerRanks.end(), rank) ==
+        operation.consumerRanks.end()) {
+    throw std::invalid_argument("DI_LOCAL_DEPENDENCY_CAPABILITY_MISMATCH");
+  }
+  validateTensorReference(edge, *member, capability);
+  return std::min<std::uint64_t>({operation.maxBytes, capability.maxInflightBytes, 64ULL << 20});
+}
+
 NdnsfCollaborationDependencyIo::NdnsfCollaborationDependencyIo(
   ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
   int fetchTimeoutMs,

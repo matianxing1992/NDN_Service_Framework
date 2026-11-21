@@ -69,6 +69,7 @@ struct NativeWorkStatisticsSnapshot
     std::optional<std::size_t> metadataBytes;
     std::optional<std::size_t> localCopyBytes;
     std::optional<std::size_t> transportLocalCopyBytes;
+    bool localDependency = false;
   };
   std::vector<Transfer> transfers;
 };

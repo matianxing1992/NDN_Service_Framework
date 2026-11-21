@@ -71,12 +71,7 @@ admitPeerContribution(const RoleSpec& role, const DependencyEdge& edge, TensorBu
   return stripGenerationEpochLineage(std::move(bundle));
 }
 
-/** Bytes a bundle will occupy on the wire, local or already encoded.
- *
- * A local value carries views, not a payload, so `payload.size()` is zero and a timing record
- * built from it claims the transfer sent nothing. The transport materializes the encoded form,
- * so that is what the record has to describe.
- */
+/** Encoded bundle size, measured for bytes and estimated for a typed local view. */
 std::size_t
 stagedWireBytes(const TensorBundle& bundle)
 {
@@ -153,10 +148,10 @@ populatePayloadAccounting(StageTransferObservation& observation,
                           const TensorBundle& bundle)
 {
   observation.tensorNames.clear();
-  if (isEncodedTensorBundle(bundle.payload)) {
+  if (bundle.localTensors || isEncodedTensorBundle(bundle.payload)) {
     // Count bytes and names from the same validated parse, avoiding another
     // allocation and copy of every activation just for accounting.
-    const auto tensors = decodeTensorBundleViews(bundle.payload);
+    const auto tensors = decodeTensorBundleViews(bundle);
     observation.tensorBytes = 0;
     for (const auto& tensor : tensors) {
       if (tensor.name != generationEpochLineageTensorName()) {
@@ -195,6 +190,7 @@ makeStageTransferObservation(const DependencyEdge& edge,
   // This is the observable bundle handoff copy, not a claim about allocator
   // internals. Unknown transport fields remain unset until Core reports them.
   observation->localCopyBytes = bundle.payload.size();
+  observation->localDependency = static_cast<bool>(bundle.localDelivery);
   return observation;
 }
 
@@ -238,6 +234,8 @@ completeStageTransferObservationImpl(const DependencyEdge& edge,
     if (!observation.localCopyBytes) {
       observation.localCopyBytes = bundle.payload.size();
     }
+    observation.localDependency = observation.localDependency ||
+      static_cast<bool>(bundle.localDelivery);
   }
   validateStageTransferObservation(*bundle.transferObservation);
 }
@@ -363,6 +361,19 @@ completeStageTransferObservation(const DependencyEdge& edge,
                                  const std::string& direction)
 {
   completeStageTransferObservationImpl(edge, bundle, direction);
+}
+
+void
+markLocalDependencyPublication(const DependencyEdge& edge, const TensorBundle& bundle) noexcept
+{
+  try {
+    auto observation = makeStageTransferObservation(edge, bundle, "send");
+    observation->localDependency = true;
+    bundle.transferObservation = std::move(observation);
+  }
+  catch (...) {
+    // Publication is already committed. Timing must not affect its outcome.
+  }
 }
 
 ProviderRoleWorker::ProviderRoleWorker(std::size_t workerCount,
@@ -632,10 +643,12 @@ ProviderRoleWorker::executeAsyncImpl(
       const auto existing = item.initialInputsByScope.find(edge.scope);
       if (existing != item.initialInputsByScope.end()) {
         timing.preSatisfied = true;
-        validateTensorBundleForEdge(edge, existing->second);
+        validateAdmittedTensorBundleForEdge(edge, existing->second);
         timing.fetchCompletedAt = std::chrono::steady_clock::now();
         timing.bytes = stagedWireBytes(existing->second);
-        completeStageTransferObservation(edge, existing->second, "receive");
+        if (!existing->second.localDelivery || !existing->second.transferObservation) {
+          completeStageTransferObservation(edge, existing->second, "receive");
+        }
         timing.transferObservation = existing->second.transferObservation;
         item.inputTimings.push_back(std::move(timing));
         logDiTimelineTrace(
@@ -698,7 +711,7 @@ ProviderRoleWorker::executeAsyncImpl(
     try {
       for (auto& pending : pendingInputs) {
         auto bundle = pending.future.get();
-        validateTensorBundleForEdge(pending.edge, bundle);
+        validateAdmittedTensorBundleForEdge(pending.edge, bundle);
 #ifdef NDNSF_DI_EXPERIMENT_FAULTS
         NativeFaultInjection::instance().checkpoint(
           NativeFaultPoint::DependencyFetched, item.role.role, item.sessionId);
@@ -767,7 +780,9 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
              std::future_status::ready) {
         if (control.isCancelled()) return DependencyWaitStatus::Cancelled;
         if (control.deadlineExpired()) return DependencyWaitStatus::DeadlineExpired;
+        if (state->item.executionGuard) state->item.executionGuard();
       }
+      if (state->item.executionGuard) state->item.executionGuard();
       return DependencyWaitStatus::Completed;
     },
     [this, state] (const DependencyWaitResult& result) mutable {
@@ -789,7 +804,7 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
       }
       try {
         auto bundle = state->pending.get();
-        validateTensorBundleForEdge(state->edge, bundle);
+        validateAdmittedTensorBundleForEdge(state->edge, bundle);
         // This is the step-scoped fetch, and it had no ledger entry at all: the wait was started
         // when the step asked for it, the bytes arrived here, and neither the completion time nor
         // the transfer was recorded -- so the budget at the end of the unit never saw these
@@ -884,10 +899,12 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
               if (control.deadlineExpired()) {
                 return DependencyWaitStatus::DeadlineExpired;
               }
+              if (state->item.executionGuard) state->item.executionGuard();
             }
           }
+          if (state->item.executionGuard) state->item.executionGuard();
           auto bundle = pending.future.get();
-          validateTensorBundleForEdge(pending.edge, bundle);
+          validateAdmittedTensorBundleForEdge(pending.edge, bundle);
 #ifdef NDNSF_DI_EXPERIMENT_FAULTS
           NativeFaultInjection::instance().checkpoint(
             NativeFaultPoint::DependencyFetched,
@@ -1719,6 +1736,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       }
       auto stripped = withoutProviderLocalState(bundle, item.role.stateOutputNames,
                                                 item.role.workStatistics);
+      stripped.localDelivery.reset();
       // A generation-bound unit stamps every dependency it publishes. This early path skipped it, so
       // a partial sent here reached the peer with no round, prefix or position binding -- and the
       // final pass, which does stamp, never sees it because `publishedScopes` already covers it.
@@ -1959,7 +1977,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
       throw std::runtime_error(
         "Provider role is missing a declared input: " + edge.scope);
     }
-    validateTensorBundleForEdge(edge, input->second);
+    validateAdmittedTensorBundleForEdge(edge, input->second);
     ctx.inputEdgesByScope.emplace(edge.scope, edge);
   }
   if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
@@ -2211,6 +2229,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
       lineage.operationIndex = edge.collectiveOperationIndex;
       bundle = attachGenerationEpochLineage(bundle, lineage);
     }
+    bundle.localDelivery.reset();
     validateTensorBundleForEdge(edge, bundle, false);
     stagedOutputs.emplace_back(edge, std::move(bundle));
   }

@@ -1080,6 +1080,29 @@ namespace ndn_service_framework
         }
 
         void
+        bindLocalDispatchRoles(std::vector<ServiceProvider::CollaborationAssignment>& assignments)
+        {
+          if (assignments.size() < 2) return;
+
+          std::vector<CollaborationRole> roles;
+          roles.reserve(assignments.size());
+          for (const auto& assignment : assignments) {
+            if (assignment.role.empty() || assignment.role.size() > 1024) {
+              throw std::invalid_argument("invalid local collaboration dispatch role");
+            }
+            roles.push_back(assignment.role);
+          }
+          std::sort(roles.begin(), roles.end());
+          if (std::adjacent_find(roles.begin(), roles.end()) != roles.end()) {
+            throw std::invalid_argument("duplicate local collaboration dispatch role");
+          }
+          auto evidence = std::make_shared<const std::vector<CollaborationRole>>(std::move(roles));
+          for (auto& assignment : assignments) {
+            assignment.localDispatchRoles = evidence;
+          }
+        }
+
+        void
         applyCollaborationSelectionMetadata(ServiceProvider::CollaborationAssignment& assignment,
                                             const ServiceSelectionMessage& selection,
                                             bool includeShared)
@@ -10265,6 +10288,15 @@ namespace ndn_service_framework
                     return;
                 }
 
+                const auto handlerThreads = m_handlerPool.getThreadCount();
+                if (assignment.localDispatchRoles &&
+                    assignment.localDispatchHandlerThreads != handlerThreads) {
+                    publishExecutionFailureOnEventLoop(
+                        requesterName, providerName, serviceName, requestId, requestMessage,
+                        "collaboration handler capacity changed before execution", selectionDigest);
+                    return;
+                }
+
                 auto runHandler =
                     [this,
                      requesterName,
@@ -10368,7 +10400,7 @@ namespace ndn_service_framework
                             });
                     };
 
-                if (m_handlerPool.getThreadCount() == 0) {
+                if (handlerThreads == 0) {
                     runHandler();
                     return;
                 }
@@ -11064,12 +11096,10 @@ namespace ndn_service_framework
                                             isStructuredCollaborationPayload(assignmentPayloadCopy);
                                         const auto rolePayloads = collaborationRolePayloads(
                                             assignmentPayloadCopy, structured);
-                                        if (rolePayloads.size() > 1) {
-                                            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
-                                            m_collaborationLocalRolesRemaining.emplace(
-                                                inputKey, rolePayloads.size());
-                                        }
-                                        bool dispatched = false;
+                                        const auto handlerThreads = rolePayloads.size() > 1
+                                            ? getHandlerThreads() : 0;
+                                        std::vector<CollaborationAssignment> assignments;
+                                        assignments.reserve(rolePayloads.size());
                                         for (const auto& rolePayload : rolePayloads) {
                                             auto assignment = parseCollaborationAssignment(
                                                 serviceName, rolePayload);
@@ -11080,6 +11110,17 @@ namespace ndn_service_framework
                                             assignment.ownsStreamTerminal =
                                                 readyRequest.hasStreamRequestOptions() &&
                                                 selectionMessage.hasStreamEventKeyGrant();
+                                            assignment.localDispatchHandlerThreads = handlerThreads;
+                                            assignments.push_back(std::move(assignment));
+                                        }
+                                        bindLocalDispatchRoles(assignments);
+                                        if (assignments.size() > 1) {
+                                            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                                            m_collaborationLocalRolesRemaining.emplace(
+                                                inputKey, assignments.size());
+                                        }
+                                        bool dispatched = false;
+                                        for (auto& assignment : assignments) {
                                             dispatched = dispatchCollaborationExecutionAsync(
                                                 requesterName, providerName, serviceName, requestId,
                                                 readyRequest, std::move(assignment), selectionDigest) ||
@@ -23774,30 +23815,44 @@ opaque_selection_committed:
                 // local role. Dispatch those envelopes separately; legacy
                 // binary/semicolon assignment sets still represent one local
                 // execution context and must retain their existing behavior.
-                const auto rolePayloads = collaborationRolePayloads(
-                    effectiveAssignmentPayload, structuredAssignmentPayload);
-                if (rolePayloads.size() > 1) {
-                    const auto pendingKey = ndn::Name(requesterName).append(serviceName)
-                        .append(requestId);
-                    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
-                    m_collaborationLocalRolesRemaining.emplace(pendingKey, rolePayloads.size());
+                try {
+                    const auto rolePayloads = collaborationRolePayloads(
+                        effectiveAssignmentPayload, structuredAssignmentPayload);
+                    const auto handlerThreads = rolePayloads.size() > 1 ? getHandlerThreads() : 0;
+                    std::vector<CollaborationAssignment> assignments;
+                    assignments.reserve(rolePayloads.size());
+                    for (const auto& rolePayload : rolePayloads) {
+                        auto assignment = parseCollaborationAssignment(serviceName, rolePayload);
+                        assignment.ownsStreamTerminal = selectedRequest.hasStreamRequestOptions() &&
+                            message.hasStreamEventKeyGrant();
+                        applyCollaborationSelectionMetadata(assignment, message,
+                            hasOpaqueParticipant || structuredAssignmentPayload);
+                        assignment.selectionDigest = selectionDigest;
+                        assignment.localDispatchHandlerThreads = handlerThreads;
+                        assignments.push_back(std::move(assignment));
+                    }
+                    bindLocalDispatchRoles(assignments);
+                    if (assignments.size() > 1) {
+                        const auto pendingKey = ndn::Name(requesterName).append(serviceName)
+                            .append(requestId);
+                        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                        m_collaborationLocalRolesRemaining.emplace(pendingKey, assignments.size());
+                    }
+                    bool dispatchedAny = false;
+                    for (auto& assignment : assignments) {
+                        dispatchedAny = dispatchCollaborationExecutionAsync(
+                            requesterName, providerName, serviceName, requestId,
+                            requestCopy, std::move(assignment), selectionDigest) || dispatchedAny;
+                    }
+                    if (dispatchedAny) {
+                        continue;
+                    }
                 }
-                bool dispatchedAny = false;
-                for (const auto& rolePayload : rolePayloads) {
-                    auto assignment =
-                        parseCollaborationAssignment(serviceName, rolePayload);
-                    assignment.ownsStreamTerminal =
-                        selectedRequest.hasStreamRequestOptions() &&
-                        message.hasStreamEventKeyGrant();
-                    applyCollaborationSelectionMetadata(assignment, message,
-                        hasOpaqueParticipant || structuredAssignmentPayload);
-                    assignment.selectionDigest = selectionDigest;
-                    dispatchedAny = dispatchCollaborationExecutionAsync(
-                        requesterName, providerName, serviceName, requestId,
-                        requestCopy, std::move(assignment), selectionDigest) ||
-                      dispatchedAny;
-                }
-                if (dispatchedAny) {
+                catch (const std::exception& error) {
+                    publishExecutionFailureOnEventLoop(
+                        requesterName, providerName, serviceName, requestId, requestCopy,
+                        std::string("collaboration assignment rejected: ") + error.what(),
+                        selectionDigest);
                     continue;
                 }
             }

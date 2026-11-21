@@ -420,6 +420,19 @@ publishTerminalActivation(const NativeEpochCoordinatorConfig& config,
   }
 }
 
+bool
+observeLocalDependencyInput(const DependencyEdge& edge, TensorBundle& bundle)
+{
+  if (!bundle.localDelivery) return true;
+  // The final drain marker carries no position when checkpoint finalization is disabled.
+  // Its delivery was counted by local IO, and it never enters model execution.
+  if (edge.operationKind == "TOKEN_FEEDBACK" && isTerminalFeedback(bundle, {}) &&
+      !extractGenerationEpochLineage(bundle))
+    return false;
+  completeStageTransferObservation(edge, bundle, "receive");
+  return true;
+}
+
 /** Leave per-step contributions to the worker, but admit generation lineage first.
  * Waiting for peer partials here would prevent either TP unit from starting. Boundary
  * activations and feedback carry the epoch identity required before state can be admitted.
@@ -432,11 +445,40 @@ workerFetchesPerStep(const RoleSpec& role, const DependencyEdge& edge)
   return role.steps && !role.steps->empty() && !edge.consumerStepId.empty() && !carriesLineage;
 }
 
+template<typename Future>
+void
+waitForCancellableDependency(const NativeEpochCoordinatorConfig& config,
+                             const RoleSpec& role, Future& future)
+{
+  using Clock = std::chrono::steady_clock;
+  const auto deadline = std::min(config.executionDeadline.value_or(Clock::time_point::max()),
+                                 role.executionDeadline.value_or(Clock::time_point::max()));
+  while (true) {
+    throwIfStopped(config);
+    const auto now = Clock::now();
+    if (now >= deadline) {
+      throw std::runtime_error("REQUEST_DEADLINE");
+    }
+    const auto status = future.wait_until(std::min(deadline, now + std::chrono::milliseconds(10)));
+    if (status == std::future_status::deferred) {
+      throw std::runtime_error("a cancellable dependency wait cannot defer its producer");
+    }
+    if (status == std::future_status::ready) {
+      throwIfStopped(config);
+      if (Clock::now() >= deadline) {
+        throw std::runtime_error("REQUEST_DEADLINE");
+      }
+      return;
+    }
+  }
+}
+
 std::map<std::string, TensorBundle>
 fetchInputs(const NativeEpochCoordinatorConfig& config,
             const RoleSpec& role,
             std::map<std::string, TensorBundle> inputs)
 {
+  const auto cancellation = std::dynamic_pointer_cast<PromptCancellableDependencyIo>(config.io);
   for (const auto& edge : role.inputs) {
     if (inputs.find(edge.scope) != inputs.end()) {
       continue;
@@ -447,16 +489,33 @@ fetchInputs(const NativeEpochCoordinatorConfig& config,
       continue;
     }
     const auto started = transferNowNs();
-    auto future = config.io->prefetchInput(config.sessionId, edge);
+    const auto canCancel = cancellation && cancellation->supportsPromptPrefetchCancellation(edge);
+    std::future<TensorBundle> future;
     NativeWorkScope wait(config.workStatistics, "epoch-input-wait", NativeWorkKind::WAIT);
-    auto bundle = future.get();
+    TensorBundle bundle;
+    try {
+      future = config.io->prefetchInput(config.sessionId, edge);
+      if (canCancel) {
+        waitForCancellableDependency(config, role, future);
+      }
+      bundle = future.get();
+    }
+    catch (...) {
+      if (canCancel) {
+        cancellation->cancelPendingPrefetches();
+        cancellation->drainPendingPrefetches();
+      }
+      throw;
+    }
     const auto finished = transferNowNs();
     wait.finish();
     NativeWorkScope admission(config.workStatistics, "epoch-input-admit", NativeWorkKind::LOCAL);
-    validateTensorBundleForEdge(edge, bundle);
+    validateAdmittedTensorBundleForEdge(edge, bundle);
+    const auto observed = observeLocalDependencyInput(edge, bundle);
     admission.finish();
-    observeCoordinatorTransfer(config, role, bundle, NativeTransferPoint::COORDINATOR_FETCH,
-                               started, finished);
+    if (observed)
+      observeCoordinatorTransfer(config, role, bundle, NativeTransferPoint::COORDINATOR_FETCH,
+                                 started, finished);
     inputs.emplace(edge.scope, std::move(bundle));
   }
   return inputs;
@@ -552,10 +611,7 @@ waitForFirstReadStart(const NativeEpochCoordinatorConfig& config,
                       const PendingInputPrefetch& pending)
 {
   for (const auto& started : pending.firstReadStarted) {
-    while (started.wait_for(std::chrono::milliseconds(10)) !=
-           std::future_status::ready) {
-      throwIfStopped(config);
-    }
+    waitForCancellableDependency(config, pending.role, started);
     started.get();
   }
 }
@@ -637,16 +693,22 @@ completeInputPrefetch(const NativeEpochCoordinatorConfig& config, PendingInputPr
   for (auto& item : pending.pending) {
     if (workerFetchesPerStep(pending.role, item.edge)) continue;
     NativeWorkScope wait(config.workStatistics, "epoch-input-wait", NativeWorkKind::WAIT);
+    if (pending.cancellation &&
+        pending.cancellation->supportsPromptPrefetchCancellation(item.edge)) {
+      waitForCancellableDependency(config, pending.role, item.result);
+    }
     auto bundle = item.result.get();
     const auto finished = transferNowNs();
     wait.finish();
     NativeWorkScope admission(config.workStatistics, "epoch-input-admit", NativeWorkKind::LOCAL);
-    validateTensorBundleForEdge(item.edge, bundle);
+    validateAdmittedTensorBundleForEdge(item.edge, bundle);
+    const auto observed = observeLocalDependencyInput(item.edge, bundle);
     admission.finish();
     // get() observes consumption; an already-ready future may have finished earlier.
-    observeCoordinatorTransfer(config, pending.role, bundle,
-                               NativeTransferPoint::COORDINATOR_FETCH,
-                               item.startedNs, finished);
+    if (observed)
+      observeCoordinatorTransfer(config, pending.role, bundle,
+                                 NativeTransferPoint::COORDINATOR_FETCH,
+                                 item.startedNs, finished);
     pending.inputs.emplace(item.edge.scope, std::move(bundle));
   }
   pending.cancelOnAbandon = false;
@@ -944,11 +1006,17 @@ extractAndVerifyInputLineage(const RoleSpec& role,
     accepted->producerRole.clear();
     accepted->consumerRole.clear();
     accepted->operationIndex = 0;
-    completeStageTransferObservation(edge, found->second, "receive");
+    if (!found->second.localDelivery || !found->second.transferObservation) {
+      completeStageTransferObservation(edge, found->second, "receive");
+    }
     // A per-step input is checked again when its exact slot is consumed by the worker.
     // Keep that stamp until then; ordinary whole-role/model inputs must not expose it.
-    if (!role.steps || role.steps->empty() || edge.consumerStepId.empty())
-      found->second = stripGenerationEpochLineage(found->second);
+    if (!role.steps || role.steps->empty() || edge.consumerStepId.empty()) {
+      auto modelInput = stripGenerationEpochLineage(found->second);
+      // This is still the admitted input of the same edge, without the runtime stamp.
+      modelInput.localDelivery = found->second.localDelivery;
+      found->second = std::move(modelInput);
+    }
   }
   return accepted;
 }
@@ -1691,6 +1759,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
               timing.publishStartedAt = publicationStarted;
               timing.publishDoneAt = publicationFinished;
               timing.publishDeferred = false;
+              timing.transferObservation = output->second.transferObservation;
               observeCoordinatorTransfer(config, executable, output->second,
                 NativeTransferPoint::OUTPUT_PUBLICATION, transferTimeNs(publicationStarted),
                 transferTimeNs(publicationFinished), transferTimeNs(timing.outputReadyAt));
@@ -1741,6 +1810,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
                 timing.publishStartedAt = publicationStarted;
                 timing.publishDoneAt = publicationFinished;
                 timing.publishDeferred = false;
+                timing.transferObservation = output->second.transferObservation;
                 observeCoordinatorTransfer(config, executable, output->second,
                   NativeTransferPoint::OUTPUT_PUBLICATION, transferTimeNs(publicationStarted),
                   transferTimeNs(publicationFinished), transferTimeNs(timing.outputReadyAt));

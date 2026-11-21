@@ -33,6 +33,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/local-pipeline-dependency-io.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
@@ -8299,6 +8300,15 @@ struct Spec231DiAdmissionControl
   }
 
   Spec231DiFault fault;
+  bool colocated = false;
+  bool observeDependencyRoute = false;
+  std::size_t handlerThreads = 2;
+  std::array<std::shared_ptr<const std::vector<CollaborationRole>>, 2> dispatchRoles;
+  std::array<std::size_t, 2> dispatchHandlerThreads{};
+  std::array<std::optional<NativeWorkStatisticsSnapshot>, 2> dependencyStatistics;
+  std::atomic<std::size_t> dependencyInterests{0};
+  std::atomic<std::size_t> dependencyData{0};
+  std::atomic<std::size_t> dependencyWireBytes{0};
   std::array<std::array<std::atomic<size_t>, 2>, 2> entered;
   std::array<std::array<std::atomic<size_t>, 2>, 2> completed;
   struct TimedStep
@@ -8568,7 +8578,7 @@ spec231InstallStatus(ndn_service_framework::test::NdnsfIntegrationEnvironment& e
   }
   else {
     BOOST_REQUIRE(environment.user().installControllerStatus(status, valid));
-    for (size_t i = 0; i < 2; ++i)
+    for (size_t i = 0; i < environment.providerCount(); ++i)
       BOOST_REQUIRE(environment.provider(i).installControllerStatus(status, valid));
   }
   return next;
@@ -8695,18 +8705,21 @@ void
 spec231ConfigureNativeProvider(NativeProviderHandlerConfig& config,
                                 ndn_service_framework::ServiceProvider& provider,
                                 ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
-                                Spec231DiAdmissionControl& control, size_t roleIndex,
-                                const std::filesystem::path& modelPath)
+                                Spec231DiAdmissionControl& control,
+                                std::map<std::string, std::pair<std::size_t, std::string>> models)
 {
   using Context = ndn_service_framework::ServiceProvider::CollaborationContext;
+  const auto roleModels = std::make_shared<const decltype(models)>(std::move(models));
   auto realFactory = std::make_shared<RegistryNativeModelRunnerFactory>();
   registerOnnxRuntimeBackend(*realFactory);
   auto observedFactory = std::make_shared<RegistryNativeModelRunnerFactory>();
-  observedFactory->registerBackend("onnxruntime-cpu", [realFactory, &control, roleIndex]
+  observedFactory->registerBackend("onnxruntime-cpu", [realFactory, &control, roleModels]
     (const NativeModelRunnerSpec& spec) {
-      return std::make_shared<Spec231ObservedRunner>(realFactory->create(spec), control, roleIndex);
+      return std::make_shared<Spec231ObservedRunner>(
+        realFactory->create(spec), control, roleModels->at(spec.role).first);
     });
   config.runnerFactory = observedFactory;
+  config.workerCount = 1;
   config.enableNativeEpochCoordinator = true;
   config.maxGenerationEpochs = 2;
   config.generationStateInputNames = {"attention_kv_in", "recurrent_state_in", "convolution_state_in"};
@@ -8721,12 +8734,12 @@ spec231ConfigureNativeProvider(NativeProviderHandlerConfig& config,
   config.fetchTimeoutMs = 6000;
   config.dependencyFetchTimeoutMs = 6000;
   config.maxSegmentSize = 1400;
-  config.runnerPreparationFactory = [roleIndex, boot = config.providerBootId,
-                                     modelPath = modelPath.string()]
+  config.runnerPreparationFactory = [roleModels, boot = config.providerBootId]
     (Context& context, const NativeSelectionProjectionV3& projection,
      const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
       if (!protectedRuntime || protectedRuntime->state() != ProtectedRuntimeState::GrantVerified)
         throw std::runtime_error("fixture preparation requires actual verified grant");
+      const auto& [roleIndex, modelPath] = roleModels->at(context.role());
       NativeModelRunnerSpec spec;
       spec.role = context.role();
       spec.kind = "spec231-tiny-cpu-onnx";
@@ -8758,32 +8771,48 @@ spec231ConfigureNativeProvider(NativeProviderHandlerConfig& config,
     };
   // This slot is borrowed only while the production grant factory synchronously
   // verifies its exact Data. Core owns validation, deadline and current-work checks.
-  const auto active = std::make_shared<Context*>(nullptr);
-  config.protectedGrantFetcher = [active, &control]
+  static thread_local Context* active = nullptr;
+  config.protectedGrantFetcher = [&control]
     (const std::string& name, int timeout, const std::function<bool()>& cancelled) {
-      if (*active == nullptr) throw std::runtime_error("grant fetch has no current fixture context");
-      const auto bytes = (*active)->fetchSignedExactData("spec231-grant", ndn::Name(name),
-        (*active)->requesterName(), timeout, cancelled);
+      if (active == nullptr) throw std::runtime_error("grant fetch has no current fixture context");
+      const auto bytes = active->fetchSignedExactData("spec231-grant", ndn::Name(name),
+        active->requesterName(), timeout, cancelled);
       if (!bytes) throw std::runtime_error("actual signed grant Data fetch failed");
       ++control.grantsFetched;
       return std::string(bytes->begin(), bytes->end());
     };
   installNativeProtectedGrantFactory(config);
   auto protectedFactory = config.protectedRuntimeFactory;
-  config.protectedRuntimeFactory = [active, protectedFactory, &control, roleIndex]
+  config.protectedRuntimeFactory = [protectedFactory, &control, roleModels]
     (Context& context, const NativeSelectionProjectionV3& projection,
      const std::shared_ptr<ProviderGroupCoordinator>& group,
      const std::shared_ptr<NativeWorkStatistics>& statistics) {
-      if (*active != nullptr) throw std::runtime_error("overlapping fixture grant contexts");
+      if (active != nullptr) throw std::runtime_error("overlapping fixture grant contexts");
+      const auto roleIndex = roleModels->at(context.role()).first;
       {
         std::lock_guard<std::mutex> lock(control.selectionEvidenceMutex);
         control.selectionDigestsByRequest[roleIndex][context.sessionId()] =
           context.assignment().selectionDigest;
+        if (control.observeDependencyRoute) {
+          control.dispatchRoles[roleIndex] = context.assignment().localDispatchRoles;
+          control.dispatchHandlerThreads[roleIndex] =
+            context.assignment().localDispatchHandlerThreads;
+        }
       }
-      *active = &context;
-      Spec231DiScopeExit clear{[active] { *active = nullptr; }};
+      active = &context;
+      Spec231DiScopeExit clear{[] { active = nullptr; }};
       return protectedFactory(context, projection, group, statistics);
     };
+  if (control.observeDependencyRoute) {
+    config.requestStatisticsObserver =
+      std::make_shared<std::function<void(const NativeRequestStatistics&)>>(
+        [&control, roleModels](const NativeRequestStatistics& statistics) {
+          if (!statistics.workStatistics) return;
+          auto snapshot = statistics.workStatistics->snapshot();
+          std::lock_guard<std::mutex> lock(control.selectionEvidenceMutex);
+          control.dependencyStatistics[roleModels->at(statistics.role).first] = std::move(snapshot);
+        });
+  }
   installNativeProviderGroupCoordinatorFactory(config, provider.getName().toUri(),
     provider.getSigningCertificateName().toUri(), &environment.keyChain());
 }
@@ -8808,6 +8837,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                                     Spec231DiAdmissionControl* spec231 = nullptr)
 {
   using namespace ndn_service_framework;
+  const bool colocated = spec231 && spec231->colocated;
   const bool twoRolePipeline = spec196TargetedPlacement || spec231 != nullptr;
   std::unique_ptr<Spec231GrantFiles> spec231GrantFiles;
   test::BootstrapProfile profile;
@@ -8838,23 +8868,51 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   std::vector<NativeServiceRegistration> spec231Registrations;
   std::vector<ndn::signal::ScopedConnection> spec231Bridges;
   if (spec231) {
-    BOOST_REQUIRE_EQUAL(environment.providerCount(), 2U);
+    BOOST_REQUIRE_EQUAL(environment.providerCount(), colocated ? 1U : 2U);
     spec231InstallStatus(environment);
-    spec231Bridges = spec231ConnectPeers(environment, *spec231);
+    if (!colocated) spec231Bridges = spec231ConnectPeers(environment, *spec231);
+    if (spec231->observeDependencyRoute) {
+      const auto isDependencyPacket = [&environment](const ndn::Name& name) {
+        for (std::size_t index = 0; index < environment.providerCount(); ++index) {
+          const auto parsed = parseProducerDataName(name, environment.provider(index).getName());
+          if (parsed && parsed->nameSpace == "NDNSF-DI" && parsed->category == "tensor") {
+            return true;
+          }
+        }
+        return false;
+      };
+      for (std::size_t index = 0; index < environment.providerCount(); ++index) {
+        spec231Bridges.emplace_back(environment.providerFace(index).onSendInterest.connect(
+          [spec231, isDependencyPacket](const ndn::Interest& interest) {
+            if (isDependencyPacket(interest.getName())) {
+              ++spec231->dependencyInterests;
+              spec231->dependencyWireBytes += interest.wireEncode().size();
+            }
+          }));
+        spec231Bridges.emplace_back(environment.providerFace(index).onSendData.connect(
+          [spec231, isDependencyPacket](const ndn::Data& data) {
+            if (isDependencyPacket(data.getName())) {
+              ++spec231->dependencyData;
+              spec231->dependencyWireBytes += data.wireEncode().size();
+            }
+          }));
+      }
+    }
     environment.user().setUseTokens(true);
-    for (size_t i = 0; i < 2; ++i) {
+    for (size_t i = 0; i < environment.providerCount(); ++i) {
       environment.provider(i).setUseTokens(true);
-      environment.provider(i).setHandlerThreads(2);
+      environment.provider(i).setHandlerThreads(spec231->handlerThreads);
     }
     environment.user().fetchPermissionsFromController(profile.attributeAuthority);
     BOOST_REQUIRE(environment.user().hasRequestScopedDefault());
     environment.pumpUntilWithAttributeAuthority([&] {
-      return environment.user().isNacProducerReadyForTest() &&
-        environment.user().isNacConsumerReadyForTest() &&
-        environment.provider(0).isRequestDecryptionReady() &&
-        environment.provider(0).isNacProducerReadyForTest() &&
-        environment.provider(1).isRequestDecryptionReady() &&
-        environment.provider(1).isNacProducerReadyForTest();
+      if (!environment.user().isNacProducerReadyForTest() ||
+          !environment.user().isNacConsumerReadyForTest()) return false;
+      for (size_t i = 0; i < environment.providerCount(); ++i) {
+        if (!environment.provider(i).isRequestDecryptionReady() ||
+            !environment.provider(i).isNacProducerReadyForTest()) return false;
+      }
+      return true;
     });
   }
 
@@ -8884,7 +8942,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     : nativePlanningDigest("r4-b6-tokenizer");
   auto conversationRoleMap = NativeJson::array({NativeJson::array({role, providerName})});
   if (spec231) {
-    conversationRoleMap.push_back(NativeJson::array({roleB, alternateProviderName}));
+    conversationRoleMap.push_back(NativeJson::array({roleB,
+      colocated ? providerName : alternateProviderName}));
   }
   const std::string roleMapDigest = nativePlanningDigest(nativeCanonicalJson(conversationRoleMap));
 
@@ -9181,7 +9240,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   offerConfig.bootEpoch = providerName + ":" + environment.provider().getProviderBootEpoch();
   offerConfig.signerKeyId = offerKeyId;
   offerConfig.acceptedRoles = {role};
-  if (spec196TargetedPlacement)
+  if (spec196TargetedPlacement || colocated)
     offerConfig.acceptedRoles.push_back(roleB);
   offerConfig.backends = {"onnxruntime-cpu"};
   offerConfig.signDigest = [offerKey] (const std::string& value) {
@@ -9245,8 +9304,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     };
   const auto authorityIdentity = issuerConfig.authorityIdentity;
   if (spec231) {
-    spec231GrantFiles = std::make_unique<Spec231GrantFiles>(authorityKey, recipientKey,
-      std::vector<std::string>{providerName, alternateProviderName});
+    auto grantProviders = std::vector<std::string>{providerName};
+    if (alternateProvider) grantProviders.push_back(alternateProviderName);
+    spec231GrantFiles = std::make_unique<Spec231GrantFiles>(
+      authorityKey, recipientKey, grantProviders);
     publishGrant = NativeAuthenticatedGrantClient::publishThroughCore(
       std::shared_ptr<ServiceUser>(&environment.user(), [](ServiceUser*) {}));
     const auto realPublish = publishGrant;
@@ -9411,14 +9472,25 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       config.localProviderName = provider.getName().toUri();
       config.providerBootId = localOfferConfig.bootEpoch;
       config.planDigest = candidate.candidateDigest;
-      spec231ConfigureNativeProvider(config, provider, environment, *spec231, roleIndex,
-                                     spec231GrantFiles->modelPath(roleIndex));
+      const auto& localRole = roleIndex == 0 ? role : roleB;
+      std::map<std::string, std::pair<std::size_t, std::string>> models = {
+        {localRole, {roleIndex, spec231GrantFiles->modelPath(roleIndex).string()}}};
+      if (colocated) models.emplace(roleB, std::make_pair(1U,
+        spec231GrantFiles->modelPath(1).string()));
+      spec231ConfigureNativeProvider(config, provider, environment, *spec231, std::move(models));
       NativeServiceDefinition definition;
       definition.serviceName = serviceName;
       definition.allowedRoles = {roleIndex == 0 &&
           spec231->fault != Spec231DiFault::WRONG_REGISTERED_ROLE ? role : roleB};
-      definition.runtimeObserver = [spec231, roleIndex](const NativeProviderCollaborationRuntime& value) {
+      if (colocated) {
+        definition.allowedRoles = {role};
+        if (spec231->fault != Spec231DiFault::WRONG_REGISTERED_ROLE)
+          definition.allowedRoles.push_back(roleB);
+      }
+      definition.runtimeObserver = [spec231, roleIndex, colocated](
+          const NativeProviderCollaborationRuntime& value) {
         spec231->stateSnapshots[roleIndex] = value.decodeStateSnapshot;
+        if (colocated) spec231->stateSnapshots[1] = value.decodeStateSnapshot;
       };
       definition.ackHandler = std::move(ackHandler);
       auto host = std::make_unique<NativeInferenceProvider>(
@@ -9975,7 +10047,22 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     const bool cancellationCase = spec231->fault == Spec231DiFault::CANCEL_INITIAL_INPUT ||
       spec231->fault == Spec231DiFault::CANCEL_NEXT_INPUT ||
       spec231->fault == Spec231DiFault::RESTART_AFTER_CANCEL;
-    if (spec231->holdsNextInput()) {
+    if (colocated && cancellationCase) {
+      await([&] { return spec231->held.load() || first.status() != NativeRequestStatus::Pending; },
+            "local-producer-held");
+      BOOST_REQUIRE_MESSAGE(spec231->held.load(), "local producer never entered the real ORT path");
+      BOOST_REQUIRE_EQUAL(spec231->completed[0][0].load(), 1U);
+      BOOST_CHECK_EQUAL(spec231->entered[1][0].load(), 0U);
+      first.cancel();
+      BOOST_REQUIRE(first.status() == NativeRequestStatus::Cancelled);
+      await([&] { return first.diagnostics().cancellationFencedRoles == 2; }, "local-cancel-fence");
+      spec231->release.store(true);
+      await([&] {
+        const auto receipt = first.diagnostics();
+        return receipt.cancellationDrainedRoles == 2 && !receipt.cancellationUnconfirmed;
+      }, "local-cancel-drain");
+    }
+    else if (spec231->holdsNextInput()) {
       const bool initial = spec231->fault == Spec231DiFault::CANCEL_INITIAL_INPUT;
       await([&] { return (spec231->held.load() &&
                          (initial ? spec231->initialManifestRequested :
@@ -10099,9 +10186,11 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       }
     }
     await([&] { return first.status() != NativeRequestStatus::Pending; });
-    const bool successExpected = spec231->fault == Spec231DiFault::NONE ||
-                                 spec231->fault == Spec231DiFault::HOLD_NEXT_INPUT ||
-                                 spec231->fault == Spec231DiFault::COMMIT_THEN_CANCEL;
+    const bool lowCapacity = colocated && spec231->handlerThreads < 2;
+    const bool successExpected = !lowCapacity &&
+      (spec231->fault == Spec231DiFault::NONE ||
+       spec231->fault == Spec231DiFault::HOLD_NEXT_INPUT ||
+       spec231->fault == Spec231DiFault::COMMIT_THEN_CANCEL);
     if (successExpected) {
       NativeInferenceResult outcome;
       try { outcome = first.result(0ms); }
@@ -10134,7 +10223,13 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       catch (const NativeDiError& error) { reason = error.what(); }
       BOOST_REQUIRE_MESSAGE(!reason.empty(), "failed operation lacks its native error");
       std::cout << "SPEC231_DI_REJECTION " << reason << std::endl;
-      if (spec231->fault == Spec231DiFault::WRONG_MANIFEST_SIGNER) {
+      if (lowCapacity) {
+        BOOST_CHECK_MESSAGE(reason.find("DI_LOCAL_DEPENDENCY_HANDLER_CAPACITY") !=
+                            std::string::npos, reason);
+        BOOST_CHECK_EQUAL(spec231->entered[0][0].load(), 0U);
+        BOOST_CHECK_EQUAL(spec231->entered[1][0].load(), 0U);
+      }
+      else if (spec231->fault == Spec231DiFault::WRONG_MANIFEST_SIGNER) {
         BOOST_CHECK_GT(spec231->signerReplacements, 0U);
         BOOST_CHECK_EQUAL(spec231->entered[1][0].load(), 0U);
       }
@@ -10536,6 +10631,374 @@ runSpec231DiAdmissionCase(Spec231DiFault fault)
     }
   }
 
+}
+
+void
+runAuthenticatedPipelineRouteCase(Spec231DiAdmissionControl& control)
+{
+  control.observeDependencyRoute = true;
+  runR4B6RealProviderConversationCase(false, !control.colocated, false, false, false,
+    false, false, false, false, false, false, Spec196ProbeResponseFault::None,
+    false, Spec196ProbeResponseFault::None, &control);
+  BOOST_REQUIRE(control.drained);
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedTwoStageGenerationUsesLocalDependencies)
+{
+  Spec231DiAdmissionControl control(Spec231DiFault::NONE);
+  control.colocated = true;
+  runAuthenticatedPipelineRouteCase(control);
+  BOOST_REQUIRE(control.dispatchRoles[0]);
+  BOOST_CHECK(control.dispatchRoles[0] == control.dispatchRoles[1]);
+  const std::vector<CollaborationRole> roles = {
+    "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/0/successor"};
+  BOOST_CHECK_EQUAL_COLLECTIONS(control.dispatchRoles[0]->begin(), control.dispatchRoles[0]->end(),
+                                roles.begin(), roles.end());
+  for (std::size_t role = 0; role < roles.size(); ++role) {
+    BOOST_CHECK_EQUAL(control.dispatchHandlerThreads[role], 2U);
+    BOOST_REQUIRE(control.dependencyStatistics[role]);
+    const auto& stats = *control.dependencyStatistics[role];
+    BOOST_CHECK_GT(stats.counts.at("dependency.localPut"), 0U);
+    BOOST_CHECK_GT(stats.counts.at("dependency.localTake"), 0U);
+    BOOST_CHECK_GT(stats.counts.at("dependency.localPutBytes"), 0U);
+    BOOST_CHECK_GT(stats.counts.at("dependency.localTakeBytes"), 0U);
+  }
+  BOOST_CHECK_EQUAL(control.dependencyInterests.load(), 0U);
+  BOOST_CHECK_EQUAL(control.dependencyData.load(), 0U);
+  BOOST_CHECK_EQUAL(control.dependencyWireBytes.load(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedTwoStageGenerationKeepsRemoteDependencies)
+{
+  Spec231DiAdmissionControl control(Spec231DiFault::NONE);
+  runAuthenticatedPipelineRouteCase(control);
+  for (std::size_t role = 0; role < control.dispatchRoles.size(); ++role) {
+    BOOST_CHECK(!control.dispatchRoles[role]);
+    BOOST_REQUIRE(control.dependencyStatistics[role]);
+    const auto& counts = control.dependencyStatistics[role]->counts;
+    BOOST_CHECK_EQUAL(counts.count("dependency.localPut"), 0U);
+    BOOST_CHECK_EQUAL(counts.count("dependency.localTake"), 0U);
+  }
+  BOOST_CHECK_GT(control.dependencyInterests.load(), 0U);
+  BOOST_CHECK_GT(control.dependencyData.load(), 0U);
+  BOOST_CHECK_GT(control.dependencyWireBytes.load(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(ColocatedPipelineRejectsStaleOrUnadmittedDependency)
+{
+  LocalDependencyAttempt attempt("current-attempt", 2, 256);
+  const auto deadline = LocalDependencyAttempt::Clock::now() + 1s;
+  attempt.attach("front", "current-attempt", true, deadline);
+  BOOST_CHECK_EXCEPTION(attempt.attach("tail", "old-attempt", true, deadline),
+                        std::invalid_argument, [](const std::invalid_argument& error) {
+    return std::string_view(error.what()) == "DI_LOCAL_DEPENDENCY_DISPATCH_MISMATCH";
+  });
+  BOOST_CHECK_EXCEPTION(attempt.awaitRoute([] { return true; }), std::runtime_error,
+                        [](const std::runtime_error& error) {
+    return std::string_view(error.what()) == "DI_LOCAL_DEPENDENCY_ATTEMPT_ENDED";
+  });
+
+  Spec231DiAdmissionControl control(Spec231DiFault::WRONG_REGISTERED_ROLE);
+  control.colocated = true;
+  runAuthenticatedPipelineRouteCase(control);
+  BOOST_CHECK_EQUAL(control.entered[0][0].load(), 0U);
+  BOOST_CHECK_EQUAL(control.entered[1][0].load(), 0U);
+  BOOST_CHECK_EQUAL(control.dependencyWireBytes.load(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(ColocatedPipelineReleasesFailedOrCancelledRoles)
+{
+  Spec231DiAdmissionControl insufficientCapacity(Spec231DiFault::NONE);
+  insufficientCapacity.colocated = true;
+  insufficientCapacity.handlerThreads = 1;
+  runAuthenticatedPipelineRouteCase(insufficientCapacity);
+  BOOST_CHECK_EQUAL(insufficientCapacity.dependencyWireBytes.load(), 0U);
+
+  Spec231DiAdmissionControl cancelled(Spec231DiFault::CANCEL_INITIAL_INPUT);
+  cancelled.colocated = true;
+  runAuthenticatedPipelineRouteCase(cancelled);
+  BOOST_CHECK_EQUAL(cancelled.completed[0][0].load(), 1U);
+  BOOST_CHECK_EQUAL(cancelled.entered[0][1].load(), 0U);
+  BOOST_CHECK_EQUAL(cancelled.entered[1][0].load(), 0U);
+  BOOST_CHECK_EQUAL(cancelled.dependencyWireBytes.load(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(ColocatedPipelineSharesOneLeaseActivationDeadline)
+{
+  LocalDependencyAttempt attempt("shared-lease-attempt", 2, 256);
+  const auto deadline = LocalDependencyAttempt::Clock::now() + 5s;
+  attempt.attach("front", "shared-lease-attempt", true, deadline);
+  attempt.attach("tail", "shared-lease-attempt", true, deadline);
+
+  GenericExecutionLease lease;
+  lease.providerName = "/provider";
+  lease.requesterName = "/user";
+  lease.requestId = "shared-lease-attempt";
+  lease.serviceName = "/pipeline";
+  lease.planDigest = nativePlanningDigest("local-pipeline-lease-plan");
+  lease.resourceBindingSchema = "ndnsf-di-binding-v1";
+  lease.resourceBindingProof = ndn::Buffer{1};
+  lease.conflictKeys = {"cpu-slot"};
+  lease.expiresAtMs = 2000;
+  lease.idempotencyKey = "prepare";
+  ProviderExecutionLeaseTable table("provider-boot");
+  const auto prepared = table.prepare(lease, 1000);
+  BOOST_REQUIRE(prepared.status);
+  const auto& leaseId = prepared.lease.leaseId;
+  BOOST_REQUIRE(table.commit(leaseId, "provider-boot", "/user", "commit", 1100).status);
+  const ExecutionLeaseBinding binding{lease.requesterName, lease.requestId, lease.serviceName,
+    lease.planDigest, lease.resourceBindingSchema, lease.resourceBindingProof};
+  const auto first = table.validateAndActivate(leaseId, "provider-boot", binding,
+    "activate", 1200, attempt.leaseDeadline(3000));
+  BOOST_REQUIRE(first.status);
+  const auto second = table.validateAndActivate(leaseId, "provider-boot", binding,
+    "activate", 1201, attempt.leaseDeadline(3001));
+  BOOST_REQUIRE(second.status);
+  BOOST_CHECK(second.idempotentReplay);
+  BOOST_CHECK_EQUAL(second.lease.executionDeadlineMs, 3000U);
+  BOOST_CHECK_EQUAL(table.counters(1201).activated, 1U);
+  const auto divergent = table.validateAndActivate(leaseId, "provider-boot", binding,
+    "activate", 1202, 3002);
+  BOOST_CHECK_EQUAL(divergent.reasonCode, "LEASE_IDEMPOTENCY_CONFLICT");
+
+  ExecutionAttemptAuthority authority;
+  const ExecutionAttemptKey stale{"/shared-lease-attempt", 1};
+  const ExecutionAttemptKey current{"/shared-lease-attempt", 2};
+  BOOST_REQUIRE_EQUAL(authority.admit(current), ExecutionAttemptAdmission::Accepted);
+  BOOST_REQUIRE_EQUAL(authority.admit(current), ExecutionAttemptAdmission::Accepted);
+  BOOST_CHECK_EQUAL(authority.admit(stale), ExecutionAttemptAdmission::Stale);
+  BOOST_CHECK(!authority.complete(stale));
+  attempt.markComputed("front");
+  BOOST_CHECK_EXCEPTION(attempt.markComputed("stale-peer"), std::runtime_error,
+                        [](const std::runtime_error& error) {
+    return std::string_view(error.what()) == "DI_LOCAL_DEPENDENCY_COMPUTE_ROLE_MISMATCH";
+  });
+  int polls = 0;
+  BOOST_CHECK_EXCEPTION(attempt.awaitComputed([&] { return ++polls < 2; }), std::runtime_error,
+                        [](const std::runtime_error& error) {
+    return std::string_view(error.what()) == "DI_LOCAL_DEPENDENCY_WORK_EXPIRED";
+  });
+  BOOST_CHECK_EQUAL(polls, 2);
+  attempt.markComputed("tail");
+  BOOST_CHECK_NO_THROW(attempt.awaitComputed([&] { return authority.isAuthoritative(current); }));
+  BOOST_CHECK(authority.complete(current));
+  BOOST_CHECK(!authority.complete(current));
+  BOOST_CHECK_EQUAL(authority.admit(current), ExecutionAttemptAdmission::DuplicateTerminal);
+}
+
+BOOST_AUTO_TEST_CASE(ColocatedPipelineStoreChecksOrderingAndBounds)
+{
+  const std::string provider = "/local-pipeline/provider";
+  const std::string requester = "/local-pipeline/user";
+  const std::string session = "/local-pipeline/request";
+  const std::string groupId = "local-pipeline-group";
+  const std::string planDigest = nativePlanningDigest("local-pipeline-plan");
+  const std::string layout = nativePlanningDigest("local-pipeline-layout");
+  const std::string tensorDigest = nativePlanningDigest("local-pipeline-hidden");
+  const auto bundle = makeEncodedTensorBundle("hidden", {NamedTensor{
+    "hidden", TensorElementType::Float32, {1}, float32Payload({3.0f})}});
+
+  std::vector<GroupOperationV1> operations;
+  std::vector<DependencyEdge> edges;
+  for (std::uint64_t round = 0; round != 4; ++round) {
+    GroupOperationV1 operation;
+    operation.operationIndex = round;
+    operation.kind = "ACTIVATION";
+    operation.producerRanks = {"0"};
+    operation.consumerRanks = {"0"};
+    operation.tensorLayoutDigest = layout;
+    operation.maxBytes = bundle.payload.size();
+    operation.maxSegments = 1;
+    operations.push_back(operation);
+
+    NativeTensorEndpointV3 endpoint;
+    endpoint.producerNamespace = provider;
+    endpoint.requester = requester;
+    endpoint.requestId = session;
+    endpoint.attempt = 1;
+    endpoint.planDigest = planDigest;
+    endpoint.groupId = groupId;
+    endpoint.groupEpoch = "1";
+    endpoint.operation = operation.kind;
+    endpoint.round = round;
+    endpoint.sourceKind = "ROLE";
+    endpoint.producerRole = "front";
+    endpoint.consumerRole = "tail";
+    endpoint.consumerRoles = {"tail"};
+    endpoint.tensorId = "hidden";
+    endpoint.tensorDigest = tensorDigest;
+    endpoint.layoutDigest = layout;
+    endpoint.targetLayoutDigest = layout;
+    endpoint.segmentCount = 1;
+    endpoint.manifestDigest = nativePlanningDigest("local-pipeline-manifest");
+    endpoint.securityProfile = "NDNSF_DATA_V1";
+    endpoint.noProgressDeadlineMs = 1000;
+    endpoint.hardDeadlineMs = 5000;
+    auto identity = nativeEndpointJson(endpoint);
+    identity.erase("endpoint_digest");
+    identity.erase("consumer_role");
+    endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+
+    DependencyEdge edge{"activation", "front", "tail", tensorObjectNamePrefix(endpoint),
+      1, bundle.payload.size(), {"hidden"}};
+    edge.consumerRoles = endpoint.consumerRoles;
+    edge.requestId = session;
+    edge.attemptEpoch = endpoint.attempt;
+    edge.useNdnsfDataV1 = true;
+    edge.collectiveOperationIndex = round;
+    edge.collectiveProducerRank = "0";
+    edge.collectiveSourceLayoutDigest = layout;
+    edge.collectiveTargetLayoutDigest = layout;
+    edge.collectiveTensorDigest = tensorDigest;
+    edge.producerProvider = provider;
+    edge.declaredByV3 = true;
+    edge.manifestDataName = tensorObjectManifestName(endpoint);
+    edge.maxSegments = 1;
+    edge.endpointDigest = endpoint.endpointDigest;
+    edge.executionObjectDigest = computeTensorExecutionObjectDigest(endpoint);
+    edge.planDigest = planDigest;
+    edge.manifestContractDigest = endpoint.manifestDigest;
+    edge.tensorDigest = tensorDigest;
+    edge.layoutDigest = layout;
+    edge.securityProfile = endpoint.securityProfile;
+    edge.operationKind = operation.kind;
+    edge.round = round;
+    edges.push_back(std::move(edge));
+  }
+  auto group = std::make_shared<ProviderGroupCoordinator>(makeD2bCoordinatorOptions());
+  const auto capability = group->createCapability(session, "attempt-1", planDigest, groupId, 1,
+    {{provider, 0, "local-pipeline-offer", provider}}, operations,
+    bundle.payload.size(), 1000, 5000);
+
+  const auto authority = makeR4B6Ed25519Key(0x51);
+  const auto user = makeR4B6Ed25519Key(0x41);
+  const auto recipient = makeR4B6Ed25519Key(0x61);
+  const auto manifest = nativePlanningDigest("local-pipeline-model");
+  const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count());
+  NativeGrantIssuerConfig policy;
+  policy.authorityIdentity = "/local-pipeline/authority";
+  policy.requesterIdentity = requester;
+  policy.protectionEpoch = "local-pipeline-protection";
+  policy.keyId = "local-pipeline-key";
+  policy.authorityPrivateKey = authority;
+  policy.requesterPublicKey = user;
+  policy.allowedModelManifests = {manifest};
+  policy.recipientPublicKeys = {{provider, recipient}};
+  policy.contentKey = [](const auto&, const auto&) { return std::vector<std::uint8_t>(32, 7); };
+  NativeSignedGrantRequest request;
+  request.providerIdentity = provider;
+  request.requesterIdentity = requester;
+  request.requestId = session;
+  request.attempt = 1;
+  request.planCoreDigest = nativePlanningDigest("local-pipeline-core");
+  request.grantViewDigest = nativePlanningDigest("local-pipeline-grant-view");
+  request.modelManifestDigest = manifest;
+  request.protectionEpoch = policy.protectionEpoch;
+  request.issuedAtMs = now;
+  const auto grant = NativeArtifactGrantIssuer(policy).issue(request.sign(*user), now, now + 5000);
+  NativeProtectedGrantConfig grantConfig;
+  grantConfig.publicationIdentity = requester;
+  grantConfig.authorityIdentity = policy.authorityIdentity;
+  grantConfig.authorityPublicKeyRaw.resize(32);
+  auto publicKeySize = grantConfig.authorityPublicKeyRaw.size();
+  BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(authority.get(),
+    reinterpret_cast<unsigned char*>(grantConfig.authorityPublicKeyRaw.data()), &publicKeySize), 1);
+  BOOST_REQUIRE_EQUAL(publicKeySize, 32U);
+  grantConfig.recipientKey.material = std::string(32, 0x61);
+  grantConfig.modelManifestDigest = manifest;
+  grantConfig.fetchGrant = [&](const std::string& name) {
+    BOOST_REQUIRE_EQUAL(name, grant.grantName);
+    return grant.wireJson;
+  };
+  const auto makeProtection = [&](const std::string& role) {
+    ProtectedRuntimeBindingV1 binding;
+    binding.provider = provider;
+    binding.role = role;
+    binding.requestId = session;
+    binding.attempt = 1;
+    binding.planCoreDigest = request.planCoreDigest;
+    binding.planDigest = planDigest;
+    binding.securityPolicySnapshotDigest = nativePlanningDigest("local-pipeline-security");
+    binding.protectionEpoch = policy.protectionEpoch;
+    binding.grantName = grant.grantName;
+    binding.grantDigest = grant.grantDigest;
+    binding.providerBootId = "local-pipeline-boot";
+    binding.fencingToken = "local-pipeline-fence";
+    binding.expiresAtMs = now + 5000;
+    for (const auto& edge : edges) {
+      if (role == edge.producerRole) {
+        binding.mayPublishEndpointDigests.insert(edge.endpointDigest);
+        binding.mayPublishConsumerByEndpoint.emplace(edge.endpointDigest, edge.consumerRole);
+      }
+      else {
+        binding.mustFetchEndpointDigests.insert(edge.endpointDigest);
+        binding.mustFetchProducerByEndpoint.emplace(edge.endpointDigest, edge.producerRole);
+      }
+    }
+    auto protection = std::make_shared<ProtectedRuntime>(binding, grantConfig);
+    protection->verifyGrant(binding, now);
+    return protection;
+  };
+
+  class NoNetwork final : public DependencyIo
+  {
+  public:
+    std::future<TensorBundle> prefetchInput(const std::string&, const DependencyEdge&) override
+    { throw std::logic_error("local fixture unexpectedly fetched from network"); }
+    void publishOutput(const std::string&, const DependencyEdge&, const TensorBundle&) override
+    { throw std::logic_error("local fixture unexpectedly published to network"); }
+  };
+  auto store = std::make_shared<LocalDependencyAttempt>("local-pair", 3, bundle.payload.size());
+  const auto deadline = LocalDependencyAttempt::Clock::now() + 5s;
+  store->attach("front", "local-pair", true, deadline);
+  store->attach("tail", "local-pair", true, deadline);
+  const auto current = [] { return true; };
+  BOOST_REQUIRE(store->awaitRoute(current));
+  auto network = std::make_shared<NoNetwork>();
+  LocalPipelineDependencyIo producer(store, network, makeProtection("front"), group,
+    session, "front", provider, current, {});
+  LocalPipelineDependencyIo consumer(store, network, makeProtection("tail"), group,
+    session, "tail", provider, current, {});
+
+  auto pending = consumer.prefetchInputWithFirstReadBarrier(session, edges[0]);
+  BOOST_REQUIRE(pending.firstReadStarted.wait_for(0ms) == std::future_status::ready);
+  BOOST_CHECK(pending.result.wait_for(0ms) == std::future_status::timeout);
+  auto malformed = bundle;
+  ++malformed.expectedBytes;
+  BOOST_CHECK_EXCEPTION(producer.publishOutput(session, edges[0], malformed), std::runtime_error,
+                        [](const std::runtime_error& error) {
+    return std::string_view(error.what()).find("tensor bundle byte count") == 0;
+  });
+  BOOST_CHECK(pending.result.wait_for(0ms) == std::future_status::timeout);
+  producer.publishOutput(session, edges[0], bundle);
+  BOOST_REQUIRE(pending.result.wait_for(0ms) == std::future_status::ready);
+  const auto delivered = pending.result.get();
+  BOOST_CHECK(delivered.payload == bundle.payload);
+  BOOST_CHECK_NO_THROW(validateAdmittedTensorBundleForEdge(edges[0], delivered));
+
+  producer.publishOutput(session, edges[1], bundle);
+  auto stale = edges[1];
+  stale.executionObjectDigest = nativePlanningDigest("local-pipeline-stale-peer-object");
+  BOOST_CHECK_EXCEPTION(consumer.prefetchInput(session, stale), std::invalid_argument,
+                        [](const std::invalid_argument& error) {
+    return std::string_view(error.what()) == "DI_LOCAL_DEPENDENCY_SLOT_MISMATCH";
+  });
+  BOOST_CHECK_EXCEPTION(producer.publishOutput(session, edges[2], bundle), std::length_error,
+                        [](const std::length_error& error) {
+    return std::string_view(error.what()) == "DI_LOCAL_DEPENDENCY_BYTE_LIMIT";
+  });
+  auto available = consumer.prefetchInput(session, edges[1]);
+  BOOST_REQUIRE(available.wait_for(0ms) == std::future_status::ready);
+  BOOST_CHECK(available.get().payload == bundle.payload);
+  producer.publishOutput(session, edges[2], bundle);
+  available = consumer.prefetchInput(session, edges[2]);
+  BOOST_REQUIRE(available.wait_for(0ms) == std::future_status::ready);
+  BOOST_CHECK(available.get().payload == bundle.payload);
+  BOOST_CHECK_EXCEPTION(consumer.prefetchInput(session, edges[3]), std::length_error,
+                        [](const std::length_error& error) {
+    return std::string_view(error.what()) == "DI_LOCAL_DEPENDENCY_SLOT_LIMIT";
+  });
 }
 
 BOOST_AUTO_TEST_CASE(Spec231DiScopedHostStopCancelsBlockedConversationDependency)
