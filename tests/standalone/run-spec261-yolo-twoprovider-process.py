@@ -24,6 +24,8 @@ parser.add_argument('--run-root', type=Path, default=None,
 parser.add_argument('--cache', type=Path, default=None)
 parser.add_argument('--variant', choices=['26n','11n'], default='26n')
 parser.add_argument('--boundary', default='onnx-node-3')
+parser.add_argument('--case', action='append', default=[],
+                    help='case directory name under the model assets (repeatable)')
 parser.add_argument('--no-local-nfd', action='store_true',
                     help='use external per-actor transports instead of a private NFD')
 parser.add_argument('--restart-provider2', action='store_true',
@@ -224,6 +226,11 @@ try:
   pe=penv(run_root/(tag+'-store'),tag)
   shutil.copy2(offerkey,run_root/(tag+'/offer-private.pem'))
   pm=[str(PROVIDER),'--plan',str(run_root/'provider/plan.json'),'--manifest',str(run_root/(tag+'/manifest.json')),'--service','/Inference/NativeUnary','--provider',identity,'--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(run_root/(tag+'/trust-schema.conf')),'--roles',roles,'--workers','4','--handler-threads','4','--serve','--run-for-ms','120000','--artifact-cache-dir',str(run_root/(tag+'/cache')),'--selection-offer-key-file',str(run_root/(tag+'/offer-private.pem')),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
+  if args.case:
+   # Each authenticated request keeps one resident per role and each resident
+   # holds its role template, so a multi-sample session needs a larger bounded
+   # template cache than the default.
+   pm += ['--artifact-cache-entries','64']
   pe['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY']=str(run_root/(tag+'/authority-public.pem'));pe['SPEC181_PROVIDER_RECIPIENT_KEY_MAP']=str(run_root/(tag+'/recipient-key-map.json'));pe['NDNSF_DI_WORKER_BINARY']=str(WORKER)
   ps=launch(pm,pe,tag,tag);children.append(ps); b.wait_marker(ps,run_root/(tag+'.log'),'NDNSF_DI_NATIVE_PROVIDER_READY',60)
   return ps
@@ -256,6 +263,41 @@ try:
   revoke_wait_seconds=max(30, int(revoke_after_ms / 1000) + 30)
   b.wait_marker(c,run_root/'controller.log','NDNSF_REVOCATION_APPLIED success=1',revoke_wait_seconds)
  # requester direct first
+ if args.case:
+  failures=[]
+  for name in args.case:
+   case_dir=YOLO[variant]['dir']/'cases'/name
+   if not (case_dir/'input.f32').is_file() or not (case_dir/'oracle.json').is_file():
+    raise RuntimeError('SPEC261_CASE_MISSING: '+str(case_dir))
+   raw=(case_dir/'input.f32').read_bytes()
+   values=json.loads((case_dir/'oracle.json').read_text())['float32']
+   dims=[1,3,640,640]
+   hdr=b'NDITB001'+struct.pack('<I',1)+struct.pack('<I',6)+b'images'+struct.pack('<I',1)+struct.pack('<I',len(dims))
+   for d in dims: hdr+=struct.pack('<q',d)
+   hdr+=struct.pack('<Q',len(raw))
+   input_path=run_root/'requester'/('input-'+name+'.bin')
+   input_path.write_bytes(hdr+raw)
+   cfg=json.loads((run_root/'requester/config.json').read_text())
+   cfg['oracle']={'tensor':YOLO[variant]['output'],'float32':values,'tolerance':1e-4,
+     'row_width':6,'detections':True,'coordinate_tolerance':0.01,'score_tolerance':1e-4,'iou_floor':0.999}
+   config_path=run_root/'requester'/('config-'+name+'.json')
+   config_path.write_text(json.dumps(cfg))
+   rqc=launch([str(REQUESTER),'--config',str(config_path),'--input',str(input_path),
+               '--output',str(run_root/'requester'/('output-'+name+'.bin'))],re,'requester-'+name,'requester')
+   children.append(rqc)
+   try:
+    rqc.wait(timeout=180)
+   except subprocess.TimeoutExpired:
+    b.stop(rqc)
+    failures.append(name+':timeout')
+    continue
+   print('requester case',name,'rc',rqc.returncode)
+   if rqc.returncode: failures.append(name)
+  print('ROOT',run_root)
+  if failures:
+   raise SystemExit(1)
+  # Case mode already produced the evidence this invocation owns.
+  raise SystemExit(0)
  rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output.bin')],re,'requester','requester');children.append(rq)
  try:
   rq.wait(timeout=120)

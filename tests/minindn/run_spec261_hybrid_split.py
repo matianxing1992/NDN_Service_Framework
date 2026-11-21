@@ -43,6 +43,8 @@ def main() -> int:
     parser.add_argument("--scratch-root", type=Path, required=True)
     parser.add_argument("--prefix", type=Path, default=Path("/usr/local"))
     parser.add_argument("--variant", choices=["26n", "11n"], default="26n")
+    parser.add_argument("--case", action="append", default=[],
+                        help="case directory under the model assets (repeatable)")
     parser.add_argument("--timeout", type=float, default=600)
     args = parser.parse_args()
     if os.geteuid() != 0:
@@ -195,17 +197,22 @@ def main() -> int:
             driver_process = subprocess.Popen(
                 [sys.executable, str(DRIVER), "--build", str(ROOT / "build"),
                  "--no-local-nfd", "--variant", args.variant,
-                 "--run-root", str(run_root)],
+                 "--run-root", str(run_root)] +
+                [item for case in args.case for item in ("--case", case)],
                 cwd=ROOT, env=environment, stdout=stream,
                 stderr=subprocess.STDOUT)
             driver_process.wait(timeout=args.timeout)
         result["driverExit"] = driver_process.returncode
         requester_log = run_root / "requester.log"
-        text = requester_log.read_text(errors="replace") if requester_log.exists() else ""
+        case_logs = [run_root / f"requester-{case}.log" for case in args.case]
+        texts = [requester_log.read_text(errors="replace") if requester_log.exists() else ""]
+        texts += [log.read_text(errors="replace") if log.exists() else "" for log in case_logs]
         result["phases"].append({"phase": "driver-finished",
                                  "exit": driver_process.returncode,
-                                 "requesterLog": str(requester_log)})
-        passed = "NATIVE_NUMERICAL_ORACLE_PASS" in text and driver_process.returncode == 0
+                                 "requesterLogs": [str(requester_log)] + [str(log) for log in case_logs]})
+        passed = driver_process.returncode == 0 and bool(args.case or texts[0]) and all(
+            "NATIVE_NUMERICAL_ORACLE_PASS" in text for text in
+            (texts[1:] if args.case else texts[:1]))
         result["status"] = "PASS" if passed else "FAIL"
         if not passed:
             result["firstFailure"] = "results/spec261-minindn: driver did not report the oracle pass"

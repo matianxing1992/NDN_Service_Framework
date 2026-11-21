@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Generate deterministic multi-sample cases for a frozen YOLO asset directory.
+
+Each case is a small perturbation of the frozen input plus an independent
+prediction file from the native C++ ONNX Runtime oracle. The Provider never
+sees these files; they exist so a single session can be exercised with several
+distinct inputs without re-exporting or re-signing the model.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-dir", type=Path, required=True,
+                        help="directory holding model.onnx and input.f32")
+    parser.add_argument("--output", type=Path, required=True,
+                        help="cases directory to create")
+    parser.add_argument("--oracle", type=Path, required=True,
+                        help="native spec261-ort-detection-oracle executable")
+    parser.add_argument("--shape", default="1,3,640,640")
+    parser.add_argument("--extra-cases", type=int, default=4)
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    shape = tuple(int(part) for part in args.shape.split(","))
+    frozen_path = args.model_dir / "input.f32"
+    if not frozen_path.is_file():
+        raise SystemExit("missing frozen input: " + str(frozen_path))
+    graph = next(args.model_dir.glob("*.onnx"), None)
+    if graph is None:
+        raise SystemExit("missing model: " + str(args.model_dir))
+    frozen = np.frombuffer(frozen_path.read_bytes(), dtype="<f4").reshape(shape)
+    cases = [frozen.astype("float32")]
+    # Perturbations stay inside [0, 1] so every case is a plausible image tensor.
+    for seed, gain, noise in [(1, 0.95, 0.02), (2, 1.05, 0.02), (3, 1.0, 0.05), (4, 0.9, 0.0)]:
+        if len(cases) > args.extra_cases:
+            break
+        rng = np.random.default_rng(seed)
+        value = np.clip(frozen * gain + rng.normal(0, noise, frozen.shape).astype("float32"), 0, 1)
+        cases.append(value.astype("float32"))
+    args.output.mkdir(parents=True, exist_ok=True)
+    import subprocess
+    for index, value in enumerate(cases):
+        case = args.output / f"case-{index:02d}"
+        case.mkdir(exist_ok=True)
+        (case / "input.f32").write_bytes(value.astype("<f4").tobytes())
+        npy = args.output / f"case-{index:02d}-input.npy"
+        prediction = args.output / f"case-{index:02d}-oracle.npy"
+        np.save(npy, value.astype("<f4"))
+        subprocess.run([str(args.oracle), "--graph", str(graph), "--input", str(npy),
+                        "--write-predictions", str(prediction)], check=True)
+        values = np.load(prediction).astype("<f4").reshape(-1)
+        (case / "oracle.json").write_text(json.dumps({"float32": [float(v) for v in values]}))
+        npy.unlink()
+        prediction.unlink()
+    print(f"wrote {len(cases)} cases to {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
