@@ -34,7 +34,8 @@ sudo /path/to/prefix/bin/spec190-multiturn-oracle \
 检查每轮的实际输出数、检查点认证和提交前缀。该对照逐 token 比较独立 CPU 输出，
 并报告 `providerStateValuesCompared`，据此判断是否做了 Provider 内部状态数值比较。
 
-YOLO 的宿主机 MiniNDN 配置由安装器的 `--with-yolo-minindn` 安装。可在任意目录
+宿主的 MiniNDN 环境随[普通 DI 安装](installation.md#minindn-宿主运行环境)交付。
+YOLO 的模型和专用入口由 `--with-yolo-minindn` 安装。可在任意目录
 运行 `ndnsf-yolo-minindn --preflight-only`，检查随安装交付的脚本、Python 路径、
 原生库和固定模型 SHA-256。实际两阶段实验用 `ndnsf-yolo-minindn` 启动，
 每次在磁盘型 scratch 中创建独立运行目录。

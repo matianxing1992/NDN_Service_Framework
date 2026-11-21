@@ -20,6 +20,17 @@
 
 configure.sh是兼容包装，保留configure-only语义。--plan/--dry-run不等于已安装或configure通过。
 
+## MiniNDN 宿主运行环境
+
+普通 `all` 和 `di` 安装（含 `--deps-only`）默认安装共用的 MiniNDN 环境。
+用 `--deps-dir deps` 将固定版本的 MiniNDN、Mininet 和所需工具源码保存在 `deps/`。
+运行文件装入 `/usr/local`，系统 Python 在隔离模式下可导入 MiniNDN 和 Mininet。
+使用 `--check-dependencies --with-minindn` 检查全局命令和 Python 导入。
+
+非实验主机可选 `--without-minindn`。`--no-dependencies --with-minindn` 仅复核已安装环境。
+Qwen 和 YOLO 安装配置共用这套运行环境。仅 YOLO 专用配置会准备 YOLO 模型和 CPU Python 包。
+实际拓扑验收见[本地 MiniNDN 验证](local-validation.md)。
+
 ## SDK closure
 
 普通OS开发包、NDN库、ONNX full-protobuf、ONNX Runtime C++ SDK和tokenizer bridge
