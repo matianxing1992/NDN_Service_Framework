@@ -4,6 +4,7 @@
 #include "ndnsf-integration-fixture.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-publication.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-repository.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
@@ -2802,20 +2803,24 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   capability.repoNode = target.repoNode;
   capability.repoMode = "persistent";
   capability.freeBytes = 4 * 1024 * 1024;
-  auto node = std::make_shared<repo::RepoNode>(servicePrefix, capability,
-    std::make_shared<repo::FilesystemRepoStoreBackend>(
-      (temporary.path() / "objects").string(), 4 * 1024 * 1024, 1024, "owner-client",
-      repo::FilesystemRecoveryPolicy::KEEP_UNCONFIRMED),
-    target.repoNode, target.providerIdentity, (temporary.path() / "metadata.sqlite3").string());
-  node->registerServices(environment.provider(1));
-  node->registerOriginalDataServing(environment.providerFace(1));
   const auto originalInsertFetches = std::make_shared<std::atomic<unsigned>>(0);
-  node->setDataReferenceSpoolFetcher(
-    [originalInsertFetches, fetch = repo::detail::FaceDataReferenceFetcher(
-       environment.providerFace(1), 1s, 10s)](const repo::RepoDataReference& value) {
-      ++*originalInsertFetches;
-      return fetch(value);
-    });
+  const auto openRepo = [&] {
+    auto node = std::make_shared<repo::RepoNode>(servicePrefix, capability,
+      std::make_shared<repo::FilesystemRepoStoreBackend>(
+        (temporary.path() / "objects").string(), 4 * 1024 * 1024, 1024, "owner-client",
+        repo::FilesystemRecoveryPolicy::KEEP_UNCONFIRMED),
+      target.repoNode, target.providerIdentity, (temporary.path() / "metadata.sqlite3").string());
+    node->registerServices(environment.provider(1));
+    node->registerOriginalDataServing(environment.providerFace(1));
+    node->setDataReferenceSpoolFetcher(
+      [originalInsertFetches, fetch = repo::detail::FaceDataReferenceFetcher(
+         environment.providerFace(1), 1s, 10s)](const repo::RepoDataReference& value) {
+        ++*originalInsertFetches;
+        return fetch(value);
+      });
+    return node;
+  };
+  auto node = openRepo();
   environment.enableProductionIngressForTest();
   environment.pumpUntilWithAttributeAuthority([&] {
     return node->isOriginalDataServingReady();
@@ -2842,6 +2847,12 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     protectedLimits);
   const auto expectedCipher = di::test::protectedKv::read(cipher);
   const di::NativeProtectedKvPacketLimits packetLimits{protectedLimits, 1000000, 128};
+  di::ProviderConversationStateReceiptV1 exportReceipt;
+  exportReceipt.conversationId = "owner-checkpoint-conversation";
+  exportReceipt.successorContextEpoch = 2;
+  exportReceipt.roleName = state.originIdentity.roleName;
+  exportReceipt.layoutDigest = state.originIdentity.layoutDigest;
+  const auto naming = di::nativeKvPacketNamingContext(exportReceipt);
   // Direct Context construction is a fixture boundary, not model admission.
   // Actual signing still uses the production owner-thread/current-work bridge.
   ServiceProvider::CollaborationAssignment sourceAssignment;
@@ -2863,21 +2874,22 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
         if (!sourceAssignment.workCurrent() || !sourceContext.hasCurrentWorkAuthority() ||
             std::chrono::steady_clock::now() >= sourceAssignment.workDeadline)
           throw std::runtime_error("Source publication authority expired");
-      });
+      }, naming);
   });
+  const auto checkpointPrefix = ndn::Name(sourceIdentity).append("NDNSF-DI").append("checkpoint")
+    .append("conversation").append("owner-checkpoint-conversation").append("epoch").append("2")
+    .append("role").append("decoder").append("state").append(state.originIdentity.layoutDigest.substr(7))
+    .append("rep");
+  BOOST_CHECK(checkpointPrefix.isPrefixOf(packets.rootName));
+  BOOST_REQUIRE_EQUAL(packets.rootName.size(), checkpointPrefix.size() + 2);
+  BOOST_CHECK_EQUAL(packets.rootName[-2].value_size(), 32);
+  BOOST_CHECK(packets.rootName[-1] == ndn::name::Component("MANIFEST"));
 
   repo::RepoUserStorageInsertRequest insert;
   insert.operationId = "client-original";
   insert.generation = 1;
-  auto& reference = insert.reference;
-  reference.objectName = packets.rootName.toUri(ndn::name::UriFormat::ALTERNATE);
-  reference.dataPrefix = sourceIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
-  reference.packetSetMetadata.emplace();
-  auto& metadata = *reference.packetSetMetadata;
-  metadata.objectName = reference.objectName;
-  metadata.objectType = "original-packet-set";
-  for (const auto& name : packets.packetNames)
-    metadata.packetNames.push_back(name.toUri(ndn::name::UriFormat::ALTERNATE));
+  insert.reference = di::nativeKvPacketReference(packets, sourceIdentity);
+  const auto& reference = insert.reference;
   std::vector<std::vector<uint8_t>> expectedWires;
   for (const auto& wire : packets.packetWires)
     expectedWires.emplace_back(wire.begin(), wire.end());
@@ -2885,8 +2897,8 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   for (const auto& wire : expectedWires) {
     aggregate.insert(aggregate.end(), wire.begin(), wire.end());
   }
-  metadata.size = reference.expectedSize = aggregate.size();
-  metadata.sha256 = reference.expectedSha256 = sha256(aggregate);
+  BOOST_CHECK_EQUAL(reference.expectedSize, aggregate.size());
+  BOOST_CHECK_EQUAL(reference.expectedSha256, sha256(aggregate));
   BOOST_CHECK_EQUAL(aggregate.size(), packets.wireBytes);
   BOOST_CHECK_EQUAL("sha256:" + reference.expectedSha256, packets.wireDigest);
 
@@ -2954,6 +2966,17 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   // Remove the original files before the independent Owner retrieval.
   BOOST_REQUIRE(fs::remove(plain));
   BOOST_REQUIRE(fs::remove(cipher));
+  const auto sourceSpoolReads = originalInsertFetches->load();
+  const std::weak_ptr<repo::RepoNode> originalRepo = node;
+  node->stopOriginalPacketOperations();
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
+  runWithFacePump(environment, [&] { node.reset(); return true; });
+  BOOST_REQUIRE(originalRepo.expired());
+  node = openRepo();
+  environment.pumpUntilWithAttributeAuthority([&] {
+    return node->isOriginalDataServingReady();
+  });
+  BOOST_REQUIRE(node->isOriginalDataServingReady());
   // Owner is permitted to invoke MANIFEST, but is not the delegated Source writer.
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
     return repo::RepoClientCompat::requestSelectedService(environment.user(),
@@ -2991,24 +3014,89 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     return repo::RepoClient::fetchOriginalDataPacketSetFromUserStorage(environment.user(),
       target, reference.objectName, verify, 15000, handoffLimits);
   });
+  BOOST_CHECK_EQUAL(originalInsertFetches->load(), sourceSpoolReads);
   BOOST_CHECK(verified.packetWires() == expectedWires);
   BOOST_CHECK_EQUAL(verified.claim().object.wireSha256, reference.expectedSha256);
   BOOST_CHECK_EQUAL(verified.manifest().size, aggregate.size());
   std::vector<ndn::Buffer> recoveredWires;
   for (const auto& wire : verified.packetWires())
     recoveredWires.emplace_back(wire.begin(), wire.end());
+  const auto materialize = [&](const auto& expectedNaming) {
+    return runWithFacePump(environment, [&] {
+      di::nativeMaterializeProtectedKvPackets(recoveredWires, protectedReference,
+        packets.rootName, cipher, packetLimits,
+        [&](const ndn::Buffer& wire, const ndn::Name& producerIdentity) {
+          return environment.provider(2).validateProducerPacketWireUntil(wire, producerIdentity,
+            std::chrono::steady_clock::now() + 5s);
+        }, [] {}, {}, expectedNaming);
+      return true;
+    });
+  };
+  auto staleNaming = naming;
+  --staleNaming.epoch;
+  BOOST_CHECK_THROW(materialize(staleNaming), std::exception);
+  BOOST_CHECK(!fs::exists(cipher));
+  materialize(naming);
+  BOOST_CHECK_EQUAL(di::test::protectedKv::read(cipher), expectedCipher);
+  const auto recipient = environment.keyChain().getPib().getIdentity(
+    environment.provider(2).getName()).getDefaultKey().getDefaultCertificate();
+  BOOST_CHECK(recipient.getIdentity() != producer.getIdentity());
+  BOOST_CHECK(recipient.getIdentity() != ownerCertificate.getIdentity());
+  const auto recipientKey = recipient.getPublicKey();
+  di::NativeProtectedKvRecipientBindingV1 binding;
+  binding.requesterIdentity = ownerCertificate.getIdentity();
+  binding.recipientIdentity = recipient.getIdentity();
+  binding.recipientCertificateName = recipient.getName();
+  binding.recipientPublicKeyDigest = "sha256:" + sha256(
+    std::vector<uint8_t>(recipientKey.begin(), recipientKey.end()));
+  binding.serviceName = sourceAssignment.service;
+  binding.requestId = ndn::Name(profile.userIdentity).append("restore").append("10");
+  binding.authorizationBinding = "owner-checkpoint-target-lease";
+  binding.planDigest = di::nativePlanningDigest("authenticated restore plan");
+  binding.roleName = state.originIdentity.roleName;
+  binding.expiresAtMs = static_cast<uint64_t>(now) + 120000;
+  binding.packetRoot = packets.rootName;
+  const auto restoreDeadline = std::chrono::steady_clock::now() + 15s;
+  auto recipientAssignment = sourceAssignment;
+  recipientAssignment.workDeadline = restoreDeadline;
+  recipientAssignment.workCurrent = [&] {
+    return environment.provider(2).hasProviderPermissionForService(binding.serviceName);
+  };
+  ServiceProvider::CollaborationContext recipientContext(environment.provider(2),
+    binding.requesterIdentity, binding.requestId, {}, recipientAssignment);
+  const auto requireRestoreCurrent = [&] {
+    if (std::chrono::steady_clock::now() >= restoreDeadline ||
+        !recipientContext.hasCurrentWorkAuthority())
+      throw std::runtime_error("test restore attempt expired");
+  };
+  const auto capsule = di::nativeWrapProtectedKvKeyForRecipient(
+    protectedReference, ownerCertificate, environment.keyChain(), recipientKey, binding,
+    requireRestoreCurrent);
+  const auto recover = [&](const auto& targetCertificate, const auto& expectedBinding,
+                           const auto& requireCurrent) {
+    di::nativeRecoverProtectedPortableKvCheckpointForRecipient(cipher, restored,
+      protectedReference, capsule, targetCertificate, environment.keyChain(), expectedBinding,
+      protectedLimits, requireCurrent);
+  };
+  BOOST_CHECK_THROW(recover(producer, binding, requireRestoreCurrent), std::exception);
+  auto wrongRoot = binding;
+  wrongRoot.packetRoot = ndn::Name(binding.packetRoot.getPrefix(-2))
+    .append(std::string(32, 'x')).append("MANIFEST");
+  BOOST_CHECK_THROW(recover(recipient, wrongRoot, requireRestoreCurrent), std::exception);
+  BOOST_CHECK_THROW(recover(recipient, binding, [] {
+    throw std::runtime_error("restore cancelled");
+  }), std::runtime_error);
+  BOOST_CHECK(!fs::exists(restored));
   runWithFacePump(environment, [&] {
-    di::nativeMaterializeProtectedKvPackets(recoveredWires, protectedReference,
-      packets.rootName, cipher, packetLimits,
-      [&](const ndn::Buffer& wire, const ndn::Name& producerIdentity) {
-        return environment.provider(2).validateProducerPacketWireUntil(wire, producerIdentity,
-          std::chrono::steady_clock::now() + 5s);
-      }, [] {});
+    di::nativeRecoverProtectedPortableKvCheckpointForRecipient(cipher, restored,
+      protectedReference, capsule, binding, protectedLimits,
+      [&](const auto& wrapped, const auto& certificate, const auto& keyDigest,
+          const auto& aad, const auto& consume) {
+        return recipientContext.consumeRecipientAssignmentCurrent(wrapped, certificate, keyDigest,
+          aad, restoreDeadline, consume);
+      }, requireRestoreCurrent);
     return true;
   });
-  BOOST_CHECK_EQUAL(di::test::protectedKv::read(cipher), expectedCipher);
-  di::nativeRecoverProtectedPortableKvCheckpoint(cipher, restored, protectedReference,
-    ownerCertificate, environment.keyChain(), protectedLimits);
   BOOST_CHECK_EQUAL(di::test::protectedKv::read(restored), expectedPlain);
   const auto recovered = di::nativeReadPrivatePortableKvCheckpoint(restored, portableLimits);
   BOOST_REQUIRE_EQUAL(recovered.components.size(), state.components.size());
