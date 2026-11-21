@@ -154,8 +154,7 @@ def test_host_nac_release_uses_published_commit_and_preserves_sealed_patch_recip
     assert published['ref'] == 'Experimental'
     assert 'patch_series' not in published
     assert len(sources.patch_series(old)) == 5
-    assert sources.sdk_prefix(host, 'NAC-ABE', tmp_path) == (
-        tmp_path / 'ndnsf-sdk' / 'nac-abe' / published['commit'])
+    assert sources.sdk_prefix(host, 'NAC-ABE', tmp_path, host=True) == tmp_path
 
 
 def test_prepare_pins_commit_and_preserves_dirty_tree(repository, tmp_path):

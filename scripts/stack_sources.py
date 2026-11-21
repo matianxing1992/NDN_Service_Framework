@@ -163,10 +163,12 @@ def patch_series(source, root=None):
     return patches
 
 
-def sdk_prefix(data, name, prefix):
-    source = data['sources'][name]
+def sdk_prefix(data, name, prefix, *, host=False):
     if name != 'NAC-ABE':
-        raise ValueError('only NAC-ABE has a versioned SDK prefix')
+        raise ValueError('SDK prefix selection is defined only for NAC-ABE')
+    if host:
+        return Path(prefix)
+    source = data['sources'][name]
     identity = source['commit']
     if 'patch_series' in source:
         patch_series(source)
@@ -342,7 +344,7 @@ def main():
                 parser.error('--deps-dir is required')
             print(prepare(data['sources'][args.name], args.name, args.deps_dir))
         elif args.action == 'sdk-prefix':
-            print(sdk_prefix(data, args.name, args.prefix))
+            print(sdk_prefix(data, args.name, args.prefix, host=True))
         elif args.action == 'probe-api':
             if args.name != 'NAC-ABE':
                 parser.error('probe-api is defined only for NAC-ABE')

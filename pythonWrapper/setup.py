@@ -398,11 +398,12 @@ def build_extension() -> Extension:
     nac_objects = []
     if nac_prefix:
         nac_includes = [str(nac_prefix / "include")]
-        library_dirs = list(dict.fromkeys([str(nac_prefix / "lib"), *library_dirs]))
         libraries = [name for name in libraries if name != "nac-abe"]
         nac_objects = [str(nac_prefix / "lib/libnac-abe.so")]
-        if not runtime_rpath:
-            extra_link_args.insert(0, f"-Wl,-rpath,{nac_prefix / 'lib'}")
+        if nac_prefix != Path("/usr/local"):
+            library_dirs = list(dict.fromkeys([str(nac_prefix / "lib"), *library_dirs]))
+            if not runtime_rpath:
+                extra_link_args.insert(0, f"-Wl,-rpath,{nac_prefix / 'lib'}")
 
     # setuptools only tracks extension source timestamps by default. The
     # binding uses public Core/DI C++ types, so header-only API changes must

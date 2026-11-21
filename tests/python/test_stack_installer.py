@@ -309,6 +309,12 @@ native_runtime_rpath
 ''')
     assert default.returncode == 0, default.stderr
     assert default.stdout == '/usr/local/lib'
+    private = shell(DEFINITIONS + '''
+NAC_SDK_PREFIX=/usr/local
+native_runtime_rpath
+''', '--prefix', '/opt/ndnsf-fixture')
+    assert private.returncode == 0, private.stderr
+    assert private.stdout == '/opt/ndnsf-fixture/lib:/usr/local/lib'
 
 
 def test_nac_install_receipt_matches_published_host_source(tmp_path):
@@ -561,7 +567,12 @@ def test_custom_prefix_manifest_restores_only_owned_files(tmp_path):
     (stage / "bin").mkdir(parents=True)
     (stage / "bin/service").write_text("new")
     (prefix / "bin").mkdir(parents=True)
-    (prefix / "bin/service").write_text("prior")
+    service = prefix / "bin/service"
+    service.write_text("prior")
+    backup = (prefix / "share/ndnsf/stack-install-manifest.backups" /
+              hashlib.sha256(str(service).encode()).hexdigest())
+    backup.parent.mkdir(parents=True)
+    backup.write_text("historical backup")
     persistent = prefix / "repo/packet"
     persistent.parent.mkdir()
     persistent.write_text("preserved")
@@ -569,10 +580,12 @@ def test_custom_prefix_manifest_restores_only_owned_files(tmp_path):
 sudo_run() { "$@"; }
 install_manifest_tree "$NDNSF_TEST_STAGE" "$RUNTIME_PREFIX" ndnsf-native
 test "$(cat "$RUNTIME_PREFIX/bin/service")" = new
+test "$(cat "$NDNSF_TEST_BACKUP")" = 'historical backup'
 manifest_tool uninstall --manifest "$INSTALL_MANIFEST"
-''', "--prefix", str(prefix), env=dict(os.environ, NDNSF_TEST_STAGE=str(stage)))
+''', "--prefix", str(prefix),
+        env=dict(os.environ, NDNSF_TEST_STAGE=str(stage), NDNSF_TEST_BACKUP=str(backup)))
     assert result.returncode == 0, result.stderr
-    assert (prefix / "bin/service").read_text() == "prior"
+    assert service.read_text() == "prior"
     assert persistent.read_text() == "preserved"
 
 

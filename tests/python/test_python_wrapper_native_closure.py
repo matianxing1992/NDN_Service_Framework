@@ -43,6 +43,10 @@ def isolated_build_environment(monkeypatch):
         return " ".join(flags)
 
     monkeypatch.setattr(subprocess, "check_output", installed_metadata)
+    host_core_metadata = Path("/usr/local/lib/pkgconfig/libndn-service-framework.pc")
+    is_file = Path.is_file
+    monkeypatch.setattr(Path, "is_file",
+                        lambda path: path != host_core_metadata and is_file(path))
     native_libs = {
         name: hashlib.sha256((Path("/usr/local/lib") / name).read_bytes()).hexdigest()
         for name in ("libndn-service-framework.so", "libndnsf-distributed-inference.so",
@@ -146,6 +150,25 @@ def test_explicit_nac_prefix_prevents_mixed_headers_and_library(monkeypatch, tmp
     assert str(prefix / "lib/libnac-abe.so") in extension.extra_objects
     assert "nac-abe" not in extension.libraries
     assert f"-Wl,-rpath,{prefix / 'lib'}" in extension.extra_link_args
+
+
+def test_global_nac_does_not_shadow_selected_ndnsf_runtime(monkeypatch, tmp_path, setup_path):
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    build = namespace["build_extension"]
+    monkeypatch.setitem(build.__globals__, "native_library_dirs", lambda: [str(tmp_path)])
+    monkeypatch.setitem(build.__globals__, "validate_native_library_digests", lambda _: None)
+    canonical_nac = {
+        Path("/usr/local/include/nac-abe/consumer.hpp"),
+        Path("/usr/local/lib/libnac-abe.so"),
+    }
+    is_file = Path.is_file
+    monkeypatch.setattr(Path, "is_file", lambda path: path in canonical_nac or is_file(path))
+    monkeypatch.setenv("NDNSF_NAC_ABE_PREFIX", "/usr/local")
+    extension = build()
+    assert extension.library_dirs[0] == str(tmp_path)
+    assert extension.extra_link_args[0] == f"-Wl,-rpath,{tmp_path}"
+    assert "/usr/local/lib/libnac-abe.so" in extension.extra_objects
 
 
 @pytest.mark.parametrize("bad_kind", ["library", "rpath", "undeclared"])

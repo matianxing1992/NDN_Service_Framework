@@ -50,10 +50,12 @@ that installation. Core compilation and runtime qualification are separate.
 The five patches are also published in NAC-ABE `Experimental` as commit
 `7592082abc291b6e5fb0c74924ad0402628af24c`. For host installation,
 `host_release` in `packaging/host-dependencies.lock.json` pins that exact
-revision. The installer builds the clean checkout and installs into
-`/usr/local/ndnsf-sdk/nac-abe/<commit>`. Build and staging directories are
-scratch. Waf uses the headers and pkg-config from that prefix, and the runtime
-loader resolves the NAC library there before the general system library path.
+revision. The installer builds the clean checkout and stages its headers,
+library, and pkg-config file before promoting them into `/usr/local`. Subsequent
+host upgrades replace that managed installation in place. Waf uses the
+installed headers and pkg-config file, and checks that the loader resolves
+the same library. Rebuild and reinstall NDNSF after changing the selected
+NAC-ABE prefix so its native libraries and Python bindings record the new path.
 Reuse requires the source and library receipt plus the compile/link and loader
 probe for `consumeWithCkAuthorization`. Waf reuses its configuration only when
 the cached runtime paths also match the installer's order.

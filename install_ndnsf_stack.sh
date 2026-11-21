@@ -674,6 +674,11 @@ def copy_backup(manifest: Path, target: Path) -> tuple[str | None, dict[str, obj
         return None, None
     backup = backup_path(manifest, target)
     backup.parent.mkdir(parents=True, exist_ok=True)
+    previous_backup = file_state(backup)
+    if previous_backup is not None and previous_backup != before:
+        # A previous install may have saved a different version at this path.
+        state_key = hashlib.sha256(json.dumps(before, sort_keys=True).encode()).hexdigest()
+        backup = backup.with_name(f"{backup.name}-{state_key}")
     if backup.exists() or backup.is_symlink():
         if file_state(backup) != before:
             raise ValueError(f"backup already exists with different contents: {backup}")
@@ -1486,8 +1491,11 @@ check_waf_inventory() {
 }
 
 native_runtime_rpath() {
-  local paths="" directory
-  for directory in "${NAC_SDK_PREFIX:+$NAC_SDK_PREFIX/lib}" "$RUNTIME_LIBRARY_DIR" "$GLOBAL_LIBRARY_DIR"; do
+  local paths="" directory sdk_lib=""
+  if [[ -n "$NAC_SDK_PREFIX" && "$NAC_SDK_PREFIX" != "$GLOBAL_DEPENDENCY_PREFIX" ]]; then
+    sdk_lib="$NAC_SDK_PREFIX/lib"
+  fi
+  for directory in "$sdk_lib" "$RUNTIME_LIBRARY_DIR" "$GLOBAL_LIBRARY_DIR"; do
     if [[ -n "$directory" && ":$paths:" != *":$directory:"* ]]; then
       paths+="${paths:+:}$directory"
     fi
@@ -1709,6 +1717,7 @@ refresh_global_pkg_config_path() {
       /usr/local/lib/pkgconfig /usr/local/lib64/pkgconfig \
       /opt/onnxruntime/lib/pkgconfig /opt/onnxruntime-1.26.0/lib/pkgconfig; do
     [[ -d "$candidate" ]] || continue
+    [[ ":$GLOBAL_PKG_CONFIG_PATH:" != *":$candidate:"* ]] || continue
     GLOBAL_PKG_CONFIG_PATH="${GLOBAL_PKG_CONFIG_PATH:+$GLOBAL_PKG_CONFIG_PATH:}$candidate"
   done
 }
@@ -3454,7 +3463,8 @@ build_cmake_dependency() {
     run env -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
       PATH="$SYSTEM_PATH" DESTDIR="$install_stage" cmake --install "$build_dir"
     install_manifest_tree "$install_stage$GLOBAL_DEPENDENCY_PREFIX" \
-      "$GLOBAL_DEPENDENCY_PREFIX" "NAC-ABE-sdk:${dependency_prefix##*/}"
+      "$GLOBAL_DEPENDENCY_PREFIX" "$name"
+    sudo_run ldconfig
     record_source_receipt "$name" "$dependency_prefix"
     verify_nac_sdk || { echo "Installed NAC SDK failed verification; preserved $build_dir and $install_stage" >&2; return 1; }
     rm -rf -- "$build_dir" "$install_stage"
