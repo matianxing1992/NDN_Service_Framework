@@ -128,7 +128,8 @@ def test_manifest_python_console_paths_collapse_record_parents(tmp_path):
     assert namespace['canonical_manifest_path'](alias) == console
     state = {'installed': {'kind': 'file', 'sha256': 'a' * 64}, 'owners': ['python:ops']}
     manifest = tmp_path / 'manifest.json'
-    manifest.write_text(json.dumps(dict(schema=1, sources=[], files={str(alias): state})))
+    old_state = {'installed': dict(state['installed'], bytes=42), 'owners': ['python:ops']}
+    manifest.write_text(json.dumps(dict(schema=1, sources=[], files={str(alias): old_state})))
     assert namespace['read_manifest'](manifest)['files'] == {str(console): state}
     conflicting = dict(state, installed={'kind': 'file', 'sha256': 'b' * 64})
     manifest.write_text(json.dumps(dict(schema=1, sources=[], files={str(alias): state, str(console): conflicting})))
@@ -294,7 +295,7 @@ printf 'LEDGER=%s\\n' "$INSTALL_MANIFEST"
     assert "LEDGER=" + str(prefix / "share/ndnsf/stack-install-manifest.json") in result.stdout
 
 
-def test_installed_runtime_rpath_orders_selected_nac_sdk_first_and_deduplicates():
+def test_installed_runtime_rpath_orders_nac_sdk_first_and_deduplicates():
     result = shell(DEFINITIONS + '''
 NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture
 native_runtime_rpath
@@ -308,6 +309,22 @@ native_runtime_rpath
 ''')
     assert default.returncode == 0, default.stderr
     assert default.stdout == '/usr/local/lib'
+
+
+def test_nac_install_receipt_matches_published_host_source(tmp_path):
+    result = shell(DEFINITIONS + '''
+GLOBAL_DEPENDENCY_PREFIX="$RUNTIME_PREFIX"
+mkdir -p "$BUILD_DIR" "$GLOBAL_DEPENDENCY_PREFIX/lib"
+select_nac_sdk
+mkdir -p "$NAC_SDK_PREFIX/lib"
+touch "$GLOBAL_DEPENDENCY_PREFIX/lib/libndn-cxx.so" \\
+      "$GLOBAL_DEPENDENCY_PREFIX/lib/libopenabe.so" "$NAC_SDK_PREFIX/lib/libnac-abe.so"
+install_manifest_tree() { cp -a "$1/." "$2/"; }
+record_source_receipt NAC-ABE "$NAC_SDK_PREFIX"
+"$PYTHON_BIN" "$SOURCE_HELPER" check --lock "$LOCK_FILE" --name NAC-ABE \\
+  --prefix "$NAC_SDK_PREFIX" --upstream-prefix "$GLOBAL_DEPENDENCY_PREFIX"
+''', '--prefix', str(tmp_path))
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("profile,di,repo,uav", [
@@ -1152,7 +1169,7 @@ ensure_source_tree() { echo UNEXPECTED_CHECKOUT >&2; return 23; }
 build_cmake_dependency NAC-ABE libnac-abe unused 0.1
 ''')
     assert result.returncode == 0
-    assert 'Locked patched NAC SDK already installed' in result.stdout
+    assert 'Locked NAC SDK already installed' in result.stdout
     assert 'UNEXPECTED_CHECKOUT' not in result.stderr
 
 

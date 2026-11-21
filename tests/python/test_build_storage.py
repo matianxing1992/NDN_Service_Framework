@@ -31,19 +31,20 @@ def test_reuses_waf_configuration_only_for_matching_identity(tmp_path):
                                         "--with-tests", "--components=core"]}
     (build / ".lock-waf_linux_build").write_text(
         "".join(f"{key} = {value!r}\n" for key, value in lock.items()))
-    nac_lib = "/usr/local/ndnsf-sdk/nac-abe/fixture/lib"
-    runtime_lib = "/usr/local/lib"
-    flags = [f"-Wl,-rpath,{nac_lib}", f"-Wl,-rpath,{runtime_lib}", "-Wl,--as-needed"]
+    sdk_lib = tmp_path / 'sdk/lib'
+    runtime_lib = tmp_path / 'runtime/lib'
+    linkflags = ['-Wl,-O1', f'-Wl,-rpath,{sdk_lib}', f'-Wl,-rpath,{runtime_lib}']
     (cache / "_cache.py").write_text(
-        f"CXX = ['/usr/bin/g++']\nsanitize_di = False\nLINKFLAGS = {flags!r}\n")
+        f"CXX = ['/usr/bin/g++']\nCFLAGS_NAC-ABE = ['-pthread']\n"
+        f"sanitize_di = False\nLINKFLAGS = {linkflags!r}\n")
     (build / "config.hpp").touch()
     args = ["configured", "--build-dir", build, "--cxx", "/usr/bin/g++", "--"]
     assert call(*args, "--prefix=/usr/local", "--components", "core").returncode == 0
     assert call(*args, "--prefix=/tmp/other").returncode == 1
-    assert call(*args[:-1], "--runtime-rpath", f"{nac_lib}:{runtime_lib}", "--",
-                "--prefix=/usr/local").returncode == 0
-    assert call(*args[:-1], "--runtime-rpath", f"{runtime_lib}:{nac_lib}", "--",
-                "--prefix=/usr/local").returncode == 1
+    assert call(*args[:-1], "--runtime-rpath", f"{sdk_lib}:{runtime_lib}",
+                "--", "--prefix=/usr/local").returncode == 0
+    assert call(*args[:-1], "--runtime-rpath", f"{runtime_lib}:{sdk_lib}",
+                "--", "--prefix=/usr/local").returncode == 1
     source.write_text("configuration changed")
     assert call(*args, "--prefix=/usr/local").returncode == 1
 
