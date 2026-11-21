@@ -28,12 +28,18 @@ REPO_OPERATIONS = ("STORE", "FETCH", "STATUS", "MANIFEST", "STORE_RANGE", "COMMI
 NATIVE_PROGRAMS = ("App_ServiceController", "DI_NativeArtifactAuthority", "DI_NativeRequester",
                    "di-native-provider", "DistributedRepoServer", "ndnsf-identity-check",
                    "ndnsf-di-tokenize-input", "ndnsf-di")
+TP_PROFILE = "qwen06b-tp-cpu"
+PIPELINE_PROFILES = ("qwen06b-pp-cpu-colocated", "qwen06b-pp-cpu-distributed",
+                     "qwen06b-single-cpu")
+PIPELINE_PROFILE_FILE = "profiles/qwen06b-pp-cpu.json"
 PREPARATION_RESOURCES = (
     "prepare-native-deployment.py", "model_assets.py", "native_probe_validation_links.py",
     "TigerCluster/runtime/processes.py", "profiles/qwen06b-tp-cpu.json",
+    PIPELINE_PROFILE_FILE,
     "recipes/qwen3-0.6b-int4.json", "fixtures/native-deployment/qwen06b-catalog.json",
     "fixtures/native-deployment/qwen06b-generation-options.json",
     "fixtures/native-deployment/two-provider.conf",
+    "fixtures/native-deployment/three-node-pipeline.conf",
 )
 
 
@@ -151,27 +157,87 @@ def ed25519_key(openssl, stem, env, root):
     return private, public, digest(der[12:])
 
 
-def policy_text(identities, network, base_role):
+def policy_text(identities, network, provider_roles, tp_base_role):
     repo_services = [network["repo_service"] + "/" + op for op in REPO_OPERATIONS]
     def rule(kind, identity, services):
         return "{}-policy {{ for {} allow {{ {} }} }}".format(kind, identity, "\n".join(services))
     providers = [rule("provider", identities["repo"], repo_services),
                  rule("provider", identities["authority"], [network["artifact_service"]])]
-    for rank in range(2):
-        providers.append(rule("provider", identities["provider-" + str(rank)], [
-            network["service"], network["service"] + "/ROLE" + base_role,
-            network["service"] + "/ROLE" + base_role + "/Tensor/Rank/" + str(rank),
-            "/NDNSF/Network/Probe/v1"]))
+    for actor, roles in provider_roles.items():
+        scoped_roles = ([tp_base_role] if tp_base_role else []) + roles
+        providers.append(rule("provider", identities[actor], [network["service"]] +
+            [network["service"] + "/ROLE" + role for role in scoped_roles] +
+            ["/NDNSF/Network/Probe/v1"]))
     users = [rule("user", identities["requester"], repo_services + [
         network["service"], network["artifact_service"], "/NDNSF/Network/Probe/v1"])]
-    users += [rule("user", identities["provider-" + str(rank)], repo_services)
-              for rank in range(2)]
+    users += [rule("user", identities[actor], repo_services) for actor in provider_roles]
     return ("name " + identities["controller"] + "/NDNSF/ControllerPolicy/v1\n" +
             "provider-policies {\n" + "\n".join(providers) + "\n}\n" +
             "user-policies {\n" + "\n".join(users) + "\n}\n")
 
 
-def prepare(profile, recipe, assets, asset_manifest, prefix, root, namespace,
+def load_profile(resources, name):
+    profile = read_json(resources / "profiles/qwen06b-tp-cpu.json")
+    if name == TP_PROFILE:
+        return profile, None
+    variants = read_json(contained_file(resources, PIPELINE_PROFILE_FILE))
+    if (variants["schema"] != "ndnsf-qwen-pipeline-experiment-profiles-v1" or
+            variants["baseProfile"] != profile["id"]):
+        raise ValueError("DEPLOYMENT_PIPELINE_PROFILE_BASE_MISMATCH")
+    layout = variants["profiles"][name]
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", layout.get("planningGraphDigest", "")):
+        raise ValueError("DEPLOYMENT_PIPELINE_GRAPH_DIGEST_INVALID")
+    turns = variants["turnCount"]
+    profile["id"] = name
+    profile["budgets"]["storageBytes"] = variants["storageBytes"]
+    profile["turns"] = profile["turns"][:turns]
+    for field in ("inputTokens", "maxNewTokens", "expectedCommittedPrefix"):
+        profile["rendering"][field] = profile["rendering"][field][:turns]
+    return profile, layout
+
+
+def apply_pipeline_layout(catalog, layout, graph_row, weight_row, generation_options):
+    split = catalog["splitter"]
+    base_role = split["roles"][0]
+    ranges = layout["layerRanges"]
+    # The native Qwen planning graph includes the layer ranges in its identity.
+    # Keep the reviewed digest with those ranges; the native catalog verifies it.
+    catalog["model"]["graph_digest"] = layout["planningGraphDigest"]
+    roles = [base_role.rsplit("/", 1)[0] + "/" + str(index) for index in range(len(ranges))]
+    resource_ceiling = split["resources_by_role"][base_role]
+    # These identities name a source-bound role, not the assembled ONNX bytes.
+    # The native preparer admits the graph and actual initializer digests.
+    artifacts = {role: digest(json.dumps([
+        graph_row["sha256"], weight_row["sha256"], catalog["recipe"]["artifact_profile_digest"],
+        layer_range], separators=(",", ":")).encode())
+        for role, layer_range in zip(roles, ranges)}
+    split.update(roles=roles, layer_ranges=ranges, tensor_degrees=[1] * len(roles),
+                 artifact_digests_by_role=artifacts,
+                 weight_bytes_by_role=dict.fromkeys(roles, weight_row["bytes"]),
+                 resources_by_role=dict.fromkeys(roles, resource_ceiling),
+                 input_ingress_role=roles[0], result_egress_role=roles[-1])
+    del split["rank_artifact_digests_by_role"]
+    # The TP fixture's stage map describes the rank boundary. The generation
+    # options carry the frozen source tensor names for all 28 layers.
+    for field, source, semantic in (("state_inputs", "stateInputNames", "past"),
+                                    ("state_outputs", "stateOutputNames", "present")):
+        names = set(generation_options[source])
+        prefix = "past_key_values" if semantic == "past" else "present"
+        role_map = {}
+        for role, (begin, end) in zip(roles, ranges):
+            bindings = {}
+            for layer in range(begin, end):
+                for kind in ("key", "value"):
+                    name = "{}.{}.{}".format(prefix, layer, kind)
+                    if name not in names:
+                        raise ValueError("DEPLOYMENT_PIPELINE_STATE_TENSOR_MISSING: " + name)
+                    bindings["{}_{}.{}".format(semantic, kind, layer)] = [name]
+            role_map[role] = bindings
+        catalog[field] = role_map
+    return roles
+
+
+def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, namespace,
             install_receipt, ndnsec, openssl, env, resources, interpreter, facilities):
     inputs = root / "inputs"
     inputs.mkdir(mode=0o700)
@@ -183,8 +249,28 @@ def prepare(profile, recipe, assets, asset_manifest, prefix, root, namespace,
     # this private parent before any actor is launched.
     (root / "statistics").mkdir(mode=0o700)
     env = dict(env, HOME=str(operator_home))
-    identities = {name: namespace + "/" + name for name in (
-        "controller", "authority", "requester", "repo", "provider-0", "provider-1")}
+    catalog = read_json(contained_file(resources, profile["catalog"]))
+    generation_options = read_json(contained_file(resources, profile["generationOptions"]))
+    graph_row, weight_row = recipe["files"]["canonicalGraph"], recipe["files"]["canonicalWeights"]
+    base_role = catalog["splitter"]["roles"][0]
+    if layout is None:
+        roles = [base_role + "/Tensor/Rank/" + str(rank) for rank in range(2)]
+        provider_nodes = ["control", "worker"]
+        stage_providers = [0, 1]
+        topology_resource = "fixtures/native-deployment/two-provider.conf"
+    else:
+        roles = apply_pipeline_layout(catalog, layout, graph_row, weight_row, generation_options)
+        provider_nodes = layout["providerNodes"]
+        stage_providers = layout["stageProviders"]
+        topology_resource = layout["topology"]
+        if (len(roles) != len(stage_providers) or
+                set(stage_providers) != set(range(len(provider_nodes)))):
+            raise ValueError("DEPLOYMENT_PIPELINE_ROLE_MAP_INVALID")
+    provider_roles = {"provider-" + str(index): [] for index in range(len(provider_nodes))}
+    for role, index in zip(roles, stage_providers):
+        provider_roles["provider-" + str(index)].append(role)
+    identities = {name: namespace + "/" + name
+                  for name in ("controller", "authority", "requester", "repo", *provider_roles)}
     network = dict(group=namespace + "/group", service=namespace + "/inference",
                    artifact_service=namespace + "/artifact-grants", repo_service=namespace + "/repo-service")
     certificates, metadata, homes = {}, {}, {}
@@ -209,8 +295,7 @@ def prepare(profile, recipe, assets, asset_manifest, prefix, root, namespace,
     journal_key.write_bytes(secrets.token_bytes(32))
     content_key_id = "content-" + secrets.token_hex(16)
     recipients, offers, parameters = {}, {}, {}
-    for rank in range(2):
-        actor = "provider-" + str(rank)
+    for actor, actor_roles in provider_roles.items():
         recipient = ed25519_key(openssl, homes[actor] / "recipient", env, root)
         offer = ed25519_key(openssl, homes[actor] / "offer", env, root)
         recipients[identities[actor]] = str(recipient[1])
@@ -238,31 +323,27 @@ def prepare(profile, recipe, assets, asset_manifest, prefix, root, namespace,
             "assembly-timeout-ms": profile["budgets"]["requestTimeoutMs"],
             "repo-fetch-timeout-ms": profile["budgets"]["requestTimeoutMs"],
             "conversation-retention-ms": profile["budgets"]["conversationRetentionMs"],
-            "statistics-file": str(root / "statistics" / (actor + ".jsonl"))}
+            "statistics-file": str(root / "statistics" / (actor + ".jsonl")),
+            "roles": ",".join(actor_roles)}
     trust = inputs / "trust-schema.conf"
     trust.write_text(render_anchored_probe_validation_schema(
         namespace, certificates.values(), sync_prefix=network["group"]))
     topology = inputs / "topology.conf"
-    shutil.copyfile(resources / "fixtures/native-deployment/two-provider.conf", topology)
-    catalog = read_json(contained_file(resources, profile["catalog"]))
-    base_role = catalog["splitter"]["roles"][0]
-    roles = [base_role + "/Tensor/Rank/" + str(rank) for rank in range(2)]
-    for rank in range(2):
-        parameters["provider-" + str(rank)]["roles"] = roles[rank]
+    shutil.copyfile(contained_file(resources, topology_resource), topology)
     policy = inputs / "controller-policy.info"
-    policy.write_text(policy_text(identities, network, base_role))
+    policy.write_text(policy_text(identities, network, provider_roles, base_role if layout is None else None))
     model = profile["model"]
     service = dict(model=model["name"], modelFamily=model["family"], modelFormat="onnx",
                    modelRepository=model["repository"], modelRevision=model["revision"],
                    dtype=model["precision"], quantization=model["quantization"],
-                   runtimeBackend="onnxruntime", plannerKind="native-qwen-tensor-parallel",
+                   runtimeBackend="onnxruntime",
+                   plannerKind="native-qwen-tensor-parallel" if layout is None else "native-qwen-layer",
                    roles=roles, dependencies=[])
     plan_path, service_manifest = inputs / "plan.json", inputs / "service-manifest.json"
     write_json(plan_path, {"version": 2, "services": [dict(service, service=network["service"],
         executionPolicy="DATA_DRIVEN_V2", schemaVersion=3)]})
     write_json(service_manifest, {"version": 2, "services": [dict(service, name=network["service"], artifacts=[])]})
     package_digest = "sha256:" + file_digest(asset_manifest)
-    graph_row, weight_row = recipe["files"]["canonicalGraph"], recipe["files"]["canonicalWeights"]
     catalog["source"] = {
         "file": str(assets["canonicalGraph"]), "bytes": graph_row["bytes"],
         "digest": "sha256:" + graph_row["sha256"],
@@ -289,8 +370,9 @@ def prepare(profile, recipe, assets, asset_manifest, prefix, root, namespace,
             raise ValueError("DEPLOYMENT_PROMPT_TOKENIZATION_MISMATCH: turn " + str(index))
         input_path = inputs / ("turn-" + str(index) + "-input.bin")
         input_path.write_bytes(bytes.fromhex(encoded["tensorBundleHex"]))
-        options = read_json(contained_file(resources, profile["generationOptions"]))
-        options.update(generationId=secrets.token_hex(16), tokenizerDigest=encoded["tokenizerDigest"])
+        options = generation_options.copy()
+        options.update(generationId=secrets.token_hex(16), tokenizerDigest=encoded["tokenizerDigest"],
+                       maxNewTokens=rendering["maxNewTokens"][index])
         options_path = inputs / ("turn-" + str(index) + "-options.json")
         write_json(options_path, options)
         turns.append(dict(input_file=str(input_path), options_file=str(options_path),
@@ -298,10 +380,11 @@ def prepare(profile, recipe, assets, asset_manifest, prefix, root, namespace,
                           checkpoint_output_file=str(root / "evidence" / ("turn-" + str(index) + "-checkpoint.json"))))
         frozen.append(dict(text=text, rendered=rendered, token_ids=encoded["tokenIds"],
                            input_sha256=file_digest(input_path), options_sha256=file_digest(options_path)))
-    candidate_digest = digest(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode())
+    candidate_inputs = profile if layout is None else dict(profile=profile, layout=layout)
+    candidate_digest = digest(json.dumps(candidate_inputs, sort_keys=True, separators=(",", ":")).encode())
     security_digest = digest((namespace + "/security-domain/v1").encode())
     request = dict(service=network["service"], task="text-generation", generation_mode="TOKEN_STREAMING",
-        options_file=turns[0]["options_file"], provider_names=[identities["provider-0"], identities["provider-1"]],
+        options_file=turns[0]["options_file"], provider_names=[identities[actor] for actor in provider_roles],
         max_candidates=1, max_reentries=1, max_policy_ms=60000, max_event_retries=8,
         ack_timeout_ms=1000, interest_lifetime_ms=5000,
         timeout_ms=profile["budgets"]["requestTimeoutMs"], no_progress_ms=profile["budgets"]["noProgressMs"],
@@ -310,11 +393,13 @@ def prepare(profile, recipe, assets, asset_manifest, prefix, root, namespace,
         input_layout_digest=profile["requestIdentities"]["inputLayout"], security_policy_digest=security_digest,
         tokenizer_digest="sha256:" + recipe["files"]["tokenizer"]["sha256"])
     actors = []
+    provider_node_map = dict(zip(provider_roles, provider_nodes))
     for actor, identity in identities.items():
-        kind = "provider" if actor.startswith("provider-") else "artifact-authority" if actor == "authority" else actor
-        actors.append(dict(id=actor, kind=kind, identity=identity, node="worker" if actor == "provider-1" else "control",
+        kind = "provider" if actor in provider_roles else "artifact-authority" if actor == "authority" else actor
+        actors.append(dict(id=actor, kind=kind, identity=identity, node=provider_node_map.get(actor, "control"),
             credential_home=str(homes[actor]), external=False,
-            resources=dict(cpus=1, gpu_devices=[], allow_sharing=True), parameters=parameters.get(actor, {})))
+            resources=dict(cpus=len(provider_roles.get(actor, ())) or 1, gpu_devices=[], allow_sharing=True),
+            parameters=parameters.get(actor, {})))
     authority = dict(authority_private_key_file=str(authority_key[0]),
         requester_public_key_files={identities["requester"]: str(requester_key[1])},
         content_key_file=str(content_key), content_key_id=content_key_id, protection_epoch="epoch-1",
@@ -324,7 +409,7 @@ def prepare(profile, recipe, assets, asset_manifest, prefix, root, namespace,
             initializer_object_digest="sha256:" + weight_row["sha256"], artifact_profile_digest=catalog["recipe"]["artifact_profile_digest"])})
     admission_entries = [dict(provider=identities[actor], service=network["service"], signerKeyId=offers[actor][2],
         keyLocatorPrefix=metadata[actor]["keyName"], certificateName=metadata[actor]["certificateName"])
-        for actor in ("provider-0", "provider-1")]
+        for actor in provider_roles]
     requester = dict(schema="ndnsf-di-native-requester-v1", catalog=catalog, request=request, turns=turns,
         model_input=dict(mode="source", repo_target=dict(repo_node=identities["repo"], provider_identity=identities["repo"],
             service_prefix=network["repo_service"]), preparation_state_file=str(root / "private-model/preparation.json"),
@@ -344,11 +429,15 @@ def prepare(profile, recipe, assets, asset_manifest, prefix, root, namespace,
             journal=dict(identity="qwen-cpu-continuous-generation", state_root=str(root / "journal"),
                 quota_bytes=profile["budgets"]["journalBytes"], keys=[dict(id="active", file=str(journal_key))]),
             turn=dict(mode="FULL_CONTEXT", retention_duration_ms=profile["budgets"]["conversationRetentionMs"])))
+    if layout is not None:
+        requester["fixed_placement"] = {"role_providers": {
+            role: identities[actor] for actor, actor_roles in provider_roles.items() for role in actor_roles}}
+    nodes = dict.fromkeys(["control", *provider_nodes])
     config = dict(schema="ndnsf-di-deployment-v1", deployment_id=profile["id"] + "-" + secrets.token_hex(4),
         release=dict(prefix=str(prefix), manifest=str(install_receipt)),
         platform=dict(kind="minindn", topology=str(topology), topology_sha256="sha256:" + file_digest(topology)),
         nodes=[dict(id=name, host=name, cpus=6, gpu_devices=[], nfd=dict(mode="managed",
-            socket=str(root / "sockets" / (name + ".sock")), address="127.0.0.1", port=6363)) for name in ("control", "worker")],
+            socket=str(root / "sockets" / (name + ".sock")), address="127.0.0.1", port=6363)) for name in nodes],
         actors=actors, network=network,
         security=dict(trust_schema=str(trust), controller_certificate=str(certificates["controller"]), controller_policy=str(policy)),
         storage=dict(state_root=str(root / "state"), evidence_root=str(root / "evidence"), scratch_root=str(root / "scratch"),
@@ -388,7 +477,7 @@ def interrupted(signum, frame):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", required=True, choices=["qwen06b-tp-cpu"])
+    parser.add_argument("--profile", required=True, choices=(TP_PROFILE, *PIPELINE_PROFILES))
     parser.add_argument("--prefix", required=True, type=Path)
     parser.add_argument("--asset-manifest", required=True, type=Path)
     parser.add_argument("--work-root", required=True, type=Path)
@@ -418,7 +507,7 @@ def main(argv=None):
         receipt = installed_inputs(prefix)
         recipe = read_json(resources / "recipes/qwen3-0.6b-int4.json")
         assets = validate_manifest(args.asset_manifest, recipe)
-        profile = read_json(resources / "profiles/qwen06b-tp-cpu.json")
+        profile, layout = load_profile(resources, args.profile)
         for field in ("catalog", "generationOptions"):
             contained_file(resources, profile[field])
         tool_path = str(prefix / "bin") + ":/usr/local/bin:/usr/bin:/bin"
@@ -441,7 +530,7 @@ def main(argv=None):
         try:
             root.mkdir(mode=0o700)
             owned = True
-            output = prepare(profile, recipe, assets, args.asset_manifest, prefix, root,
+            output = prepare(profile, layout, recipe, assets, args.asset_manifest, prefix, root,
                              args.namespace, receipt, ndnsec, openssl, env, resources,
                              interpreter, facilities)
         finally:

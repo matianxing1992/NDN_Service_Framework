@@ -1,0 +1,29 @@
+{
+  "schema": "ndnsf-qwen-pipeline-experiment-profiles-v1",
+  "baseProfile": "qwen06b-tp-cpu",
+  "turnCount": 2,
+  "storageBytes": 8589934592,
+  "profiles": {
+    "qwen06b-pp-cpu-colocated": {
+      "layerRanges": [[0, 14], [14, 28]],
+      "planningGraphDigest": "sha256:08896574dcd8a945be8a477a78d0a9a9e70e2a3ff0ddc7824d001a35424a0c0b",
+      "stageProviders": [0, 0],
+      "providerNodes": ["worker"],
+      "topology": "fixtures/native-deployment/two-provider.conf"
+    },
+    "qwen06b-pp-cpu-distributed": {
+      "layerRanges": [[0, 14], [14, 28]],
+      "planningGraphDigest": "sha256:08896574dcd8a945be8a477a78d0a9a9e70e2a3ff0ddc7824d001a35424a0c0b",
+      "stageProviders": [0, 1],
+      "providerNodes": ["worker-0", "worker-1"],
+      "topology": "fixtures/native-deployment/three-node-pipeline.conf"
+    },
+    "qwen06b-single-cpu": {
+      "layerRanges": [[0, 28]],
+      "planningGraphDigest": "sha256:4a0fcda389ac8133efb56c7654b43265c5a6e2b7933c3e9ba0bfde7611306c16",
+      "stageProviders": [0],
+      "providerNodes": ["worker"],
+      "topology": "fixtures/native-deployment/two-provider.conf"
+    }
+  }
+}

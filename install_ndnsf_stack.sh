@@ -135,7 +135,7 @@ Options:
   --with-minindn-deps      Install Mini-NDN experiment OS packages.
   --with-yolo-minindn      Install the pinned two-node Mini-NDN + YOLO CPU profile.
   --with-qwen-minindn      Check Qwen Mini-NDN prerequisites; do not download a model.
-  --prepare-experiment qwen06b-tp-cpu
+  --prepare-experiment PROFILE
                           Prepare inputs using an already installed prefix; no build or actor launch.
   --asset-manifest FILE   SEALED model manifest for --prepare-experiment.
                           Prepare it first with Experiments/prepare-model-assets.py:
@@ -377,9 +377,13 @@ done
 
 # Reject unsupported options before apt, dependency installation, or configure.
 if [[ -n "$PREPARE_EXPERIMENT" ]]; then
-  [[ "$PREPARE_EXPERIMENT" == qwen06b-tp-cpu && -n "$EXPERIMENT_ASSET_MANIFEST" &&
+  case "$PREPARE_EXPERIMENT" in
+    qwen06b-tp-cpu|qwen06b-pp-cpu-colocated|qwen06b-pp-cpu-distributed|qwen06b-single-cpu) ;;
+    *) echo "Unsupported experiment profile: $PREPARE_EXPERIMENT" >&2; exit 2 ;;
+  esac
+  [[ -n "$EXPERIMENT_ASSET_MANIFEST" &&
      -n "$EXPERIMENT_WORK_ROOT" && -n "$EXPERIMENT_NAMESPACE" ]] || {
-    echo '--prepare-experiment qwen06b-tp-cpu requires --asset-manifest, --work-root and --namespace' >&2
+    echo '--prepare-experiment requires --asset-manifest, --work-root and --namespace' >&2
     exit 2
   }
   if (( CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES || UNINSTALL_STACK || SOURCE_MODE ||

@@ -991,14 +991,82 @@ int main(int argc, char** argv)
 
     // Synthetic namespace receipts exercise the native oracle only; they do
     // not claim that this fixture created a topology or ran real inference.
-    const auto miniNdnFixture = [&] {
+    const auto miniNdnFixture = [&] (bool colocated = false) {
       deploymentFixture();
       auto config = readJsonFile(root / "configuration.json");
       config["platform"] = {{"kind", "minindn"}};
       config["nodes"] = NativeJson::array({{{"id", "a"}, {"host", "node-a"}},
                                           {{"id", "b"}, {"host", "node-b"}}});
+      if (colocated) {
+        const std::string provider = "/example/ndnsf-qwen06b/provider-0";
+        config["actors"].erase(2);
+        config["requester"]["fixed_placement"]["role_providers"]["role1"] = provider;
+        auto requester = config.at("requester");
+        requester["statistics_file"] = (root / "requester-statistics.jsonl").string();
+        write(root / "requester.json", requester.dump());
+        const auto roleMapDigest = ndnsf::di::nativePlanningDigest(ndnsf::di::nativeCanonicalJson(
+          NativeJson::array({NativeJson::array({"role0", provider}),
+                             NativeJson::array({"role1", provider})})));
+        for (const auto& turn : requester.at("turns")) {
+          const auto optionsPath = turn.at("options_file").get<std::string>();
+          const auto outputPath = turn.at("output_file").get<std::string>();
+          auto options = readJsonFile(optionsPath);
+          auto output = readJsonFile(outputPath);
+          options["maxNewTokens"] = output.at("tokenIds").size();
+          options["eosTokenIds"] = {4};
+          output["finishReason"] = "max_tokens";
+          output["finishHint"] = "MAX_TOKENS";
+          write(optionsPath, options.dump());
+          write(outputPath, output.dump());
+          const auto path = turn.at("checkpoint_output_file").get<std::string>();
+          auto checkpoint = readJsonFile(path);
+          checkpoint["planRoleMapDigest"] = roleMapDigest;
+          checkpoint.erase("checkpointDigest");
+          checkpoint.erase("signature");
+          checkpoint["checkpointDigest"] = ndnsf::di::nativePlanningDigest(
+            ndnsf::di::nativeConversationCanonicalJson(checkpoint));
+          checkpoint["signature"] = std::string(64, 'a');
+          write(path, checkpoint.dump());
+        }
+        std::string combined;
+        for (unsigned index : {0, 1}) {
+          std::ifstream rows(root / ("provider-" + std::to_string(index) + "-statistics.jsonl"));
+          std::string line;
+          std::getline(rows, line);
+          if (index == 0) combined = line + '\n';
+          while (std::getline(rows, line)) {
+            auto row = NativeJson::parse(line);
+            row["provider"] = provider;
+            row["providerBootId"] = "boot-0";
+            row["admittedModelDigest"] = "sha256:model";
+            row["admittedArtifactDigest"] = "sha256:artifact";
+            for (auto& observation : row.at("runtimeMetrics"))
+              observation["lastBackendExecution"]["providerBootId"] = "boot-0";
+            ndnsf::di::ExecutionEvidence evidence;
+            evidence.providerName = provider;
+            evidence.providerBootId = "boot-0";
+            evidence.runnerKind = ndnsf::di::RunnerKind::OnnxRuntimeCpu;
+            evidence.realCompute = true;
+            evidence.deviceKind = "cpu";
+            evidence.runtimeVersion = "fixture-ort";
+            evidence.createdAtMs = 1;
+            evidence.modelDigest = "sha256:model";
+            evidence.planDigest = row.at("planDigest");
+            evidence.roles = {row.at("role").get<std::string>()};
+            evidence.artifactDigests[evidence.roles.front()] = "sha256:artifact";
+            evidence.processId = 42;
+            evidence.requestId = row.at("requestId");
+            evidence.attemptEpoch = row.at("attemptEpoch");
+            evidence.executionCompleted = true;
+            row["finalExecutionEvidence"] = NativeJson::parse(
+              ndnsf::di::executionEvidenceToJson(evidence));
+            combined += row.dump() + '\n';
+          }
+        }
+        write(root / "provider-0-statistics.jsonl", combined);
+      }
       for (auto& actor : config["actors"])
-        actor["node"] = actor["id"] == "provider-1" ? "b" : "a";
+        actor["node"] = actor["id"] == (colocated ? "provider-0" : "provider-1") ? "b" : "a";
       const auto digest = ndnsf::di::nativePlanningDigest(
         ndnsf::di::nativeCanonicalJson(config)).substr(7);
       auto state = readJsonFile(root / "deployment-state.json");
@@ -1039,6 +1107,39 @@ int main(int argc, char** argv)
     };
     miniNdnFixture();
     check("", "", "", deployment);
+    miniNdnFixture(true);
+    check("", "", "", deployment);
+    auto fixedRoleDeployment = deployment;
+    fixedRoleDeployment.insert(fixedRoleDeployment.end(),
+      {"--require-fixed-role-conversation", "1", "3"});
+    check("", "", "", fixedRoleDeployment);
+    fixedRoleDeployment[fixedRoleDeployment.size() - 2] = "2";
+    check("", "", "deployment-fixed-role-input-budget", fixedRoleDeployment);
+    fixedRoleDeployment.back() = "4";
+    check("", "", "deployment-fixed-role-output-budget", fixedRoleDeployment);
+    const auto badColocatedRole = [&](const std::string& reason,
+                                      const std::function<void(NativeJson&)>& change) {
+      miniNdnFixture(true);
+      const auto path = root / "provider-0-statistics.jsonl";
+      std::ifstream input(path);
+      std::string line, output;
+      while (std::getline(input, line)) {
+        auto value = NativeJson::parse(line);
+        if (value.value("requestId", "") == "request-1" && value.value("role", "") == "role1")
+          change(value);
+        if (!value.is_null()) output += value.dump() + '\n';
+      }
+      input.close();
+      write(path, output);
+      check("", "", reason, deployment);
+    };
+    badColocatedRole("statistics-request-count", [](auto& row) { row = nullptr; });
+    badColocatedRole("deployment-checkpoint-role-coverage", [](auto& row) {
+      row["role"] = "role0";
+    });
+    badColocatedRole("deployment-role-execution-binding", [](auto& row) {
+      row["finalExecutionEvidence"]["processId"] = 43;
+    });
     const auto badMiniNdn = [&](const std::string& reason,
                                 const std::function<void(NativeJson&)>& change) {
       miniNdnFixture();

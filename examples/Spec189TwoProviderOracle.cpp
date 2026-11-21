@@ -752,7 +752,8 @@ struct StatisticsRows
 
 StatisticsRows
 readStatistics(const std::filesystem::path& path, const std::string& schema,
-               unsigned rounds, bool provider, bool sparse = false)
+               unsigned rounds, bool provider, bool sparse = false,
+               std::size_t rolesPerRound = 1)
 {
   if (!std::filesystem::is_regular_file(path) ||
       std::filesystem::file_size(path) > 64U * 1024U * 1024U)
@@ -761,6 +762,7 @@ readStatistics(const std::filesystem::path& path, const std::string& schema,
   StatisticsRows rows;
   std::string line;
   unsigned ready = 0;
+  const auto maxRequests = rounds * (sparse ? 64U : rolesPerRound);
   while (std::getline(input, line)) {
     if (input.eof()) chainFailure("statistics-truncated-row");
     NativeJson row;
@@ -780,12 +782,12 @@ readStatistics(const std::filesystem::path& path, const std::string& schema,
     }
     else {
       if (row.value("type", "") != "request" ||
-          rows.requests.size() >= rounds * (sparse ? 64U : 1U))
+          rows.requests.size() >= maxRequests)
         chainFailure("statistics-request-count");
       rows.requests.push_back(row);
     }
   }
-  if (!input.eof() || (!sparse && rows.requests.size() != rounds) ||
+  if (!input.eof() || (!sparse && rows.requests.size() != maxRequests) ||
       (provider && ready != 1))
     chainFailure("statistics-request-count");
   return rows;
@@ -1300,11 +1302,18 @@ struct ExactConversation
   std::uint64_t providers;
 };
 
+struct FixedRoleConversation
+{
+  std::uint64_t inputTokens;
+  std::uint64_t outputTokens;
+};
+
 NativeJson
 validateDeployment(const std::filesystem::path& statePath, bool requireMultiToken,
                    bool requireDistributedGpu = false, bool modelReference = false,
                    const std::filesystem::path& referenceSourcePath = {},
-                   const std::optional<ExactConversation>& exact = {})
+                   const std::optional<ExactConversation>& exact = {},
+                   const std::optional<FixedRoleConversation>& fixed = {})
 {
   const auto state = readJson(statePath);
   const bool slurm = state.contains("job_id");
@@ -1365,6 +1374,14 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     requesterConfig.at("fixed_placement").at("role_providers");
   if (!automaticPlacement && (!placement.is_object() || placement.empty()))
     chainFailure("deployment-role-map");
+  std::map<std::string, std::size_t> roleCounts;
+  for (const auto& provider : placement) {
+    if (!provider.is_string() || provider.get_ref<const std::string&>().empty())
+      chainFailure("deployment-role-map");
+    ++roleCounts[provider.get_ref<const std::string&>()];
+  }
+  const bool hasSharedRoles = std::any_of(roleCounts.begin(), roleCounts.end(),
+    [] (const auto& entry) { return entry.second > 1; });
   if (handoff && (requesterConfig.contains("fixed_placement") ||
       !requesterConfig.at("kv_handoff").at("roles").is_object() ||
       requesterConfig.at("kv_handoff").at("roles").empty() ||
@@ -1396,6 +1413,8 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   if (exact && (!minindn || groupedTurns || turns.size() < 2 || automaticPlacement ||
                 handoff || placement.size() != exact->providers))
     chainFailure("deployment-exact-conversation-configuration");
+  if (fixed && (!minindn || groupedTurns || turns.size() < 2 || automaticPlacement))
+    chainFailure("deployment-fixed-role-conversation-configuration");
   std::set<std::string> tokenInputRoles;
   if (exact) {
     // Each rank of the first Qwen stage admits the token input. Later stages
@@ -1522,11 +1541,15 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     if (actor.at("kind") != "provider") continue;
     const auto identity = actor.at("identity").get<std::string>();
     if (!identities.insert(identity).second) chainFailure("deployment-provider-identity");
+    const auto roleCount = roleCounts.find(identity);
+    if (!automaticPlacement && roleCount == roleCounts.end())
+      chainFailure("deployment-role-map");
     const auto statisticsPath = actor.contains("parameters")
       ? actor.at("parameters").value("statistics-file", (actorRoot(id) / (id + "-statistics.jsonl")).string())
       : (actorRoot(id) / (id + "-statistics.jsonl")).string();
     providers.push_back(readStatistics(statisticsPath,
-      "ndnsf-di-native-request-statistics-v1", rounds, true, automaticPlacement));
+      "ndnsf-di-native-request-statistics-v1", rounds, true, automaticPlacement,
+      roleCount == roleCounts.end() ? 1 : roleCount->second));
     if (exact) {
       const bool captureLogits = actor.contains("parameters") &&
         actor.at("parameters").contains("capture-logits-output");
@@ -1572,10 +1595,10 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     std::vector<std::pair<const StatisticsRows*, const NativeJson*>> observations;
     NativeJson observedPlacement = NativeJson::object();
     for (const auto& provider : providers) {
+      const bool matchRequestId = automaticPlacement || roleCounts.at(provider.provider) > 1;
       for (std::size_t index = 0; index < provider.requests.size(); ++index) {
         const auto& observation = provider.requests.at(index);
-        if ((!automaticPlacement && index != round) ||
-            (automaticPlacement && observation.at("requestId") != requestId))
+        if (matchRequestId ? observation.at("requestId") != requestId : index != round)
           continue;
         const auto role = observation.at("role").get<std::string>();
         if (role.empty() || observedPlacement.contains(role) ||
@@ -1658,7 +1681,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
               .get<std::string>();
           }
         }
-        if (observations.size() != 1 || executionNamespaces.size() != 1 ||
+        if (observations.size() != placement.size() || executionNamespaces.size() != 1 ||
             requesterNamespace.empty() || executionNamespaces.count(requesterNamespace) != 0)
           chainFailure("deployment-minindn-single-stage-not-remote");
       }
@@ -1685,6 +1708,10 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       chainFailure("deployment-exact-token-budget:turn=" + std::to_string(round) +
                    ":expected=" + std::to_string(exact->tokensPerTurn) +
                    ":actual=" + std::to_string(tokenTotal));
+    if (fixed && (tokenTotal != fixed->outputTokens ||
+                  generation.at("maxNewTokens") != fixed->outputTokens ||
+                  generation.at("finishReason") != "max_tokens"))
+      chainFailure("deployment-fixed-role-output-budget:turn=" + std::to_string(round));
     const std::filesystem::path inputPath(turn.at("input_file").get<std::string>());
     if (!std::filesystem::is_regular_file(inputPath) ||
         std::filesystem::file_size(inputPath) > 16U * 1024U * 1024U)
@@ -1711,6 +1738,8 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     }
     if (inputTensors != 1) chainFailure("deployment-input-token-count");
     const auto prefillPrefixTokens = prefix.size();
+    if (fixed && prefillPrefixTokens - parentPrefixTokens != fixed->inputTokens)
+      chainFailure("deployment-fixed-role-input-budget:turn=" + std::to_string(round));
     for (const auto& token : output.at("tokenIds")) prefix.push_back(token.get<std::int64_t>());
     const auto checkpoint = readJson(turn.at("checkpoint_output_file").get<std::string>());
     const auto contextEpoch = groupedTurns ? round % 2 + 1 : round + 1;
@@ -1755,7 +1784,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     }
     const auto& receipts = checkpoint.at("roleReceiptDigests");
     std::set<std::string> roles;
-    std::set<std::uint64_t> executionPids;
+    std::map<std::uint64_t, std::string> executionPids;
     unsigned publishers = 0;
     std::optional<std::uint64_t> attempt;
     for (const auto& observed : observations) {
@@ -1793,9 +1822,13 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
                            ":actual=" + std::to_string(observed));
           }
         }
+      }
+      if (exact || fixed || hasSharedRoles) {
+        const std::string binding = exact ? "deployment-exact-execution" :
+                                           "deployment-role-execution";
         const auto& finalExecution = observation.at("finalExecutionEvidence");
         if (finalExecution.is_null())
-          chainFailure("deployment-exact-execution-missing");
+          chainFailure(binding + "-missing");
         const auto evidence = ndnsf::di::executionEvidenceFromJson(finalExecution.dump());
         const auto artifact = evidence.artifactDigests.find(role);
         const auto admittedModel = observation.at("admittedModelDigest").get<std::string>();
@@ -1805,9 +1838,10 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
         const auto launch = std::find_if(launches.begin(), launches.end(), [&] (const auto& item) {
           return item.at("id") == provider.actor;
         });
-        if (launch == launches.end() ||
+        if (launch == launches.end() || evidence.processId == 0 ||
             evidence.processId != nonnegativeInteger(launch->at("proof").at("pid")) ||
-            !executionPids.insert(evidence.processId).second ||
+            executionPids.emplace(evidence.processId, provider.actor).first->second !=
+              provider.actor ||
             admittedModel.empty() || evidence.modelDigest != admittedModel ||
             admittedArtifact.empty() || artifact == evidence.artifactDigests.end() ||
             artifact->second != admittedArtifact ||
@@ -1816,7 +1850,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
             evidence.requestId != requestId || evidence.planDigest != plan ||
             evidence.attemptEpoch != currentAttempt ||
             evidence.roles != std::vector<std::string>{role})
-          chainFailure("deployment-exact-execution-binding:turn=" + std::to_string(round) +
+          chainFailure(binding + "-binding:turn=" + std::to_string(round) +
                        ":role=" + role);
       }
       const auto providerInterval = *statisticsInterval(
@@ -1847,6 +1881,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       chainFailure("deployment-stream-role-coverage");
     results.push_back({{"requestId", requestId}, {"planDigest", plan},
       {"generatedTokens", tokenTotal}, {"contextEpoch", contextEpoch},
+      {"newInputTokens", prefillPrefixTokens - parentPrefixTokens},
       {"prefixTokens", prefix.size()}, {"finishReason", generation.at("finishReason")}});
   }
   for (const auto& provider : providers) {
@@ -2343,7 +2378,8 @@ main(int argc, char** argv)
               << "       " << argv[0] << " --deployment-state FILE [--require-multi-token]"
                  " [--require-distributed-gpu] [--model-reference]"
                  " [--model-reference-source FILE]"
-                 " [--require-exact-conversation TOKENS PROVIDERS]\n"
+                 " [--require-exact-conversation TOKENS PROVIDERS |"
+                 " --require-fixed-role-conversation INPUT_TOKENS OUTPUT_TOKENS]\n"
               << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
     return 0;
   }
@@ -2353,10 +2389,16 @@ main(int argc, char** argv)
   unsigned rounds = 1;
   bool roundsSeen = false;
   std::optional<ExactConversation> exact;
+  std::optional<FixedRoleConversation> fixed;
   const char* runRootArg = nullptr;
   const char* repoRootArg = nullptr;
   const char* deploymentStateArg = nullptr;
   const char* referenceSourceArg = nullptr;
+  const auto parseCount = [] (std::string_view input, std::uint64_t& count) {
+    const auto end = input.data() + input.size();
+    const auto result = std::from_chars(input.data(), end, count);
+    return result.ec == std::errc{} && result.ptr == end && count > 0;
+  };
   for (int i = 1; i < argc; ++i) {
     const std::string option(argv[i]);
     if (option == "--placement-only" && !placementOnly) placementOnly = true;
@@ -2370,18 +2412,25 @@ main(int argc, char** argv)
     else if (option == "--model-reference-source" && !referenceSourceArg && i + 1 < argc)
       referenceSourceArg = argv[++i];
     else if (option == "--require-exact-conversation" && !exact && i + 2 < argc) {
-      const auto parseCount = [] (std::string_view input, std::uint64_t& count) {
-        const auto end = input.data() + input.size();
-        const auto result = std::from_chars(input.data(), end, count);
-        return result.ec == std::errc{} && result.ptr == end && count >= 2;
-      };
       ExactConversation counts{};
       const std::string_view tokens(argv[++i]);
       const std::string_view providers(argv[++i]);
       if (parseCount(tokens, counts.tokensPerTurn) &&
+          counts.tokensPerTurn >= 2 &&
           counts.tokensPerTurn <= ndnsf::di::MAX_NATIVE_GENERATED_TOKENS &&
-          parseCount(providers, counts.providers))
+          parseCount(providers, counts.providers) && counts.providers >= 2)
         exact = counts;
+      else
+        invalidOptions = true;
+    }
+    else if (option == "--require-fixed-role-conversation" && !fixed && i + 2 < argc) {
+      FixedRoleConversation counts{};
+      const std::string_view inputTokens(argv[++i]);
+      const std::string_view outputTokens(argv[++i]);
+      if (parseCount(inputTokens, counts.inputTokens) &&
+          parseCount(outputTokens, counts.outputTokens) &&
+          counts.outputTokens <= ndnsf::di::MAX_NATIVE_GENERATED_TOKENS)
+        fixed = counts;
       else
         invalidOptions = true;
     }
@@ -2401,6 +2450,7 @@ main(int argc, char** argv)
   if (invalidOptions || ((distributedGpu || modelReference) && !deploymentStateArg) ||
       (referenceSourceArg && (!modelReference || !deploymentStateArg)) ||
       (exact && (!modelReference || distributedGpu)) ||
+      (fixed && (!deploymentStateArg || distributedGpu || exact)) ||
       (deploymentStateArg && (repoLifecycle || repoRootArg || runRootArg || placementOnly ||
         cacheCompatibility || expectedRevocationFailure || quietPerformance || roundsSeen)) ||
       (repoLifecycle && (repoRootArg == nullptr || runRootArg != nullptr ||
@@ -2418,7 +2468,8 @@ main(int argc, char** argv)
               << "       " << argv[0] << " --deployment-state FILE [--require-multi-token]"
                  " [--require-distributed-gpu] [--model-reference]"
                  " [--model-reference-source FILE]"
-                 " [--require-exact-conversation TOKENS PROVIDERS]\n"
+                 " [--require-exact-conversation TOKENS PROVIDERS |"
+                 " --require-fixed-role-conversation INPUT_TOKENS OUTPUT_TOKENS]\n"
               << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
     return 2;
   }
@@ -2427,7 +2478,7 @@ main(int argc, char** argv)
       const auto receipt = validateDeployment(
         std::filesystem::absolute(deploymentStateArg), multiToken, distributedGpu, modelReference,
         referenceSourceArg ? std::filesystem::absolute(referenceSourceArg) : std::filesystem::path{},
-        exact);
+        exact, fixed);
       std::cout << (modelReference ? "SPEC220_CPP_MODEL_REFERENCE_PASS " :
                                     "SPEC217_CPP_DEPLOYMENT_EXECUTION_PASS ")
                 << ndnsf::di::nativeCanonicalJson(receipt) << '\n';

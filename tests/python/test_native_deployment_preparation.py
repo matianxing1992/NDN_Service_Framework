@@ -19,6 +19,38 @@ SPEC.loader.exec_module(prepare)
 
 
 class NativePreparationBoundaryTest(unittest.TestCase):
+    def test_pipeline_profiles_freeze_comparable_roles_and_workload(self):
+        resources = ROOT / 'Experiments'
+        recipe = prepare.read_json(resources / 'recipes/qwen3-0.6b-int4.json')
+        split_catalogs = []
+        placements = []
+        for name in prepare.PIPELINE_PROFILES:
+            profile, layout = prepare.load_profile(resources, name)
+            catalog = prepare.read_json(resources / profile['catalog'])
+            options = prepare.read_json(resources / profile['generationOptions'])
+            roles = prepare.apply_pipeline_layout(catalog, layout,
+                recipe['files']['canonicalGraph'], recipe['files']['canonicalWeights'], options)
+            self.assertEqual(profile['rendering']['inputTokens'], [24, 24])
+            self.assertEqual(profile['rendering']['maxNewTokens'], [32, 32])
+            self.assertEqual(profile['rendering']['expectedCommittedPrefix'], [56, 112])
+            self.assertEqual(profile['budgets']['storageBytes'], 8 * 1024 ** 3)
+            self.assertEqual(catalog['splitter']['tensor_degrees'], [1] * len(roles))
+            self.assertRegex(catalog['model']['graph_digest'], r'^sha256:[0-9a-f]{64}$')
+            for field, option in (('state_inputs', 'stateInputNames'),
+                                  ('state_outputs', 'stateOutputNames')):
+                tensors = [name for role in roles for names in catalog[field][role].values()
+                           for name in names]
+                self.assertCountEqual(tensors, options[option])
+            split_catalogs.append(catalog)
+            placements.append(layout['stageProviders'])
+
+        self.assertEqual(split_catalogs[0], split_catalogs[1])
+        self.assertEqual(split_catalogs[0]['splitter']['layer_ranges'], [[0, 14], [14, 28]])
+        self.assertEqual(split_catalogs[2]['splitter']['layer_ranges'], [[0, 28]])
+        self.assertNotEqual(split_catalogs[0]['model']['graph_digest'],
+                            split_catalogs[2]['model']['graph_digest'])
+        self.assertEqual(placements, [[0, 0], [0, 1], [0]])
+
     def fixture_prefix(self, root):
         prefix = root / 'prefix'
         ledger = dict(schema=1, files={})
