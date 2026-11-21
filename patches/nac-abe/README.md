@@ -60,14 +60,8 @@ Reuse requires the source and library receipt plus the compile/link and loader
 probe for `consumeWithCkAuthorization`. Waf reuses its configuration only when
 the cached runtime paths also match the installer's order.
 
-On a host with the OS build packages already installed, run
-`./install_ndnsf_stack.sh --deps-only --no-system-packages --without-minindn`,
-`./install_ndnsf_stack.sh --check-dependencies`, then
-`./install_ndnsf_stack.sh --no-dependencies --no-system-packages`.
-Use `ldd -r` without loader environment overrides to confirm that the NDNSF
-executables resolve `/usr/local/lib/libnac-abe.so`. For an upgrade from a
-version-specific SDK, check existing consumers after relinking NDNSF before
-archiving the old install directories.
+Follow the [host SDK migration and verification procedure](../../Experiments/guides/installation.md#宿主-sdk-版本与迁移)
+when upgrading an installed NDNSF host.
 
 The published NAC revision passed 17 native cases. NDNSF's focused
 `nac-transport` target covers eight native cases.

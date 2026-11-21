@@ -19,6 +19,37 @@
 
 configure.sh是兼容包装，保留configure-only语义。--plan/--dry-run不等于已安装或configure通过。
 
+## 宿主 SDK 版本与迁移
+
+以准备安装的 NDNSF 提交及其[宿主源码锁](../../packaging/host-dependencies.lock.json)
+为准。当前锁的 NAC-ABE `host_release` 指向发布提交 `7592082a`，安装到 `/usr/local`。
+`--prefix` 只选择 NDNSF 安装位置。NAC-ABE 的头文件、pkg-config、库和收据仍由宿主
+安装器管理。`--deps-dir deps` 指定源码缓存目录。
+
+迁移前确认相关服务可以停机重启并保留旧安装的回滚材料。安装新版时，已有程序可能
+因搜索顺序而立即加载新版 `libnac-abe.so`。因此把全局依赖迁移、NDNSF 原生应用及
+Python 绑定的重建重装、消费者重启安排在同一次维护操作中。
+
+已具备系统构建包的实验主机按以下顺序执行。第一步只安装锁定的宿主依赖，安装器
+可能更新校验或收据不符的其它依赖（例如 OpenABE）。
+
+~~~bash
+./install_ndnsf_stack.sh --deps-only --deps-dir deps --no-system-packages --without-minindn
+./install_ndnsf_stack.sh --check-dependencies --with-minindn
+./install_ndnsf_stack.sh --no-dependencies --no-system-packages --with-qwen-minindn
+~~~
+
+第二步要求 MiniNDN 已安装。如果缺少，把第一步换成
+`./install_ndnsf_stack.sh --deps-only --deps-dir deps --with-minindn`，同时安装 MiniNDN
+和所需系统包。普通生产主机可在第二步省去 `--with-minindn`，第三步把
+`--with-qwen-minindn` 换成 `--without-minindn`，仍重装整栈。
+迁移后清除 `LD_LIBRARY_PATH` 和 `LD_PRELOAD`。用 `ldd -r` 检查使用该 SDK 的原生
+可执行文件和库，应解析到 `/usr/local/lib/libnac-abe.so` 且无缺失依赖或未定义符号。
+从源码树外用系统 Python `-I` 实际导入 `ndnsf._ndnsf` 和 `py_repoclient._py_repoclient`，
+从进程的 `/proc/self/maps` 核对它们加载同一全局库。随后按[本地验收指南](local-validation.md)
+运行已安装的原生探针和 MiniNDN 冷暖检查。确认消费者重启和检查均通过后，将旧 SDK
+归档到编译器、pkg-config 和动态加载器的搜索路径之外。
+
 ## MiniNDN 宿主运行环境
 
 普通 `all` 和 `di` 安装（含 `--deps-only`）默认安装共用的 MiniNDN 环境。

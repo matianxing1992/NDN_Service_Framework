@@ -27,12 +27,23 @@ Qwen CPU TP 三轮验收还要运行同一安装前缀中的独立未切分模�
 网络均已关闭，再用同一部署用户运行以下命令。
 
 ~~~bash
-sudo /path/to/prefix/bin/spec190-multiturn-oracle \
+sudo /path/to/prefix/bin/multiturn-oracle \
   --deployment-state /path/to/state.json --require-multi-token --model-reference
 ~~~
 
 检查每轮的实际输出数、检查点认证和提交前缀。该对照逐 token 比较独立 CPU 输出，
 并报告 `providerStateValuesCompared`，据此判断是否做了 Provider 内部状态数值比较。
+
+用 `--with-tests` 安装 DI 后，从源码树外运行同批次的 ONNX 安装探针：
+
+~~~bash
+env -u LD_LIBRARY_PATH -u LD_PRELOAD \
+  /path/to/prefix/libexec/ndnsf-tests/onnx-source \
+  --run_test=Spec233OnnxSource/InstalledSourceProbeUsesTheCurrentFloatingContractAbi
+~~~
+
+它启动同目录的 `automatic-source-probe`，验证实际安装库返回的 ONNX 合约版本、
+浮点事实和摘要。
 
 宿主的 MiniNDN 环境随[普通 DI 安装](installation.md#minindn-宿主运行环境)交付。
 YOLO 的模型和专用入口由 `--with-yolo-minindn` 安装。可在任意目录

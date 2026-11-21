@@ -3893,8 +3893,8 @@ check_qwen_installed_programs() {
     }
   done
   echo 'Qwen executables installed; this is NOT an inference PASS.'
-  echo 'Next: prepare canonical ONNX/KV model artifacts and run LocalExperiment check with an installed-binary profile.'
-  echo 'See docs/unified-stack-install.md#qwen-minindn-readiness for model and qualification boundaries.'
+  echo 'Prepare the fixed Qwen assets and deployment, then run the installed MiniNDN validation.'
+  echo 'See Experiments/guides/local-validation.md for the installed validation commands.'
 }
 
 cd "$ROOT"

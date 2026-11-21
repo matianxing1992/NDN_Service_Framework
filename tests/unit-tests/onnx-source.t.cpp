@@ -1170,6 +1170,12 @@ BOOST_AUTO_TEST_CASE(FloatingExternalScalarsRejectRangesBudgetAndCancellation)
 
 BOOST_AUTO_TEST_CASE(InstalledSourceProbeUsesTheCurrentFloatingContractAbi)
 {
+  const auto executable = std::filesystem::read_symlink("/proc/self/exe");
+  const auto probe = executable.parent_path() / "automatic-source-probe";
+  BOOST_REQUIRE_MESSAGE(probe.is_absolute() && std::filesystem::is_regular_file(probe) &&
+                        ::access(probe.c_str(), X_OK) == 0,
+                        "required ONNX source probe missing: " << probe.string());
+
   FilesFixture files;
   auto source = integerLiteralModel();
   auto* scalar = source.mutable_graph()->add_initializer();
@@ -1183,7 +1189,7 @@ BOOST_AUTO_TEST_CASE(InstalledSourceProbeUsesTheCurrentFloatingContractAbi)
   // this actual installed ABI consumer without a shell or another protocol.
   const auto status = boost::process::system("/usr/bin/timeout",
     boost::process::args(std::vector<std::string>{"--signal=TERM", "--kill-after=5", "15",
-      "/usr/local/libexec/ndnsf-tests/spec233-automatic-source-probe", "--inspect", path.string()}),
+      probe.string(), "--inspect", path.string()}),
     (boost::process::std_out & boost::process::std_err) > output.string());
   BOOST_REQUIRE_EQUAL(status, 0);
   BOOST_REQUIRE_LE(std::filesystem::file_size(output), 1U << 20);
