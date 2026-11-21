@@ -145,10 +145,12 @@ populateLineageObservation(StageTransferObservation& observation,
 {
   observation.lineagePresent = false;
   observation.lineageIdentity.clear();
+  observation.transitionKind.clear();
   observation.positionDigest.clear();
   if (const auto lineage = extractGenerationEpochLineage(bundle)) {
     observation.lineagePresent = true;
     observation.positionDigest = lineage->positionDigest;
+    observation.transitionKind = lineage->transitionKind;
     observation.lineageIdentity = lineage->requestId + "|" +
       lineage->generationId + "|" + std::to_string(lineage->streamEpoch) +
       "|" + std::to_string(lineage->inferenceEpoch) + "|" +
@@ -192,6 +194,19 @@ attachTransferObservation(const DependencyEdge& edge,
   if (metrics.localCopyBytes) {
     observation.transportLocalCopyBytes = metrics.localCopyBytes;
   }
+}
+
+void
+observeNetworkTransfer(const std::shared_ptr<NativeWorkStatistics>& statistics,
+                       std::uint64_t epoch, NativeNetworkTransferKind kind,
+                       const CollaborationTransferMetrics& metrics,
+                       const StageTransferObservation* observation = nullptr) noexcept
+{
+  if (!statistics) return;
+  statistics->observeNetworkTransfer(epoch, kind,
+    observation ? std::string_view(observation->transitionKind) : std::string_view{},
+    observation ? std::optional<std::size_t>(observation->tensorBytes) : std::nullopt,
+    metrics.wireBytes, metrics.interestCount, metrics.retryCount);
 }
 
 std::string
@@ -548,6 +563,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
   auto fetch = [this, sessionId, edge, cancelled, reportFirstRead] {
    NativeWorkScope workerWork(m_workStatistics, "dependency-prefetch-worker",
                               NativeWorkKind::LOCAL, inferenceEpochForEdge(edge));
+   CollaborationTransferMetrics transportMetrics;
    try {
     if (cancelled->load(std::memory_order_acquire)) {
       throw std::runtime_error("dependency prefetch was cancelled");
@@ -563,7 +579,6 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
         ProtectedDataflowDirection::Fetch, edge.endpointDigest,
         edge.producerRole, edge.consumerRole, nowEpochMs(), edge.round, m_workStatistics);
     }
-    CollaborationTransferMetrics transportMetrics;
     if (edge.useNdnsfDataV1) {
       if (!m_groupCoordinator || !m_groupCoordinator->hasCapability()) {
         throw std::runtime_error(
@@ -654,6 +669,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
               ? ndn_service_framework::ServiceProvider::ExactDataFetchPhase::AwaitPublication
               : ndn_service_framework::ServiceProvider::ExactDataFetchPhase::Published);
           fetchWait.finish();
+          mergeTransferMetrics(transportMetrics, segmentMetrics);
           if (!content) {
             if (cancelled->load(std::memory_order_acquire)) {
               throw std::runtime_error(
@@ -662,7 +678,6 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             throw std::runtime_error(
               "failed to fetch signed exact Data: " + name.toUri());
           }
-          mergeTransferMetrics(transportMetrics, segmentMetrics);
           if (initialProducerReadiness) {
             // The first manifest fetch is a producer-readiness wait.  It is
             // explicitly allowed to outlive noProgressMs while the producer
@@ -1437,6 +1452,10 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
               sizingKey, edge.round, manifest.totalBytes, manifest.segmentSize};
           }
         }
+        bundle.transferObservation->readySteadyNs = std::chrono::duration_cast<
+          std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        observeNetworkTransfer(m_workStatistics, inferenceEpochForEdge(edge),
+          NativeNetworkTransferKind::RECEIVE, transportMetrics, bundle.transferObservation.get());
         return bundle;
       }
       throw std::invalid_argument("C04 tensor endpoint is required for network dependency fetch");
@@ -1472,9 +1491,15 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
     logDependencyObject(sessionId, edge, "fetch", bundle.payload.size(), "ok");
     logDependencyStageMarker("complete", sessionId, edge,
                              m_ctx.localProvider().toUri());
+    bundle.transferObservation->readySteadyNs = std::chrono::duration_cast<
+      std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    observeNetworkTransfer(m_workStatistics, inferenceEpochForEdge(edge),
+      NativeNetworkTransferKind::RECEIVE, transportMetrics, bundle.transferObservation.get());
     return bundle;
    }
    catch (...) {
+     observeNetworkTransfer(m_workStatistics, inferenceEpochForEdge(edge),
+       NativeNetworkTransferKind::RECEIVE_FAILED, transportMetrics);
      try {
        logDependencyStageMarker("failed", sessionId, edge,
                                 m_ctx.localProvider().toUri());
@@ -1699,6 +1724,8 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
                                          cached->second.originals, &retryMetrics))
             throw std::runtime_error("failed to replay signed tensor originals");
           attachTransferObservation(edge, bundle, "send", retryMetrics);
+          observeNetworkTransfer(m_workStatistics, publicationInferenceEpochForEdge(edge),
+            NativeNetworkTransferKind::REPUBLICATION, retryMetrics, bundle.transferObservation.get());
           if (!m_groupCoordinator->recordProgress(nowEpochMs()))
             throw std::runtime_error("tensor retry group deadline or cancellation");
           return;
@@ -1740,12 +1767,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         exactNames);
 
       NativeWorkScope encodeWork(m_workStatistics, "tensor-segment-encode", NativeWorkKind::LOCAL);
-      std::vector<std::vector<std::uint8_t>> encodedSegments;
-      encodedSegments.reserve(sealed.segments.size());
-      for (const auto& segment : sealed.segments) {
-        encodedSegments.push_back(ProviderGroupCoordinator::encodeSegmentCompact(
-          sealed.manifest, segment));
-      }
+      auto encodedSegments = ProviderGroupCoordinator::encodeSegmentsCompact(sealed);
       encodeWork.finish();
 
       std::uint64_t numericProducerRank = 0;
@@ -1873,6 +1895,8 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         }
       }
       attachTransferObservation(edge, bundle, "send", transportMetrics);
+      observeNetworkTransfer(m_workStatistics, publicationInferenceEpochForEdge(edge),
+        NativeNetworkTransferKind::PUBLICATION, transportMetrics, bundle.transferObservation.get());
       if (!m_groupCoordinator->recordProgress(nowEpochMs())) {
         throw std::runtime_error(
           "NDNSF_DATA_V1 group deadline or cancellation after publication");
@@ -1899,6 +1923,8 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
     }
     transportMetrics.actualDataName = publishedName.toUri();
     attachTransferObservation(edge, bundle, "send", transportMetrics);
+    observeNetworkTransfer(m_workStatistics, publicationInferenceEpochForEdge(edge),
+      NativeNetworkTransferKind::PUBLICATION, transportMetrics, bundle.transferObservation.get());
     return;
   }
   CollaborationTransferMetrics transportMetrics;
@@ -1914,6 +1940,8 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
   }
   transportMetrics.actualDataName = publishedName.toUri();
   attachTransferObservation(edge, bundle, "send", transportMetrics);
+  observeNetworkTransfer(m_workStatistics, publicationInferenceEpochForEdge(edge),
+    NativeNetworkTransferKind::PUBLICATION, transportMetrics, bundle.transferObservation.get());
 }
 
 } // namespace ndnsf::di

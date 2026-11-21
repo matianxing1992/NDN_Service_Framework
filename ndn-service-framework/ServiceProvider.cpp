@@ -14877,6 +14877,10 @@ namespace ndn_service_framework
                                 std::chrono::system_clock::now().time_since_epoch()).count();
                             NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=COLLAB_DATA_INTEREST_ISSUED"
                                           << " timestamp_us=" << issuedUs
+                                          << " steady_ns=" << std::chrono::duration_cast<
+                                              std::chrono::nanoseconds>(
+                                                std::chrono::steady_clock::now()
+                                                  .time_since_epoch()).count()
                                           << " requestId=" << requestId.toUri()
                                           << " keyScope=" << keyScope
                                           << " dataName=" << dataName.toUri()

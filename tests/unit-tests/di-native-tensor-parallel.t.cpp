@@ -50,6 +50,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -57,6 +58,7 @@
 #include <future>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <system_error>
 #include <limits>
 #include <thread>
@@ -19764,6 +19766,16 @@ BOOST_AUTO_TEST_CASE(AStepWithTwoRemoteContributionsKeepsBothAcrossItsWaits)
   };
 
   auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+  std::set<std::string> expectedReceives;
+  for (auto& edge : role.inputs) {
+    if (edge.operationKind == "TENSOR_PARTIAL") {
+      auto name = ndn::Name(assignment.providerByRole.at(edge.producerRole));
+      name.append("fixture").append("partial").appendNumber(expectedReceives.size());
+      edge.plannedDataName = name.toUri();
+      BOOST_REQUIRE(expectedReceives.insert(edge.plannedDataName).second);
+    }
+  }
+  BOOST_REQUIRE_GE(expectedReceives.size(), 2U);
   // The plan's own template must give this unit's reductions two remote contributions. If it
   // ever stops doing that, this case would silently test the degree-two shape again.
   {
@@ -19777,14 +19789,12 @@ BOOST_AUTO_TEST_CASE(AStepWithTwoRemoteContributionsKeepsBothAcrossItsWaits)
     BOOST_CHECK_GE(remoteSlots, 2U);
   }
 
-  // Each contribution is delivered only when asked for, and the first one is delivered
-  // immediately while the second arrives after a delay -- so the unit must suspend between them
-  // and resume with the first still in hand.
+  enum class Delivery { READY, LATER, EXCEPTION, EXPIRED, CANCEL_ON_REQUEUE };
   class SplitDeliveryIo final : public DependencyIo
   {
   public:
-    explicit SplitDeliveryIo(std::shared_ptr<std::atomic<int>> published)
-      : m_published(std::move(published))
+    explicit SplitDeliveryIo(Delivery mode)
+      : m_mode(mode)
     {
     }
 
@@ -19792,31 +19802,49 @@ BOOST_AUTO_TEST_CASE(AStepWithTwoRemoteContributionsKeepsBothAcrossItsWaits)
     prefetchInput(const std::string&, const DependencyEdge& edge) override
     {
       std::promise<TensorBundle> promise;
+      auto future = promise.get_future();
       NamedTensor tensor;
       tensor.name = "partial";
       tensor.elementType = TensorElementType::Float32;
       tensor.shape = {1, 1, 4};
-      tensor.payload.assign(4 * sizeof(float), 0);
-      auto* values = reinterpret_cast<float*>(tensor.payload.data());
-      for (std::size_t index = 0; index < 4; ++index) values[index] = 1.0f;
-      promise.set_value(makeEncodedTensorBundle(edge.scope, {std::move(tensor)}));
-      return promise.get_future();
+      const std::array<float, 4> values{1.0f, 1.0f, 1.0f, 1.0f};
+      tensor.payload.resize(sizeof(values));
+      std::memcpy(tensor.payload.data(), values.data(), sizeof(values));
+      auto bundle = makeEncodedTensorBundle(edge.scope, {std::move(tensor)});
+      if (m_mode == Delivery::EXCEPTION) {
+        promise.set_exception(std::make_exception_ptr(std::runtime_error("fixture fetch failed")));
+      }
+      else if (m_mode == Delivery::LATER || m_mode == Delivery::CANCEL_ON_REQUEUE) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_pending.emplace_back(std::move(promise), std::move(bundle));
+      }
+      else {
+        promise.set_value(std::move(bundle));
+      }
+      return future;
+    }
+
+    bool
+    release(std::size_t index)
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      if (index >= m_pending.size()) return false;
+      auto& [promise, bundle] = m_pending[index];
+      promise.set_value(std::move(bundle));
+      return true;
     }
 
     void
-    publishOutput(const std::string&, const DependencyEdge& edge,
-                  const TensorBundle&) override
+    publishOutput(const std::string&, const DependencyEdge&, const TensorBundle&) override
     {
-      ++*m_published;
-      (void)edge;
     }
 
   private:
-    std::shared_ptr<std::atomic<int>> m_published;
+    Delivery m_mode;
+    std::mutex m_mutex;
+    std::vector<std::pair<std::promise<TensorBundle>, TensorBundle>> m_pending;
   };
 
-  auto published = std::make_shared<std::atomic<int>>(0);
-  ProviderRoleWorker worker(1, 1, 8, std::chrono::seconds(60));
   const auto promptToken = [] (const std::string& name, std::int64_t value) {
     NamedTensor tensor;
     tensor.name = name;
@@ -19833,17 +19861,93 @@ BOOST_AUTO_TEST_CASE(AStepWithTwoRemoteContributionsKeepsBothAcrossItsWaits)
     {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
       {promptToken("position_ids", 0)})},
   };
-  auto runner = makeRunner();
-  try {
-    const auto result = worker.executePreparedAsync(
-      "/session/three-contributions", std::move(role),
-      std::make_shared<SplitDeliveryIo>(published),
-      [runner] { return runner; }, initial).get();
-    // Both remote contributions were read and the unit finished: the merged value exists.
+  for (const auto mode : {Delivery::READY, Delivery::LATER, Delivery::EXCEPTION,
+                          Delivery::EXPIRED, Delivery::CANCEL_ON_REQUEUE}) {
+    auto candidate = role;
+    const auto observations = std::make_shared<NativeWorkStatistics>(
+      NativeWorkStatistics::Clock{}, true);
+    candidate.workStatistics = observations;
+    if (mode == Delivery::EXPIRED) {
+      candidate.executionDeadline = std::chrono::steady_clock::now();
+    }
+    auto io = std::make_shared<SplitDeliveryIo>(mode);
+    auto runner = makeRunner();
+    enum class GuardState { CURRENT, CANCEL_AFTER_CHECK, CANCELLED };
+    std::atomic<GuardState> guardState{GuardState::CURRENT};
+    const auto guard = [&] {
+      auto expected = GuardState::CANCEL_AFTER_CHECK;
+      // The callback's admission check succeeds. The next check, when the
+      // resumed item is taken from the ready queue, sees cancellation.
+      if (!guardState.compare_exchange_strong(expected, GuardState::CANCELLED) &&
+          expected == GuardState::CANCELLED) {
+        throw std::runtime_error("fixture cancelled before resume");
+      }
+    };
+    ProviderRoleWorker worker(1, 1, 8, std::chrono::seconds(10));
+    auto future = worker.executePreparedAsync(
+      "/session/three-contributions", std::move(candidate), io,
+      [runner] { return runner; }, initial, {}, guard);
+    if (mode == Delivery::LATER || mode == Delivery::CANCEL_ON_REQUEUE) {
+      const auto count = mode == Delivery::LATER ? expectedReceives.size() : 1U;
+      for (std::size_t index = 0; index < count; ++index) {
+        const auto started = [&] {
+          const auto state = worker.snapshot();
+          if (state.activeWorkerCount != 0 || state.readyQueueDepth != 0 ||
+              state.dependencyWaitActiveCount != 1 || state.dependencyWaitCompleted != index) {
+            return false;
+          }
+          const auto snapshot = observations->snapshot();
+          return std::count_if(snapshot.transfers.begin(), snapshot.transfers.end(),
+            [] (const auto& row) { return row.point == NativeTransferPoint::WORKER_INPUT; }) ==
+            static_cast<std::ptrdiff_t>(index);
+        };
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!started() && std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        BOOST_REQUIRE(started());
+        if (mode == Delivery::CANCEL_ON_REQUEUE) {
+          guardState.store(GuardState::CANCEL_AFTER_CHECK);
+        }
+        BOOST_REQUIRE(io->release(index));
+      }
+    }
+    if (mode == Delivery::CANCEL_ON_REQUEUE) {
+      BOOST_CHECK_EXCEPTION(future.get(), std::runtime_error, [] (const std::runtime_error& error) {
+        return std::string(error.what()) == "fixture cancelled before resume";
+      });
+      BOOST_CHECK_EQUAL(worker.snapshot().dependencyWaitCompleted, 1U);
+      BOOST_CHECK(observations->snapshot().transfers.empty());
+      continue;
+    }
+    if (mode == Delivery::EXCEPTION || mode == Delivery::EXPIRED) {
+      const auto expected = mode == Delivery::EXCEPTION ? "fixture fetch failed" : "DEADLINE_EXPIRED";
+      BOOST_CHECK_EXCEPTION(future.get(), std::runtime_error, [&] (const std::runtime_error& error) {
+        return std::string(error.what()).find(expected) != std::string::npos;
+      });
+      BOOST_CHECK_EQUAL(worker.snapshot().dependencyWaitCompleted, 0U);
+      BOOST_CHECK(observations->snapshot().transfers.empty());
+      continue;
+    }
+    const auto result = future.get();
+    BOOST_CHECK_EQUAL(worker.snapshot().dependencyWaitCompleted,
+                      mode == Delivery::LATER ? expectedReceives.size() : 0U);
     BOOST_CHECK_GT(result.outputsByScope.size(), 0U);
-  }
-  catch (const std::exception& error) {
-    BOOST_FAIL(std::string("two contributions across two waits: ") + error.what());
+    const auto snapshot = observations->snapshot();
+    std::set<std::string> observedReceives;
+    for (const auto& transfer : snapshot.transfers) {
+      if (transfer.point != NativeTransferPoint::WORKER_INPUT) continue;
+      BOOST_CHECK(observedReceives.insert(transfer.plannedDataName).second);
+    }
+    BOOST_CHECK(observedReceives == expectedReceives);
+    std::uint64_t sampled = 0;
+    for (const auto& [name, value] : snapshot.counts) {
+      if (name == "sumArrival.futureReady" || name == "sumArrival.pending" ||
+          name == "sumArrival.preSatisfied" || name == "sumArrival.notStarted") {
+        sampled += value;
+      }
+    }
+    BOOST_CHECK_EQUAL(sampled, expectedReceives.size());
   }
 }
 

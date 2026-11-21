@@ -1286,6 +1286,10 @@ def build(bld):
             'Experiments/TigerCluster/runtime/processes.py',
             'Experiments/profiles/qwen06b-tp-cpu.json',
             'Experiments/profiles/qwen06b-pp-cpu.json',
+            'Experiments/profiles/qwen06b-wired-star-cpu.json',
+            'Experiments/Topology/spec270-wired-star.conf',
+            'Experiments/fixtures/native-deployment/qwen06b-full-catalog.json',
+            'Experiments/fixtures/native-deployment/qwen06b-pp14-catalog.json',
             'Experiments/profiles/requirements-cpu-ops-py38.txt',
             'Experiments/fixtures/native-deployment/qwen06b-catalog.json',
             'Experiments/fixtures/native-deployment/qwen06b-catalog.provenance.json',
@@ -1300,7 +1304,7 @@ def build(bld):
         ]
         for relative in asset_tools:
             bld.install_as('${PREFIX}/share/ndnsf/' + relative,
-                           bld.srcnode.find_node(relative))
+                           bld.srcnode.find_node(relative), name=relative)
 
         # Append new native tools after existing targets to preserve their object indices.
         bld.program(name='ndnsf-di-tokenize-input', target='ndnsf-di-tokenize-input',

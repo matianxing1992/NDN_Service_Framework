@@ -137,6 +137,10 @@ Options:
   --with-qwen-minindn      Check Qwen Mini-NDN prerequisites; do not download a model.
   --prepare-experiment PROFILE
                           Prepare inputs using an already installed prefix; no build or actor launch.
+                          Profiles: qwen06b-tp-cpu, qwen06b-pp-cpu-colocated,
+                          qwen06b-pp-cpu-distributed, qwen06b-single-cpu,
+                          qwen06b-wired-star-tp-cpu, qwen06b-wired-star-pp-cpu,
+                          qwen06b-wired-star-full-cpu.
   --asset-manifest FILE   SEALED model manifest for --prepare-experiment.
                           Prepare it first with Experiments/prepare-model-assets.py:
                             --recipe qwen3-0.6b-int4 --asset-root DIR
@@ -378,7 +382,8 @@ done
 # Reject unsupported options before apt, dependency installation, or configure.
 if [[ -n "$PREPARE_EXPERIMENT" ]]; then
   case "$PREPARE_EXPERIMENT" in
-    qwen06b-tp-cpu|qwen06b-pp-cpu-colocated|qwen06b-pp-cpu-distributed|qwen06b-single-cpu) ;;
+    qwen06b-tp-cpu|qwen06b-pp-cpu-colocated|qwen06b-pp-cpu-distributed|qwen06b-single-cpu|\
+    qwen06b-wired-star-tp-cpu|qwen06b-wired-star-pp-cpu|qwen06b-wired-star-full-cpu) ;;
     *) echo "Unsupported experiment profile: $PREPARE_EXPERIMENT" >&2; exit 2 ;;
   esac
   [[ -n "$EXPERIMENT_ASSET_MANIFEST" &&

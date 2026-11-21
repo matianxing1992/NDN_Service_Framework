@@ -764,26 +764,22 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
 
   const auto waitId = state->item.sessionId + "|" + state->item.role.role + "|step|" +
                       std::to_string(m_nextDependencyWaitId.fetch_add(1));
-  // Anchored at admission, not at the latest resume: a resumed unit that waited once must not
-  // receive a fresh full timeout for the next step.
-  const auto deadline = state->item.role.executionDeadline.value_or(
-                       (state->item.firstQueuedAt.has_value()
-                           ? *state->item.firstQueuedAt : state->item.queuedAt) +
-                        m_dependencyWaitTimeout);
   const auto submitted = m_dependencyWaitScheduler->submit(
     waitId,
-    deadline,
+    stepInputDeadline(state->item),
     [state] (const DependencyWaitControl& control) {
       NativeWorkScope waitScope(state->item.role.workStatistics,
                                 "role-step-dependency-wait", NativeWorkKind::WAIT);
-      while (state->pending.wait_for(std::chrono::milliseconds(2)) !=
-             std::future_status::ready) {
+      while (true) {
         if (control.isCancelled()) return DependencyWaitStatus::Cancelled;
         if (control.deadlineExpired()) return DependencyWaitStatus::DeadlineExpired;
         if (state->item.executionGuard) state->item.executionGuard();
+        if (state->pending.wait_for(std::chrono::milliseconds(2)) == std::future_status::ready) {
+          if (control.isCancelled()) return DependencyWaitStatus::Cancelled;
+          if (control.deadlineExpired()) return DependencyWaitStatus::DeadlineExpired;
+          return DependencyWaitStatus::Completed;
+        }
       }
-      if (state->item.executionGuard) state->item.executionGuard();
-      return DependencyWaitStatus::Completed;
     },
     [this, state] (const DependencyWaitResult& result) mutable {
       if (result.status != DependencyWaitStatus::Completed) {
@@ -803,49 +799,11 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
         return;
       }
       try {
-        auto bundle = state->pending.get();
-        validateAdmittedTensorBundleForEdge(state->edge, bundle);
-        // This is the step-scoped fetch, and it had no ledger entry at all: the wait was started
-        // when the step asked for it, the bytes arrived here, and neither the completion time nor
-        // the transfer was recorded -- so the budget at the end of the unit never saw these
-        // receives and the timing ledger showed a wait with no result.
-        // The record for this edge was created when the fetch was deferred, so it is completed in
-        // place rather than pushed again: a second record for the same scope would count one arrival
-        // twice and leave the first as a zero-byte, never-completed placeholder.
-        {
-          completeStageTransferObservation(state->edge, bundle, "receive");
-          auto existing = std::find_if(state->item.inputTimings.begin(),
-                                       state->item.inputTimings.end(),
-            [&] (const InputFetchTiming& entry) {
-              return entry.scope == state->edge.scope && !entry.preSatisfied;
-            });
-          if (existing != state->item.inputTimings.end()) {
-            existing->fetchCompletedAt = std::chrono::steady_clock::now();
-            existing->bytes = stagedWireBytes(bundle);
-            existing->transferObservation = bundle.transferObservation;
-          }
-          else {
-            InputFetchTiming timing;
-            timing.producerRole = state->edge.producerRole;
-            timing.scope = state->edge.scope;
-            timing.plannedDataName = state->edge.plannedDataName;
-            timing.plannedSegmentNames = plannedSegmentNamesForEdge(state->edge);
-            timing.expectedSegments = state->edge.expectedSegments;
-            timing.expectedBytes = state->edge.expectedBytes;
-            timing.fetchCompletedAt = std::chrono::steady_clock::now();
-            timing.bytes = stagedWireBytes(bundle);
-            timing.transferObservation = bundle.transferObservation;
-            state->item.inputTimings.push_back(std::move(timing));
-          }
+        checkStepInputCurrent(state->item, state->edge);
+        auto bundle = admitFetchedStepInput(state->item, state->edge, state->pending.get());
+        if (!state->item.stepRemoteInputs.emplace(state->edge.scope, std::move(bundle)).second) {
+          throw std::runtime_error("sealed step fetched the same input twice: " + state->edge.scope);
         }
-        // The peer stamped this contribution. Check the binding before reducing it: comparing only
-        // the endpoint fields would accept a partial from another round that happened to arrive on
-        // the right name, so the whole generation state is compared. Then strip it -- the SUM reads
-        // float32 members only, and a lineage tensor left in the set makes the counts disagree.
-        // One admission for every route: this is the third, and it used to carry its own copy of the
-        // check. Copies drift -- the two branches above had no check at all until the same round.
-        bundle = admitPeerContribution(state->item.role, state->edge, std::move(bundle));
-        state->item.stepRemoteInputs[state->edge.scope] = std::move(bundle);
       }
       catch (...) {
         failPromise(state->item.promise, std::current_exception());
@@ -859,6 +817,43 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
                   std::string("dependency wait admission failed: ") +
                   toString(submitted))));
   }
+}
+
+std::chrono::steady_clock::time_point
+ProviderRoleWorker::stepInputDeadline(const WorkItem& item) const
+{
+  return item.role.executionDeadline.value_or(
+    item.firstQueuedAt.value_or(item.queuedAt) + m_dependencyWaitTimeout);
+}
+
+void
+ProviderRoleWorker::checkStepInputCurrent(const WorkItem& item, const DependencyEdge& edge) const
+{
+  if (std::chrono::steady_clock::now() >= stepInputDeadline(item)) {
+    throw std::runtime_error("dependency wait failed: DEADLINE_EXPIRED for " + edge.scope);
+  }
+  if (item.executionGuard) item.executionGuard();
+}
+
+TensorBundle
+ProviderRoleWorker::admitFetchedStepInput(WorkItem& item, const DependencyEdge& edge,
+                                         TensorBundle bundle)
+{
+  validateAdmittedTensorBundleForEdge(edge, bundle);
+  completeStageTransferObservation(edge, bundle, "receive");
+  const auto observation = bundle.transferObservation;
+  const auto bytes = stagedWireBytes(bundle);
+  bundle = admitPeerContribution(item.role, edge, std::move(bundle));
+
+  auto timing = std::find_if(item.inputTimings.begin(), item.inputTimings.end(),
+    [&edge] (const InputFetchTiming& entry) { return entry.scope == edge.scope; });
+  if (timing == item.inputTimings.end() || timing->preSatisfied) {
+    throw std::logic_error("sealed step fetch has no matching input timing: " + edge.scope);
+  }
+  timing->fetchCompletedAt = std::chrono::steady_clock::now();
+  timing->bytes = bytes;
+  timing->transferObservation = observation;
+  return bundle;
 }
 
 
@@ -1461,6 +1456,42 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         throw std::runtime_error("sealed step remote input started twice: " + edge.scope);
     };
     if (step.operation == "SUM") {
+      if (item.role.workStatistics && item.role.workStatistics->epochProfilingEnabled() &&
+          item.lastSampledSumStep != item.resumeStepIndex) {
+        item.lastSampledSumStep = item.resumeStepIndex;
+        const auto arrivedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+        for (const auto& edge : item.role.inputs) {
+          if (edge.consumerStepId != step.stepId) continue;
+          const auto pending = item.pendingInputsByScope.find(edge.scope);
+          const char* state = "not-started";
+          if (ctx.inputsByScope.count(edge.scope) != 0) {
+            state = "pre-satisfied";
+            item.role.workStatistics->addCount("sumArrival.preSatisfied", 1);
+          }
+          else if (pending != item.pendingInputsByScope.end() && pending->second.valid()) {
+            const auto ready = pending->second.wait_for(std::chrono::seconds(0)) ==
+              std::future_status::ready;
+            state = ready ? "future-ready" : "pending";
+            item.role.workStatistics->addCount(
+              ready ? "sumArrival.futureReady" : "sumArrival.pending", 1);
+          }
+          else {
+            item.role.workStatistics->addCount("sumArrival.notStarted", 1);
+          }
+          // Future readiness includes exceptional completion. The admission
+          // receipt identifies which sampled edges later supplied valid data.
+          try {
+            logRuntimeTrace("NDNSF_DI_SUM_ARRIVAL steady_ns=" + std::to_string(arrivedNs) +
+              " data_name=" + edge.plannedDataName + " scope=" + edge.scope +
+              " role=" + edge.consumerRole + " step=" + step.stepId +
+              " slot=" + edge.consumerSlotId + " state=" + state);
+          }
+          catch (...) {
+            item.role.workStatistics->addCount("sumArrival.traceUnavailable", 1);
+          }
+        }
+      }
       // Start this step's reads together before waiting for any result.
       // The fetch owner still bounds concurrency and validates each slot.
       for (const auto& edge : item.role.inputs) {
@@ -1473,59 +1504,58 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     }
     for (const auto& edge : item.role.inputs) {
       if (edge.consumerStepId != step.stepId) continue;
-      auto admitted = ctx.inputsByScope.find(edge.scope);
-      // A contribution this unit suspended on arrives here, already validated, when the unit
-      // resumes. It is consumed once: the entry is removed so a later step cannot see it twice.
-      if (admitted == ctx.inputsByScope.end()) {
-        const auto resumed = item.stepRemoteInputs.find(edge.scope);
-        if (resumed != item.stepRemoteInputs.end()) {
-          // Already admitted where it arrived: the await callback checked the generation binding
-          // and stripped it before storing under `stepRemoteInputs`. Admitting again here would
-          // judge a stripped bundle by the rule that expects the stamp, so a legitimate peer result
-          // would be rejected exactly once per step.
-          if (!inputs.emplace(edge.consumerSlotId, std::move(resumed->second)).second) {
-            throw std::runtime_error(
-              "sealed step has duplicate contributions for one slot: " +
-              edge.consumerSlotId);
-          }
-          item.stepRemoteInputs.erase(resumed);
-          continue;
+      const auto preSatisfied = ctx.inputsByScope.find(edge.scope);
+      if (preSatisfied != ctx.inputsByScope.end()) {
+        if (!inputs.emplace(edge.consumerSlotId,
+                            admitPeerContribution(item.role, edge, preSatisfied->second)).second) {
+          throw std::runtime_error(
+            "sealed step has duplicate contributions for one slot: " + edge.consumerSlotId);
         }
+        continue;
       }
-      if (admitted == ctx.inputsByScope.end()) {
-        // Start any demand-driven edge here. An exact peer prefetch is already in flight.
+
+      TensorBundle bundle;
+      const auto resumed = item.stepRemoteInputs.find(edge.scope);
+      if (resumed != item.stepRemoteInputs.end()) {
+        // The wait callback already admitted this value and stripped its lineage.
+        bundle = std::move(resumed->second);
+        item.stepRemoteInputs.erase(resumed);
+      }
+      else {
         startDeferred(edge);
         const auto pending = item.pendingInputsByScope.find(edge.scope);
         if (pending == item.pendingInputsByScope.end()) {
-          // A contribution collected by an earlier turn is already in `inputs`; anything else
-          // missing here was never started, which is a template or transport defect rather than
-          // a resumed one.
+          // A contribution collected by an earlier turn is still in this step's inputs.
           if (inputs.count(edge.consumerSlotId) != 0) continue;
           throw std::runtime_error(
             "sealed step remote input was never started: " + edge.scope);
         }
-        // The contribution is not here yet. This unit must not hold the compute thread while
-        // it waits: on a Provider hosting more than one unit, the contribution it needs may be
-        // publishable only by the unit that is queued behind it. Hand the wait to the scheduler
-        // and leave; the completion re-enqueues this item, which resumes at this step.
-        // `inputs` already lives on the item, so everything gathered before this wait survives
-        // the suspension and is still there when the unit resumes at this same step.
-        borrowAndSuspendOnEdge(item, edge, pending->second);
-        return std::nullopt;
+        if (pending->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+          // Keep the compute lane available to the unit that can produce this input.
+          borrowAndSuspendOnEdge(item, edge, pending->second);
+          return std::nullopt;
+        }
+        checkStepInputCurrent(item, edge);
+        bundle = admitFetchedStepInput(item, edge, pending->second.get());
+        item.pendingInputsByScope.erase(pending);
       }
-      // Two edges feeding one slot would let a contribution be counted twice,
-      // which inflates the reduction without looking wrong. The sealed template
-      // declares one dependency per contribution, so a second one is a contract
-      // violation rather than something to merge.
-      // Admission happens on the value this step actually consumes. `ctx.inputsByScope` is const
-      // and is a copy of the item's map, so re-binding the item's copy earlier left the two
-      // different: the check ran on one bundle and the reduction received another, which is the
-      // strip not happening at all.
-      if (!inputs.emplace(edge.consumerSlotId,
-                          admitPeerContribution(item.role, edge, admitted->second)).second) {
+      checkStepInputCurrent(item, edge);
+      if (!inputs.emplace(edge.consumerSlotId, std::move(bundle)).second) {
         throw std::runtime_error(
-          "sealed step has duplicate contributions for one slot: " +
-          edge.consumerSlotId);
+          "sealed step has duplicate contributions for one slot: " + edge.consumerSlotId);
+      }
+      const auto timing = std::find_if(item.inputTimings.begin(), item.inputTimings.end(),
+        [&edge] (const InputFetchTiming& row) { return row.scope == edge.scope; });
+      if (item.role.workStatistics && timing != item.inputTimings.end() &&
+          timing->transferObservation) {
+        const auto toNs = [] (std::chrono::steady_clock::time_point time) {
+          return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            time.time_since_epoch()).count();
+        };
+        item.role.workStatistics->observeTransfer(*timing->transferObservation,
+          item.role.inferenceEpoch, toNs(timing->prefetchStartedAt),
+          toNs(timing->fetchCompletedAt), toNs(std::chrono::steady_clock::now()),
+          NativeTransferPoint::WORKER_INPUT);
       }
     }
     // EPOCH_INPUT slots are the request's own inputs. A request carries one bundle under
@@ -1650,6 +1680,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     stepContext.streamEventSink = {};
     if (item.executionGuard) item.executionGuard();
     const auto outputs = item.runner->run(stepContext);
+    const auto stepOutputReadyAt = std::chrono::steady_clock::now();
     // Carry this step's own backend call forward. Reading the runner's latest snapshot at the end
     // of the unit only ever yields the last entry's timing, so a 28-layer unit reported one layer's
     // ORT as its cost; the consumer needs each step.
@@ -1774,7 +1805,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         // made every local partial claim it sent nothing.
         partialTiming.bytes = stagedWireBytes(stripped);
         partialTiming.transferObservation = stripped.transferObservation;
-        partialTiming.outputReadyAt = partialPublishStartedAt;
+        partialTiming.outputReadyAt = stepOutputReadyAt;
         partialTiming.publishStartedAt = partialPublishStartedAt;
         partialTiming.publishDoneAt = partialPublishDoneAt;
         item.outputTimings.push_back(std::move(partialTiming));
@@ -1923,6 +1954,8 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
   result.timing.workerStartedAt = workerStartedAt;
   result.timing.startedAt = std::chrono::steady_clock::now();
   result.inputTimings = item.inputTimings;
+  const bool firstTurn = !item.inputsBound;
+  item.inputsBound = true;
 
   NativeWorkScope inputWork(item.role.workStatistics, "role-input-bind", NativeWorkKind::LOCAL);
   RoleExecutionContext ctx;
@@ -2019,21 +2052,22 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
   const bool canReuseOutputs = !ctx.automaticBinding && !hasStreamSideEffect &&
     !item.role.streamingStateExecution && !item.role.generationLineage && !sealedTemplate;
   inputWork.finish();
-  if (item.role.workStatistics) {
+  if (firstTurn && item.role.workStatistics) {
     const auto admitted = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
     for (const auto& timing : result.inputTimings) {
-      if (timing.transferObservation) {
-        // A coordinator-supplied bundle has already completed its fetch.
-        // These worker timestamps describe consumption, not that earlier I/O.
-        item.role.workStatistics->observeTransfer(*timing.transferObservation,
-          item.role.inferenceEpoch,
-          timing.preSatisfied ? 0 : std::chrono::duration_cast<std::chrono::nanoseconds>(
-            timing.prefetchStartedAt.time_since_epoch()).count(),
-          timing.preSatisfied ? 0 : std::chrono::duration_cast<std::chrono::nanoseconds>(
-            timing.fetchCompletedAt.time_since_epoch()).count(), admitted,
-          NativeTransferPoint::WORKER_INPUT);
-      }
+      if (!timing.transferObservation ||
+          (sealedTemplate && !timing.preSatisfied))
+        continue;
+      // A coordinator-supplied bundle has already completed its fetch.
+      // These worker timestamps describe consumption, not that earlier I/O.
+      item.role.workStatistics->observeTransfer(*timing.transferObservation,
+        item.role.inferenceEpoch,
+        timing.preSatisfied ? 0 : std::chrono::duration_cast<std::chrono::nanoseconds>(
+          timing.prefetchStartedAt.time_since_epoch()).count(),
+        timing.preSatisfied ? 0 : std::chrono::duration_cast<std::chrono::nanoseconds>(
+          timing.fetchCompletedAt.time_since_epoch()).count(), admitted,
+        NativeTransferPoint::WORKER_INPUT);
     }
   }
   if (canReuseOutputs) {

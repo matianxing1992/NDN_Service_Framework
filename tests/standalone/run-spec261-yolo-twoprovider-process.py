@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the YOLO hybrid split across two real TP Providers.
+"""Run YOLO component or hybrid splitting across two real Providers.
 
 The driver owns only process lifecycle and private NFD/PIB/TPM setup.  The
 request, grant verification, provider execution, response decoding, and
@@ -7,6 +7,9 @@ numerical oracle remain in the C++ production executables.
 """
 
 import argparse
+import ast
+import math
+import signal
 import sys, json
 import hashlib, os, shutil, subprocess, tempfile, time, sqlite3, struct
 from cryptography.hazmat.primitives.serialization import load_pem_public_key, Encoding, PublicFormat
@@ -22,7 +25,12 @@ parser.add_argument('--build', type=Path, default=Path(os.environ.get("SPEC185_B
 parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--cache', type=Path, default=None)
+parser.add_argument('--initializer-sha256',
+                    help='explicit sha256: digest of a prepared initializer object')
+parser.add_argument('--frozen-fixtures', action='store_true',
+                    help='use the tracked fixed input and independent detection reference')
 parser.add_argument('--variant', choices=['26n','11n'], default='26n')
+parser.add_argument('--mode', choices=['component', 'hybrid'], default='hybrid')
 parser.add_argument('--boundary', default='onnx-node-3')
 parser.add_argument('--case', action='append', default=[],
                     help='case directory name under the model assets (repeatable)')
@@ -33,6 +41,8 @@ parser.add_argument('--restart-provider2', action='store_true',
 parser.add_argument('--revoke', action='store_true',
                     help='revoke the Provider identity from the real Controller before the request')
 args=parser.parse_args()
+if args.frozen_fixtures and args.case:
+ parser.error('--frozen-fixtures selects the single tracked case')
 BUILD=args.build.resolve()
 CONTROLLER=b.native_program(BUILD, 'App_ServiceController'); AUTHORITY=b.native_program(BUILD, 'DI_NativeArtifactAuthority'); PROVIDER=b.native_program(BUILD, 'di-native-provider'); REQUESTER=b.native_program(BUILD, 'DI_NativeRequester'); WORKER=b.native_program(BUILD, "DI_NativeOnnxAssemblyWorker", source_subdir="", installed_subdir="libexec/ndnsf-di")
 # make descriptor/catalog.  These helpers are deliberately pure Python fixture
@@ -64,19 +74,54 @@ cache = (args.cache or YOLO[variant]['dir']).resolve()
 src = (cache / 'model.onnx').read_bytes() if (cache / 'model.onnx').exists() else (cache / f'yolo{variant}.onnx').read_bytes()
 weights_path = cache / 'model.weights' if (cache / 'model.weights').exists() else cache / f'yolo{variant}.weights'
 weights = weights_path.read_bytes()
-input_raw = (cache / 'input.f32').read_bytes()
-oracle_values = json.loads((cache / 'oracle.json').read_text())
+initializer_digest = args.initializer_sha256 or YOLO[variant]['initializer']
+if initializer_digest != 'sha256:' + hashlib.sha256(weights).hexdigest():
+ parser.error('initializer object does not match the expected SHA-256')
+def read_frozen_float32(path, shape):
+ with path.open('rb') as stream:
+  if stream.read(8) != b'\x93NUMPY\x01\x00':
+   raise ValueError(f'unexpected NumPy version: {path}')
+  header_size = struct.unpack('<H', stream.read(2))[0]
+  if header_size > 4096:
+   raise ValueError(f'unexpected NumPy header size: {path}')
+  header = ast.literal_eval(stream.read(header_size).decode('ascii').strip())
+  if header != {'descr': '<f4', 'fortran_order': False, 'shape': shape}:
+   raise ValueError(f'unexpected NumPy tensor layout: {path}')
+  payload = stream.read()
+ if len(payload) != 4 * math.prod(shape):
+  raise ValueError(f'unexpected NumPy tensor size: {path}')
+ return payload
+
+if args.frozen_fixtures:
+ fixtures = ROOT / 'tests/fixtures/spec261' / ('yolo' + variant)
+ input_raw = read_frozen_float32(fixtures / 'fixed-input.npy', (1, 3, 640, 640))
+ predictions = read_frozen_float32(fixtures / 'oracle-predictions.npy', (1, 300, 6))
+ oracle_values = [value for (value,) in struct.iter_unpack('<f', predictions)]
+else:
+ input_raw = (cache / 'input.f32').read_bytes()
+ oracle_values = json.loads((cache / 'oracle.json').read_text())
 src_digest='sha256:'+hashlib.sha256(src).hexdigest()
 ad=adapter_descriptor('spec261','1',dg('fixture-adapter-state'),'fixture-abi-v1',('onnx',),('task',),('onnxruntime',),('float32',),dg('fixture-input-schema'),dg('fixture-options-schema'),dg('fixture-result-schema'),dg('fixture-graph-schema'),dg('fixture-split-schema'),dg('fixture-state-schema'),True,True,True)
 model=model_descriptor(YOLO[variant]['name'],dg(YOLO[variant]['name']+'-content'),dg(YOLO[variant]['name']+'-semantics'),YOLO[variant]['planning'],'onnx','float32',ad)
 adapter_digest=digest(ad)
 package=dg('yolo-source-package'); profile=dg('yolo-artifact-profile'); asm=dg('yolo-assembler'); offer_policy=dg('yolo-offer-policy')
-catalog={"schema":"ndnsf-di-native-request-catalog-v1","model":json.loads(canonical_bytes(model).decode()),"source":{"data_name":"/catalog/source","digest":src_digest,"model_manifest_digest":package,"canonical_graph_digest":YOLO[variant]['canonical'],"initializer_file":"model.weights","initializer_digest":YOLO[variant]['initializer']},"recipe":{"artifact_profile_digest":profile,"assembler_descriptor_digest":asm,"backend_abi":"onnxruntime-cpu-v1","precision":"float32","quantization":"none","layout":"native","padding":"none","protection_epoch":"epoch-1","max_source_bytes":67108864,"max_assembled_bytes":134217728,"max_nodes":YOLO[variant]['max_nodes']},"publication":{"artifact_root":"/Model/"+YOLO[variant]['name']+"/artifacts","package_manifest_digest":package},"input_format":"OPAQUE","max_payload_bytes":8388608,"splitter":{"kind":"ONNX_SOURCE","selection_mode":"hybrid","roles":["Prefix","Rank0","Rank1","Suffix"],"boundary_node":args.boundary,"input_ingress_role":"Prefix","result_egress_role":"Suffix","postprocessing":{},"input_channels":16,"conv_input_axis":"input-channel","activation_shape":[1,16,320,320],"partial_shape":[1,32,160,160],"activation_dtype":"float32","conv_input_tensor":YOLO[variant]["conv_input"],"conv_weight_initializer":YOLO[variant]["conv_weight"],"conv_bias_initializer":YOLO[variant]["conv_bias"],"conv_output_tensor":YOLO[variant]["conv_output"],"conv_weight_bytes":18432,"conv_bias_bytes":128,"conv_pads":[1,1,1,1],"conv_strides":[2,2],"conv_dilations":[1,1]},"node_mapping":{},"state_inputs":{},"state_outputs":{}}
-plan={"version":2,"services":[{"service":"/Inference/NativeUnary","schemaVersion":2,"model":"/Model/"+YOLO[variant]['name'],"modelFamily":"yolo","modelFormat":"onnx","plannerKind":"native-source-full","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2","roles":["Prefix","Rank0","Rank1","Suffix"],"dependencies":[],"planner":{"schemaVersion":2,"modelFamily":"yolo","modelFormat":"onnx","plannerKind":"native-source-full","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2"}}]}
-manifest={"services":[{"name":"/Inference/NativeUnary","model":"/Model/"+YOLO[variant]['name'],"roles":["Prefix","Rank0","Rank1","Suffix"],"artifacts":[{"artifact":"/Artifact/YOLO/Prefix","backend":"onnxruntime-cpu","kind":"model","role":"Prefix"},{"artifact":"/Artifact/YOLO/Rank0","backend":"onnxruntime-cpu","kind":"model","role":"Rank0"},{"artifact":"/Artifact/YOLO/Rank1","backend":"onnxruntime-cpu","kind":"model","role":"Rank1"},{"artifact":"/Artifact/YOLO/Suffix","backend":"onnxruntime-cpu","kind":"model","role":"Suffix"}]}]}
+provider_roles = {
+ 'provider': ['Prefix', 'Rank0'] if args.mode == 'hybrid' else ['Prefix'],
+ 'provider2': ['Rank1', 'Suffix'] if args.mode == 'hybrid' else ['Suffix'],
+}
+roles = [role for assigned in provider_roles.values() for role in assigned]
+catalog={"schema":"ndnsf-di-native-request-catalog-v1","model":json.loads(canonical_bytes(model).decode()),"source":{"data_name":"/catalog/source","digest":src_digest,"model_manifest_digest":package,"canonical_graph_digest":YOLO[variant]['canonical'],"initializer_file":"model.weights","initializer_digest":initializer_digest},"recipe":{"artifact_profile_digest":profile,"assembler_descriptor_digest":asm,"backend_abi":"onnxruntime-cpu-v1","precision":"float32","quantization":"none","layout":"native","padding":"none","protection_epoch":"epoch-1","max_source_bytes":67108864,"max_assembled_bytes":134217728,"max_nodes":YOLO[variant]['max_nodes']},"publication":{"artifact_root":"/Model/"+YOLO[variant]['name']+"/artifacts","package_manifest_digest":package},"input_format":"OPAQUE","max_payload_bytes":8388608,"splitter":{"kind":"ONNX_SOURCE","selection_mode":args.mode,"roles":roles,"boundary_node":args.boundary,"input_ingress_role":"Prefix","result_egress_role":"Suffix","postprocessing":{}},"node_mapping":{},"state_inputs":{},"state_outputs":{}}
+if args.mode == "hybrid":
+ catalog["splitter"].update({"input_channels":16,"conv_input_axis":"input-channel","activation_shape":[1,16,320,320],"partial_shape":[1,32,160,160],"activation_dtype":"float32","conv_input_tensor":YOLO[variant]["conv_input"],"conv_weight_initializer":YOLO[variant]["conv_weight"],"conv_bias_initializer":YOLO[variant]["conv_bias"],"conv_output_tensor":YOLO[variant]["conv_output"],"conv_weight_bytes":18432,"conv_bias_bytes":128,"conv_pads":[1,1,1,1],"conv_strides":[2,2],"conv_dilations":[1,1]})
+plan={"version":2,"services":[{"service":"/Inference/NativeUnary","schemaVersion":2,"model":"/Model/"+YOLO[variant]['name'],"modelFamily":"yolo","modelFormat":"onnx","plannerKind":"native-source-full","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2","roles":roles,"dependencies":[],"planner":{"schemaVersion":2,"modelFamily":"yolo","modelFormat":"onnx","plannerKind":"native-source-full","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2"}}]}
+manifest={"services":[{"name":"/Inference/NativeUnary","model":"/Model/"+YOLO[variant]['name'],"roles":roles,"artifacts":[{"artifact":"/Artifact/YOLO/"+role,"backend":"onnxruntime-cpu","kind":"model","role":role} for role in roles]}]}
 # provider plan and manifest files generated later
 
 def policy_text():
+ prefix_grants, suffix_grants = (
+  "\n  ".join("/Inference/NativeUnary/ROLE/" + role for role in assigned)
+  for assigned in provider_roles.values()
+ )
  return """name /example/hello/controller/NDNSF/ControllerPolicy/v1
 
 provider-policies
@@ -90,15 +135,13 @@ provider-policies
  {
   for /example/hello/provider
   allow { /Inference/NativeUnary
-  /Inference/NativeUnary/ROLE/Prefix
-  /Inference/NativeUnary/ROLE/Rank0 }
+  %s }
  }
  provider-policy
  {
   for /example/hello/provider2
   allow { /Inference/NativeUnary
-  /Inference/NativeUnary/ROLE/Rank1
-  /Inference/NativeUnary/ROLE/Suffix }
+  %s }
  }
 }
 
@@ -111,7 +154,7 @@ user-policies
   /HELLO }
  }
 }
-"""
+""" % (prefix_grants, suffix_grants)
 if args.run_root is None:
  run_root=Path(tempfile.mkdtemp(prefix='spec182-r11-b2-probe-',dir='/tmp'))
 else:
@@ -156,7 +199,7 @@ registry2=json.loads(json.dumps(registry)); registry2['artifactPolicyAuthority']
 # A case takes about 30 s on the high-latency topology, so budget a minute each
 # plus the fixed startup allowance.
 RUN_FOR_MS=120000+60000*len(args.case)
-ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":RUN_FOR_MS,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":{"/example/hello/provider":"../provider/public.pem","/example/hello/provider2":"../provider2/public.pem"},"publication_sources":{package:{"model_name":model["model_name"],"model_content_digest":model["content_digest"],"canonical_source_digest":src_digest,"initializer_object_digest":YOLO[variant]["initializer"],"artifact_profile_digest":profile}}}}
+ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":RUN_FOR_MS,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":{"/example/hello/provider":"../provider/public.pem","/example/hello/provider2":"../provider2/public.pem"},"publication_sources":{package:{"model_name":model["model_name"],"model_content_digest":model["content_digest"],"canonical_source_digest":src_digest,"initializer_object_digest":initializer_digest,"artifact_profile_digest":profile}}}}
 if args.case:
  # A longer request window needs a matching grant policy ceiling.
  ac['max_grant_ttl_ms']=300000
@@ -237,11 +280,14 @@ try:
  controller_started_at=time.monotonic()
  c=launch(controller_command,penv(run_root/'controller-store','controller'),'controller','controller');children.append(c); b.wait_marker(c,run_root/'controller.log','ServiceController started...',30)
  a=launch([str(AUTHORITY),'--config',str(run_root/'authority/authority.json')],penv(run_root/'authority-store','authority'),'authority','authority');children.append(a); b.wait_marker(a,run_root/'authority.log','NATIVE_GRANT_AUTHORITY_READY',30)
- providers=[('/example/hello/provider','Prefix,Rank0','provider',offerpriv),('/example/hello/provider2','Rank1,Suffix','provider2',offer2priv)]
+ providers=[('/example/hello/'+tag, ','.join(provider_roles[tag]), tag, offerkey)
+            for tag, offerkey in [('provider', offerpriv), ('provider2', offer2priv)]]
  def start_provider(identity,roles,tag,offerkey):
   pe=penv(run_root/(tag+'-store'),tag)
   shutil.copy2(offerkey,run_root/(tag+'/offer-private.pem'))
   pm=[str(PROVIDER),'--plan',str(run_root/'provider/plan.json'),'--manifest',str(run_root/(tag+'/manifest.json')),'--service','/Inference/NativeUnary','--provider',identity,'--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(run_root/(tag+'/trust-schema.conf')),'--roles',roles,'--workers','4','--handler-threads','4','--serve','--run-for-ms',str(RUN_FOR_MS),'--artifact-cache-dir',str(run_root/(tag+'/cache')),'--selection-offer-key-file',str(run_root/(tag+'/offer-private.pem')),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
+  if args.frozen_fixtures:
+   pm += ['--statistics-file', str(run_root/(tag+'-statistics.jsonl'))]
   if args.case:
    # Each authenticated request keeps one resident per role and each resident
    # holds its role template, so a multi-sample session needs a larger bounded
@@ -314,6 +360,7 @@ try:
    raise SystemExit(1)
   # Case mode already produced the evidence this invocation owns.
   raise SystemExit(0)
+ request_started = time.monotonic()
  rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output.bin')],re,'requester','requester');children.append(rq)
  try:
   rq.wait(timeout=120)
@@ -321,12 +368,17 @@ try:
   b.stop(rq)
   raise RuntimeError('requester did not finish within 120s')
  print('requester rc',rq.returncode)
+ if args.frozen_fixtures:
+  (run_root/'request-timing.json').write_text(json.dumps({
+   'boundary': 'requester-launch-to-process-exit', 'wallSeconds': time.monotonic() - request_started,
+   'exitCode': rq.returncode,
+  }))
  if rq.returncode != 0:
   raise SystemExit(rq.returncode)
  if args.restart_provider2:
   b.stop(running['provider2'])
   time.sleep(1.0)
-  running['provider2']=start_provider('/example/hello/provider2','Rank1,Suffix','provider2',offer2priv)
+  running['provider2']=start_provider(*providers[1])
   rq2=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output-restarted.bin')],re,'requester-restarted','requester');children.append(rq2)
   try:
    rq2.wait(timeout=120)
@@ -346,4 +398,10 @@ try:
   time.sleep(0.2)
   print('NATIVE_REQUEST_REVOKE_ORCHESTRATION_COMPLETE')
 finally:
- for p in reversed(children): b.stop(p)
+ cleanup = []
+ for p in reversed(children):
+  exit_code = b.stop(p)
+  cleanup.append({'pid': p.pid, 'exitCode': exit_code,
+                  'forced': exit_code == -signal.SIGKILL, 'reaped': p.poll() is not None})
+ if args.frozen_fixtures:
+  (run_root/'actor-cleanup.json').write_text(json.dumps(cleanup))

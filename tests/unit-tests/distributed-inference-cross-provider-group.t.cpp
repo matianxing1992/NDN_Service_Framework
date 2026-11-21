@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollectiveControl.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 
@@ -577,6 +578,13 @@ BOOST_AUTO_TEST_CASE(CoordinatorSealsAndVerifiesBoundedOperation)
   BOOST_CHECK(!sealed.manifest.producerSignature.empty());
   BOOST_CHECK_EQUAL(sealed.segments[0].nonce.size(), 12);
   BOOST_CHECK(sealed.segments[0].nonce != sealed.segments[1].nonce);
+  // Frozen compact wires from the installed pre-batch implementation.
+  const auto compact = ProviderGroupCoordinator::encodeSegmentsCompact(sealed);
+  BOOST_REQUIRE_EQUAL(compact.size(), 2U);
+  BOOST_CHECK_EQUAL(sha256TensorBytes(compact[0]),
+    "sha256:3348108b4c621a33c5e54ae446e19672f8ec04ebfcf9796154f429b5d4042677");
+  BOOST_CHECK_EQUAL(sha256TensorBytes(compact[1]),
+    "sha256:c172963ed18975d69f9e3146228b19666d8e7288a6688fc820d402ee93a5530f");
   const auto expectedName = ndn::Name("/provider/P0/NDNSF-DI/crypto-fixture")
     .append(capability.capabilityDigest).append("1000").append("tensor-digest").appendSegment(0);
   BOOST_CHECK(ndn::Name(sealed.segments[0].dataName) == expectedName);
@@ -825,6 +833,16 @@ BOOST_AUTO_TEST_CASE(CoordinatorUsesRsaWrappedEpochKeyAndWireBundle)
   const auto decoded = ProviderGroupCoordinator::decodeOperation(wire);
   BOOST_REQUIRE_EQUAL(decoded.segments.size(), 2U);
   BOOST_CHECK_EQUAL(decoded.manifest.digest(), sealed.manifest.digest());
+  const auto compactBatch = ProviderGroupCoordinator::encodeSegmentsCompact(sealed);
+  BOOST_REQUIRE_EQUAL(compactBatch.size(), sealed.segments.size());
+  auto incompleteBatch = sealed;
+  incompleteBatch.segments.pop_back();
+  BOOST_CHECK_THROW(ProviderGroupCoordinator::encodeSegmentsCompact(incompleteBatch),
+                    std::invalid_argument);
+  auto unorderedBatch = sealed;
+  std::swap(unorderedBatch.segments[0], unorderedBatch.segments[1]);
+  BOOST_CHECK_THROW(ProviderGroupCoordinator::encodeSegmentsCompact(unorderedBatch),
+                    std::invalid_argument);
   for (size_t index = 0; index < sealed.segments.size(); ++index) {
     const auto segmentWire = ProviderGroupCoordinator::encodeSegment(
       sealed.manifest, sealed.segments[index]);
@@ -836,6 +854,7 @@ BOOST_AUTO_TEST_CASE(CoordinatorUsesRsaWrappedEpochKeyAndWireBundle)
 
     const auto compactWire = ProviderGroupCoordinator::encodeSegmentCompact(
       sealed.manifest, sealed.segments[index]);
+    BOOST_CHECK(compactBatch[index] == compactWire);
     BOOST_CHECK_LT(compactWire.size(), ndn::MAX_NDN_PACKET_SIZE);
     const auto compactDecoded = ProviderGroupCoordinator::decodeSegment(
       compactWire, sealed.segments[index].dataName);

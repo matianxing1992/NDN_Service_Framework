@@ -28,6 +28,7 @@ struct StageTransferObservation
   std::string identity;
   std::string actualDataName;
   std::string lineageIdentity;
+  std::string transitionKind;
   std::string positionDigest;
   bool lineagePresent = false;
   std::vector<std::string> tensorNames;
@@ -43,6 +44,8 @@ struct StageTransferObservation
   std::optional<std::size_t> localCopyBytes;
   std::optional<std::size_t> transportLocalCopyBytes;
   bool localDependency = false;
+  // Set by the receive owner before handing the reconstructed bundle to its future.
+  std::optional<std::int64_t> readySteadyNs;
 };
 
 inline std::string

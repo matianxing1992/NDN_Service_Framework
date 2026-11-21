@@ -287,6 +287,13 @@ def validate_statistics_record(record, actor):
         return
     if not isinstance(stats, dict) or not isinstance(stats.get("transfers", []), list):
         raise ValueError("invalid work statistics shape")
+    if "phaseComplete" in stats and type(stats["phaseComplete"]) is not bool:
+        raise ValueError("invalid phase coverage")
+    for key in ("droppedTransfers", "invalidTransfers", "droppedNetworkTransfers"):
+        if key in stats and (type(stats[key]) is not int or stats[key] < 0):
+            raise ValueError("invalid statistics coverage: " + key)
+    if not isinstance(stats.get("networkTransfers", []), list):
+        raise ValueError("invalid network transfer totals")
     for key in ("phases", "counts"):
         if not isinstance(stats.get(key, {}), dict):
             raise ValueError("invalid statistics inventory: " + key)
@@ -404,16 +411,26 @@ def analyze_statistics(paths: list[Path], expected_roles=()) -> dict:
                         len({k[1] for k in record_receipts}) != 1):
                     issues.append("INCOMPLETE_EPOCH_BACKEND_COVERAGE")
             stats = record.get("workStatistics") or {}
+            transfer_complete = (stats["droppedTransfers"] == stats["invalidTransfers"] == 0
+                                 if "droppedTransfers" in stats and "invalidTransfers" in stats
+                                 else stats.get("complete") is True)
             work.append({"actor": actor, "provider": record.get("provider"),
                          "role": record.get("role"), "source": source,
                          "complete": stats.get("complete", False),
+                         "phaseComplete": stats.get("phaseComplete", stats.get("complete", False)),
+                         "transferDetailsComplete": transfer_complete,
+                         "droppedTransfers": stats.get("droppedTransfers"),
+                         "invalidTransfers": stats.get("invalidTransfers"),
+                         "networkTransferCoverage": stats.get("networkTransferCoverage"),
+                         "droppedNetworkTransfers": stats.get("droppedNetworkTransfers"),
+                         "networkTransfers": stats.get("networkTransfers", []),
                          "localWorkComplete": stats.get("localWorkComplete", False),
                          "phases": stats.get("phases", {}), "counts": stats.get("counts", {})})
             for transfer in stats.get("transfers", []):
                 key = (transfer.get("plannedDataName"), transfer.get("inferenceEpoch"))
                 transfers[key].append({**transfer, "clockDomain": record.get("clockDomain"),
                                        "provider": record.get("provider"), "source": source,
-                                       "observationComplete": stats.get("complete") is True})
+                                       "observationComplete": transfer_complete})
         receipts = [r for k, r in backend.items() if k not in backend_conflicts]
         # A rejected line may hide another role/attempt. Qualify no round from
         # a tainted input set; keep the valid observations for diagnosis only.
@@ -443,7 +460,8 @@ def analyze_statistics(paths: list[Path], expected_roles=()) -> dict:
                       ("output-publication", "coordinator-fetch", "worker-input")}
             row = {"plannedDataName": name, "inferenceEpoch": epoch,
                    "observations": values, "outputReadyToFetchConsumedNs": None,
-                   "outputReadyToWorkerAdmittedNs": None, "reasons": []}
+                   "outputReadyToWorkerAdmittedNs": None, "outputReadyToTransportReadyNs": None,
+                   "transportReadyToWorkerAdmittedNs": None, "reasons": []}
             sends = points["output-publication"]
             for point, field, endpoint in (
                     ("coordinator-fetch", "outputReadyToFetchConsumedNs", "finishedSteadyNs"),
@@ -461,6 +479,18 @@ def analyze_statistics(paths: list[Path], expected_roles=()) -> dict:
                 row[field] = elapsed(send.get("outputReadySteadyNs"), receive.get(endpoint))
                 if row[field] is None:
                     row["reasons"].append(point + ":TIMESTAMP_UNKNOWN_OR_REVERSED")
+                ready = receive.get("readySteadyNs")
+                if point == "worker-input":
+                    row["transportReadyToWorkerAdmittedNs"] = elapsed(
+                        ready, receive.get("admittedSteadyNs"))
+                if ready is not None:
+                    ready_interval = elapsed(send.get("outputReadySteadyNs"), ready)
+                    known = row["outputReadyToTransportReadyNs"]
+                    if known is not None and ready_interval != known:
+                        row["outputReadyToTransportReadyNs"] = None
+                        row["reasons"].append("transport-ready:CONFLICTING_RECEIPTS")
+                    else:
+                        row["outputReadyToTransportReadyNs"] = ready_interval
             deliveries.append(row)
         rounds.append({
             "requestId": request, "turn": caller.get("turn"),

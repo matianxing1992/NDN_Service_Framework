@@ -350,6 +350,8 @@ private:
     // soon as that step finishes.
     std::map<std::string, std::map<std::string, TensorBundle>> stepCollectedInputs;
     std::size_t resumeStepIndex = 0;
+    std::optional<std::size_t> lastSampledSumStep;
+    bool inputsBound = false;
   };
 
   /** One suspended step, waiting for the single contribution it needs. */
@@ -397,6 +399,15 @@ private:
   void
   borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge& edge,
                          std::shared_future<TensorBundle> pending);
+
+  std::chrono::steady_clock::time_point
+  stepInputDeadline(const WorkItem& item) const;
+
+  void
+  checkStepInputCurrent(const WorkItem& item, const DependencyEdge& edge) const;
+
+  TensorBundle
+  admitFetchedStepInput(WorkItem& item, const DependencyEdge& edge, TensorBundle bundle);
 
   void
   scheduleWhenInputsReady(WorkItem item, std::vector<PendingInput> pendingInputs);

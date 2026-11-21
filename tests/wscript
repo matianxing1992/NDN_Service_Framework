@@ -356,9 +356,9 @@ def build(bld):
                             bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.cpp')],
                     includes=['..'], use='BOOST DL',
                     defines=['SPEC220_COLLECTOR_ONLY'],
-                    cxxflags=['-std=c++17', '-O1', '-g1', '-fno-omit-frame-pointer',
+                    cxxflags=['-std=c++17', '-O1', '-g1', '-pthread', '-fno-omit-frame-pointer',
                               '-fsanitize=' + sanitizer],
-                    linkflags=['-fsanitize=' + sanitizer], install_path=None)
+                    linkflags=['-fsanitize=' + sanitizer, '-pthread'], install_path=None)
     bld.program(target='../cached-signer-fixture',
                 name='cached-signer-fixture',
                 source=['standalone/cached-signer-fixture.cpp'],
@@ -2327,12 +2327,14 @@ def build(bld):
     # C10 asks for one bounded asan-ubsan card over the real C++ selector once the local tensor
     # representation exists. Only the local-handoff cases run there: the card is about ownership
     # and lifetime, so a whole-suite run under instrumentation would cost hours to cover paths
-    # that never touch a local value. The library it links is the same one the product uses, so a
-    # defect in the codec or the adapter's owner is visible here.
+    # that never touch a local value. Compile the worker itself with instrumentation so the
+    # direct-consume and wait/resume cases also check production worker code.
     bld.program(target='../tp-tests-asan', name='tp-tests-asan',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/di-native-tensor-parallel.t.cpp'),
-                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
+                        bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/'
+                                              'ProviderRoleWorker.cpp')],
                 includes=framework_includes,
                 use=di_integration_use + 'ndnsf-distributed-inference ndn-service-framework ' +
                     framework_use + ' ONNXRUNTIME',
