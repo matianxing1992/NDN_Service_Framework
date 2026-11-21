@@ -66,12 +66,7 @@ NativeStoredModelHandle
 nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
                                   const NativeFileKeyResolver& resolve);
 
-/** File-protection key from the deployment environment.
- *
- * `NDNSF_DI_FILE_KEY_ID` names the key and `NDNSF_DI_FILE_KEY` carries its 32 bytes in hex.
- * An unset pair returns nothing so callers keep the unsealed path instead of pretending to
- * seal; a half-configured or malformed pair throws rather than silently disabling sealing.
- */
+/** Read the active write key from the private file named by `NDNSF_FILE_KEYRING`. */
 std::optional<NativeFileProtectionKey>
 nativeFileProtectionKeyFromEnvironment();
 
@@ -79,7 +74,7 @@ nativeFileProtectionKeyFromEnvironment();
 NativeFileKeyResolver
 nativeFileKeyResolverFromKeyRing();
 
-/** Open a handle whatever its on-disk generation (v1 legacy import or sealed v2). */
+/** Open a sealed handle by its recorded key ID. Legacy files require explicit import. */
 NativeStoredModelHandle
 nativeOpenStoredModelHandle(const std::filesystem::path& source,
                             const NativeFileKeyResolver& resolve);
@@ -87,6 +82,12 @@ nativeOpenStoredModelHandle(const std::filesystem::path& source,
 /** Load a bounded, current-user-owned regular 0600 file without following a final symlink. */
 NativeStoredModelHandle
 nativeLoadStoredModelHandle(const std::filesystem::path& source);
+
+/** Seal a legacy handle only when it matches the caller's verified publication identity. */
+void
+nativeImportLegacyStoredModelHandle(const std::filesystem::path& source,
+  const std::filesystem::path& destination, const ndn::Name& expectedRoot,
+  const std::string& expectedWireDigest, const NativeFileProtectionKey& protection);
 
 /** Public root points to one segmented logical-object index, not all segment Names. */
 struct NativeStoredModelRoot

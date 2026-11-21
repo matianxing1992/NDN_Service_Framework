@@ -7,11 +7,8 @@
 #include <string>
 #include <vector>
 
-#include <cerrno>
-#include <fstream>
 #include <stdexcept>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <utility>
 
 namespace ndn_service_framework {
 
@@ -88,22 +85,9 @@ parseKeyRingText(const std::string& text)
   return entries;
 }
 
-/** Read the configured ring with the private-file checks a key store needs. */
-inline std::vector<FileKeyRingEntry>
-readKeyRingFile(const std::filesystem::path& path)
-{
-  struct stat info{};
-  if (::lstat(path.c_str(), &info) != 0)
-    throw std::runtime_error("NDNSF_FILE_KEYRING_UNREADABLE: cannot stat the configured key ring");
-  if (!S_ISREG(info.st_mode) || info.st_uid != ::geteuid() || (info.st_mode & 0077) != 0)
-    throw std::runtime_error("NDNSF_FILE_KEYRING_INVALID: key ring must be a private owned file");
-  std::ifstream input(path);
-  if (!input)
-    throw std::runtime_error("NDNSF_FILE_KEYRING_UNREADABLE: cannot open the configured key ring");
-  const std::string text((std::istreambuf_iterator<char>(input)),
-                         std::istreambuf_iterator<char>());
-  return parseKeyRingText(text);
-}
+/** Read a bounded private key ring, validating the open descriptor. */
+std::vector<FileKeyRingEntry>
+readKeyRingFile(const std::filesystem::path& path);
 
 } // namespace ndn_service_framework
 

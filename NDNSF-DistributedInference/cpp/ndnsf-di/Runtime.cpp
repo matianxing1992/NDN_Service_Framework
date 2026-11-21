@@ -1814,7 +1814,7 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
   const std::string& modelKey,
   const ndnsf_distributed_repo::RepoArtifactTarget& repository,
   const std::filesystem::path& preparationState,
-  const std::filesystem::path& privateHandleFile) const
+  const std::filesystem::path& privateHandleFile, const ndn::Name& legacyJournalPrefix) const
 {
   const auto [statePath, handlePath] = detail::storedModelPrivatePaths(
     preparationState, privateHandleFile);
@@ -1881,13 +1881,10 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
     };
     auto io = nativeStoredModelRepositoryIo(serviceUser, repository, deadline, current, true,
                                            acquireOperationLifetime);
+  const NativeStoredModelHandleOutput output{handlePath, *fileProtection};
   const auto publication = nativePublishStoredPreparedModel(*owner->keyChain,
-    serviceUser->getName(), ndn::Name(repository.repoNode), ndn::Name{}, loadCatalog,
-    spec.catalogConfigurationJson, io, statePath);
-  current();
-  // Seal the handle when the deployment configured a file-protection key; otherwise the
-  // unsealed path stays, because pretending to seal would be worse than saying so.
-  nativeExportSealedStoredModelHandle(publication.handle, handlePath, *fileProtection);
+    serviceUser->getName(), ndn::Name(repository.repoNode), legacyJournalPrefix, loadCatalog,
+    spec.catalogConfigurationJson, io, statePath, !legacyJournalPrefix.empty(), &output);
   current();
 
   NativeStoredModelPreparationReceipt receipt;
@@ -2057,6 +2054,22 @@ User::publishStoredModel(const std::string& modelKey,
   detail::StoredModelPreparationOperation operation(m_state, modelKey, "publish-stored", timeout,
                                             "model-publication");
   return publishStoredModelImpl(operation, modelKey, repository, preparationState, privateHandleFile);
+}
+
+NativeStoredModelPreparationReceipt
+User::publishStoredModel(const std::string& modelKey,
+  const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+  const std::filesystem::path& preparationState,
+  const std::filesystem::path& privateHandleFile, Milliseconds timeout,
+  const ndn::Name& legacyJournalPrefix) const
+{
+  if (legacyJournalPrefix.empty())
+    throw DiError("LEGACY_JOURNAL_PREFIX_REQUIRED", "local", "model-publication",
+                  "legacy journal import requires the original publication prefix");
+  detail::StoredModelPreparationOperation operation(m_state, modelKey, "publish-stored", timeout,
+                                            "model-publication");
+  return publishStoredModelImpl(operation, modelKey, repository, preparationState,
+                                privateHandleFile, legacyJournalPrefix);
 }
 
 PreparedModel

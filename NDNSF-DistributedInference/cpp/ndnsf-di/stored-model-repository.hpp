@@ -25,6 +25,13 @@ class RepoCommitPipeline;
 
 namespace ndnsf::di {
 
+/** Private handle export owned by the same locked operation as its journal. */
+struct NativeStoredModelHandleOutput
+{
+  const std::filesystem::path& path;
+  const NativeFileProtectionKey& protection;
+};
+
 inline constexpr std::uint64_t NATIVE_STORED_MODEL_MAX_PUBLICATION_BYTES = 100000000000ULL;
 
 /** Upload-only bounds for binary owned INSERT; retrieval keeps its smaller fetch windows. */
@@ -136,13 +143,9 @@ private:
     const ndn::Name&, const ndn::Name&, const ndn::Name&, const std::string&,
     const std::string&, const std::string&,
     const std::function<std::optional<NativeStoredModelInput>()>&, const NativeStoredModelPacketIo&,
-    const std::filesystem::path&, const std::function<void(const ndn::Name&)>&);
-  friend NativeStoredModelPublication nativePublishStoredModel(ndn::KeyChain&,
-    const ndn::Name&, const ndn::Name&, const ndn::Name&, const std::string&,
-    const std::string&, const std::string&,
-    const std::function<std::optional<NativeStoredModelInput>()>&, const NativeStoredModelPacketIo&,
     const std::filesystem::path&, const std::function<void(const ndn::Name&)>&,
-    const NativeStoredModelSemanticContext&);
+    const NativeStoredModelSemanticContext&, bool,
+    const NativeStoredModelHandleOutput*);
   friend std::uint64_t nativePreflightStoredModelPublication(ndn::KeyChain&,
     const ndn::Name&, const ndn::Name&, const std::string&, const std::string&,
     const std::string&, const std::vector<std::pair<std::string, std::uint64_t>>&);
@@ -217,7 +220,8 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const std::string& modelDigest, const std::string& catalogId, const std::string& manifestId,
   const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
-  const std::function<void(const ndn::Name&)>& bindPrefix);
+  const std::function<void(const ndn::Name&)>& bindPrefix, bool importLegacyJournal = false,
+  const NativeStoredModelHandleOutput* output = nullptr);
 
 /** Same journal-aware entry with the verified semantic facts. The journal allocates and persists the package
  * prefix and its `<PackagePublicationId>` together with the seed, and reuses them on resume. */
@@ -228,7 +232,8 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
   const std::function<void(const ndn::Name&)>& bindPrefix,
-  const NativeStoredModelSemanticContext& semantic);
+  const NativeStoredModelSemanticContext& semantic, bool importLegacyJournal = false,
+  const NativeStoredModelHandleOutput* output = nullptr);
 
 /** Read-only admission; no source loader or commit callback is invoked. */
 NativeStoredModelCatalog

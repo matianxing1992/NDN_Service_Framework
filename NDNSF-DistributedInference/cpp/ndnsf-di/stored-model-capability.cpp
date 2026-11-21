@@ -314,6 +314,7 @@ nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
     {"version", 1}});
   const auto aad = std::string(SEALED_HANDLE_MAGIC) + header;
   auto body = sealableHandleBody(handle);
+  Cleanse guard{body};
   const auto sealed = detail::cryptSymmetric(true, protection.key, nonce, body, aad);
   const auto prefix = aad + '\n';
   require(prefix.size() + sealed.size() <= 65536);
@@ -321,19 +322,22 @@ nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
     writeAll(fd, reinterpret_cast<const std::uint8_t*>(prefix.data()), prefix.size());
     writeAll(fd, sealed.data(), sealed.size());
   });
-  OPENSSL_cleanse(body.data(), body.size());
 }
 
-std::optional<NativeFileProtectionKey>
-nativeFileProtectionKeyFromEnvironment();
+namespace {
+
+NativeStoredModelHandle
+decodeSealedHandle(const Bytes& bytes, const NativeFileKeyResolver& resolve);
+
+} // namespace
 
 NativeStoredModelHandle
 nativeOpenStoredModelHandle(const std::filesystem::path& source,
                             const NativeFileKeyResolver& resolve)
 {
-  std::vector<std::uint8_t> magic;
+  Bytes bytes;
   try {
-    magic = readPrivateFile(source, 65536);
+    bytes = readPrivateFile(source, 65536);
   }
   catch (const std::exception& error) {
     // The private-file rules (owner, mode, single link, size) are the first thing that can fail,
@@ -341,37 +345,22 @@ nativeOpenStoredModelHandle(const std::filesystem::path& source,
     throw std::runtime_error(std::string("DI_STORED_MODEL_HANDLE_UNREADABLE: ") +
                              error.what());
   }
-  const std::string sealedMagic(SEALED_HANDLE_MAGIC);
-  const bool isSealed = magic.size() >= sealedMagic.size() &&
-    std::equal(sealedMagic.begin(), sealedMagic.end(), magic.begin());
+  Cleanse guard{bytes};
+  const std::string_view sealedMagic(SEALED_HANDLE_MAGIC);
+  const bool isSealed = bytes.size() >= sealedMagic.size() &&
+    std::equal(sealedMagic.begin(), sealedMagic.end(), bytes.begin());
   if (!isSealed) {
-    // A legacy handle still starts with its own magic; anything else is not a handle at all and
-    // must not be read as one.
-    const std::string legacyMagic(HANDLE_MAGIC);
-    const bool isLegacy = magic.size() >= legacyMagic.size() &&
-      std::equal(legacyMagic.begin(), legacyMagic.end(), magic.begin());
-    if (!isLegacy)
-      throw std::runtime_error("DI_STORED_MODEL_HANDLE_UNRECOGNIZED");
-    auto handle = nativeLoadStoredModelHandle(source);
-    // An unsealed handle is readable by anyone who can read the file, so with a protection key at hand
-    // it is migrated in place once instead of being left behind as a permanent second format. The
-    // rewrite is atomic, so an interrupted migration leaves the legacy file intact.
-    if (resolve) {
-      try {
-        if (const auto protection = nativeFileProtectionKeyFromEnvironment()) {
-          nativeExportSealedStoredModelHandle(handle, source, *protection);
-        }
-      }
-      catch (const std::exception&) {
-        // A migration that cannot be written must not make the model unopenable.
-      }
+    const std::string_view legacyMagic(HANDLE_MAGIC);
+    if (bytes.size() >= legacyMagic.size() &&
+        std::equal(legacyMagic.begin(), legacyMagic.end(), bytes.begin())) {
+      throw std::runtime_error("DI_STORED_MODEL_LEGACY_IMPORT_REQUIRED");
     }
-    return handle;
+    throw std::runtime_error("DI_STORED_MODEL_HANDLE_UNRECOGNIZED");
   }
   if (!resolve)
     throw std::runtime_error("DI_STORED_MODEL_SEALED_WITHOUT_RESOLVER");
   try {
-    return nativeLoadSealedStoredModelHandle(source, resolve);
+    return decodeSealedHandle(bytes, resolve);
   }
   catch (const std::exception& error) {
     // The envelope names its key; a resolver that does not know it fails here and says why.
@@ -409,13 +398,12 @@ nativeFileKeyResolverFromKeyRing()
   };
 }
 
+namespace {
+
 NativeStoredModelHandle
-nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
-                                  const NativeFileKeyResolver& resolve)
+decodeSealedHandle(const Bytes& bytes, const NativeFileKeyResolver& resolve)
 {
   require(static_cast<bool>(resolve));
-  auto bytes = readPrivateFile(source, 65536);
-  Cleanse guard{bytes};
   const std::string magic(SEALED_HANDLE_MAGIC);
   // A v1 file stays a deliberate import; never read it as if it were sealed.
   require(bytes.size() > magic.size() &&
@@ -432,18 +420,29 @@ nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
   require(nonce.size() == 12);
   auto key = resolve(keyId);
   require(key && key->size() == 32);
+  Cleanse keyGuard{*key};
   const std::vector<std::uint8_t> sealed(end + 1, bytes.end());
   const auto aad = std::string(SEALED_HANDLE_MAGIC) + headerText;
   std::vector<std::uint8_t> body;
+  Cleanse bodyGuard{body};
   try {
     body = detail::cryptSymmetric(false, *key, nonce, sealed, aad);
   }
   catch (const std::exception& error) {
     throw std::runtime_error(std::string("DI_STORED_MODEL_HANDLE_OPEN: ") + error.what());
   }
-  const auto handle = decodeHandleBody(body);
-  OPENSSL_cleanse(key->data(), key->size());
-  return handle;
+  return decodeHandleBody(body);
+}
+
+} // namespace
+
+NativeStoredModelHandle
+nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
+                                  const NativeFileKeyResolver& resolve)
+{
+  auto bytes = readPrivateFile(source, 65536);
+  Cleanse guard{bytes};
+  return decodeSealedHandle(bytes, resolve);
 }
 
 NativeStoredModelHandle
@@ -473,6 +472,19 @@ nativeLoadStoredModelHandle(const std::filesystem::path& source)
     require(false);
   }
   return handle;
+}
+
+void
+nativeImportLegacyStoredModelHandle(const std::filesystem::path& source,
+  const std::filesystem::path& destination, const ndn::Name& expectedRoot,
+  const std::string& expectedWireDigest, const NativeFileProtectionKey& protection)
+{
+  auto handle = nativeLoadStoredModelHandle(source);
+  Cleanse guard{handle.masterKey};
+  if (handle.rootName != expectedRoot || handle.rootWireDigest != expectedWireDigest) {
+    throw std::runtime_error("DI_STORED_MODEL_LEGACY_PUBLICATION_MISMATCH");
+  }
+  nativeExportSealedStoredModelHandle(handle, destination, protection);
 }
 
 NativeStoredModelRoot
@@ -667,13 +679,18 @@ class PreparationJournal
 {
 public:
   PreparationJournal(const std::filesystem::path& path, NativeJson context,
-                     const NativeStoredModelPacketIo& io)
+                     const NativeStoredModelPacketIo& io, bool importLegacy,
+                     const NativeStoredModelHandleOutput* output)
     : m_path(path)
     , m_stage(path.string() + ".object")
     , m_io(io)
+    , m_output(output)
+    , m_requireProtection(output || ndn_service_framework::fileKeyRingPath().has_value())
   {
     require(m_io.requireCommitted && !path.empty() && !path.filename().empty() &&
             path.filename() != "." && path.filename() != "..");
+    require(!importLegacy || (m_requireProtection &&
+            !context.at("publicationPrefix").get<std::string>().empty()));
     m_io.requireCurrent();
     const auto parent = path.parent_path().empty() ? std::filesystem::path(".") :
                                                     path.parent_path();
@@ -686,6 +703,16 @@ public:
     require(m_lock.value >= 0 && ::fstat(m_lock.value, &status) == 0 &&
       S_ISREG(status.st_mode) && status.st_uid == ::geteuid() && status.st_nlink == 1 &&
       (status.st_mode & 07777) == 0600 && ::flock(m_lock.value, LOCK_EX | LOCK_NB) == 0);
+    std::optional<NativeStoredModelHandle> existingHandle;
+    if (m_output != nullptr) {
+      const auto& destination = m_output->path;
+      require(!destination.empty() && destination != m_path && destination != m_stage &&
+              destination != std::filesystem::path(m_path.string() + ".lock"));
+      if (::lstat(destination.c_str(), &status) == 0)
+        existingHandle = nativeOpenStoredModelHandle(destination, nativeFileKeyResolverFromKeyRing());
+      else
+        require(errno == ENOENT);
+    }
     m_handle.producer = ndn::Name(context.at("producer").get<std::string>());
     m_handle.repository = ndn::Name(context.at("repository").get<std::string>());
     const bool resolvePrefix = context.at("publicationPrefix").get<std::string>().empty();
@@ -696,39 +723,20 @@ public:
       m_handle.rootName = ndn::Name(m_prefix).append("root");
     };
     if (!resolvePrefix) bindPrefix(context.at("publicationPrefix").get<std::string>());
+    bool rewrap = false;
     if (::lstat(path.c_str(), &status) == 0) {
       auto bytes = readPrivateFile(path, MAX_JOURNAL_BYTES, m_io.requireCurrent);
       Cleanse guard{bytes};
+      const bool plaintext = startsWith(bytes, MAGIC);
+      if (m_requireProtection && plaintext && !importLegacy) {
+        throw std::runtime_error("DI_STORED_MODEL_LEGACY_JOURNAL_IMPORT_REQUIRED");
+      }
       try {
-        const std::string magic(MAGIC);
-        const std::string sealedMagic(SEALED_MAGIC);
-        const std::string keyedMagic(SEALED_MAGIC_V3);
-        const bool keyed = bytes.size() > keyedMagic.size() + 103 &&
-          std::equal(keyedMagic.begin(), keyedMagic.end(), bytes.begin());
-        const bool sealed = !keyed && bytes.size() > sealedMagic.size() + 103 &&
-          std::equal(sealedMagic.begin(), sealedMagic.end(), bytes.begin());
-        require(bytes.size() > magic.size() + 103 &&
-          (keyed || sealed || std::equal(magic.begin(), magic.end(), bytes.begin())));
-        std::size_t magicSize = keyed ? keyedMagic.size() : (sealed ? sealedMagic.size() : magic.size());
-        std::optional<JournalKey> storedKey;
+        const bool authenticated = startsWith(bytes, SEALED_MAGIC_V4);
+        const bool legacySealed = startsWith(bytes, SEALED_MAGIC) || startsWith(bytes, SEALED_MAGIC_V3);
         std::string sealedKeyId;
-        if (keyed) {
-          const auto newline = std::find(bytes.begin() + static_cast<std::ptrdiff_t>(magicSize),
-                                         bytes.begin() + 256, '\n');
-          require(newline != bytes.begin() + 256);
-          storedKey = journalKeyById(std::string(bytes.begin() + static_cast<std::ptrdiff_t>(magicSize),
-                                                 newline));
-          require(storedKey.has_value());
-          sealedKeyId = storedKey->id;
-          magicSize = static_cast<std::size_t>(newline - bytes.begin()) + 1;
-        }
-        const auto keyBytes = (keyed || sealed) ? SEALED_FIELD_BYTES : std::size_t{32};
-        // The trailing checksum is a `sha256:` digest, 71 characters, not the raw 32 bytes.
-        const auto bodySize = bytes.size() - 71;
-        require(digest(bytes.data(), bodySize) ==
-                std::string(bytes.begin() + bodySize, bytes.end()));
-        const auto metadataEnd = bodySize - keyBytes;
-        const auto text = std::string(bytes.begin() + magicSize, bytes.begin() + metadataEnd);
+        const auto text = authenticated ? readSealed(bytes, sealedKeyId) : readLegacy(bytes);
+        m_requireProtection = m_requireProtection || authenticated || legacySealed;
         m_metadata = nativeParseJson(text);
         if (resolvePrefix)
           bindPrefix(m_metadata.at("context").at("publicationPrefix").get<std::string>());
@@ -756,61 +764,15 @@ public:
         require(nativeCanonicalJson(m_metadata) == text && m_metadata.is_object() &&
           m_metadata.size() == 7 && m_metadata.at("schema") == "ndnsf-di-model-preparation-v1" &&
           savedContext == context);
-        if (keyed || sealed) {
-          // A keyed journal names its key. A sealed v2 journal does not, so any ring entry may be the one that
-          // sealed it - the write key first, then the rest, because a ring that gained an entry since would
-          // otherwise make every older journal unreadable.
-          std::vector<JournalKey> candidates;
-          if (keyed) {
-            if (storedKey)
-              candidates.push_back(*storedKey);
-          }
-          else {
-            if (const auto writeKey = journalWriteKey())
-              candidates.push_back(*writeKey);
-            try {
-              for (const auto& entry : ndn_service_framework::loadFileKeyRingEntries())
-                candidates.push_back(JournalKey{entry.keyId, entry.key});
-            }
-            catch (const std::exception&) {
-            }
-          }
-          bool opened = false;
-          for (const auto& candidate : candidates) {
-            // A wrong key makes the AEAD open throw rather than return false, so a candidate that does not fit is
-            // caught here instead of aborting the whole open.
-            try {
-              if (ndn_service_framework::openField(
-                    candidate.key,
-                    std::string(bytes.begin() + metadataEnd, bytes.begin() + bodySize),
-                    "ndnsf-di/model-preparation-journal", m_sealedKey)) {
-                opened = true;
-                break;
-              }
-            }
-            catch (const std::exception&) {
-            }
-          }
-          require(opened);
-          require(m_sealedKey.size() == 32);
-          m_handle.masterKey.assign(m_sealedKey.begin(), m_sealedKey.end());
-          OPENSSL_cleanse(m_sealedKey.data(), m_sealedKey.size());
-        }
-        else {
-          m_handle.masterKey.assign(bytes.begin() + metadataEnd, bytes.begin() + bodySize);
-        }
         validate();
-        // The journal opened under an older ring entry: re-seal it with the current write key so a rotation
-        // completes here instead of being re-applied on every open. A failure is not fatal - the work is readable.
-        if (!sealedKeyId.empty()) {
-          const auto writeKey = journalWriteKey();
-          if (writeKey && writeKey->id != sealedKeyId) {
-            try {
-              save();
-            }
-            catch (const std::exception&) {
-            }
-          }
+        if (authenticated || legacySealed) {
+          auto writeKey = journalWriteKey();
+          require(writeKey.has_value());
+          Cleanse guard{writeKey->key};
+          rewrap = !authenticated || writeKey->keyId != sealedKeyId;
+        }
+        else if (importLegacy) {
+          rewrap = true;
         }
       }
       catch (...) {
@@ -819,6 +781,10 @@ public:
       }
     }
     else {
+      if (existingHandle)
+        throw std::runtime_error("DI_STORED_MODEL_HANDLE_WITHOUT_JOURNAL");
+      if (importLegacy)
+        throw std::runtime_error("DI_STORED_MODEL_LEGACY_JOURNAL_MISSING");
       require(errno == ENOENT && ::lstat(m_stage.c_str(), &status) != 0 && errno == ENOENT);
       if (resolvePrefix) {
         if (context.contains("semanticPublication")) {
@@ -872,10 +838,19 @@ public:
         {"tail", NativeJson::array()}, {"ready", false}};
       save();
     }
-    if (m_metadata.at("current").is_null()) removeCompletedStage();
+    if (existingHandle &&
+        (!ready() || existingHandle->producer != m_handle.producer ||
+         existingHandle->repository != m_handle.repository ||
+         existingHandle->rootName != m_handle.rootName ||
+         existingHandle->rootWireDigest != m_handle.rootWireDigest ||
+         CRYPTO_memcmp(existingHandle->masterKey.data(), m_handle.masterKey.data(), 32) != 0)) {
+      throw std::runtime_error("DI_STORED_MODEL_HANDLE_JOURNAL_MISMATCH");
+    }
     for (const auto& object : m_metadata.at("objects").items())
       confirm(object.value().at("groups"));
     if (ready()) confirm(m_metadata.at("tail"));
+    if (rewrap) save();
+    if (m_metadata.at("current").is_null()) removeCompletedStage();
     m_io.requireCurrent();
   }
 
@@ -886,6 +861,15 @@ public:
   const ndn::Name& prefix() const noexcept { return m_prefix; }
   bool ready() const { return m_metadata.at("ready").get<bool>(); }
   bool hasCurrent() const { return !m_metadata.at("current").is_null(); }
+  void
+  exportHandle() const
+  {
+    if (m_output != nullptr) {
+      m_io.requireCurrent();
+      require(ready());
+      nativeExportSealedStoredModelHandle(m_handle, m_output->path, m_output->protection);
+    }
+  }
   std::size_t objectCount() const { return m_metadata.at("objects").size(); }
   unsigned currentGroupingVersion() const
   { return uploadGroupingVersion(m_metadata.at("current")); }
@@ -964,6 +948,90 @@ public:
   }
 
 private:
+  static bool
+  startsWith(const Bytes& bytes, std::string_view prefix)
+  {
+    return bytes.size() >= prefix.size() &&
+           std::equal(prefix.begin(), prefix.end(), bytes.begin());
+  }
+
+  static std::string
+  readKeyId(const Bytes& bytes, std::size_t limit, std::size_t& offset)
+  {
+    const auto endOffset = std::min<std::size_t>(limit, 256);
+    require(offset < endOffset && endOffset <= bytes.size());
+    const auto start = bytes.begin() + offset;
+    const auto end = bytes.begin() + endOffset;
+    const auto delimiter = std::find(start, end, '\n');
+    require(delimiter != start && delimiter != end);
+    offset = static_cast<std::size_t>(delimiter - bytes.begin()) + 1;
+    return std::string(start, delimiter);
+  }
+
+  std::string
+  readSealed(const Bytes& bytes, std::string& keyId)
+  {
+    auto offset = sizeof(SEALED_MAGIC_V4) - 1;
+    keyId = readKeyId(bytes, bytes.size(), offset);
+    require(bytes.size() - offset > 12 + 16 + 32);
+    auto protection = journalKeyById(keyId);
+    require(protection.has_value());
+    Cleanse keyGuard{protection->key};
+    const Bytes nonce(bytes.begin() + offset, bytes.begin() + offset + 12);
+    const Bytes ciphertext(bytes.begin() + offset + nonce.size(), bytes.end());
+    const std::string header(bytes.begin(), bytes.begin() + offset);
+    auto body = detail::cryptSymmetric(false, protection->key, nonce, ciphertext, header);
+    Cleanse bodyGuard{body};
+    require(body.size() > 32);
+    m_handle.masterKey.assign(body.end() - 32, body.end());
+    return std::string(body.begin(), body.end() - 32);
+  }
+
+  std::string
+  readLegacy(const Bytes& bytes)
+  {
+    const bool keyed = startsWith(bytes, SEALED_MAGIC_V3);
+    const bool sealed = !keyed && startsWith(bytes, SEALED_MAGIC);
+    require(keyed || sealed || startsWith(bytes, MAGIC));
+    std::size_t offset = keyed ? sizeof(SEALED_MAGIC_V3) - 1 :
+      (sealed ? sizeof(SEALED_MAGIC) - 1 : sizeof(MAGIC) - 1);
+    const auto keyBytes = keyed || sealed ? SEALED_FIELD_BYTES : std::size_t{32};
+    require(bytes.size() > offset + keyBytes + 71);
+    const auto bodyEnd = bytes.size() - 71;
+    const auto metadataEnd = bodyEnd - keyBytes;
+    require(digest(bytes.data(), bodyEnd) == std::string(bytes.begin() + bodyEnd, bytes.end()));
+    if (keyed || sealed) {
+      std::vector<ndn_service_framework::FileKeyRingEntry> candidates;
+      if (keyed) {
+        const auto id = readKeyId(bytes, metadataEnd, offset);
+        auto key = ndn_service_framework::loadFileKeyRingEntry(id);
+        require(key.has_value());
+        candidates.push_back(std::move(*key));
+      }
+      else {
+        candidates = ndn_service_framework::loadFileKeyRingEntries();
+      }
+      const std::string field(bytes.begin() + metadataEnd, bytes.begin() + bodyEnd);
+      bool opened = false;
+      std::string plaintext;
+      for (auto& candidate : candidates) {
+        Cleanse keyGuard{candidate.key};
+        if (!opened) {
+          opened = ndn_service_framework::openField(candidate.key, field,
+            "ndnsf-di/model-preparation-journal", plaintext);
+        }
+      }
+      require(opened && plaintext.size() == 32);
+      m_handle.masterKey.assign(plaintext.begin(), plaintext.end());
+      OPENSSL_cleanse(plaintext.data(), plaintext.size());
+    }
+    else {
+      m_handle.masterKey.assign(bytes.begin() + metadataEnd, bytes.begin() + bodyEnd);
+    }
+    require(metadataEnd > offset);
+    return std::string(bytes.begin() + offset, bytes.begin() + metadataEnd);
+  }
+
   void
   validate()
   {
@@ -1042,37 +1110,45 @@ private:
   save()
   {
     m_io.requireCurrent();
-    const auto protection = journalWriteKey();
+    auto protection = journalWriteKey();
     // A ring that is configured but cannot be read is not the same as no ring: falling back to the plain layout here
     // would write the master secret in clear exactly when the protection is supposed to be in force.
-    if (!protection) {
-      const char* ring = ::getenv("NDNSF_FILE_KEYRING");
-      if (ring != nullptr && *ring != '\0')
-        throw std::runtime_error("DI_STORED_MODEL_REJECTED: the configured file key ring could not be read");
+    if (!protection && (m_requireProtection || ndn_service_framework::fileKeyRingPath())) {
+      throw std::runtime_error("DI_STORED_MODEL_REJECTED: the configured file key ring could not be read");
     }
-    // A journal written with a key is sealed with the newest ring entry and records that entry's id, so a later
-    // rotation still opens it. Without a ring the older plain layout stands, which the reader still accepts.
-    std::string keyField;
     if (protection) {
-      keyField = ndn_service_framework::sealField(
-        protection->key, std::string(m_handle.masterKey.begin(), m_handle.masterKey.end()),
-        "ndnsf-di/model-preparation-journal");
-      require(keyField.size() == SEALED_FIELD_BYTES);
+      require(protection->keyId.size() <= 64 &&
+              protection->keyId.find_first_of("\r\n\t ") == std::string::npos);
+      m_requireProtection = true;
     }
-    const auto prefix = (protection ? std::string(SEALED_MAGIC_V3) + protection->id + "\n" : std::string(MAGIC)) +
-      nativeCanonicalJson(m_metadata);
-    require(prefix.size() + (protection ? (103 - 32 + SEALED_FIELD_BYTES) : 103) <=
-            MAX_JOURNAL_BYTES);
-    // 103 = 32-byte secret + 71-character digest; the sealed layout replaces 32 with its field length.
-    Bytes bytes(prefix.begin(), prefix.end());
-    bytes.reserve(prefix.size() + 103);
+    const auto metadata = nativeCanonicalJson(m_metadata);
+    Bytes bytes;
     Cleanse guard{bytes};
-    if (!protection)
+    if (protection) {
+      Cleanse keyGuard{protection->key};
+      const auto header = std::string(SEALED_MAGIC_V4) + protection->keyId + '\n';
+      require(header.size() + metadata.size() + 32 + 12 + 16 <= MAX_JOURNAL_BYTES);
+      Bytes nonce(12);
+      require(RAND_bytes(nonce.data(), static_cast<int>(nonce.size())) == 1);
+      Bytes plaintext(metadata.begin(), metadata.end());
+      Cleanse bodyGuard{plaintext};
+      plaintext.insert(plaintext.end(), m_handle.masterKey.begin(), m_handle.masterKey.end());
+      const auto ciphertext = detail::cryptSymmetric(true, protection->key, nonce, plaintext,
+                                                     header);
+      bytes.assign(header.begin(), header.end());
+      bytes.insert(bytes.end(), nonce.begin(), nonce.end());
+      bytes.insert(bytes.end(), ciphertext.begin(), ciphertext.end());
+    }
+    else {
+      const std::string_view header(MAGIC);
+      require(header.size() + metadata.size() + 103 <= MAX_JOURNAL_BYTES);
+      bytes.reserve(header.size() + metadata.size() + 103);
+      bytes.assign(header.begin(), header.end());
+      bytes.insert(bytes.end(), metadata.begin(), metadata.end());
       bytes.insert(bytes.end(), m_handle.masterKey.begin(), m_handle.masterKey.end());
-    else
-      bytes.insert(bytes.end(), keyField.begin(), keyField.end());
-    const auto checksum = digest(bytes.data(), bytes.size());
-    bytes.insert(bytes.end(), checksum.begin(), checksum.end());
+      const auto checksum = digest(bytes.data(), bytes.size());
+      bytes.insert(bytes.end(), checksum.begin(), checksum.end());
+    }
     detail::writePrivateCheckpointFile(m_path, {}, [&](int fd) {
       writeAll(fd, bytes.data(), bytes.size());
     }, [&] { m_io.requireCurrent(); return false; });
@@ -1101,19 +1177,13 @@ private:
     std::vector<std::uint8_t> key;
   };
 
-  /** The write key for new journal material: the newest ring entry. Re-read every call so a rotated ring is
-   *  picked up without restarting the process. */
-  static std::optional<JournalKey>
-  journalWriteKey()
+  /** Runtime binds one write key to both files for the duration of the operation. */
+  std::optional<NativeFileProtectionKey>
+  journalWriteKey() const
   {
-    try {
-      const auto entries = ndn_service_framework::loadFileKeyRingEntries();
-      if (!entries.empty())
-        return JournalKey{entries.front().keyId, entries.front().key};
-    }
-    catch (const std::exception&) {
-    }
-    return std::nullopt;
+    if (m_output != nullptr)
+      return m_output->protection;
+    return nativeFileProtectionKeyFromEnvironment();
   }
 
   /** The key a journal was sealed with, resolved by the id stored beside it. */
@@ -1135,12 +1205,14 @@ private:
   // v3 carries the id of the ring entry that sealed it, so a rotated ring stays readable: a journal sealed with
   // an older entry is opened with that entry, not with whichever key happens to be first today.
   static constexpr char SEALED_MAGIC_V3[] = "NDNSF-DI-MODEL-PREPARATION-v3\n";
+  static constexpr char SEALED_MAGIC_V4[] = "NDNSF-DI-MODEL-PREPARATION-v4\n";
   // base64 of a 32-byte secret sealed with AES-256-GCM: 12-byte nonce, 32-byte ciphertext, 16-byte tag.
   static constexpr std::size_t SEALED_FIELD_BYTES = 95;
   static constexpr std::uint64_t MAX_JOURNAL_BYTES = 64U << 20;
   std::filesystem::path m_path, m_stage;
   NativeStoredModelPacketIo m_io;
-  std::string m_sealedKey;
+  const NativeStoredModelHandleOutput* m_output;
+  bool m_requireProtection;
   FileDescriptor m_parent{-1}, m_lock{-1};
   NativeStoredModelHandle m_handle;
   ndn::Name m_prefix;
@@ -1483,11 +1555,12 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const std::string& modelDigest, const std::string& catalogId, const std::string& manifestId,
   const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
-  const std::function<void(const ndn::Name&)>& bindPrefix)
+  const std::function<void(const ndn::Name&)>& bindPrefix, bool importLegacyJournal,
+  const NativeStoredModelHandleOutput* output)
 {
   return nativePublishStoredModel(keyChain, producer, repository, publicationPrefix, modelDigest,
     catalogId, manifestId, nextObject, io, preparationState, bindPrefix,
-    NativeStoredModelSemanticContext{});
+    NativeStoredModelSemanticContext{}, importLegacyJournal, output);
 }
 
 NativeStoredModelPublication
@@ -1497,13 +1570,16 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
   const std::function<void(const ndn::Name&)>& bindPrefix,
-  const NativeStoredModelSemanticContext& semantic)
+  const NativeStoredModelSemanticContext& semantic, bool importLegacyJournal,
+  const NativeStoredModelHandleOutput* output)
 {
   require(io.commit && io.requireCurrent && nextObject && !repository.empty() &&
           repository.wireEncode().size() <= 4096 &&
           isDigest(modelDigest) && validObjectId(catalogId) && validObjectId(manifestId) &&
           catalogId != manifestId);
   require(!producer.empty() && (!publicationPrefix.empty() || !preparationState.empty()));
+  require(!importLegacyJournal || (!publicationPrefix.empty() && !preparationState.empty()));
+  require(output == nullptr || !preparationState.empty());
   auto prefix = publicationPrefix;
   if (!prefix.empty()) requirePublicationPrefix(producer, prefix);
   io.requireCurrent();
@@ -1520,13 +1596,11 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
       {"publicationPrefix", prefix.empty() ? std::string{} :
         prefix.toUri(ndn::name::UriFormat::CANONICAL)},
       {"modelDigest", modelDigest}, {"catalogId", catalogId}, {"manifestId", manifestId}};
-    if (!semantic.empty() && !prefix.empty() &&
-        !nativeStoredModelSemanticPrefix(prefix)) {
-      // Verified coordinates describe a semantic package row, so an explicit prefix that does not carry that row
-      // cannot be used with them: the objects under it would be named by the legacy convention.
-      require(false);
-    }
-    if (!semantic.empty()) {
+    const bool explicitLegacyPrefix = !prefix.empty() && !nativeStoredModelSemanticPrefix(prefix);
+    // Import reopens an existing legacy journal at its original prefix. A new publication
+    // with verified coordinates requires a semantic package name.
+    require(semantic.empty() || !explicitLegacyPrefix || importLegacyJournal);
+    if (!semantic.empty() && !explicitLegacyPrefix) {
       // The package rows need the verified facts before the journal allocates its prefix; the prefix itself is
       // allocated inside the journal and persisted with the seed.
       context["semanticPublication"] = NativeJson{
@@ -1537,10 +1611,12 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
         {"revisionLabel", semantic.sourceRevisionLabel.empty() ? "unspecified" :
           semantic.sourceRevisionLabel}};
     }
-    journal = std::make_unique<PreparationJournal>(preparationState, context, io);
+    journal = std::make_unique<PreparationJournal>(preparationState, context, io,
+      importLegacyJournal, output);
     handle = journal->handle();
     prefix = journal->prefix();
     if (journal->ready()) {
+      journal->exportHandle();
       publication.objectCount = journal->objectCount();
       io.requireCurrent();
       return publication;
@@ -1641,7 +1717,10 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   (void)nativeAdmitStoredModelRoot(handle, *root);
   commitPackets({root}, io, publication, tailVersion, tailObserver);
   io.requireCurrent();
-  if (journal) journal->finish(handle.rootWireDigest, tailGroups);
+  if (journal) {
+    journal->finish(handle.rootWireDigest, tailGroups);
+    journal->exportHandle();
+  }
   return publication;
 }
 

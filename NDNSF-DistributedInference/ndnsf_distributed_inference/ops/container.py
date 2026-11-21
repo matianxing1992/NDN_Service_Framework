@@ -18,7 +18,7 @@ import time
 from types import SimpleNamespace
 
 from . import cluster
-from .deployment_config import (_digest_file, _name, _read_json, provider_cache_path,
+from .deployment_config import (_digest_file, _name, _read_json, actor_file_keyring, provider_cache_path,
                                 provider_recipient_map)
 from .trust_resources import TrustResourceError, describe_failure
 
@@ -475,10 +475,9 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
         add(source.parent / 'nodes' / node['id'] / 'gpu-allocation.json')
     for key in ('trust_schema', 'controller_certificate'):
         add(config['security'][key])
-    # A model preparation needs its file-protection key inside the container as well: without the ring the runtime
-    # refuses to publish, and with an unreadable one it must not fall back to a plain handle.
-    if config['security'].get('file_keyring'):
-        add(config['security']['file_keyring'])
+    keyring = actor_file_keyring(config, actor)
+    if keyring:
+        add(keyring)
     for path in trust_resources:
         add(path)
     if kind == 'controller':
@@ -798,7 +797,6 @@ def execute(args):
     _prepare_repository_locks(repository_locks)
     env = cluster._environment(home, node['nfd']['socket'], role_id,
                               {'boot_id': args.boot_id, 'configuration_sha256': args.configuration_sha256,
-                               'file_keyring': config['security'].get('file_keyring'),
                                'release_sha256': args.release_sha256,
                                 'diagnostic_logging': args.debug,
                                 'runtime_timing': getattr(args, 'timing', False)})

@@ -2480,6 +2480,46 @@ def test_controller_generation_path_is_stable_private_and_native_owned(
     assert not Path(expected).exists()  # The native Controller owns its state writes.
 
 
+def test_file_keyrings_are_bound_only_to_their_native_owners(ops, deployment, monkeypatch):
+    parser, _ = ops
+    base, config = deployment
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    rings = {}
+    for kind in ('controller', 'requester'):
+        ring = base / (kind + '.ring')
+        ring.write_text('test path fixture')
+        ring.chmod(0o600)
+        rings[kind] = str(ring)
+        next(a for a in config['actors'] if a['kind'] == kind)['file_keyring'] = str(ring)
+    providers = [a for a in config['actors'] if a['kind'] == 'provider']
+    (base / 'trust-root-registry-v1.json').write_text('{}')
+    (base / 'recipients.json').write_text(json.dumps({a['identity']: 'key.pem' for a in providers}))
+    for provider in providers:
+        provider.setdefault('parameters', {}).update({
+            'grant-authority-public-key': 'key.pem', 'recipient-key-map': 'recipients.json'})
+    monkeypatch.setenv('NDNSF_FILE_KEYRING', '/unrelated-ring')
+    normalized = parser.load_deployment(write_config(base, config))
+    state = {'boot_id': 'a' * 32, 'configuration_sha256': 'b' * 64}
+    for actor in normalized['actors']:
+        _, env = cluster._native_launch(normalized, actor, base, state)
+        assert env.get('NDNSF_FILE_KEYRING') == rings.get(actor['kind'])
+    assert 'NDNSF_FILE_KEYRING' not in cluster._environment(base, '/unused.sock', 'nfd', state)
+
+    requester = next(a for a in config['actors'] if a['kind'] == 'requester')
+    requester['file_keyring'] = rings['controller']
+    with pytest.raises(parser.DeploymentConfigError, match='require distinct files'):
+        parser.load_deployment(write_config(base, config))
+
+    for actor in config['actors']:
+        actor.pop('file_keyring', None)
+    config['security']['file_keyring'] = rings['controller']
+    normalized = parser.load_deployment(write_config(base, config))
+    for actor in normalized['actors']:
+        _, env = cluster._native_launch(normalized, actor, base, state)
+        expected = rings['controller'] if actor['kind'] in rings else None
+        assert env.get('NDNSF_FILE_KEYRING') == expected
+
+
 def test_cluster_cancellation_after_intent_does_not_spawn_requester(ops, deployment, monkeypatch):
     with management_operation(ops, deployment) as (cluster, _, root, state, _):
         env = cluster._environment(deployment[0], deployment[0] / 'nfd.sock', 'requester', state)
@@ -3338,6 +3378,26 @@ def test_stored_model_private_paths_have_only_requester_mounts(node_container, m
     provider = next(a for a in config['actors'] if a['kind'] == 'provider')
     provider_mounts = container.role_mounts(config, frozen, provider)[3]
     assert not any(container._contains(path, handle) for path in provider_mounts)
+
+
+def test_container_mounts_only_the_current_actors_file_keyring(node_container):
+    config, container, frozen, _, _ = node_container
+    rings = {}
+    for kind in ('controller', 'requester'):
+        ring = frozen.parent.parent / (kind + '.ring')
+        ring.write_text('test path fixture')
+        ring.chmod(0o600)
+        rings[kind] = ring
+        next(a for a in config['actors'] if a['kind'] == kind)['file_keyring'] = str(ring)
+    container.cluster.write_json(frozen, config)
+    for kind in ('controller', 'requester', 'provider'):
+        actor = next(a for a in config['actors'] if a['kind'] == kind)
+        mounts = container.role_mounts(config, frozen, actor)[3]
+        for owner, ring in rings.items():
+            if owner == kind:
+                assert mounts[ring] == 'ro'
+            else:
+                assert not any(container._contains(path, ring) for path in mounts)
 
 
 def test_source_ready_mounts_do_not_require_absent_native_source(node_container):

@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-preparation-index.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-filesystem-artifacts.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-owned-initializer-file.hpp"
@@ -750,9 +751,18 @@ private:
 int
 run(int argc, char** argv)
 {
+  if (argc == 6 && std::string_view(argv[1]) == "--import-legacy-handle") {
+    const auto protection = nativeFileProtectionKeyFromEnvironment();
+    if (!protection)
+      throw std::invalid_argument("legacy handle import requires NDNSF_FILE_KEYRING");
+    nativeImportLegacyStoredModelHandle(argv[2], argv[3], ndn::Name(argv[4]), argv[5], *protection);
+    return 0;
+  }
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "Usage: DI_NativeRequester --config FILE "
                  "[--prepare-only | --input FILE --output FILE]\n"
+                 "       DI_NativeRequester --import-legacy-handle SOURCE DEST ROOT WIRE_DIGEST\n"
+                 "       DI_NativeRequester --config FILE --import-legacy-journal PREFIX\n"
                  "Config schema: ndnsf-di-native-requester-v1\n"
                  "Optional statistics_file writes one JSONL timing row per turn.\n"
                  "A config with a turns array runs every turn in one native Conversation.\n"
@@ -762,8 +772,10 @@ run(int argc, char** argv)
   const bool legacyArgs = argc == 7 && std::string(argv[1]) == "--config" &&
     std::string(argv[3]) == "--input" && std::string(argv[5]) == "--output";
   const bool turnsArgs = argc == 3 && std::string(argv[1]) == "--config";
-  const bool prepareOnly = argc == 4 && std::string(argv[1]) == "--config" &&
-    std::string(argv[3]) == "--prepare-only";
+  const bool importLegacyJournal = argc == 5 && std::string(argv[1]) == "--config" &&
+    std::string(argv[3]) == "--import-legacy-journal";
+  const bool prepareOnly = importLegacyJournal ||
+    (argc == 4 && std::string(argv[1]) == "--config" && std::string(argv[3]) == "--prepare-only");
   if (!legacyArgs && !turnsArgs && !prepareOnly) {
     std::cerr << "Usage: DI_NativeRequester --config FILE "
                  "[--prepare-only | --input FILE --output FILE]\n";
@@ -782,6 +794,12 @@ run(int argc, char** argv)
   if (modelInputMode != "source" && modelInputMode != "publish-stored" &&
       modelInputMode != "stored")
     throw std::invalid_argument("model_input.mode is unsupported");
+  ndn::Name legacyJournalPrefix;
+  if (importLegacyJournal) {
+    legacyJournalPrefix = ndn::Name(argv[4]);
+    if (modelInputMode != "publish-stored" || legacyJournalPrefix.empty())
+      throw std::invalid_argument("legacy journal import requires publish-stored mode and a prefix");
+  }
 
   std::optional<ndnsf_distributed_repo::RepoArtifactTarget> modelRepository;
   if (const auto target = config.get_child_optional("model_repository")) {
@@ -1011,8 +1029,11 @@ run(int argc, char** argv)
   }
   auto user = runtime->user();
   if (modelInputMode == "publish-stored") {
-    const auto receipt = user.publishStoredModel("default", *storedModelRepository,
-      storedPreparationState, storedPrivateHandle, prepareOptions.timeout);
+    const auto receipt = importLegacyJournal
+      ? user.publishStoredModel("default", *storedModelRepository, storedPreparationState,
+          storedPrivateHandle, prepareOptions.timeout, legacyJournalPrefix)
+      : user.publishStoredModel("default", *storedModelRepository, storedPreparationState,
+          storedPrivateHandle, prepareOptions.timeout);
     runtime->close();
     if (!runtime->drain(std::chrono::seconds(5)))
       throw std::runtime_error("NATIVE_PREPARATION_DRAIN_TIMEOUT");

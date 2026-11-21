@@ -160,6 +160,13 @@ def provider_cache_path(cache_root, identity):
     return str(Path(cache_root) / ('provider-' + digest))
 
 
+def actor_file_keyring(config, actor):
+    """Select the local secret-file path owned by the Controller or Requester."""
+    if actor['kind'] in ('controller', 'requester') and not actor.get('external', False):
+        return actor.get('file_keyring', config['security'].get('file_keyring'))
+    return None
+
+
 def preparation_deployment(config):
     """Project prepare intent before inference-only inputs are validated."""
     result = copy.deepcopy(config)
@@ -333,8 +340,7 @@ def load_deployment(path, *, prepare_only=False):
         "trust_schema", "controller_certificate", "controller_policy", "file_keyring"},
         {"trust_schema", "controller_certificate"})
     if "file_keyring" in security:
-        # The actors seal local model handles with the deployment key ring; without this the
-        # installed deployment can only ever write the plaintext v1 handle.
+        # Older deployments use this path for both secret owners.
         security["file_keyring"] = resolve(security["file_keyring"], "security.file_keyring",
                                            control=True, exists=True)
     model = _object(config["model"], "model", {"plan", "manifest", "tokenizer"},
@@ -410,7 +416,7 @@ def load_deployment(path, *, prepare_only=False):
     reservations = {key: [] for key in nodes}
     for actor in _array(config["actors"], "actors", True):
         _object(actor, "actor", {"id", "kind", "identity", "external", "node",
-                               "credential_home", "resources", "parameters"},
+                               "credential_home", "resources", "parameters", "file_keyring"},
                 {"id", "kind", "identity"})
         actor_id = _identifier(actor["id"], "actor.id")
         identity = _name(actor["identity"], "actor.identity")
@@ -420,7 +426,7 @@ def load_deployment(path, *, prepare_only=False):
             _fail("actor.kind", "unsupported actor kind")
         external = _boolean(actor.setdefault("external", False), "actor.external")
         if external:
-            if actor.keys() & {"node", "credential_home", "resources", "parameters"}:
+            if actor.keys() & {"node", "credential_home", "resources", "parameters", "file_keyring"}:
                 _fail("actor", "external references cannot own process inputs")
         else:
             _object(actor, "actor", required={"node", "credential_home", "resources"})
@@ -428,6 +434,11 @@ def load_deployment(path, *, prepare_only=False):
                 _fail("actor.node", "unknown node")
             actor["credential_home"] = resolve(actor["credential_home"], "actor.credential_home",
                                                 exists=True, directory=True)
+            if "file_keyring" in actor:
+                if actor["kind"] not in ("controller", "requester"):
+                    _fail("actor.file_keyring", "only Controller and Requester own these files")
+                actor["file_keyring"] = resolve(actor["file_keyring"], "actor.file_keyring",
+                                                 control=True, exists=True)
             home = (actor["node"], actor["credential_home"])
             if any((local or node == home[0]) and
                    (Path(previous) == Path(home[1]) or
@@ -453,6 +464,12 @@ def load_deployment(path, *, prepare_only=False):
     for kind in ("controller", "requester"):
         if len(by_kind[kind]) != 1:
             _fail("actors", "requires exactly one " + kind)
+    secret_owners = [by_kind[kind][0] for kind in ("controller", "requester")]
+    if any("file_keyring" in actor for actor in secret_owners):
+        controller_ring, requester_ring = (actor_file_keyring(config, actor)
+                                          for actor in secret_owners)
+        if controller_ring and controller_ring == requester_ring:
+            _fail("actor.file_keyring", "Controller and Requester require distinct files")
     if len(by_kind['artifact-authority']) > 1 or (
             not publish_only and not benchmark and len(by_kind['artifact-authority']) != 1):
         _fail('actors', 'requires exactly one artifact-authority except publish-only preparation')

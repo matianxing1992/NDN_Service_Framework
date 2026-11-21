@@ -16,7 +16,8 @@ import time
 import uuid
 
 from .deployment_config import (_identifier, _object, _read_json, _string, _name,
-                                load_deployment, provider_cache_path, provider_recipient_map)
+                                actor_file_keyring, load_deployment, provider_cache_path,
+                                provider_recipient_map)
 from .processes import process_identity, owned_state, stop_owned, write_json
 
 
@@ -184,7 +185,6 @@ def _environment(home, socket, actor_id, state):
                NDN_CLIENT_PIB='pib-sqlite3:' + str(Path(home) / '.ndn'),
                NDN_CLIENT_TPM='tpm-file:',
                NDN_LOG='*=DEBUG' if state.get('diagnostic_logging') else '*=NONE',
-               **({'NDNSF_FILE_KEYRING': state['file_keyring']} if state.get('file_keyring') else {}),
                NDNSF_DEPLOYMENT_ACTOR_ID=actor_id,
                NDNSF_DEPLOYMENT_BOOT_ID=state['boot_id'],
                NDNSF_DEPLOYMENT_CONFIG_SHA256=state['configuration_sha256'])
@@ -232,6 +232,9 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
     controller = next(a['identity'] for a in config['actors'] if a['kind'] == 'controller')
     node = next(n for n in config['nodes'] if n['id'] == actor['node'])
     env = _environment(actor['credential_home'], node['nfd']['socket'], actor['id'], state)
+    keyring = actor_file_keyring(config, actor)
+    if keyring:
+        env['NDNSF_FILE_KEYRING'] = keyring
     env['NDNSF_CONTROLLER_CERT_FILE'] = security['controller_certificate']
     cpus = str(actor['resources']['cpus'])
     env.update(OMP_NUM_THREADS=cpus, OPENBLAS_NUM_THREADS=cpus, MKL_NUM_THREADS=cpus,
@@ -979,8 +982,6 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
                  'runtime_timing': timing,
                  'operation': 'prepare' if prepare_only else 'run',
                  'status': 'STARTING', 'launches': [], 'source': str(source)}
-        if config.get('security', {}).get('file_keyring'):
-            state['file_keyring'] = config['security']['file_keyring']
         if repo_benchmark is not None:
             state['operation'] = 'repo-benchmark'
             state['repo_benchmark'] = dict(repo_benchmark)
