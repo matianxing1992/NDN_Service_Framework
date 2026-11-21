@@ -1,6 +1,7 @@
 #include "NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -668,6 +669,16 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
           transform.value("partial", std::string{}).empty())
         throw std::invalid_argument("conv-bias transform is incomplete");
     }
+    else if (kind == "ffn-pair-partial") {
+      const auto pair = NativeOnnxSourceTransformV1::parse(wire);
+      const auto identity = tensorIdentityByRole.find(role);
+      if (identity == tensorIdentityByRole.end() || identity->second.degree != 2 ||
+          identity->second.rank >= 2 || identity->second.tensorShardV1.empty())
+        throw std::invalid_argument("paired FFN requires a two-rank shard identity");
+      const auto ranges = nativeConvInputChannelRanges(pair.extent, 2);
+      if (ranges[identity->second.rank] != std::make_pair(pair.begin, pair.end))
+        throw std::invalid_argument("paired FFN transform range differs from rank identity");
+    }
     else if (!kind.empty()) {
       throw std::invalid_argument("source transform kind is unsupported");
     }
@@ -935,6 +946,12 @@ nativePlanRequiredCapabilities(const NativeSplitCandidate& candidate)
   }
   if (!candidate.sourceTransformByRole.empty())
     required.emplace_back(NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1);
+  if (std::any_of(candidate.sourceTransformByRole.begin(), candidate.sourceTransformByRole.end(),
+                  [] (const auto& item) {
+                    return nativeParseJson(item.second).value("kind", std::string{}) ==
+                           "ffn-pair-partial";
+                  }))
+    required.emplace_back(NATIVE_FFN_PAIR_CAPABILITY_V1);
   return required;
 }
 

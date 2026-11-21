@@ -2952,6 +2952,248 @@ checkConvFp32Error(const std::vector<float>& actual, const std::vector<ConvRefer
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformShardsBothFfnProjections)
+{
+  onnx::ModelProto source;
+  source.set_ir_version(9);
+  source.add_opset_import()->set_version(20);
+  auto& graph = *source.mutable_graph();
+  graph.set_name("paired-ffn");
+  const auto port = [] (onnx::ValueInfoProto& value, const std::string& name, int width) {
+    value.set_name(name);
+    auto* type = value.mutable_type()->mutable_tensor_type();
+    type->set_elem_type(onnx::TensorProto::FLOAT);
+    for (int dim : {1, 1, 1, width})
+      type->mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  port(*graph.add_input(), "x", 3);
+  port(*graph.add_output(), "y", 4);
+  const auto weight = [&] (const std::string& name, const std::vector<int>& shape,
+                           const std::vector<float>& values) {
+    auto& tensor = *graph.add_initializer();
+    tensor.set_name(name);
+    tensor.set_data_type(onnx::TensorProto::FLOAT);
+    for (const auto dim : shape) tensor.add_dims(dim);
+    for (const auto value : values) tensor.add_float_data(value);
+  };
+  std::vector<float> w1(3 * 7), w2(7 * 4), b1(7);
+  for (int i = 0; i < 21; ++i) w1[i] = static_cast<float>(i - 10) / 16;
+  for (int i = 0; i < 28; ++i) w2[i] = static_cast<float>((i * 11) % 23 - 11) / 16;
+  for (int i = 0; i < 7; ++i) b1[i] = static_cast<float>(i - 3) / 8;
+  weight("W1", {3, 7}, w1);
+  weight("W2", {7, 4}, w2);
+  weight("b1", {7}, b1);
+  const auto op = [&] (const char* name, const char* opType,
+                       std::initializer_list<const char*> inputs, const char* output) {
+    auto* node = graph.add_node();
+    node->set_name(name);
+    node->set_op_type(opType);
+    for (const auto input : inputs) node->add_input(input);
+    node->add_output(output);
+    return node;
+  };
+  op("up", "MatMul", {"x", "W1"}, "expanded");
+  op("bias", "Add", {"expanded", "b1"}, "biased");
+  auto* approximate = op("activation", "Gelu", {"biased"}, "activated")->add_attribute();
+  approximate->set_name("approximate");
+  approximate->set_type(onnx::AttributeProto::STRING);
+  approximate->set_s("tanh");
+  op("down", "MatMul", {"activated", "W2"}, "y");
+
+  NativeOnnxSourceTransformV1 transform;
+  transform.kind = "ffn-pair-partial";
+  transform.axis = "ffn-channel";
+  transform.node = "up";
+  transform.downNode = "down";
+  transform.input = "x";
+  transform.output = "y";
+  transform.weight = "W1";
+  transform.downWeight = "W2";
+  transform.bias = "b1";
+  transform.extent = 7;
+  const std::vector<float> x{0.5f, -0.25f, 0.75f};
+  const auto run = [&] (const auto& model) {
+    return runOrt(model, {{"x", x}}, {{"x", {1, 1, 1, 3}}}, "y", {1, 1, 1, 4},
+                  ORT_DISABLE_ALL);
+  };
+  const auto full = run(source);
+  std::array<double, 4> sum{};
+  for (const auto& [begin, end] : nativeConvInputChannelRanges(7, 2)) {
+    transform.begin = begin;
+    transform.end = end;
+    const auto admitted = NativeOnnxSourceTransformV1::parse(transform.canonicalJson());
+    const auto derived = applyNativeOnnxSourceTransform(source, admitted);
+    BOOST_CHECK_EQUAL(derived.graph().initializer(0).dims(1), end - begin);
+    BOOST_CHECK_EQUAL(derived.graph().initializer(1).dims(0), end - begin);
+    BOOST_CHECK_EQUAL(derived.graph().initializer(2).dims(0), end - begin);
+    const auto partial = run(derived);
+    BOOST_REQUIRE_EQUAL(partial.size(), sum.size());
+    for (std::size_t out = 0; out < sum.size(); ++out) {
+      double expected = 0;
+      for (auto channel = begin; channel < end; ++channel) {
+        double up = b1[channel];
+        for (std::size_t in = 0; in < x.size(); ++in)
+          up += static_cast<double>(x[in]) * w1[in * 7 + channel];
+        const auto gelu = up * 0.5 * (1 + std::tanh(std::sqrt(2.0 / std::acos(-1.0)) *
+                                                  (up + 0.044715 * up * up * up)));
+        expected += gelu * w2[channel * 4 + out];
+      }
+      BOOST_CHECK_SMALL(static_cast<double>(partial[out]) - expected, 1e-6);
+      sum[out] += partial[out];
+    }
+  }
+  BOOST_REQUIRE_EQUAL(full.size(), sum.size());
+  for (std::size_t out = 0; out < sum.size(); ++out)
+    BOOST_CHECK_SMALL(sum[out] - full[out], 1e-6);
+
+  auto externalGraph = source;
+  auto& external = *externalGraph.mutable_graph();
+  external.mutable_node()->DeleteSubrange(1, 1);
+  external.mutable_node(1)->set_input(0, "expanded");
+  external.mutable_initializer()->DeleteSubrange(2, 1);
+  constexpr std::uint64_t EXTENT = 524296;
+  constexpr auto HALF = EXTENT / 2;
+  constexpr auto MATRIX1_BYTES = 3 * EXTENT * 4;
+  const auto setStorage = [&] (int index, std::uint64_t start, std::uint64_t length) {
+    auto& tensor = *external.mutable_initializer(index);
+    tensor.clear_float_data();
+    tensor.set_data_location(onnx::TensorProto::EXTERNAL);
+    const auto set = [&] (const char* key, const std::string& value) {
+      auto* field = tensor.add_external_data();
+      field->set_key(key);
+      field->set_value(value);
+    };
+    set("location", "model.onnx.data");
+    set("offset", std::to_string(start));
+    set("length", std::to_string(length));
+  };
+  external.mutable_initializer(0)->set_dims(1, EXTENT);
+  external.mutable_initializer(1)->set_dims(0, EXTENT);
+  setStorage(0, 0, MATRIX1_BYTES);
+  setStorage(1, MATRIX1_BYTES, EXTENT * 4 * 4);
+  auto externalTransform = transform;
+  externalTransform.bias.clear();
+  externalTransform.extent = EXTENT;
+  externalTransform.begin = HALF;
+  externalTransform.end = EXTENT;
+  constexpr auto UP_BYTES = 3 * HALF * 4;
+  std::uint64_t emitted = 0;
+  std::uint64_t largestRead = 0;
+  const auto streamed = applyNativeOnnxSourceTransform(externalGraph, externalTransform,
+    [&] (const auto& path, std::uint64_t offset, std::uint64_t length) {
+      BOOST_CHECK_EQUAL(path, "model.onnx.data");
+      largestRead = std::max(largestRead, length);
+      const auto expected = emitted < UP_BYTES
+        ? (emitted / (HALF * 4) * EXTENT + HALF) * 4 + emitted % (HALF * 4)
+        : MATRIX1_BYTES + HALF * 4 * 4 + emitted - UP_BYTES;
+      BOOST_CHECK_EQUAL(offset, expected);
+      return std::vector<std::uint8_t>(length, 11);
+    }, [&] (const auto& bytes) { emitted += bytes.size(); });
+  BOOST_CHECK_EQUAL(largestRead, 1U << 20);
+  BOOST_CHECK_EQUAL(emitted, UP_BYTES + HALF * 4 * 4);
+  BOOST_CHECK_EQUAL(streamed.graph().initializer(0).external_data(1).value(), "0");
+  BOOST_CHECK_EQUAL(streamed.graph().initializer(1).external_data(1).value(),
+                    std::to_string(UP_BYTES));
+
+  auto wrongWeight = transform;
+  wrongWeight.downWeight = "other";
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongWeight), std::invalid_argument);
+  auto wrongAxis = transform;
+  wrongAxis.axis = "input-channel";
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongAxis), std::invalid_argument);
+  auto wrongRange = transform;
+  wrongRange.begin = wrongRange.end;
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongRange), std::invalid_argument);
+  auto unsupported = source;
+  auto* foreignActivation = unsupported.mutable_graph()->mutable_node(2);
+  foreignActivation->set_op_type("Relu");
+  foreignActivation->clear_attribute();
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(unsupported, transform), std::invalid_argument);
+  auto openBoundary = source;
+  *openBoundary.mutable_graph()->add_output() = graph.output(0);
+  openBoundary.mutable_graph()->mutable_output(1)->set_name("activated");
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(openBoundary, transform), std::invalid_argument);
+
+  op("prefix", "Identity", {"x"}, "hidden");
+  for (int i = graph.node_size() - 1; i > 0; --i)
+    graph.mutable_node()->SwapElements(i, i - 1);
+  graph.mutable_node(1)->set_input(0, "hidden");
+  graph.mutable_node(4)->set_output(0, "partial");
+  const std::vector<float> b2{0.125f, -0.25f, 0.5f, -0.625f};
+  weight("b2", {4}, b2);
+  op("suffix", "Add", {"partial", "b2"}, "y");
+  const auto biasedFull = run(source);
+  for (std::size_t out = 0; out < sum.size(); ++out)
+    BOOST_CHECK_SMALL(sum[out] + b2[out] - biasedFull[out], 1e-6);
+
+  NativeCanonicalSource canonicalSource;
+  const auto modelWire = source.SerializeAsString();
+  canonicalSource.modelBytes.assign(modelWire.begin(), modelWire.end());
+  auto descriptor = model("fixture", "PairedFFN", digest("ffn-placeholder"));
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 4 * 1024 * 1024, 4 * 1024 * 1024};
+  const auto inspected = inspectNativeOnnxSourceGraph(canonicalSource, descriptor, control);
+  descriptor.graphDigest = inspected.graph.graphDigest;
+  const auto identity = canonicalOnnxSourceIdentity(canonicalSource, control);
+  const NativeJson configuration{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    {"legacy_yolo_retired", false},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/ffn"},
+      {"digest", nativePlanningDigest(canonicalSource.modelBytes.data(),
+                                      canonicalSource.modelBytes.size())},
+      {"model_manifest_digest", digest("ffn-manifest")},
+      {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest("ffn-profile")},
+      {"assembler_descriptor_digest", digest("ffn-assembler")}, {"backend_abi", "fixture-abi"},
+      {"precision", descriptor.precision}, {"quantization", "none"}, {"layout", "NCHW"},
+      {"padding", "none"}, {"protection_epoch", "epoch-1"}, {"max_source_bytes", 4194304},
+      {"max_assembled_bytes", 4194304}, {"max_nodes", 100}}},
+    {"publication", {{"artifact_root", "/fixture/ffn/artifacts"}}},
+    {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"mode", "hybrid"},
+      {"roles", {"Prefix", "Rank0", "Rank1", "Suffix"}},
+      {"boundary_node", "onnx-node-1"}, {"ffn_down_node", "onnx-node-4"},
+      {"input_ingress_role", "Prefix"}, {"result_egress_role", "Suffix"}}}
+  };
+  const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration),
+                                                  canonicalSource, control);
+  BOOST_REQUIRE(loaded.splitter);
+  const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph, {});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto& candidate = candidates.front();
+  BOOST_CHECK_EQUAL(candidate.executionPlan.stageLayout.size(), 3U);
+  BOOST_CHECK_EQUAL(candidate.roleNodeIdsByRole.at("Rank0").size(), 4U);
+  BOOST_CHECK(candidate.roleNodeIdsByRole.at("Rank0") == candidate.roleNodeIdsByRole.at("Rank1"));
+  BOOST_REQUIRE_EQUAL(candidate.sourceTransformByRole.size(), 2U);
+  const auto requirements = nativePlanRequiredCapabilities(candidate);
+  BOOST_CHECK(std::find(requirements.begin(), requirements.end(),
+                        NATIVE_FFN_PAIR_CAPABILITY_V1) != requirements.end());
+  const auto rank0 = NativeOnnxSourceTransformV1::parse(candidate.sourceTransformByRole.at("Rank0"));
+  const auto rank1 = NativeOnnxSourceTransformV1::parse(candidate.sourceTransformByRole.at("Rank1"));
+  BOOST_CHECK_EQUAL(rank0.end, 4U);
+  BOOST_CHECK_EQUAL(rank1.begin, 4U);
+  BOOST_CHECK_EQUAL(rank1.end, 7U);
+  BOOST_CHECK_EQUAL(*candidate.requirementsByRole.at("Rank0").weightBytes, 128U);
+  BOOST_CHECK_EQUAL(*candidate.requirementsByRole.at("Rank1").weightBytes, 96U);
+  BOOST_CHECK_EQUAL(*candidate.requirementsByRole.at("Suffix").weightBytes, 16U);
+  const NativeRequestControl request{"/fixture/ffn/request", 1,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
+  const auto roles = loaded.preparation->prepareRoles(loaded.model, candidate, request);
+  BOOST_REQUIRE_EQUAL(roles.size(), 4U);
+  for (const auto& role : roles) BOOST_CHECK_NO_THROW(validateNativeAssembly(role));
+  const auto plannedRank = std::find_if(roles.begin(), roles.end(), [] (const auto& role) {
+    return role.selectedRole == "Rank1";
+  });
+  BOOST_REQUIRE(plannedRank != roles.end());
+  BOOST_CHECK(!plannedRank->artifactCoordinate.empty());
+  BOOST_CHECK_EQUAL(plannedRank->expectedInputs.at(0).name, "hidden");
+  BOOST_CHECK_EQUAL(plannedRank->expectedOutputs.at(0).name, "partial");
+  auto wrongRank = *plannedRank;
+  wrongRank.tensorParallelRank = 0;
+  BOOST_CHECK_THROW(validateNativeAssembly(wrongRank), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformPreservesExactConvAndResidual)
 {
   auto source = loadConvFixture();

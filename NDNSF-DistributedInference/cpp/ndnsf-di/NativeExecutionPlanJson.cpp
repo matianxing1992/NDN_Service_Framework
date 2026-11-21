@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
@@ -4318,12 +4319,28 @@ void validateAssemblyEncoding(const NativeSelectionRoleV3& role)
 
 void validateNativeAssembly(const NativeSelectionRoleV3& role)
 {
+  bool ffnPair = false;
   if (!role.sourceTransformV1.empty()) {
     const auto transform = nativeParseJson(role.sourceTransformV1);
     if (!transform.is_object() ||
         transform.value("schema", std::string{}) != "source_transform_v1" ||
         transform.value("kind", std::string{}).empty())
       throw std::invalid_argument("role source transform is invalid");
+    ffnPair = transform.value("kind", std::string{}) == "ffn-pair-partial";
+    if (ffnPair) {
+      const auto recipe = NativeOnnxSourceTransformV1::parse(role.sourceTransformV1);
+      if (role.adapterId == "qwen" || role.tensorParallelDegree != 2 ||
+          role.tensorParallelRank >= 2 || role.tensorShardV1.empty())
+        throw std::invalid_argument("role paired FFN geometry is incomplete");
+      const auto ranges = nativeConvInputChannelRanges(recipe.extent, 2);
+      const auto shard = parseNativeTensorShardV1(role.tensorShardV1);
+      const auto& axes = shard.at("axes");
+      if (ranges[role.tensorParallelRank] != std::make_pair(recipe.begin, recipe.end) ||
+          axes.size() != 1 || axes[0].at("axis") != recipe.axis ||
+          axes[0].at("begin") != recipe.begin || axes[0].at("end") != recipe.end ||
+          axes[0].at("extent") != recipe.extent)
+        throw std::invalid_argument("role paired FFN axis differs from its rank recipe");
+    }
   }
   if (!role.tensorShardV1.empty()) {
     // A source-transformed ONNX rank carries its own channel-slice geometry in
@@ -4345,7 +4362,7 @@ void validateNativeAssembly(const NativeSelectionRoleV3& role)
   }
   // Authenticate the equal-Qwen case too. Otherwise removing both the shard
   // field and its Selection version can retain an explicit recipe's cache key.
-  if (!role.automaticContractDigest.empty() ||
+  if (ffnPair || !role.automaticContractDigest.empty() ||
       (role.adapterId == "qwen" && role.tensorParallelDegree >= 2)) {
     const auto canonical = canonicalNativeOnnxRecipeJson(role);
     const auto canonicalDigest = nativePlanningDigest(canonical);

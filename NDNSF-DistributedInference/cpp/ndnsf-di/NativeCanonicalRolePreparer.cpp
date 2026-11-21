@@ -85,12 +85,14 @@ assembledArtifactCoordinate(const NativeSplitCandidate& candidate,
     const auto transform = NativeOnnxSourceTransformV1::parse(role.sourceTransformV1);
     const auto shard = parseNativeTensorShardV1(role.tensorShardV1);
     const auto& axes = shard.at("axes");
-    if (transform.kind != "conv-input-channel-partial" || axes.size() != 1 ||
+    const bool ffnPair = transform.kind == "ffn-pair-partial";
+    if ((!ffnPair && transform.kind != "conv-input-channel-partial") || axes.size() != 1 ||
         axes[0].at("axis") != transform.axis || axes[0].at("begin") != transform.begin ||
         axes[0].at("end") != transform.end || axes[0].at("extent") != transform.extent)
       throw std::invalid_argument("ONNX source artifact has invalid shard coordinates");
     coordinate.append("entry").append("region").append("profile")
-      .append("channels-" + decimal(transform.begin) + "-" + decimal(transform.end));
+      .append(std::string(ffnPair ? "ffn-channels-" : "channels-") +
+              decimal(transform.begin) + "-" + decimal(transform.end));
     return coordinate.toUri(ndn::name::UriFormat::ALTERNATE);
   }
 
@@ -509,9 +511,28 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     const auto sourceTransform = transform == candidate.sourceTransformByRole.end()
       ? std::optional<NativeOnnxSourceTransformV1>{}
       : NativeOnnxSourceTransformV1::parse(transform->second);
-    if (sourceTransform && sourceTransform->kind == "conv-input-channel-partial") {
+    if (sourceTransform && (sourceTransform->kind == "conv-input-channel-partial" ||
+                            sourceTransform->kind == "ffn-pair-partial")) {
       if (!requirement.weightBytes || *requirement.weightBytes == 0)
         throw std::invalid_argument("transformed native role has no resident weight bound");
+      if (sourceTransform->kind == "ffn-pair-partial") {
+        const auto width = sourceTransform->end - sourceTransform->begin;
+        std::uint64_t residentBytes = 0;
+        for (const auto& initializer :
+             {sourceTransform->weight, sourceTransform->downWeight, sourceTransform->bias}) {
+          if (initializer.empty()) continue;
+          const auto& size = metadata.at("tensors").at(initializer).at("sizeBytes");
+          if (!size.is_number_unsigned())
+            throw std::invalid_argument("paired FFN initializer memory is unknown");
+          const auto bytes = size.get<std::uint64_t>();
+          if (bytes == 0 || bytes % sourceTransform->extent != 0)
+            throw std::invalid_argument("paired FFN initializer memory differs from its axis");
+          const auto shardBytes = (bytes / sourceTransform->extent) * width;
+          if (shardBytes > *requirement.weightBytes - residentBytes)
+            throw std::invalid_argument("paired FFN weight budget is below its sliced bytes");
+          residentBytes += shardBytes;
+        }
+      }
     }
     else if (degree == 1 && !(name == candidate.resultEgressRole &&
                         candidate.mergeKind == "NATIVE_POSTPROCESS")) {

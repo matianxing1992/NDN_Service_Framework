@@ -20,6 +20,15 @@ NativeOnnxSourceTransformV1::validate() const
     if (sourceConv.empty() || bias.empty() || output.empty())
       throw std::invalid_argument("conv-bias transform is incomplete");
   }
+  else if (kind == "ffn-pair-partial") {
+    if (node.empty() || downNode.empty() || node == downNode || input.empty() ||
+        output.empty() || input == output || weight.empty() || downWeight.empty() ||
+        weight == downWeight || (!bias.empty() && (bias == weight || bias == downWeight)))
+      throw std::invalid_argument("paired FFN transform is incomplete");
+    if (axis != "ffn-channel" || extent < 2 || begin >= end || end > extent ||
+        end - begin == extent || !pads.empty() || !strides.empty() || !dilations.empty())
+      throw std::invalid_argument("paired FFN transform range is invalid");
+  }
   else {
     throw std::invalid_argument("source transform kind is unsupported");
   }
@@ -29,7 +38,7 @@ std::string
 NativeOnnxSourceTransformV1::canonicalJson() const
 {
   auto value = NativeJson{{"schema", schema}, {"kind", kind}, {"node", node}};
-  if (kind == "conv-input-channel-partial") {
+  if (kind == "conv-input-channel-partial" || kind == "ffn-pair-partial") {
     value["axis"] = axis;
     value["input"] = input;
     value["weight"] = weight;
@@ -41,6 +50,10 @@ NativeOnnxSourceTransformV1::canonicalJson() const
     if (!pads.empty()) value["pads"] = pads;
     if (!strides.empty()) value["strides"] = strides;
     if (!dilations.empty()) value["dilations"] = dilations;
+    if (kind == "ffn-pair-partial") {
+      value["downNode"] = downNode;
+      value["downWeight"] = downWeight;
+    }
   }
   else {
     value["sourceConv"] = sourceConv;
@@ -75,7 +88,14 @@ NativeOnnxSourceTransformV1::parse(const std::string& wire)
   result.pads = value.value("pads", std::vector<std::int64_t>{});
   result.strides = value.value("strides", std::vector<std::int64_t>{});
   result.dilations = value.value("dilations", std::vector<std::int64_t>{});
+  if (result.kind == "ffn-pair-partial") {
+    result.downNode = value.value("downNode", std::string{});
+    result.downWeight = value.value("downWeight", std::string{});
+  }
   result.validate();
+  if (result.kind == "ffn-pair-partial" &&
+      result.canonicalJson() != nativeCanonicalJson(value))
+    throw std::invalid_argument("paired FFN transform has unexpected fields");
   return result;
 }
 

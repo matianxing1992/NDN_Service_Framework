@@ -3,19 +3,25 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "ndnsf-integration-fixture.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
 #include <onnx/onnx_pb.h>
+#include <openssl/evp.h>
 
 #include <boost/test/unit_test.hpp>
+#include <boost/scope_exit.hpp>
 
 #include <cstdlib>
 #include <filesystem>
@@ -573,6 +579,327 @@ runRegisteredProviderAssemblyCase(std::size_t providerCount)
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec175NativeAssembly)
+
+BOOST_AUTO_TEST_CASE(PairedFfnMaterialSidecarReopensAndRejectsCorruption)
+{
+  constexpr std::uint64_t WIDTH = 524296;
+  constexpr auto HALF = WIDTH / 2;
+  constexpr auto MATRIX_BYTES = WIDTH * 4;
+  onnx::ModelProto model;
+  model.set_ir_version(9);
+  model.add_opset_import()->set_version(20);
+  auto& graph = *model.mutable_graph();
+  graph.set_name("spec263-external-ffn");
+  for (auto* value : {graph.add_input(), graph.add_output()}) {
+    auto* type = value->mutable_type()->mutable_tensor_type();
+    type->set_elem_type(onnx::TensorProto::FLOAT);
+    type->mutable_shape()->add_dim()->set_dim_value(1);
+    type->mutable_shape()->add_dim()->set_dim_value(1);
+  }
+  graph.mutable_input(0)->set_name("hidden");
+  graph.mutable_output(0)->set_name("partial");
+  const auto addMatrix = [&] (const char* name, std::uint64_t rows, std::uint64_t columns,
+                              std::uint64_t offset) {
+    auto& tensor = *graph.add_initializer();
+    tensor.set_name(name);
+    tensor.set_data_type(onnx::TensorProto::FLOAT);
+    tensor.add_dims(rows);
+    tensor.add_dims(columns);
+    tensor.set_data_location(onnx::TensorProto::EXTERNAL);
+    for (const auto& [key, value] : std::map<std::string, std::string>{
+           {"location", "source.data"}, {"offset", std::to_string(offset)},
+           {"length", std::to_string(MATRIX_BYTES)}}) {
+      auto* item = tensor.add_external_data();
+      item->set_key(key);
+      item->set_value(value);
+    }
+  };
+  addMatrix("W1", 1, WIDTH, 0);
+  addMatrix("W2", WIDTH, 1, MATRIX_BYTES);
+  const auto addOp = [&] (const char* kind, std::initializer_list<const char*> in,
+                          const char* out) {
+    auto* node = graph.add_node();
+    node->set_op_type(kind);
+    for (const auto name : in) node->add_input(name);
+    node->add_output(out);
+  };
+  addOp("MatMul", {"hidden", "W1"}, "expanded");
+  addOp("Gelu", {"expanded"}, "activated");
+  addOp("MatMul", {"activated", "W2"}, "partial");
+
+  NativeCanonicalSource source;
+  const auto wire = model.SerializeAsString();
+  source.modelBytes.assign(wire.begin(), wire.end());
+  source.initializerBytes.emplace(2 * MATRIX_BYTES);
+  for (std::uint64_t index = 0; index < source.initializerBytes->size(); ++index)
+    (*source.initializerBytes)[index] = (index ^ (index >> 12) ^ (index >> 21)) & 0xff;
+  const NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(45),
+    [] {}, 16U << 20, 32U << 20};
+  const auto material = deriveNativeCanonicalMaterialManifest(source, control);
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  const auto manifest = material->canonicalJson();
+  const std::string manifestName = "/spec263/ffn/material/manifest";
+  const std::string receiptName = "/spec263/ffn/material/receipt";
+  const std::string rootName = "/spec263/ffn/root";
+  auto objects = NativeJson::array();
+  std::map<std::string, std::vector<std::uint8_t>> payloads;
+  for (const auto& payload : material->payloads) {
+    const auto name = "/spec263/ffn/material/" + payload.payloadId;
+    payloads.emplace(name, payload.copyBytes());
+    objects.push_back({{"payloadId", payload.payloadId}, {"dataName", name},
+                       {"bytes", payload.byteSize()}, {"digest", payload.digest}});
+  }
+  const auto receipt = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-canonical-material-receipt-v1"}, {"sourceDigest", material->sourceDigest},
+    {"graphDigest", material->graphDigest}, {"materialIdentityDigest", material->manifestDigest},
+    {"materialManifestDigest", digest(manifest)}, {"materialObjects", objects}});
+  payloads.emplace(manifestName, std::vector<std::uint8_t>(manifest.begin(), manifest.end()));
+  payloads.emplace(receiptName, std::vector<std::uint8_t>(receipt.begin(), receipt.end()));
+  const auto profile = zeroDigest('b');
+  const auto root = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-canonical-model-manifest-v1"}, {"state", "ACTIVE"},
+    {"artifactProfileDigest", profile}, {"modelIdentityDigest", zeroDigest('a')},
+    {"modelName", "spec263-external-ffn"},
+    {"metadata", {{"canonicalSourceDigest", material->sourceDigest},
+                  {"canonicalSourceBytes", source.modelBytes.size()},
+                  {"materialIdentityDigest", material->manifestDigest},
+                  {"materialManifestDataName", manifestName},
+                  {"materialManifestDigest", digest(manifest)},
+                  {"materialManifestBytes", manifest.size()},
+                  {"materialReceiptDataName", receiptName},
+                  {"materialReceiptDigest", digest(receipt)},
+                  {"materialReceiptBytes", receipt.size()}}}});
+  auto projection = makeProjection(digest(root), profile, identity.graphDigest,
+                                   identity.initializerDigest);
+  projection.plan.modelName = "spec263-external-ffn";
+  projection.canonicalArtifactName = rootName;
+  auto& role = projection.assembly;
+  role.roleKind = "COMPONENT_SET";
+  role.layerEnd = 0;
+  role.backend = "onnxruntime-cpu";
+  role.deviceSet.clear();
+  role.adapterVersion = "1";
+  role.nodeIndices = {0, 1, 2};
+  role.expectedInputs = candidateTensorContracts(graph.input());
+  role.expectedOutputs = candidateTensorContracts(graph.output());
+  role.maxSourceBytes = control.maxSourceBytes;
+  role.maxAssembledBytes = control.maxAssembledBytes;
+  role.tensorParallelDegree = 2;
+  role.tensorParallelRank = 1;
+  role.protectionEpoch = "spec263-ffn-epoch";
+  role.tensorShardV1 = nativeCanonicalJson(NativeJson{
+    {"stage_layout_digest", zeroDigest('f')},
+    {"axes", NativeJson::array({{{"axis", "ffn-channel"}, {"begin", HALF},
+                                 {"end", WIDTH}, {"extent", WIDTH}}})}});
+  NativeOnnxSourceTransformV1 pair;
+  pair.kind = "ffn-pair-partial";
+  pair.axis = "ffn-channel";
+  pair.node = "onnx-node-0";
+  pair.downNode = "onnx-node-2";
+  pair.input = "hidden";
+  pair.output = "partial";
+  pair.weight = "W1";
+  pair.downWeight = "W2";
+  pair.begin = HALF;
+  pair.end = pair.extent = WIDTH;
+  role.sourceTransformV1 = pair.canonicalJson();
+  role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
+  projection.selectedRole = role;
+  projection.plan.roles = {"Rank0", role.selectedRole};
+  projection.plan.tensorDegree = 2;
+  projection.plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  projection.plan.stageLayout = {{"ffn", zeroDigest('e'), projection.plan.roles}};
+  projection.executionRole.stageId = "ffn";
+  projection.executionRole.rank = 1;
+  projection.executionRole.backend = role.backend;
+  projection.executionRole.adapterId = role.adapterId;
+  projection.executionRole.adapterVersion = role.adapterVersion;
+  NativeExecutionStepSpec call;
+  call.stepId = role.selectedRole + "/RUN";
+  call.unitId = role.selectedRole;
+  call.operation = "CALL_SUBGRAPH";
+  call.artifactEntry = role.selectedRole + "/artifact";
+  NativeStepSlotSpec inputSlot;
+  inputSlot.slotId = "hidden";
+  inputSlot.dtype = "float32";
+  inputSlot.shape = {1, 1};
+  inputSlot.layoutDigest = zeroDigest('a');
+  inputSlot.source = "EPOCH_INPUT";
+  auto outputSlot = inputSlot;
+  outputSlot.slotId = "partial";
+  outputSlot.source = "LOCAL_STEP";
+  call.inputSlots = {inputSlot};
+  call.outputSlots = {outputSlot};
+  projection.plan.steps = {call};
+  projection.planCoreDigest = projection.planDigest;
+  projection.securityPolicySnapshotDigest = projection.planDigest;
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  projection.deadlineMs = now + 90000;
+  const auto privateKey = [] (char seed) {
+    const std::string raw(32, seed);
+    return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+      reinterpret_cast<const unsigned char*>(raw.data()), raw.size()), EVP_PKEY_free);
+  };
+  const auto rawPublicKey = [] (const auto& key) {
+    std::string raw(32, '\0');
+    auto size = raw.size();
+    BOOST_REQUIRE(key);
+    BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(
+      key.get(), reinterpret_cast<unsigned char*>(raw.data()), &size), 1);
+    BOOST_REQUIRE_EQUAL(size, raw.size());
+    return raw;
+  };
+  const auto publicKey = [&] (const auto& key) {
+    const auto raw = rawPublicKey(key);
+    return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr,
+      reinterpret_cast<const unsigned char*>(raw.data()), raw.size()), EVP_PKEY_free);
+  };
+  const auto authority = privateKey('a');
+  const auto requester = privateKey('b');
+  const auto recipient = privateKey('c');
+  NativeGrantIssuerConfig issuer;
+  issuer.authorityIdentity = "/spec263/authority";
+  issuer.requesterIdentity = "/spec263/requester";
+  issuer.protectionEpoch = role.protectionEpoch;
+  issuer.keyId = "spec263-ffn-key";
+  issuer.authorityPrivateKey = authority;
+  issuer.requesterPublicKey = publicKey(requester);
+  issuer.allowedModelManifests = {role.modelManifestDigest};
+  issuer.recipientPublicKeys.emplace(projection.provider, publicKey(recipient));
+  issuer.contentKey = [] (const auto&, const auto&) { return std::vector<std::uint8_t>(32, 0x42); };
+  NativeSignedGrantRequest grantRequest;
+  grantRequest.providerIdentity = projection.provider;
+  grantRequest.requesterIdentity = issuer.requesterIdentity;
+  grantRequest.requestId = projection.requestId;
+  grantRequest.attempt = projection.attempt;
+  grantRequest.planCoreDigest = projection.planCoreDigest;
+  grantRequest.grantViewDigest = projection.planDigest;
+  grantRequest.modelManifestDigest = role.modelManifestDigest;
+  grantRequest.protectionEpoch = role.protectionEpoch;
+  grantRequest.issuedAtMs = now;
+  const auto grant = NativeArtifactGrantIssuer(issuer).issue(
+    grantRequest.sign(*requester), now, projection.deadlineMs);
+  projection.hasGrantBinding = true;
+  projection.grantName = grant.grantName;
+  projection.grantDigest = grant.grantDigest;
+  const auto makeRuntime = [&] {
+    ProtectedRuntimeBindingV1 binding;
+    binding.provider = projection.provider;
+    binding.role = role.selectedRole;
+    binding.requestId = projection.requestId;
+    binding.attempt = projection.attempt;
+    binding.planCoreDigest = projection.planCoreDigest;
+    binding.planDigest = projection.planDigest;
+    binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
+    binding.protectionEpoch = role.protectionEpoch;
+    binding.grantName = projection.grantName;
+    binding.grantDigest = projection.grantDigest;
+    binding.providerBootId = "spec263-test-boot";
+    binding.fencingToken = nativeProtectedFencingToken(projection, binding.providerBootId, {});
+    binding.expiresAtMs = projection.deadlineMs;
+    NativeProtectedGrantConfig config;
+    config.publicationIdentity = issuer.requesterIdentity;
+    config.authorityIdentity = issuer.authorityIdentity;
+    config.authorityPublicKeyRaw = rawPublicKey(authority);
+    config.recipientKey = {NativeRecipientKey::Kind::Ed25519Seed, std::string(32, 'c')};
+    config.modelManifestDigest = role.modelManifestDigest;
+    config.fetchGrant = [&] (const std::string&) { return grant.wireJson; };
+    auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(config));
+    runtime->verifyGrant(binding, now);
+    return runtime;
+  };
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [&] (const ndn::Name& name) -> std::optional<ndn::Buffer> {
+    if (name.toUri() != rootName) return std::nullopt;
+    return ndn::Buffer(root.begin(), root.end());
+  };
+  fetchers.fetchEncryptedLargeData = [&] (const ndn::Name& name, const ndn::Name&)
+    -> std::optional<ndn::Buffer> {
+    const auto item = payloads.find(name.toUri());
+    if (item == payloads.end()) return std::nullopt;
+    return ndn::Buffer(item->second.begin(), item->second.end());
+  };
+  auto pattern = (std::filesystem::temp_directory_path() / "spec263-ffn-cache-XXXXXX").string();
+  BOOST_REQUIRE(::mkdtemp(pattern.data()) != nullptr);
+  BOOST_SCOPE_EXIT_ALL(&pattern) {
+    std::error_code error;
+    std::filesystem::remove_all(pattern, error);
+  };
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = pattern;
+  options.providerIdentity = projection.provider;
+  options.workerLocation = testWorkerLocation();
+  options.signManifest = [] (const std::string& bytes) { return digest(bytes); };
+  options.roleAssemblySpecDigest = zeroDigest('e');
+  options.protectedRuntime = makeRuntime();
+  const auto built = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  BOOST_REQUIRE(built.entryContract);
+  BOOST_CHECK_EQUAL(built.entryContract->entryId, call.artifactEntry);
+  const auto sidecar = std::filesystem::path(built.path).parent_path() / "model.onnx.data";
+  const auto bytes = readBytes(sidecar);
+  const auto& original = source.initializerBytes->asVector();
+  BOOST_REQUIRE_EQUAL(bytes.size(), MATRIX_BYTES);
+  BOOST_CHECK(std::equal(bytes.begin(), bytes.begin() + HALF * 4,
+                         original.begin() + HALF * 4));
+  BOOST_CHECK(std::equal(bytes.begin() + HALF * 4, bytes.end(),
+                         original.begin() + MATRIX_BYTES + HALF * 4));
+  options.protectedRuntime->complete();
+  options.protectedRuntime.reset();
+  options.protectedRuntime = makeRuntime();
+  const auto reopened = tryLoadNativeCanonicalOnnxRoleFromCache(
+    fetchers, projection, options, {}, {});
+  BOOST_REQUIRE(reopened);
+  BOOST_CHECK_EQUAL(reopened->metadata.at("protectedCacheHit"), "true");
+  BOOST_REQUIRE(reopened->entryContract);
+  BOOST_CHECK(*reopened->entryContract == *built.entryContract);
+  BOOST_CHECK_EQUAL(reopened->metadata.at("assembledFileSetDigest"),
+                    built.metadata.at("assembledFileSetDigest"));
+  {
+    std::fstream tamper(sidecar, std::ios::binary | std::ios::in | std::ios::out);
+    BOOST_REQUIRE(tamper.good());
+    tamper.put(static_cast<char>(bytes.front() ^ 1));
+  }
+  BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(fetchers, projection, options, {}, {}));
+  options.protectedRuntime->complete();
+
+  const auto initializer = std::find_if(material->references.begin(), material->references.end(),
+    [] (const auto& reference) { return reference.logicalName == "W1"; });
+  BOOST_REQUIRE(initializer != material->references.end());
+  BOOST_REQUIRE(!initializer->chunkPayloadIds.empty());
+  const auto chunkName = "/spec263/ffn/material/" + initializer->chunkPayloadIds.front();
+  auto corrupt = fetchers;
+  corrupt.fetchEncryptedLargeData = [&] (const ndn::Name& name, const ndn::Name& service) {
+    auto payload = fetchers.fetchEncryptedLargeData(name, service);
+    if (payload && name.toUri() == chunkName) payload->front() ^= 1;
+    return payload;
+  };
+  auto rejected = options;
+  rejected.cacheDir = (std::filesystem::path(pattern) / "bad-source").string();
+  rejected.protectedRuntime = makeRuntime();
+  BOOST_CHECK_EXCEPTION(prepareNativeCanonicalOnnxRole(corrupt, projection, rejected),
+    std::runtime_error, [] (const std::runtime_error& error) {
+      return std::string(error.what()) == "DI_CANONICAL_material-payload_DIGEST_MISMATCH";
+    });
+  rejected.protectedRuntime->complete();
+  BOOST_CHECK(!std::filesystem::exists(rejected.cacheDir + "/assembled"));
+
+  auto cancelled = options;
+  cancelled.cacheDir = (std::filesystem::path(pattern) / "cancelled").string();
+  cancelled.protectedRuntime = makeRuntime();
+  bool staged = false;
+  cancelled.reportProgress = [&] (const std::string& phase, double) {
+    if (phase == "MODEL_TRANSFORMED") staged = true;
+  };
+  cancelled.shouldCancel = [&] { return staged; };
+  BOOST_CHECK_EXCEPTION(prepareNativeCanonicalOnnxRole(fetchers, projection, cancelled),
+    std::runtime_error, [] (const std::runtime_error& error) {
+      return std::string(error.what()) == "DI_NATIVE_ASSEMBLY_CANCELLED";
+    });
+  BOOST_CHECK(staged);
+  cancelled.protectedRuntime->complete();
+  BOOST_CHECK(!std::filesystem::exists(cancelled.cacheDir + "/assembled"));
+}
 
 BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
 {

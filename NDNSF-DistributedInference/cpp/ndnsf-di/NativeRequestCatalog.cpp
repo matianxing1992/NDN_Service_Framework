@@ -11,6 +11,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
 
+#include <onnx/onnx_pb.h>
+
 #include <algorithm>
 #include <cfenv>
 #include <cstring>
@@ -562,6 +564,9 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     profile.convPads = split.value("conv_pads", std::vector<std::int64_t>{});
     profile.convStrides = split.value("conv_strides", std::vector<std::int64_t>{});
     profile.convDilations = split.value("conv_dilations", std::vector<std::int64_t>{});
+    const auto pairedDown = split.find("ffn_down_node");
+    if (pairedDown != split.end() && mode != NativeSourcePartitionMode::HYBRID)
+      throw std::invalid_argument("paired FFN window requires source hybrid mode");
     if (mode == NativeSourcePartitionMode::HYBRID) {
       const auto& order = model.graph.topologicalOrder;
       const auto boundary = std::find(order.begin(), order.end(), profile.boundaryNode);
@@ -574,15 +579,136 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
           throw std::invalid_argument("ONNX_SOURCE initializer memory is unknown");
         return size.get<std::uint64_t>();
       };
-      profile.convWeightBytes = initializerBytes(profile.convWeightInitializer);
-      profile.convBiasBytes = profile.convBiasInitializer.empty() ? 0 :
-        initializerBytes(profile.convBiasInitializer);
+      auto suffixStart = std::next(boundary);
+      if (pairedDown != split.end()) {
+        const auto downId = pairedDown->get<std::string>();
+        const auto downPosition = std::find(suffixStart, order.end(), downId);
+        if (downPosition == order.end() || boundary == order.begin() ||
+            std::next(downPosition) == order.end() ||
+            (std::distance(boundary, downPosition) != 2 &&
+             std::distance(boundary, downPosition) != 3))
+          throw std::invalid_argument("paired FFN must delimit a closed middle window");
+        const auto start = inspection.canonicalNodeIndices.at(*boundary);
+        const auto finish = inspection.canonicalNodeIndices.at(*downPosition);
+        onnx::ModelProto original;
+        if (source.modelBytes.size() > std::numeric_limits<int>::max() ||
+            !original.ParseFromArray(source.modelBytes.data(),
+                                     static_cast<int>(source.modelBytes.size())) ||
+            finish >= static_cast<std::uint64_t>(original.graph().node_size()) ||
+            finish - start != static_cast<std::uint64_t>(std::distance(boundary, downPosition)))
+          throw std::invalid_argument("paired FFN source graph does not match its inspection");
+        const auto& graph = original.graph();
+        if (model.graph.modelInputs.size() != 1 || model.graph.modelOutputs.size() != 1 ||
+            profile.roles.size() != 4 || profile.inputIngressRole != profile.roles.front() ||
+            profile.resultEgressRole != profile.roles.back())
+          throw std::invalid_argument("paired FFN source ports need prefix and suffix owners");
+        const auto& sourceInput = model.graph.modelInputs.front().name;
+        const auto& sourceOutput = model.graph.modelOutputs.front().name;
+        bool suffixProducesOutput = false;
+        for (auto i = start; i < static_cast<std::uint64_t>(graph.node_size()); ++i) {
+          const auto& node = graph.node(static_cast<int>(i));
+          if (std::find(node.input().begin(), node.input().end(), sourceInput) != node.input().end())
+            throw std::invalid_argument("paired FFN source input has users outside the prefix");
+          if (i > finish &&
+              std::find(node.output().begin(), node.output().end(), sourceOutput) != node.output().end())
+            suffixProducesOutput = true;
+        }
+        if (!suffixProducesOutput)
+          throw std::invalid_argument("paired FFN source suffix does not own terminal output");
+        const auto& up = graph.node(static_cast<int>(start));
+        const auto& down = graph.node(static_cast<int>(finish));
+        const auto requireOp = [] (const auto& node, std::string_view op, int inputs) {
+          if (!node.domain().empty() || node.op_type() != op || node.input_size() != inputs ||
+              node.output_size() != 1 || (op != "Gelu" && node.attribute_size() != 0))
+            throw std::invalid_argument("paired FFN window has an unsupported source operator");
+        };
+        requireOp(up, "MatMul", 2);
+        requireOp(down, "MatMul", 2);
+        auto activationInput = up.output(0);
+        NativeOnnxSourceTransformV1 pair;
+        pair.kind = "ffn-pair-partial";
+        pair.node = *boundary;
+        pair.downNode = *downPosition;
+        pair.axis = "ffn-channel";
+        pair.input = up.input(0);
+        pair.weight = up.input(1);
+        pair.downWeight = down.input(1);
+        pair.output = down.output(0);
+        if (finish - start == 3) {
+          const auto& add = graph.node(static_cast<int>(start + 1));
+          requireOp(add, "Add", 2);
+          if (add.input(0) == activationInput) pair.bias = add.input(1);
+          else if (add.input(1) == activationInput) pair.bias = add.input(0);
+          else throw std::invalid_argument("paired FFN bias is not fed by the up projection");
+          activationInput = add.output(0);
+        }
+        const auto& gelu = graph.node(static_cast<int>(finish - 1));
+        requireOp(gelu, "Gelu", 1);
+        if (gelu.input(0) != activationInput || down.input(0) != gelu.output(0))
+          throw std::invalid_argument("paired FFN projections do not share their activation");
+        const auto floatShape = [&] (const std::string& name) {
+          const auto& tensor = tensors.at(name);
+          if (tensor.at("dtype") != "float32" || !tensor.at("sizeBytes").is_number_unsigned())
+            throw std::invalid_argument("paired FFN requires static FP32 tensors");
+          auto shape = tensor.at("shape").get<std::vector<std::int64_t>>();
+          if (shape.empty() || std::any_of(shape.begin(), shape.end(), [](auto n) { return n <= 0; }))
+            throw std::invalid_argument("paired FFN requires positive source dimensions");
+          return shape;
+        };
+        const auto upDims = floatShape(pair.weight);
+        const auto downDims = floatShape(pair.downWeight);
+        profile.activationShape = floatShape(pair.input);
+        profile.partialShape = floatShape(pair.output);
+        if (upDims.size() != 2 || downDims.size() != 2 || upDims[1] < 2 ||
+            upDims[1] != downDims[0] || profile.activationShape.size() < 2 ||
+            profile.activationShape.size() != profile.partialShape.size() ||
+            !std::equal(profile.activationShape.begin(), profile.activationShape.end() - 1,
+                        profile.partialShape.begin()) ||
+            profile.activationShape.back() != upDims[0] || profile.partialShape.back() != downDims[1] ||
+            (!pair.bias.empty() && floatShape(pair.bias) != std::vector<std::int64_t>{upDims[1]}))
+          throw std::invalid_argument("paired FFN source shapes do not contract");
+        for (const auto& [name, owner] :
+             {std::make_pair(pair.weight, start), std::make_pair(pair.downWeight, finish),
+              std::make_pair(pair.bias, start + 1)}) {
+          if (name.empty()) continue;
+          const auto users = inspection.initializerConsumers.find(name);
+          if (users == inspection.initializerConsumers.end() ||
+              users->second != std::vector<std::uint64_t>{owner})
+            throw std::invalid_argument("paired FFN initializer has foreign consumers");
+          const auto bytes = initializerBytes(name);
+          if (bytes > std::numeric_limits<std::uint64_t>::max() - profile.ffnPairWeightBytes)
+            throw std::overflow_error("paired FFN initializer bytes exceed uint64");
+          profile.ffnPairWeightBytes += bytes;
+        }
+        pair.extent = profile.inputChannels = static_cast<std::uint64_t>(upDims[1]);
+        pair.end = pair.extent / 2 + pair.extent % 2;
+        pair.validate();
+        profile.activationDtype = "float32";
+        profile.ffnPair = std::move(pair);
+        profile.convBiasBytes = 0;
+        suffixStart = std::next(downPosition);
+        std::uint64_t prefixBytes = 0;
+        for (const auto& [name, users] : inspection.initializerConsumers) {
+          if (std::none_of(users.begin(), users.end(), [start](auto node) { return node < start; }))
+            continue;
+          const auto bytes = initializerBytes(name);
+          if (bytes > std::numeric_limits<std::uint64_t>::max() - prefixBytes)
+            throw std::overflow_error("paired FFN prefix initializer bytes exceed uint64");
+          prefixBytes += bytes;
+        }
+        profile.ffnPrefixWeightBytes = prefixBytes;
+      }
+      else {
+        profile.convWeightBytes = initializerBytes(profile.convWeightInitializer);
+        profile.convBiasBytes = profile.convBiasInitializer.empty() ? 0 :
+          initializerBytes(profile.convBiasInitializer);
+      }
       std::set<std::uint64_t> suffixNodes;
-      for (auto node = std::next(boundary); node != order.end(); ++node)
+      for (auto node = suffixStart; node != order.end(); ++node)
         suffixNodes.insert(inspection.canonicalNodeIndices.at(*node));
       std::uint64_t suffixBytes = profile.convBiasBytes;
       for (const auto& [name, users] : inspection.initializerConsumers) {
-        if (name == profile.convBiasInitializer ||
+        if ((!profile.ffnPair && name == profile.convBiasInitializer) ||
             std::none_of(users.begin(), users.end(),
                          [&] (auto node) { return suffixNodes.count(node) != 0; }))
           continue;

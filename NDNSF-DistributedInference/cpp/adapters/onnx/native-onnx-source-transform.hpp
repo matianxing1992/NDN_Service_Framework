@@ -17,6 +17,9 @@ using NativeOnnxExternalReader =
   std::function<std::vector<std::uint8_t>(const std::string& location,
                                           std::uint64_t offset, std::uint64_t length)>;
 
+/** Append to a new, empty model.onnx.data owned by the caller. */
+using NativeOnnxExternalAppender = std::function<void(const std::vector<std::uint8_t>&)>;
+
 /**
  * Apply a source_transform_v1 lowering to one materialized role graph.
  *
@@ -27,7 +30,8 @@ using NativeOnnxExternalReader =
 onnx::ModelProto
 applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
                                const NativeOnnxSourceTransformV1& transform,
-                               const NativeOnnxExternalReader& external = {});
+                               const NativeOnnxExternalReader& external = {},
+                               const NativeOnnxExternalAppender& append = {});
 
 } // namespace ndnsf::di
 

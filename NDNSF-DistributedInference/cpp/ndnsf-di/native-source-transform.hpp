@@ -7,6 +7,8 @@
 
 namespace ndnsf::di {
 
+inline constexpr const char* NATIVE_FFN_PAIR_CAPABILITY_V1 = "onnx-source-ffn-pair-v1";
+
 /** Versioned lowering instruction carried by a transformed ONNX role recipe.
  *
  * The source graph and initializer identities stay bound to the original
@@ -24,6 +26,10 @@ struct NativeOnnxSourceTransformV1
   std::string weight;
   std::string bias;
   std::string output;
+  // The first projection is described by node/weight. These fields bind the
+  // second projection of a complete FFN slice to the same channel interval.
+  std::string downNode;
+  std::string downWeight;
   std::uint64_t begin = 0;
   std::uint64_t end = 0;
   std::uint64_t extent = 0;

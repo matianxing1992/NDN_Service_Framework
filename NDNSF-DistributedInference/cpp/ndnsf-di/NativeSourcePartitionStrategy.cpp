@@ -78,6 +78,13 @@ NativeSourcePartitionStrategy::enumerateImpl(
   budget.validate();
   model.validate();
   graph.validate(model);
+  const auto& pair = m_profile.ffnPair;
+  const auto& activationTensor = pair ? pair->input : m_profile.convInputTensor;
+  const auto& partialTensor = pair ? pair->output : m_profile.convOutputTensor;
+  const auto& shardAxis = pair ? pair->axis : m_profile.convInputAxis;
+  const std::string stageSuffix = pair ? "/ffn" : "/conv";
+  std::size_t firstRankNode = 0;
+  std::size_t lastRankNode = 0;
   std::map<std::string, std::string> ownerByNode;
   if (m_profile.mode == NativeSourcePartitionMode::FULL) {
     for (const auto& node : graph.nodes) {
@@ -93,17 +100,26 @@ NativeSourcePartitionStrategy::enumerateImpl(
       throw std::invalid_argument("source partition boundary is not in the graph");
     const auto boundaryNode = std::find_if(graph.nodes.begin(), graph.nodes.end(),
       [&] (const auto& node) { return node.id == m_profile.boundaryNode; });
-    if (boundaryNode == graph.nodes.end() || boundaryNode->opType != "Conv")
-      throw std::invalid_argument("source hybrid boundary is not a Conv");
-    const auto boundaryIndex = static_cast<std::size_t>(
+    if (boundaryNode == graph.nodes.end() || boundaryNode->opType != (pair ? "MatMul" : "Conv"))
+      throw std::invalid_argument("source hybrid boundary has the wrong operator");
+    firstRankNode = static_cast<std::size_t>(
       std::distance(graph.topologicalOrder.begin(), boundary));
-    if (boundaryIndex == 0 || boundaryIndex + 1 >= graph.topologicalOrder.size())
+    lastRankNode = firstRankNode;
+    if (pair) {
+      const auto last = std::find(boundary, graph.topologicalOrder.end(), pair->downNode);
+      if (last == graph.topologicalOrder.end() ||
+          std::distance(boundary, last) != (pair->bias.empty() ? 2 : 3) ||
+          graph.modelInputs.size() != 1 || graph.modelOutputs.size() != 1)
+        throw std::invalid_argument("paired FFN source window is incomplete");
+      lastRankNode = static_cast<std::size_t>(std::distance(graph.topologicalOrder.begin(), last));
+    }
+    if (firstRankNode == 0 || lastRankNode + 1 >= graph.topologicalOrder.size())
       throw std::invalid_argument("source hybrid boundary leaves an empty region");
     for (std::size_t i = 0; i < graph.topologicalOrder.size(); ++i) {
       if (control) control->requireActive();
       const auto& node = graph.topologicalOrder[i];
-      if (i < boundaryIndex) ownerByNode.emplace(node, m_profile.roles[0]);
-      else if (i > boundaryIndex) ownerByNode.emplace(node, m_profile.roles[3]);
+      if (i < firstRankNode) ownerByNode.emplace(node, m_profile.roles[0]);
+      else if (i > lastRankNode) ownerByNode.emplace(node, m_profile.roles[3]);
       else {
         ownerByNode.emplace(node, m_profile.roles[1]);
       }
@@ -149,17 +165,14 @@ NativeSourcePartitionStrategy::enumerateImpl(
 
   std::string hybridStageDigest;
   if (m_profile.mode == NativeSourcePartitionMode::HYBRID) {
-    const auto boundary = std::find(graph.topologicalOrder.begin(),
-                                    graph.topologicalOrder.end(),
-                                    m_profile.boundaryNode);
-    const auto boundaryIndex = static_cast<std::size_t>(
-      std::distance(graph.topologicalOrder.begin(), boundary));
-    candidate.roleNodeIdsByRole[m_profile.roles[1]] = {m_profile.boundaryNode};
-    candidate.roleNodeIdsByRole[m_profile.roles[2]] = {m_profile.boundaryNode};
+    const auto rankBegin = graph.topologicalOrder.begin() + firstRankNode;
+    const auto rankEnd = graph.topologicalOrder.begin() + lastRankNode + 1;
+    candidate.roleNodeIdsByRole[m_profile.roles[1]].assign(rankBegin, rankEnd);
+    candidate.roleNodeIdsByRole[m_profile.roles[2]].assign(rankBegin, rankEnd);
     for (std::size_t i = 0; i < graph.topologicalOrder.size(); ++i) {
       const auto& node = graph.topologicalOrder[i];
-      if (i < boundaryIndex) candidate.roleNodeIdsByRole[m_profile.roles[0]].push_back(node);
-      else if (i > boundaryIndex) candidate.roleNodeIdsByRole[m_profile.roles[3]].push_back(node);
+      if (i < firstRankNode) candidate.roleNodeIdsByRole[m_profile.roles[0]].push_back(node);
+      else if (i > lastRankNode) candidate.roleNodeIdsByRole[m_profile.roles[3]].push_back(node);
     }
     struct CrossingEdge
     {
@@ -177,18 +190,34 @@ NativeSourcePartitionStrategy::enumerateImpl(
       for (const auto& consumerNode : edge.consumers) {
         const auto consumer = ownerByNode.find(consumerNode);
         if (consumer == ownerByNode.end() || consumer->second == producer->second) continue;
+        if (pair &&
+            ((producer->second == m_profile.roles[1] && edge.id != partialTensor) ||
+             (consumer->second == m_profile.roles[1] && edge.id != activationTensor)))
+          throw std::invalid_argument("paired FFN exposes an undeclared interior tensor");
         crossings.push_back({&edge, producer->second, consumer->second});
       }
     }
-    const auto half = m_profile.inputChannels / 2;
+    if (pair &&
+        (std::none_of(crossings.begin(), crossings.end(), [&] (const auto& edge) {
+           return edge.edge->id == activationTensor && edge.producerRole == m_profile.roles[0] &&
+                  edge.consumerRole == m_profile.roles[1];
+         }) ||
+         std::none_of(crossings.begin(), crossings.end(), [&] (const auto& edge) {
+           return edge.edge->id == partialTensor && edge.producerRole == m_profile.roles[1] &&
+                  edge.consumerRole == m_profile.roles[3];
+         })))
+      throw std::invalid_argument("paired FFN does not have both source pipeline handoffs");
+    const auto half = m_profile.inputChannels / 2 +
+                      (pair ? m_profile.inputChannels % 2 : 0);
     hybridStageDigest = nativePlanningDigest("source-hybrid|" + graph.graphDigest + "|" +
                                              m_profile.boundaryNode + "|" +
-                                             std::to_string(m_profile.inputChannels));
+                                             std::to_string(m_profile.inputChannels) +
+                                             (pair ? "|" + pair->downNode : ""));
     auto first = NativeJson::array();
-    first.push_back(NativeJson{{"axis", m_profile.convInputAxis}, {"begin", 0},
+    first.push_back(NativeJson{{"axis", shardAxis}, {"begin", 0},
                                {"end", half}, {"extent", m_profile.inputChannels}});
     auto second = NativeJson::array();
-    second.push_back(NativeJson{{"axis", m_profile.convInputAxis}, {"begin", half},
+    second.push_back(NativeJson{{"axis", shardAxis}, {"begin", half},
                                 {"end", m_profile.inputChannels},
                                 {"extent", m_profile.inputChannels}});
     auto ranked = NativeJson::array();
@@ -196,7 +225,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
     ranked.push_back(NativeJson{{"role", m_profile.roles[2]}, {"axes", second}});
     const auto layoutDigest = nativeTensorStageLayoutDigest(
       model.adapter.descriptorDigest(), graph.graphDigest,
-      m_profile.roles[1] + "/conv", hybridStageDigest, ranked);
+      m_profile.roles[1] + stageSuffix, hybridStageDigest, ranked);
     auto shard0 = NativeJson{{"stage_layout_digest", layoutDigest}, {"axes", first}};
     auto shard1 = NativeJson{{"stage_layout_digest", layoutDigest}, {"axes", second}};
     candidate.tensorIdentityByRole[m_profile.roles[1]] = {
@@ -207,31 +236,36 @@ NativeSourcePartitionStrategy::enumerateImpl(
     candidate.executionPlan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
     const auto rankTransform = [&] (std::uint64_t begin, std::uint64_t end) {
       NativeOnnxSourceTransformV1 value;
-      value.kind = "conv-input-channel-partial";
-      value.node = m_profile.boundaryNode;
-      value.axis = m_profile.convInputAxis;
-      value.input = m_profile.convInputTensor;
-      value.weight = m_profile.convWeightInitializer;
-      value.output = m_profile.convOutputTensor;
-      value.bias = m_profile.convBiasInitializer;
+      if (pair) {
+        value = *pair;
+      }
+      else {
+        value.kind = "conv-input-channel-partial";
+        value.node = m_profile.boundaryNode;
+        value.axis = shardAxis;
+        value.input = activationTensor;
+        value.weight = m_profile.convWeightInitializer;
+        value.output = partialTensor;
+        value.bias = m_profile.convBiasInitializer;
+        value.pads = m_profile.convPads;
+        value.strides = m_profile.convStrides;
+        value.dilations = m_profile.convDilations;
+      }
       value.begin = begin;
       value.end = end;
       value.extent = m_profile.inputChannels;
-      value.pads = m_profile.convPads;
-      value.strides = m_profile.convStrides;
-      value.dilations = m_profile.convDilations;
       value.validate();
       return value.canonicalJson();
     };
     candidate.sourceTransformByRole[m_profile.roles[1]] = rankTransform(0, half);
     candidate.sourceTransformByRole[m_profile.roles[2]] = rankTransform(half, m_profile.inputChannels);
-    if (!m_profile.convBiasInitializer.empty()) {
+    if (!pair && !m_profile.convBiasInitializer.empty()) {
       // A fused Conv bias has no explicit Add in the source graph; the suffix
       // still has to apply it exactly once. Bind the transform either way and
       // let lowering decide whether the source already spells the Add out.
       std::string biasNode = m_profile.boundaryNode;
-      if (boundaryIndex + 1 < graph.topologicalOrder.size()) {
-        const auto& nextId = graph.topologicalOrder[boundaryIndex + 1];
+      if (lastRankNode + 1 < graph.topologicalOrder.size()) {
+        const auto& nextId = graph.topologicalOrder[lastRankNode + 1];
         const auto next = std::find_if(graph.nodes.begin(), graph.nodes.end(),
           [&] (const auto& node) { return node.id == nextId; });
         if (next != graph.nodes.end() && next->opType == "Add") biasNode = nextId;
@@ -248,7 +282,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
     candidate.executionPlan.stageLayout = {
       {m_profile.roles[0] + "/stage", nativePlanningDigest("source-prefix|" + graph.graphDigest),
        {m_profile.roles[0]}},
-      {m_profile.roles[1] + "/conv", hybridStageDigest,
+      {m_profile.roles[1] + stageSuffix, hybridStageDigest,
        {m_profile.roles[1], m_profile.roles[2]}},
       {m_profile.roles[3] + "/stage", nativePlanningDigest("source-suffix|" + graph.graphDigest),
        {m_profile.roles[3]}},
@@ -293,8 +327,8 @@ NativeSourcePartitionStrategy::enumerateImpl(
       result.producerSlotId = producerSlot;
       return result;
     };
-    const std::string activation = m_profile.convInputTensor;
-    const std::string partial = m_profile.convOutputTensor;
+    const auto& activation = activationTensor;
+    const auto& partial = partialTensor;
     if (activation == sourceInput || activation == partial || partial == sourceOutput)
       throw std::invalid_argument(
         "hybrid source partition reuses a graph boundary tensor as an internal port");
@@ -550,19 +584,19 @@ NativeSourcePartitionStrategy::enumerateImpl(
     for (const auto& rank : {m_profile.roles[1], m_profile.roles[2]})
       candidate.executionPlan.dependencies.push_back(dependency(
         "prefix-to-" + rank, m_profile.roles[0], rank,
-        m_profile.roles[0] + "/RUN", m_profile.convInputTensor, rank + "/RUN",
-        m_profile.convInputTensor));
+        m_profile.roles[0] + "/RUN", activationTensor, rank + "/RUN",
+        activationTensor));
     auto partial = dependency(
       "rank1-to-sum", m_profile.roles[2], m_profile.roles[1],
-      m_profile.roles[2] + "/RUN", m_profile.convOutputTensor,
+      m_profile.roles[2] + "/RUN", partialTensor,
       m_profile.roles[1] + "/SUM", "rank1");
     partial.operationKind = "TENSOR_PARTIAL";
     partial.useNdnsfDataV1 = true;
     candidate.executionPlan.dependencies.push_back(std::move(partial));
     candidate.executionPlan.dependencies.push_back(dependency(
       "sum-to-suffix", m_profile.roles[1], m_profile.roles[3],
-      m_profile.roles[1] + "/SUM", m_profile.convOutputTensor,
-      m_profile.roles[3] + "/RUN", m_profile.convOutputTensor));
+      m_profile.roles[1] + "/SUM", partialTensor,
+      m_profile.roles[3] + "/RUN", partialTensor));
     // Direct bypass dependencies carry every non-SUM crossing into the suffix.
     for (const auto& edge : graph.edges) {
       const auto producer = ownerByNode.find(edge.producer);
@@ -570,7 +604,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
       const bool fromRank = producer->second == m_profile.roles[1] ||
                             producer->second == m_profile.roles[2];
       if (producer->second != m_profile.roles[0] && !fromRank) continue;
-      if (edge.id == m_profile.convOutputTensor ||
+      if (edge.id == partialTensor ||
           edge.producer == m_profile.boundaryNode)
         continue;
       const bool toSuffix = std::any_of(edge.consumers.begin(), edge.consumers.end(),
@@ -597,21 +631,30 @@ NativeSourcePartitionStrategy::enumerateImpl(
   for (const auto& role : m_profile.roles) {
     if (control) control->requireActive();
     std::vector<std::string> roleNodes;
-    for (const auto& node : graph.topologicalOrder)
-      if (ownerByNode.at(node) == role) roleNodes.push_back(node);
+    if (pair) {
+      roleNodes = candidate.roleNodeIdsByRole.at(role);
+    }
+    else {
+      for (const auto& node : graph.topologicalOrder)
+        if (ownerByNode.at(node) == role) roleNodes.push_back(node);
+    }
     candidate.fragmentsByRole[role] = nativePlanningDigest(nativeCanonicalJson(NativeJson{
       {"candidate", candidate.splitter.name}, {"graph", graph.graphDigest},
       {"role", role}, {"nodes", roleNodes}}));
     candidate.artifactsByRole[role] = {candidate.fragmentsByRole[role]};
     std::uint64_t residentBytes = roleBytes;
-    if (transformedRoles && m_profile.convWeightBytes != 0) {
+    if (pair && role == m_profile.roles[0] && m_profile.ffnPrefixWeightBytes)
+      residentBytes = std::max<std::uint64_t>(1, *m_profile.ffnPrefixWeightBytes);
+    const auto splitWeightBytes = pair ? m_profile.ffnPairWeightBytes : m_profile.convWeightBytes;
+    if (transformedRoles && splitWeightBytes != 0) {
       if (role == m_profile.roles[1] || role == m_profile.roles[2]) {
         const auto channels = m_profile.inputChannels;
-        if (m_profile.convWeightBytes % channels != 0)
-          throw std::invalid_argument("Conv initializer bytes do not fit the channel split");
+        if (splitWeightBytes % channels != 0)
+          throw std::invalid_argument("initializer bytes do not fit the channel split");
+        const auto firstRankChannels = channels / 2 + (pair ? channels % 2 : 0);
         const auto rankChannels = role == m_profile.roles[1] ?
-          channels / 2 : channels - channels / 2;
-        residentBytes = (m_profile.convWeightBytes / channels) * rankChannels;
+          firstRankChannels : channels - firstRankChannels;
+        residentBytes = (splitWeightBytes / channels) * rankChannels;
       }
       else if (role == m_profile.roles[3] && m_profile.suffixWeightBytes)
         residentBytes = std::max<std::uint64_t>(1, *m_profile.suffixWeightBytes);

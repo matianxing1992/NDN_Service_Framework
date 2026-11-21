@@ -2,6 +2,7 @@
 #define NDNSF_DI_NATIVE_SOURCE_PARTITION_STRATEGY_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 
 #include <optional>
 #include <string>
@@ -41,13 +42,16 @@ struct NativeSourcePartitionProfile
   std::vector<std::int64_t> convStrides;
   std::vector<std::int64_t> convDilations;
   std::optional<std::uint64_t> suffixWeightBytes;
+  std::optional<NativeOnnxSourceTransformV1> ffnPair;
+  std::optional<std::uint64_t> ffnPrefixWeightBytes;
+  std::uint64_t ffnPairWeightBytes = 0;
 };
 
 /**
  * Build full, component and hybrid candidates from verified source facts.
  *
- * Full and component are ordinary source regions. Hybrid reserves a
- * degree-two Conv stage and derives its executable roles from source transforms.
+ * Full and component use ordinary source regions. Hybrid lowers a selected
+ * degree-two Conv or paired projection region between single-role stages.
  */
 class NativeSourcePartitionStrategy final : public NativeModelSplitStrategy,
                                              public CooperativeModelSplitStrategy

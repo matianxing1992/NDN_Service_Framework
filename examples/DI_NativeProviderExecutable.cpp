@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-publication.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
@@ -1379,7 +1380,8 @@ main(int argc, char** argv)
                              NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1,
                              // The worker lowers an admitted ONNX source transform
                              // into the derived role graph it executes.
-                             NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1};
+                             NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1,
+                             NATIVE_FFN_PAIR_CAPABILITY_V1};
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
       {

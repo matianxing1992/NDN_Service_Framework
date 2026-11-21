@@ -2121,6 +2121,8 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   const auto roleRoot = cacheRoot / (protectedRole ? "protected" : "assembled") / safeRole(
     projection.assemblyContract().selectedRole);
   const auto& assemblyRole = projection.assemblyContract();
+  const bool verifyDerivedFfn = !assemblyRole.sourceTransformV1.empty() &&
+    NativeOnnxSourceTransformV1::parse(assemblyRole.sourceTransformV1).kind == "ffn-pair-partial";
   const auto plaintextLeaf = assembledCacheLeaf(assemblyRole, assemblyRole.recipeDigest.substr(7));
   const auto stablePlaintextDirectory = cacheRoot / "assembled" / safeRole(
     assemblyRole.selectedRole) / plaintextLeaf;
@@ -2270,7 +2272,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
         !isSha256Digest(assembledDigest) ||
         (firstString(manifest, {"schema"}) != ASSEMBLED_FILE_SET_SCHEMA &&
           (!protectedRole || persistentPlaintextArtifact) &&
-          (options.verifyCachedArtifactDigest || reboundPublication) &&
+          (options.verifyCachedArtifactDigest || reboundPublication || verifyDerivedFfn) &&
           sha256File(modelPath, projection.assemblyContract().maxAssembledBytes,
             [&] { requireActiveAssembly(options, projection.deadlineMs); }) != assembledDigest)) {
       discardCorruptEntry(directory);
@@ -2318,7 +2320,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     if (!spec.path.empty()) {
       validateNativeAssembledArtifactFiles(spec, options.cacheDir,
         projection.assemblyContract().maxAssembledBytes,
-        options.verifyCachedArtifactDigest || reboundPublication,
+        options.verifyCachedArtifactDigest || reboundPublication || verifyDerivedFfn,
         [&] { requireActiveAssembly(options, projection.deadlineMs); });
     }
     if (protectedRole) {
@@ -3530,7 +3532,20 @@ prepareNativeCanonicalOnnxRole(
         // the materialized role copies only its selected nodes, whose ONNX names
         // are the export's own (`conv0`). Translate the id to the name the
         // selected graph actually carries before lowering.
-        if (const auto prefix = std::string("onnx-node-");
+        const bool ffnPair = transform.kind == "ffn-pair-partial";
+        if (ffnPair) {
+          const auto& indices = projection.assemblyContract().nodeIndices;
+          auto& graph = *sourceModel.mutable_graph();
+          if (indices.empty() || indices.size() != static_cast<std::size_t>(graph.node_size()) ||
+              transform.node != "onnx-node-" + std::to_string(indices.front()) ||
+              transform.downNode != "onnx-node-" + std::to_string(indices.back()))
+            throw std::invalid_argument("paired FFN projection ordinals differ from recipe");
+          // The materializer emits nodes in exactly the checked ordinal order.
+          // Give the two matched projections stable names in the derived graph.
+          graph.mutable_node(0)->set_name(transform.node);
+          graph.mutable_node(graph.node_size() - 1)->set_name(transform.downNode);
+        }
+        else if (const auto prefix = std::string("onnx-node-");
             transform.node.rfind(prefix, 0) == 0 &&
             !projection.assemblyContract().nodeIndices.empty()) {
           const auto target = std::stoull(transform.node.substr(prefix.size()));
@@ -3541,9 +3556,36 @@ prepareNativeCanonicalOnnxRole(
               static_cast<int>(target - first)).name();
           }
         }
+        const auto derivedInitializer = rootPath / "ffn.onnx.data";
+        int derivedFd = -1;
+        BOOST_SCOPE_EXIT_ALL(&derivedFd) {
+          if (derivedFd >= 0) ::close(derivedFd);
+        };
+        std::uint64_t derivedInitializerBytes = 0;
+        const auto appendSlice = [&] (const std::vector<std::uint8_t>& bytes) {
+          if (!ffnPair || bytes.size() > assemblyControl.maxAssembledBytes -
+                                         derivedInitializerBytes)
+            throw std::runtime_error("DI_CANONICAL_FFN_SIDECAR_LIMIT");
+          if (derivedFd < 0) {
+            storeWhileAuthorized([&] {
+              derivedFd = ::open(derivedInitializer.c_str(),
+                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+              if (derivedFd < 0)
+                throw std::runtime_error("DI_CANONICAL_FFN_SIDECAR_CREATE_FAILED");
+            });
+          }
+          writeMaterial(derivedFd, bytes.data(), bytes.size());
+          derivedInitializerBytes += bytes.size();
+        };
         std::map<std::string, std::vector<std::uint8_t>> externalCache;
         const auto derived = applyNativeOnnxSourceTransform(sourceModel, transform,
           [&] (const std::string& location, std::uint64_t offset, std::uint64_t length) {
+            if (ffnPair) {
+              assemblyControl.requireActive();
+              if (location != "model.onnx.data" || !initializerFileOwner)
+                throw std::runtime_error("DI_CANONICAL_FFN_SIDECAR_MISSING");
+              return initializerFileOwner->read(offset, length);
+            }
             const auto key = location + ":" + std::to_string(offset) + ":" +
                              std::to_string(length);
             const auto cached = externalCache.find(key);
@@ -3553,7 +3595,29 @@ prepareNativeCanonicalOnnxRole(
             auto bytes = canonicalSource.initializerRangeSource->read(offset, length);
             externalCache.emplace(key, bytes);
             return bytes;
+          }, appendSlice);
+        if (derivedFd >= 0) {
+          const auto closeStatus = ::close(derivedFd);
+          derivedFd = -1;
+          if (closeStatus != 0)
+            throw std::runtime_error("DI_CANONICAL_FFN_SIDECAR_CLOSE_FAILED");
+          const auto digest = sha256File(derivedInitializer, derivedInitializerBytes,
+                                         assemblyControl.requireActive);
+          canonicalSource.initializerRangeSource.reset();
+          initializerFileOwner.reset();
+          storeWhileAuthorized([&] {
+            if (eraseProtectedSourceFile) eraseProtectedSourceFile(initializerFile);
+            else std::filesystem::remove(initializerFile);
+            std::filesystem::rename(derivedInitializer, initializerFile);
           });
+          auto initializerControl = assemblyControl;
+          initializerControl.maxSourceBytes = assemblyControl.maxAssembledBytes;
+          initializerFileOwner = openNativeCanonicalInitializerFile(
+            initializerFile.string(), derivedInitializerBytes, digest, initializerControl);
+          canonicalSource.initializerRangeSource = initializerFileOwner;
+          materializedFiles.initializerBytes = derivedInitializerBytes;
+          materializedFiles.initializerDigest = digest;
+        }
         std::string derivedBytes;
         if (!derived.SerializeToString(&derivedBytes) ||
             derivedBytes.size() > assemblyControl.maxAssembledBytes)
