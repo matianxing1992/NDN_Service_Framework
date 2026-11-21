@@ -622,6 +622,9 @@ void RequestMessage::setDeploymentIntent(const DeploymentIntent& intent) {
     m_wire.reset();
 }
 void RequestMessage::setRequestCapabilities(const RequestCapabilities& capabilities) {
+    if (capabilities.hasField(RequestCapabilities::PUBLIC_REQUEST_ID_FIELD))
+        (void)makePublicNamingLabelComponent(capabilities.getField(
+            RequestCapabilities::PUBLIC_REQUEST_ID_FIELD));
     requestCapabilities_ = capabilities;
     m_wire.reset();
 }
@@ -670,6 +673,12 @@ const DeploymentIntent& RequestMessage::getDeploymentIntent() const {
 const RequestCapabilities& RequestMessage::getRequestCapabilities() const {
     if (!requestCapabilities_) throw std::logic_error("request has no capabilities");
     return *requestCapabilities_;
+}
+std::string RequestMessage::getPublicRequestId() const {
+    return requestCapabilities_ &&
+        requestCapabilities_->hasField(RequestCapabilities::PUBLIC_REQUEST_ID_FIELD)
+        ? requestCapabilities_->getField(RequestCapabilities::PUBLIC_REQUEST_ID_FIELD)
+        : std::string{};
 }
 const EncryptedRequestInput& RequestMessage::getEncryptedRequestInput() const {
     if (!encryptedRequestInput_) throw std::logic_error("request has no encrypted input");
@@ -879,8 +888,9 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
         }
         else if (b.type() == tlv::RequestCapabilitiesType) {
             RequestCapabilities capabilities;
-            if (!capabilities.WireDecode(b)) return false;
-            requestCapabilities_ = std::move(capabilities);
+            if (requestCapabilities_ || !capabilities.WireDecode(b)) return false;
+            try { setRequestCapabilities(capabilities); }
+            catch (const std::invalid_argument&) { return false; }
         }
         else if (b.type() == tlv::EncryptedRequestInputType) {
             EncryptedRequestInput input;

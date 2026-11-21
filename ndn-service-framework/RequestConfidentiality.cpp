@@ -244,7 +244,8 @@ setFailure(RequestCryptoFailure* failure, RequestCryptoFailure value)
 
 std::string
 computeRequestInputRepresentationId(const RequestSecurityBinding& binding,
-                                    const RequestInputOwner& owner)
+                                    const RequestInputOwner& owner,
+                                    const std::string& publicRequestId)
 {
   // Ordered tagged transcript. Names and digests are strings; the request/attempt pair is bound as decimal text so
   // both sides derive identical bytes without depending on integer width.
@@ -255,7 +256,7 @@ computeRequestInputRepresentationId(const RequestSecurityBinding& binding,
     const auto& wire = value.wireEncode();
     return ndn_service_framework::NamingDigestField{tag, 1, std::vector<std::uint8_t>(wire.begin(), wire.end())};
   };
-  return computeNamingDigest("ndnsf-naming/request-input-representation", {
+  std::vector<NamingDigestField> fields{
     field(1, "ndnsf-di-request-input-v1"),
     nameField(2, owner.user),
     nameField(3, owner.provider),
@@ -268,22 +269,28 @@ computeRequestInputRepresentationId(const RequestSecurityBinding& binding,
     field(9, binding.userEncryptionCertDigest),
     field(10, binding.providerEncryptionCertName.toUri(ndn::name::UriFormat::CANONICAL)),
     field(11, binding.providerEncryptionCertDigest),
-    field(12, binding.selectionDigest)});
+    field(12, binding.selectionDigest)};
+  if (!publicRequestId.empty())
+    fields.push_back(field(13, publicRequestId));
+  return computeNamingDigest("ndnsf-naming/request-input-representation", fields);
 }
 
 ndn::Name
 makeRequestScopedInputName(const RequestInputOwner& owner,
-                           const RequestSecurityBinding& binding)
+                           const RequestSecurityBinding& binding,
+                           const std::string& publicRequestId)
 {
   if (owner.user.empty() || owner.provider.empty() || binding.serviceName.empty() ||
       binding.requestId.empty() || binding.attempt == 0)
     throw std::invalid_argument("request-scoped input name facts are incomplete");
-  const auto representation = computeRequestInputRepresentationId(binding, owner);
+  const auto representation = computeRequestInputRepresentationId(binding, owner, publicRequestId);
   ndn::Name name(owner.user);
   // `<RequestId>` is one public component: a multi-component Core request name is carried inside a single label
   // rather than expanded into the name, which N2 forbids.
   name.append("NDNSF-DI").append("input").append("request")
-    .append(makeNamingLabelComponent(binding.requestId.toUri(ndn::name::UriFormat::CANONICAL)))
+    .append(publicRequestId.empty()
+      ? makeNamingLabelComponent(binding.requestId.toUri(ndn::name::UriFormat::CANONICAL))
+      : makePublicNamingLabelComponent(publicRequestId))
     .append("attempt").append(makeNamingDecimalComponent(binding.attempt))
     .append("recipient").append(makeReversibleNameComponent(owner.provider))
     .append("rep").append(makeNamingDigestComponent(representation))

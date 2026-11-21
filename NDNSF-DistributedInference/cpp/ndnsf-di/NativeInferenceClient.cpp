@@ -520,6 +520,7 @@ struct NativeInferenceHandle::Operation
   bool coreActive = false;
   mutable std::mutex mutex;
   std::string requestId;
+  std::string publicRequestId;
   std::string applicationRequestId;
   std::string coreRequestId; // Per-attempt transport identity; public requestId remains stable.
   std::optional<NativeGenerationRecovery> recovery;
@@ -2679,7 +2680,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           }
           NativeRequestControl control{coreRequestId, sourceAttempt, operation->deadline,
             [flag = operation->cancelled] { return flag->load(); },
-            operation->options.workStatistics};
+            operation->options.workStatistics, operation->publicRequestId};
           if (!runtime || !inspected || !strategies.enumerate || !strategies.proposeRoles ||
               (cooperativeStrategies ? (!cooperativeSplitter || !cooperativePlacement) :
                                        (!legacySplitter || !legacyPlacement)) ||
@@ -2895,6 +2896,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       };
       ndn_service_framework::RequestCapabilities capabilities;
       capabilities.setField("NDNSF_DATA_V1", "required");
+      capabilities.setField(ndn_service_framework::RequestCapabilities::PUBLIC_REQUEST_ID_FIELD,
+                            operation->publicRequestId);
       const bool supplyDiscovery = operation->encodedRequest && operation->encodedRequest->discoveryPayload &&
         (operation->encodedRequest->automaticShapeSeed ||
          operation->user->hasRequestScopedDefault());
@@ -3794,9 +3797,10 @@ NativeInferenceHandle NativeInferenceClient::requestImpl(
     // Core/Provider V2 names historically treat the request identity as a
     // suffix; introducing another path component breaks legacy filters and
     // compact-selection parsing even though the identity itself is unique.
-    operation->requestId = ndn::Name("/NDNSF/DI/REQUEST/" +
+    operation->publicRequestId =
       (m_requestOwnerScope.empty() ? std::string{} : m_requestOwnerScope + "-") +
-      std::to_string(NEXT_REQUEST_ID.fetch_add(1))).toUri();
+      std::to_string(NEXT_REQUEST_ID.fetch_add(1));
+    operation->requestId = ndn::Name("/NDNSF/DI/REQUEST").append(operation->publicRequestId).toUri();
     operation->coreRequestId = operation->requestId;
     operation->attempt = 1;
     // Absolute budget: computed once from the submission clock; waits and

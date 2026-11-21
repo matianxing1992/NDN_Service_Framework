@@ -61,7 +61,8 @@ struct RequestKeyBundle
  * fetches or decrypts, and `binding.inputDataName` is excluded because the name itself is being computed.
  */
 std::string computeRequestInputRepresentationId(const RequestSecurityBinding& binding,
-                                                const struct RequestInputOwner& owner);
+                                                const struct RequestInputOwner& owner,
+                                                const std::string& publicRequestId = {});
 
 /** Identity of the receiving Provider and the publishing User; the complete Provider prefix is part of the name. */
 struct RequestInputOwner
@@ -73,7 +74,8 @@ struct RequestInputOwner
 /** N5 request-scoped input prefix:
  *  `<User>/NDNSF-DI/input/request/<RequestId>/attempt/<A>/recipient/NameComponent(<Provider>)/rep/<R>/v=0`. */
 ndn::Name makeRequestScopedInputName(const RequestInputOwner& owner,
-                                     const RequestSecurityBinding& binding);
+                                     const RequestSecurityBinding& binding,
+                                     const std::string& publicRequestId = {});
 
 struct SelectionKeyEnvelope
 {

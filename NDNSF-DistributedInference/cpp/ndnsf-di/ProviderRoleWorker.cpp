@@ -207,6 +207,12 @@ completeStageTransferObservationImpl(const DependencyEdge& edge,
     bundle.transferObservation = makeStageTransferObservation(edge, bundle, direction);
   }
   else {
+    // A retained original may be handed to several readers. Each receiver
+    // updates its own observation while the producer still accounts for the send.
+    if (!bundle.transferObservation.unique()) {
+      bundle.transferObservation =
+        std::make_shared<StageTransferObservation>(*bundle.transferObservation);
+    }
     auto& observation = *bundle.transferObservation;
     observation.edgeScope = edge.scope;
     observation.plannedDataName = edge.plannedDataName;

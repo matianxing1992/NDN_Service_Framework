@@ -555,12 +555,14 @@ std::string NativeSplitCandidate::canonicalJson() const
         }
         return result;
       };
-      steps.push_back(NativeJson{{"step_id", step.stepId}, {"unit_id", step.unitId},
+      NativeJson value{{"step_id", step.stepId}, {"unit_id", step.unitId},
                                  {"operation", step.operation},
                                  {"artifact_entry", step.artifactEntry},
                                  {"input_slots", slots(step.inputSlots)},
                                  {"output_slots", slots(step.outputSlots)},
-                                 {"local_state_slots", step.localStateSlots}});
+                                 {"local_state_slots", step.localStateSlots}};
+      if (step.sourceLayers.second != 0) value["source_layers"] = step.sourceLayers;
+      steps.push_back(std::move(value));
     }
     executionPlanJson["steps"] = std::move(steps);
     executionPlanJson["step_plan_version"] = executionPlan.stepPlanVersion;

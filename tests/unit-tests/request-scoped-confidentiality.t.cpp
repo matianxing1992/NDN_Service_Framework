@@ -524,6 +524,12 @@ BOOST_AUTO_TEST_CASE(InputNameCarriesTheRequestIdAsOneComponent)
   auto otherAttempt = binding;
   otherAttempt.attempt = 1;
   BOOST_CHECK(makeRequestScopedInputName(owner, otherAttempt) != name);
+  otherAttempt.requestId = ndn::Name("/user/NDNSF-DI/request/9");
+  const auto booked = makeRequestScopedInputName(owner, otherAttempt, "logical-request");
+  const auto replacement = makeRequestScopedInputName(owner, binding, "logical-request");
+  BOOST_CHECK(booked[requestAt + 1] == ndn::name::Component("logical-request"));
+  BOOST_CHECK(replacement.getPrefix(requestAt + 3) == booked.getPrefix(requestAt + 3));
+  BOOST_CHECK(replacement[-2] != booked[-2]);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

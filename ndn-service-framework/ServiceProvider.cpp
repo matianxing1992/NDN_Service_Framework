@@ -8466,7 +8466,8 @@ namespace ndn_service_framework
     {
         // Non-event IMS/RPC/tensor insertion never enters the stream-owner
         // mutex; the exact actor boundary also permits reserved actor labels.
-        if (name.size() != identity.size() + 10 || !identity.isPrefixOf(name) ||
+        if ((name.size() != identity.size() + 10 && name.size() != identity.size() + 13) ||
+            !identity.isPrefixOf(name) ||
             name[identity.size()] != ndn::name::Component("NDNSF") ||
             name[identity.size() + 1] != ndn::name::Component("event") ||
             name[-1].type() != ndn::tlv::SequenceNumNameComponent) return std::nullopt;
@@ -8728,6 +8729,7 @@ namespace ndn_service_framework
         }
         StreamBinding binding;
         binding.requestId = requestId;
+        binding.publicRequestId = requestMessage.getPublicRequestId();
         binding.requester = requesterName;
         binding.serviceName = serviceName;
         binding.producer = providerName;
@@ -10887,7 +10889,8 @@ namespace ndn_service_framework
         // Same N5 builder the User used, over the same pre-publication facts; the Provider rebuilds the name
         // before it fetches or decrypts, so nothing here may depend on the plaintext.
         expected.inputDataName = makeRequestScopedInputName(
-            RequestInputOwner{requesterName, providerName}, expected);
+            RequestInputOwner{requesterName, providerName}, expected,
+            requestMessage.getPublicRequestId());
         expected.segmentOrEventId = "request-input";
 
         SelectionKeyEnvelope envelope;

@@ -1136,6 +1136,7 @@ def build(bld):
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/invocation-stream-message.t.cpp'),
                         bld.path.find_node('unit-tests/invocation-stream-lifecycle.t.cpp'),
+                        bld.path.find_node('unit-tests/request-scoped-confidentiality.t.cpp'),
                         bld.path.find_node('integration-tests/invocation-stream-flow.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=framework_includes,

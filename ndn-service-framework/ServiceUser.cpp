@@ -10628,7 +10628,8 @@ namespace ndn_service_framework
             // The N5 input name commits only to facts both sides hold before publication, so it can be built from
             // the binding as soon as it is complete and before the name itself joins it.
             const RequestInputOwner inputOwner{identity, providerName};
-            const auto inputName = makeRequestScopedInputName(inputOwner, binding);
+            const auto inputName = makeRequestScopedInputName(inputOwner, binding,
+                pendingCall.requestMessage.getPublicRequestId());
             binding.inputDataName = inputName;
             binding.segmentOrEventId = "request-input";
 
@@ -16832,6 +16833,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
             }
             StreamBinding grantBinding;
             grantBinding.requestId = requestId;
+            grantBinding.publicRequestId = pendingIt->second.requestMessage.getPublicRequestId();
             grantBinding.requester = identity;
             grantBinding.serviceName = serviceName;
             grantBinding.producer = providerName;
@@ -18926,6 +18928,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
         StreamBinding binding;
         binding.requestId = requestId;
+        binding.publicRequestId = pending->second.requestMessage.getPublicRequestId();
         binding.requester = identity;
         binding.serviceName = serviceName;
         binding.producer = providerName;

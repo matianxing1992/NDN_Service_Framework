@@ -104,6 +104,7 @@ struct NativeRequestControl
   std::function<bool()> cancelled;
 
   std::shared_ptr<class NativeWorkStatistics> workStatistics;
+  std::string publicRequestId;
 
   void requireActive() const;
 };

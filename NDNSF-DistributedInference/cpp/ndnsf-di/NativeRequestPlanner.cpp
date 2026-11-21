@@ -2138,6 +2138,7 @@ NativePlannedRequest planNativeRequestImpl(
     result.sealed = ownedSealed.invocationContext();
     logPlanPhase(control.requestId, "security_finalize", phaseStarted);
     NativeProjectionContext projection{epochMs(), runtime.noProgressMs, runtime.maxSegments};
+    projection.publicRequestId = control.publicRequestId;
     projection.logicalInputDigest = encoded.logicalInputDigest;
     projection.inputLayoutDigest = runtime.inputLayoutDigest;
     projection.inlineFirstSegment = true;

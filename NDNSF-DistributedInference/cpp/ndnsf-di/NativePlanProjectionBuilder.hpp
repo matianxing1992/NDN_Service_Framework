@@ -36,6 +36,7 @@ struct NativeProjectionContext
   std::shared_ptr<const NativeStaticProjectionLayout>* layoutOwner = nullptr;
   bool compactGenerationEndpoints = false;
   std::shared_ptr<NativeWorkStatistics> workStatistics;
+  std::string publicRequestId;
 };
 
 class NativePlanProjectionBuilder final

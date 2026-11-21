@@ -1232,6 +1232,8 @@ StreamProviderLifecycle::fence()
 void
 StreamBinding::validate() const
 {
+  if (!publicRequestId.empty())
+    (void)makePublicNamingLabelComponent(publicRequestId);
   if (requestId.empty() || requester.empty() || serviceName.empty() || producer.empty() ||
       producerBootId.empty() || producerBootId.size() > 1024 ||
       attemptEpoch < 1 || attemptEpoch > 2 ||
@@ -1273,6 +1275,9 @@ StreamBinding::canonicalBytes() const
       versionWire.begin(), versionWire.size()));
   }
   appendUint64(bytes, deadlineEpochMs);
+  if (!publicRequestId.empty())
+    appendLengthPrefixed(bytes, ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(publicRequestId.data()), publicRequestId.size()));
   return bytes;
 }
 
@@ -1287,6 +1292,7 @@ StreamBinding::operator==(const StreamBinding& other) const
          eventKeyCommitment == other.eventKeyCommitment &&
          userToken == other.userToken && policyEpoch == other.policyEpoch &&
          controllerVersion == other.controllerVersion &&
+         publicRequestId == other.publicRequestId &&
          deadlineEpochMs == other.deadlineEpochMs;
 }
 
@@ -1419,14 +1425,22 @@ makeEventNameWithDigest(const StreamBinding& binding, const StreamDigest& digest
 {
   if (cursor == 0) throw std::invalid_argument("stream event cursor must be positive");
   auto name = makeProducerDataPrefix(binding.producer, "NDNSF", "event");
-  name.append("REQUEST").append(makeNamingLabelComponent(
+  if (!binding.publicRequestId.empty()) {
+    name.append("service").append(makeReversibleNameComponent(binding.serviceName))
+      .append("request").append(makePublicNamingLabelComponent(binding.publicRequestId))
+      .append("attempt").append(makeNamingDecimalComponent(binding.attemptEpoch))
+      .append("stream").append(toLowerHex(ndn::span<const uint8_t>(
+        binding.generationId.data(), binding.generationId.size()))).append("rep");
+  }
+  else {
+    name.append("REQUEST").append(makeNamingLabelComponent(
       binding.requestId.toUri(ndn::name::UriFormat::CANONICAL)))
       .append("ATTEMPT").append(makeNamingDecimalComponent(binding.attemptEpoch))
       .append("SERVICE").append(makeNamingLabelComponent(
-          binding.serviceName.toUri(ndn::name::UriFormat::CANONICAL)))
-      .append(makeNamingDigestComponent(toLowerHex(
-          ndn::span<const uint8_t>(digest.data(), digest.size()))))
-      .append(ndn::name::Component::fromNumber(cursor, ndn::tlv::SequenceNumNameComponent));
+          binding.serviceName.toUri(ndn::name::UriFormat::CANONICAL)));
+  }
+  name.append(makeNamingDigestComponent(toLowerHex(
+    ndn::span<const uint8_t>(digest.data(), digest.size())))).appendSequenceNumber(cursor);
   checkNamingNameSize(name);
   return name;
 }

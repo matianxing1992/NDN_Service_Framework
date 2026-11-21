@@ -4361,6 +4361,18 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
       BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, cold));
       BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, *reopened));
       const bool singleton = projection.plan.degreeForRole(role.role) == 1;
+      auto foreignLayer = projection;
+      const auto declaredStep = std::find_if(foreignLayer.plan.steps.begin(),
+        foreignLayer.plan.steps.end(), [&](const auto& step) {
+          return step.unitId == role.selectedRole && step.operation == "CALL_SUBGRAPH" &&
+                 step.sourceLayers.second != 0;
+        });
+      BOOST_REQUIRE(declaredStep != foreignLayer.plan.steps.end());
+      ++declaredStep->sourceLayers.second;
+      const auto rejectedLayer = validateNativePreparedRunnerSpec(foreignLayer, cold);
+      BOOST_REQUIRE(rejectedLayer);
+      BOOST_CHECK_EQUAL(*rejectedLayer, singleton ? "DI_PROVIDER_WHOLE_REGION_ENTRY_MISMATCH" :
+                                                   "DI_PROVIDER_ASSEMBLY_STEP_CONTRACT_MISMATCH");
       if (!singleton) {
         BOOST_CHECK_EQUAL(cold.metadata.at("tensorParallelChildBackend"), role.backend);
         BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelChildBackend"), role.backend);

@@ -68,7 +68,7 @@ computeTensorRepresentationCommitment(const NativeTensorSemanticFacts& facts)
     return ndn_service_framework::NamingDigestField{tag, 2,
       std::vector<std::uint8_t>(value.begin(), value.end())};
   };
-  return ndn_service_framework::computeNamingDigest("ndnsf-naming/tensor-representation", {
+  std::vector<ndn_service_framework::NamingDigestField> fields{
     text(1, "ndnsf-di-tensor-v1"),
     text(2, facts.requestId),
     uint64Field(3, facts.attempt),
@@ -90,7 +90,22 @@ computeTensorRepresentationCommitment(const NativeTensorSemanticFacts& facts)
     text(19, facts.securityProfile),
     uint64Field(20, facts.segmentCount),
     text(21, facts.bundleTensorNamesDigest),
-    uint64Field(22, facts.inlineFirstSegment)});
+    uint64Field(22, facts.inlineFirstSegment)};
+  if (!facts.namingCapabilityDigest.empty())
+    fields.push_back(text(23, facts.namingCapabilityDigest));
+  if (!facts.publicRequestId.empty())
+    fields.push_back(text(24, facts.publicRequestId));
+  return ndn_service_framework::computeNamingDigest("ndnsf-naming/tensor-representation", fields);
+}
+
+std::uint64_t
+tensorPublicationRound(const std::string& operation, std::uint64_t operationEpoch,
+                       const std::string& namingCapabilityDigest)
+{
+  // Feedback is created before the epoch that consumes it. The capability
+  // still authorizes the original packed operation at that consumption epoch.
+  return !namingCapabilityDigest.empty() && operation == "TOKEN_FEEDBACK" && operationEpoch > 0
+    ? operationEpoch - 1 : operationEpoch;
 }
 
 std::string
@@ -101,6 +116,8 @@ tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
   const bool input = endpoint.sourceKind == "APPLICATION_INPUT";
   const auto stride = endpoint.namingOperationStride;
   const auto round = input || stride == 0 ? 0 : endpoint.round / stride;
+  const auto publicationRound = tensorPublicationRound(endpoint.operation, round,
+                                                       endpoint.namingCapabilityDigest);
   const auto index = input ? 0 : stride == 0 ? endpoint.round : endpoint.round % stride;
   // The representation commits to what the object is, not to how it is transported or to the plan that scheduled it.
   NativeTensorSemanticFacts facts;
@@ -108,7 +125,8 @@ tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
   facts.attempt = endpoint.attempt;
   facts.round = round;
   facts.index = index;
-  facts.phase = input || stride == 0 ? "execute" : (round == 0 ? "prefill" : "continuation");
+  facts.phase = input || stride == 0 ? "execute" :
+    (publicationRound == 0 ? "prefill" : "continuation");
   facts.role = endpoint.producerRole;
   facts.step = endpoint.namingStepId;
   facts.layerBegin = endpoint.namingLayerBegin;
@@ -128,6 +146,8 @@ tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
     "ndnsf-naming/tensor-bundle",
     {{1, 5, std::vector<std::uint8_t>(bundle.begin(), bundle.end())}});
   facts.inlineFirstSegment = endpoint.inlineFirstSegment ? 1 : 0;
+  facts.namingCapabilityDigest = endpoint.namingCapabilityDigest;
+  facts.publicRequestId = endpoint.publicRequestId;
   const auto key = computeTensorRepresentationCommitment(facts);
   auto name = ndn_service_framework::makeProducerDataPrefix(
     ndn::Name(endpoint.producerNamespace), "NDNSF-DI", "tensor");
@@ -136,15 +156,14 @@ tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
     // commitment above; it is not a separate name component. The phase names the epoch that produced the object:
     // a generation plan's first epoch is prefill and every later one is continuation, a non-generation plan is
     // execute. Deriving it here means no cached or rebound projection can disagree about it.
-    const auto phase = stride == 0 ? std::string("execute")
-      : (round == 0 ? std::string("prefill") : std::string("continuation"));
     const auto label = [](const std::string& value) {
       return ndn::name::Component(value);
     };
-    name.append("request").append(label(endpoint.requestId));
+    name.append("request").append(endpoint.publicRequestId.empty() ? label(endpoint.requestId) :
+      ndn_service_framework::makePublicNamingLabelComponent(endpoint.publicRequestId));
     name.append("attempt").append(ndn_service_framework::makeNamingDecimalComponent(endpoint.attempt));
-    name.append("round").append(ndn_service_framework::makeNamingDecimalComponent(round));
-    name.append("phase").append(phase);
+    name.append("round").append(ndn_service_framework::makeNamingDecimalComponent(publicationRound));
+    name.append("phase").append(facts.phase);
     name.append("role").append(label(endpoint.producerRole));
     name.append("step").append(label(endpoint.namingStepId));
     name.append("layers");
@@ -550,6 +569,9 @@ NativeExecutionStepSpec::validate() const
   if (stepId.empty() || unitId.empty() || !isStepOperation(operation)) {
     throw std::invalid_argument("execution step identity or operation is invalid");
   }
+  if ((sourceLayers.first != 0 || sourceLayers.second != 0) &&
+      sourceLayers.first >= sourceLayers.second)
+    throw std::invalid_argument("execution step has an invalid source layer interval");
   // SUM is a local reduction over admitted contributions: it has no subgraph,
   // so it must not fabricate an artifact entry or an empty ONNX graph.
   if ((operation == "CALL_SUBGRAPH") != !artifactEntry.empty()) {
@@ -809,6 +831,7 @@ makeReceivingStageReduction(const NativeExecutionPlan& plan, std::string_view re
   if (findStep(sum.stepId) != plan.steps.end()) return std::nullopt;
   sum.unitId = receiver.front();
   sum.operation = "SUM";
+  sum.sourceLayers = original->sourceLayers;
   sum.outputSlots = original->outputSlots;
   sum.outputSlots.front().slotId = port->slotId;
   std::vector<NativeDependencySpec> contributions;

@@ -222,7 +222,11 @@ class SecureStatusQuery : public DeploymentControlMessage
 class SecureStatusSnapshot : public DeploymentControlMessage
 { public: SecureStatusSnapshot(); };
 class RequestCapabilities : public DeploymentControlMessage
-{ public: RequestCapabilities(); };
+{
+public:
+    static constexpr const char* PUBLIC_REQUEST_ID_FIELD = "DI_PublicRequestId";
+    RequestCapabilities();
+};
 class PeerNetworkProbe : public DeploymentControlMessage
 { public: PeerNetworkProbe(); };
 class PeerNetworkProbeResponse : public DeploymentControlMessage
@@ -334,6 +338,7 @@ public:
     bool hasConversationContinuation() const;
     const DeploymentIntent& getDeploymentIntent() const;
     const RequestCapabilities& getRequestCapabilities() const;
+    std::string getPublicRequestId() const;
     const EncryptedRequestInput& getEncryptedRequestInput() const;
     const ndn::Block& getRequestSecurityBinding() const;
     const EncryptionCertificateAdvertisement& getUserEncryptionCertificate() const;

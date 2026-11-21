@@ -116,6 +116,8 @@ struct NativeExecutionStepSpec
   std::vector<NativeStepSlotSpec> inputSlots;
   std::vector<NativeStepSlotSpec> outputSlots;
   std::vector<std::string> localStateSlots;
+  // Half-open interval of source model layers owned by this step, if declared.
+  std::pair<std::uint64_t, std::uint64_t> sourceLayers{};
 
   void validate() const;
 };
@@ -230,9 +232,15 @@ struct NativeTensorSemanticFacts
   std::uint64_t segmentCount = 0;
   std::string bundleTensorNamesDigest;
   std::uint64_t inlineFirstSegment = 0;
+  std::string namingCapabilityDigest;
+  std::string publicRequestId;
 };
 
 std::string computeTensorRepresentationCommitment(const NativeTensorSemanticFacts& facts);
+
+/** Convert the scheduled feedback consumption epoch to its production epoch. */
+std::uint64_t tensorPublicationRound(const std::string& operation, std::uint64_t operationEpoch,
+                                     const std::string& namingCapabilityDigest);
 
 struct NativeTensorEndpointV3
 {
@@ -286,6 +294,9 @@ struct NativeTensorEndpointV3
   std::uint64_t namingLayerBegin = 0;
   std::uint64_t namingLayerEnd = 0;  // zero means the coordinates declare no layer interval
   std::string namingPortId;
+  // Public digest of the signed capability used to protect this invocation's object.
+  std::string namingCapabilityDigest;
+  std::string publicRequestId;
 };
 
 /**

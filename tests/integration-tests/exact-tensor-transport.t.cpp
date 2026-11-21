@@ -562,8 +562,9 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   const std::string tensorDigest = sha('4');
 
   GroupOperationV1 operation;
-  const bool feedback = mode == "feedback" || mode == "feedback-next";
-  operation.operationIndex = feedback ? (mode == "feedback-next" ? 5 : 2) : 7;
+  const bool semanticFeedback = mode == "feedback-semantic";
+  const bool feedback = mode == "feedback" || mode == "feedback-next" || semanticFeedback;
+  operation.operationIndex = feedback ? (mode == "feedback" ? 2 : 5) : 7;
   if (observedSizing && mode != "inline-observed-prefill") operation.operationIndex = 15;
   operation.kind = feedback ? "TOKEN_FEEDBACK" :
     sharedFanout ? "TENSOR_PARTIAL" : "PIPELINE_TRANSFER";
@@ -640,6 +641,13 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   endpoint.securityProfile = "NDNSF_DATA_V1";
   endpoint.noProgressDeadlineMs = capability.noProgressMs;
   endpoint.hardDeadlineMs = capability.hardDeadlineMs;
+  endpoint.inlineFirstSegment = inlineDelivery;
+  if (semanticFeedback) {
+    endpoint.namingStepId = "token-feedback";
+    endpoint.namingPortId = "input_ids";
+    endpoint.namingCapabilityDigest = "sha256:" + capability.capabilityDigest;
+    endpoint.publicRequestId = "logical-123";
+  }
   {
     auto identity = nativeEndpointJson(endpoint);
     identity.erase("endpoint_digest"); identity.erase("consumer_role");
@@ -669,6 +677,10 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   edge.endpointDigest = endpoint.endpointDigest;
   edge.executionObjectDigest = computeTensorExecutionObjectDigest(endpoint);
   edge.namingOperationStride = endpoint.namingOperationStride;
+  edge.namingStepId = endpoint.namingStepId;
+  edge.namingPortId = endpoint.namingPortId;
+  edge.namingCapabilityDigest = endpoint.namingCapabilityDigest;
+  edge.publicRequestId = endpoint.publicRequestId;
   edge.planDigest = planDigest;
   edge.manifestContractDigest = endpoint.manifestDigest;
   edge.tensorDigest = tensorDigest;
@@ -769,6 +781,22 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     BOOST_CHECK_EQUAL(packets, 0U);
     BOOST_CHECK(uniquePackets.empty());
     // The ordinary publication below must still reuse this endpoint safely.
+  }
+  if (semanticFeedback) {
+    for (const auto& digest : {std::string{}, sha('e')}) {
+      auto wrongProtection = edge;
+      wrongProtection.namingCapabilityDigest = digest;
+      const auto isWrongProtection = [](const std::invalid_argument& error) {
+        return std::string(error.what()) == "C04 tensor reference protection capability mismatch";
+      };
+      BOOST_CHECK_EXCEPTION(producerIo.publishOutput("session-v3", wrongProtection, original),
+                            std::invalid_argument, isWrongProtection);
+      BOOST_CHECK_EXCEPTION(consumerIo.prefetchInput("session-v3", wrongProtection).get(),
+                            std::invalid_argument, isWrongProtection);
+      BOOST_CHECK_EQUAL(manifestInterests.load(), 0U);
+      BOOST_CHECK_EQUAL(segmentInterests, 0U);
+      BOOST_CHECK(uniquePackets.empty());
+    }
   }
   if (mode == "admission") {
     std::vector<DependencyEdge> invalid;
@@ -894,11 +922,16 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     BOOST_REQUIRE(producerContext.publishSignedExactData(groupId, publications, 60000));
   }
   else if (mode != "prefetch-renewals") {
-    auto publishEdge = edge;
-    if (mode == "inline-fallback") publishEdge.inlineFirstSegment = false;
-    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", publishEdge, original));
+    if (mode == "inline-fallback") {
+      auto wrongFraming = edge;
+      wrongFraming.inlineFirstSegment = false;
+      BOOST_CHECK_THROW(producerIo.publishOutput("session-v3", wrongFraming, original),
+                        std::invalid_argument);
+      BOOST_CHECK(uniquePackets.empty());
+    }
+    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
   }
-  if (mode == "context") edge.endpointDigest = sha('9');
+  if (mode == "context") edge.tensorDigest = sha('9');
 
   if (cancellation) {
     const auto roleName = endpoint.consumerRole;
@@ -1074,7 +1107,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
 
   if (mode == "inline-pool-validation") {
     auto rejectedEdge = edge;
-    rejectedEdge.endpointDigest = sha('9');
+    rejectedEdge.tensorDigest = sha('9');
     auto operation = consumerIo.prefetchInputWithFirstReadBarrier("session-v3", rejectedEdge);
     environment.pumpUntil([&] {
       return operation.result.wait_for(0ms) == std::future_status::ready &&
@@ -1666,7 +1699,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     BOOST_CHECK_THROW(producerContext.publishSignedExactData(groupId, originalObjects, 60000), std::invalid_argument);
     BOOST_CHECK_EQUAL(packets, beforeRejectedReplay);
   }
-  const bool expectInline = inlineDelivery && mode != "inline-fallback" && mode != "inline-oversize";
+  const bool expectInline = inlineDelivery && mode != "inline-oversize";
   BOOST_CHECK_EQUAL(uniquePackets.size(), expectedSegments + (expectInline ? 0U : 1U));
   if (mode == "inline-oversize") {
     BOOST_CHECK_EQUAL(requestedSegments.count(ndn::Name(tensorObjectSegmentName(endpoint, 0))), 1U);
@@ -1714,8 +1747,16 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     const auto binding = parseProducerDataName(ndn::Name(edge.plannedDataName), producer.getName());
     BOOST_REQUIRE(binding);
     BOOST_CHECK(binding->suffix.get(5) == makeNamingDecimalComponent(mode == "feedback-next" ? 1 : 0));
-    BOOST_CHECK(binding->suffix.get(11) == makeNamingDecimalComponent(2));
-    BOOST_CHECK(binding->suffix.get(7) == makeNamingLabelComponent("S1R0"));
+    if (semanticFeedback) {
+      BOOST_CHECK(binding->suffix.get(1) == ndn::name::Component("logical-123"));
+      BOOST_CHECK(binding->suffix.get(7) == ndn::name::Component("prefill"));
+      BOOST_CHECK(binding->suffix.get(9) == ndn::name::Component("S1R0"));
+      BOOST_CHECK(binding->suffix.get(11) == ndn::name::Component("token-feedback"));
+    }
+    else {
+      BOOST_CHECK(binding->suffix.get(11) == makeNamingDecimalComponent(2));
+      BOOST_CHECK(binding->suffix.get(7) == makeNamingLabelComponent("S1R0"));
+    }
   }
   BOOST_CHECK_GE(packets, uniquePackets.size());
   if (mode == "prefetch-renewals") {
@@ -1965,7 +2006,7 @@ BOOST_AUTO_TEST_CASE(PublishedSegmentWindowRecoversDroppedData)
 {
   runTransfer("inline-window-loss");
 }
-BOOST_AUTO_TEST_CASE(InlineManifestAcceptsPlainManifestFallback) { runTransfer("inline-fallback"); }
+BOOST_AUTO_TEST_CASE(InlineManifestRejectsMismatchedFraming) { runTransfer("inline-fallback"); }
 BOOST_AUTO_TEST_CASE(InlineManifestFallsBackOnActualSignedPacketBound) { runTransfer("inline-oversize"); }
 BOOST_AUTO_TEST_CASE(InlineManifestCancellationStopsRemainingPrefetch) { runTransfer("inline-cancel"); }
 BOOST_AUTO_TEST_CASE(InlineManifestRejectsResignedEmbeddedCiphertextChange) { runTransfer("inline-corrupt"); }
@@ -2035,7 +2076,11 @@ BOOST_AUTO_TEST_CASE(LegacyFieldsAreCheckedBeforeRestoration) { runTransfer("leg
 BOOST_AUTO_TEST_CASE(PromptCancellationStopsExactManifestFetch) { runTransfer("cancel"); }
 
 BOOST_AUTO_TEST_CASE(CrossRoleFeedbackUsesActualC04ManifestAndSegmentInterests) { runTransfer("feedback"); }
-BOOST_AUTO_TEST_CASE(NextEpochFeedbackUsesSignedStrideAndActualC04Interests) { runTransfer("feedback-next"); }
+BOOST_AUTO_TEST_CASE(NextEpochFeedbackUsesSignedStrideAndActualC04Interests)
+{
+  runTransfer("feedback-next");
+  runTransfer("feedback-semantic");
+}
 BOOST_AUTO_TEST_CASE(CollectiveReferencesRejectInvalidOwnerKindKeyAndStrideBeforeIo) { runTransfer("admission"); }
 
 BOOST_AUTO_TEST_CASE(CurrentLargeFetchRejectsMissingExpiredOrCancelledFenceBeforeIo)

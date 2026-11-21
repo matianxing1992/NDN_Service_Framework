@@ -47,6 +47,9 @@ bindNativeWholeRegionEntry(const NativeSelectionProjectionV3& projection,
   if (call == nullptr)
     return false;
   const auto& step = *call;
+  if (step.sourceLayers.second != 0 &&
+      step.sourceLayers != std::make_pair(role.layerBegin, role.layerEnd))
+    throw std::invalid_argument("whole-region step layers differ from its source interval");
   NativeSubgraphEntryContract entry;
   entry.entryId = step.artifactEntry;
   entry.unitId = role.selectedRole;

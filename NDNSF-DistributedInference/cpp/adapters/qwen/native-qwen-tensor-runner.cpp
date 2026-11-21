@@ -198,6 +198,7 @@ parseDeclaredSteps(const std::string& json)
     step.unitId = item.at("unitId").get<std::string>();
     step.operation = item.at("operation").get<std::string>();
     step.artifactEntry = item.value("artifactEntry", std::string{});
+    step.sourceLayers = item.value("sourceLayers", decltype(step.sourceLayers){});
     steps.push_back(std::move(step));
   }
   return steps;

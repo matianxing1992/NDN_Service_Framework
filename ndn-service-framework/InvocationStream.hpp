@@ -803,6 +803,7 @@ struct StreamBinding
   // event digest is version-bound without repeating the version per event.
   std::optional<ControllerVersion> controllerVersion;
   uint64_t deadlineEpochMs = 0;
+  std::string publicRequestId;
 
   void validate() const;
   ndn::Buffer canonicalBytes() const;

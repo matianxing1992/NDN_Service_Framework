@@ -982,6 +982,7 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       attn.unitId = unit.roleId;
       attn.operation = "CALL_SUBGRAPH";
       attn.artifactEntry = entry(unit.roleId, "ATTN", layer);
+      attn.sourceLayers = {layer, layer + 1};
       // Layer 0 reads the embedded X0 from INIT.
       //
       // Every later layer's input normalization is a skip normalization over *two*
@@ -1049,6 +1050,7 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       sumAttn.stepId = sumAttnStep(unit.roleId, layer);
       sumAttn.unitId = unit.roleId;
       sumAttn.operation = "SUM";
+      sumAttn.sourceLayers = {layer, layer + 1};
       // Contributions are listed in global rank order, not "local first". Floating-point
       // addition is not associative, so a per-rank order would make two units compute
       // different sums of the same contributions: with three ranks, unit 2 would add
@@ -1072,6 +1074,7 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       mlp.unitId = unit.roleId;
       mlp.operation = "CALL_SUBGRAPH";
       mlp.artifactEntry = entry(unit.roleId, "MLP", layer);
+      mlp.sourceLayers = {layer, layer + 1};
       // The entry performs the original skip/norm in-graph, so it needs both the
       // merged attention partial and this rank's residual, and it keeps the
       // post-attention residual X' for the next layer and the head.
@@ -1091,6 +1094,7 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       sumMlp.stepId = sumMlpStep(unit.roleId, layer);
       sumMlp.unitId = unit.roleId;
       sumMlp.operation = "SUM";
+      sumMlp.sourceLayers = {layer, layer + 1};
       for (const auto& peer : tp.units) {
         if (peer.rank == unit.rank) {
           sumMlp.inputSlots.push_back(makeFedSlot(
@@ -1135,6 +1139,9 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
         [&] (const auto& item) { return item.entryId == step.artifactEntry; });
       if (contract == verified->end() || contract->unitId != step.unitId)
         throw std::invalid_argument("material step has no matching entry: " + step.stepId);
+      if ((contract->kind == "ATTN" || contract->kind == "MLP") &&
+          step.sourceLayers != std::make_pair(contract->layer, contract->layer + 1))
+        throw std::invalid_argument("material step layers differ from its source entry");
       referenced.insert(contract->entryId);
       if (!contract->synthesizedInputGraphNames.empty())
         throw std::invalid_argument("material entry requires unbound synthesized inputs: " +
@@ -2507,6 +2514,7 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
       step.stepId = step.artifactEntry = unit.roleId + "/REGION";
       step.unitId = unit.roleId;
       step.operation = "CALL_SUBGRAPH";
+      step.sourceLayers = {unit.layerBegin, unit.layerEnd};
       const auto slotFor = [] (const NativeAssemblyTensorContractV3& port) {
         NativeStepSlotSpec slot;
         slot.slotId = port.name;
@@ -3597,6 +3605,12 @@ verifyQwenTpRankEntries(const std::filesystem::path& root, const std::string& un
     if (step.artifactEntry.empty()) {
       return "step " + step.stepId + " names no entry";
     }
+    const auto entry = std::find_if(table.begin(), table.end(),
+      [&](const auto& value) { return value.entryId == step.artifactEntry; });
+    if (entry != table.end() && step.sourceLayers.second != 0 &&
+        ((entry->kind != "ATTN" && entry->kind != "MLP") ||
+         step.sourceLayers != std::make_pair(entry->layer, entry->layer + 1)))
+      return "step " + step.stepId + " layers differ from its source entry";
     referenced.insert(step.artifactEntry);
   }
   std::set<std::string> held;
@@ -3673,6 +3687,7 @@ qwenTpStepDeclarationJson(const std::vector<NativeExecutionStepSpec>& steps)
     item["unitId"] = step.unitId;
     item["operation"] = step.operation;
     item["artifactEntry"] = step.artifactEntry;
+    if (step.sourceLayers.second != 0) item["sourceLayers"] = step.sourceLayers;
     array.push_back(std::move(item));
   }
   return array.dump();

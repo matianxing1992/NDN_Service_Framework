@@ -1380,6 +1380,10 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
         BOOST_REQUIRE_EQUAL(producer->capability().operationCount(), 2);
         for (std::size_t i = 0; i < source.dataflow.mayPublish.size(); ++i) {
           const auto& endpoint = source.dataflow.mayPublish[i];
+          BOOST_CHECK_EQUAL(endpoint.namingCapabilityDigest,
+                            "sha256:" + producer->capability().capabilityDigest);
+          BOOST_CHECK_EQUAL(tensorObjectManifestName(endpoint),
+                            tensorObjectManifestName(target.dataflow.mustFetch[i]));
           BOOST_CHECK_EQUAL(endpoint.endpointDigest, target.dataflow.mustFetch[i].endpointDigest);
           BOOST_CHECK_EQUAL(endpoint.endpointDigest, target.dataflow.waitFor.front().endpointDigests[i]);
           const auto op = producer->capability().operation(endpoint.round);
@@ -1602,11 +1606,44 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
             reboundGenerationSealed, input.split, keys, warmGenerationContext, 4096);
           const auto freshGeneration = NativeGroupProjectionBuilder::build(
             reboundGenerationSealed, input.split, keys, requestContext, 4096);
+          // Independently created capabilities intentionally give different original
+          // Data Names. Compare the two projection layouts within one unchanged scope.
+          const auto useNamingCapability = [](auto flow, const std::string& groupCapability) {
+            const auto wire = ndn_service_framework::selectionGatedUnhex(groupCapability);
+            const auto capability = ProviderGroupCoordinator::decodeCapability(
+              {wire.begin(), wire.end()});
+            std::map<std::string, std::string> endpointDigests;
+            for (auto* endpoints : {&flow.mayPublish, &flow.mustFetch}) {
+              for (auto& endpoint : *endpoints) {
+                if (endpoint.sourceKind != "ROLE") continue;
+                const auto oldDigest = endpoint.endpointDigest;
+                endpoint.namingCapabilityDigest = "sha256:" + capability.capabilityDigest;
+                NativePlanProjectionBuilder::certifyEndpoint(endpoint);
+                endpointDigests.emplace(oldDigest, endpoint.endpointDigest);
+              }
+            }
+            for (auto& readiness : flow.waitFor)
+              for (auto& digest : readiness.endpointDigests) {
+                const auto replacement = endpointDigests.find(digest);
+                if (replacement != endpointDigests.end()) digest = replacement->second;
+              }
+            auto identity = nativeDataflowJson(flow);
+            identity.erase("dataflow_digest");
+            for (const auto* section : {"may_publish", "must_fetch"})
+              for (auto& endpoint : identity.at(section)) endpoint.erase("dependency_id");
+            flow.dataflowDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+            return flow;
+          };
+          BOOST_CHECK_NE(tensorObjectManifestName(
+            reboundGeneration.at(execution.roles.front()).dataflow.mayPublish.front()),
+            tensorObjectManifestName(
+              freshGeneration.at(execution.roles.front()).dataflow.mayPublish.front()));
           BOOST_CHECK(feedbackLayout == retainedFeedbackLayout);
           for (const auto& role : execution.roles) {
             BOOST_CHECK_EQUAL(reboundGeneration.at(role).dataflow.mayPublish.size(),
                               cachedGeneration.at(role).dataflow.mayPublish.size());
-            BOOST_CHECK(nativeDataflowJson(reboundGeneration.at(role).dataflow) ==
+            BOOST_CHECK(nativeDataflowJson(useNamingCapability(reboundGeneration.at(role).dataflow,
+                          freshGeneration.at(role).groupCapabilityV1)) ==
                         nativeDataflowJson(freshGeneration.at(role).dataflow));
           }
           generationPlan.dependencies.back().keyScope = feedback.keyScope;
@@ -1729,8 +1766,12 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
                               2U * expectedFutureEndpoints);
             std::vector<NativeSelectionProjectionV3> rangePeers;
             for (const auto& role : execution.roles) {
+              auto sharedScopeExpanded = expandedGroups.at(role);
+              sharedScopeExpanded.groupCapabilityV1 = compactGroups.at(role).groupCapabilityV1;
+              sharedScopeExpanded.dataflow = useNamingCapability(
+                std::move(sharedScopeExpanded.dataflow), sharedScopeExpanded.groupCapabilityV1);
               const auto reference = NativePlanSealer::project(
-                rangePlan, proposal.providerByRole.at(role), expandedGroups.at(role));
+                rangePlan, proposal.providerByRole.at(role), sharedScopeExpanded);
               auto compact = NativePlanSealer::projectInvocation(
                 ownedRange, proposal.providerByRole.at(role),
                 compactGroups.at(role));

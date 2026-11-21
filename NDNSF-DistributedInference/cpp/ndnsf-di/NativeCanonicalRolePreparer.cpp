@@ -520,6 +520,9 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
       NativeSelectionRoleV3 role;
       role.role = name; role.selectedRole = degree == 1 ? name : name + "#" + std::to_string(rank);
       role.rank = rank; role.roleKind = degree > 1 ? "HYBRID_RANK" : roleKind(name);
+      if (role.roleKind == "COMPONENT_SET" && !layers.empty() &&
+          (model.descriptor.adapterId == "qwen" || model.descriptor.adapterId == "llama"))
+        role.roleKind = "PIPELINE_RANGE";
       if (role.roleKind != "COMPONENT_SET") {
         role.layerBegin = layers.empty() ? 0 : *layers.begin();
         role.layerEnd = layers.empty() ? planningIndices.size() : *layers.rbegin() + 1;

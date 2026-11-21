@@ -432,16 +432,21 @@ BOOST_AUTO_TEST_CASE(RequestMessageCarriesOneFinalStreamOptionsBlock)
   ndn::Buffer payload{0x01, 0x02};
   request.setPayload(payload, payload.size());
   request.setStreamRequestOptions(validOptions());
+  RequestCapabilities capabilities;
+  capabilities.setField(RequestCapabilities::PUBLIC_REQUEST_ID_FIELD, "public-request");
+  request.setRequestCapabilities(capabilities);
 
   const auto wire = request.WireEncode();
   RequestMessage decoded;
   BOOST_REQUIRE(decoded.WireDecode(wire));
   BOOST_REQUIRE(decoded.hasStreamRequestOptions());
   BOOST_CHECK(decoded.getStreamRequestOptions() == validOptions());
+  BOOST_CHECK_EQUAL(decoded.getPublicRequestId(), "public-request");
 
   const RequestMessage copied(decoded);
   BOOST_REQUIRE(copied.hasStreamRequestOptions());
   BOOST_CHECK(copied.getStreamRequestOptions() == validOptions());
+  BOOST_CHECK_EQUAL(copied.getPublicRequestId(), "public-request");
 
   auto parsed = wire;
   parsed.parse();
@@ -606,6 +611,26 @@ BOOST_AUTO_TEST_CASE(ContextualEventNamesKeepFullActorAndBinding)
       ndn::span<const uint8_t>(digest.data(), digest.size())))
     .append(ndn::name::Component(58, ndn::span<const uint8_t>(sequence.data(), sequence.size())));
   BOOST_CHECK_EQUAL(name, independent);
+  auto semantic = binding;
+  semantic.publicRequestId = "logical-request";
+  const auto first = makeInvocationEventName(semantic, 257);
+  auto replacement = semantic;
+  replacement.requestId = ndn::Name("/core/replacement");
+  replacement.attemptEpoch = 2;
+  ++replacement.streamEpoch;
+  const auto second = makeInvocationEventName(replacement, 257);
+  const auto common = ndn::Name(binding.producer).append("NDNSF").append("event")
+    .append("service").append(ndn::name::Component("/8=SERVICE/8=NDNSF/8=event/8=Qwen"))
+    .append("request").append("logical-request").append("attempt");
+  BOOST_CHECK(common.isPrefixOf(first));
+  BOOST_CHECK(common.isPrefixOf(second));
+  BOOST_CHECK(first[common.size()] == ndn::name::Component("1"));
+  BOOST_CHECK(second[common.size()] == ndn::name::Component("2"));
+  BOOST_CHECK(second[-5] == ndn::name::Component("stream"));
+  BOOST_CHECK(second[-3] == ndn::name::Component("rep"));
+  BOOST_CHECK_EQUAL(second[-1].toSequenceNumber(), 257U);
+  BOOST_CHECK(parseInvocationEventName(second, replacement));
+  BOOST_CHECK(!parseInvocationEventName(first, replacement));
   BOOST_REQUIRE(parseInvocationEventName(independent, binding));
   BOOST_CHECK(!parseInvocationEventName(name)); // one-argument API is legacy-only
   auto wrong = name.getPrefix(-1);

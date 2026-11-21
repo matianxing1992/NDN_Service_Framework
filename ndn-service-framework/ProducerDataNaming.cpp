@@ -99,16 +99,34 @@ ndn::Name makeProducerDataPrefix(const ndn::Name& producer, const std::string& n
     .append(ndn::name::Component(category));
 }
 
-ndn::name::Component makeNamingLabelComponent(const std::string& value)
+namespace {
+
+void validateNamingLabel(const std::vector<uint8_t>& bytes)
 {
-  const std::vector<uint8_t> bytes(value.begin(), value.end());
-  if (value.empty() || !validUtf8(bytes)) throw std::invalid_argument("invalid semantic label UTF8");
+  if (bytes.empty() || !validUtf8(bytes))
+    throw std::invalid_argument("invalid semantic label UTF8");
   // Exclude Unicode C0/C1 controls, including DEL. All other spelling is preserved.
   for (size_t i = 0; i < bytes.size(); ++i) {
     if (bytes[i] < 0x20 || bytes[i] == 0x7f ||
         (bytes[i] == 0xc2 && i + 1 < bytes.size() && bytes[i + 1] >= 0x80 && bytes[i + 1] <= 0x9f))
       throw std::invalid_argument("semantic label contains control character");
   }
+}
+
+} // namespace
+
+ndn::name::Component makePublicNamingLabelComponent(const std::string& label)
+{
+  if (label.size() > 64)
+    throw std::invalid_argument("public naming label exceeds 64 bytes");
+  validateNamingLabel({label.begin(), label.end()});
+  return ndn::name::Component(label);
+}
+
+ndn::name::Component makeNamingLabelComponent(const std::string& value)
+{
+  const std::vector<uint8_t> bytes(value.begin(), value.end());
+  validateNamingLabel(bytes);
   if (bytes.size() <= 64)
     return ndn::name::Component("name=" + value);
   // A label longer than the public bound keeps its readable prefix AND commits to the whole value, so two labels

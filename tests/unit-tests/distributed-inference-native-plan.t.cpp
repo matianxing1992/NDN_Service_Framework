@@ -1888,6 +1888,20 @@ BOOST_AUTO_TEST_CASE(NativeTensorC04WireGoldensBindCompleteEndpointAndSignedStri
   BOOST_CHECK(ndn::Name(tensorObjectNamePrefix(altered)) != actual);
   altered = value; altered.tensorId.back() = 'u'; certifyNamingEndpoint(altered);
   BOOST_CHECK(ndn::Name(tensorObjectNamePrefix(altered)) != actual);
+  auto protectedEndpoint = value;
+  protectedEndpoint.namingCapabilityDigest = digest('1');
+  certifyNamingEndpoint(protectedEndpoint);
+  auto changedCapability = protectedEndpoint;
+  changedCapability.namingCapabilityDigest = digest('2');
+  certifyNamingEndpoint(changedCapability);
+  const ndn::Name protectedName(tensorObjectNamePrefix(protectedEndpoint));
+  const ndn::Name changedName(tensorObjectNamePrefix(changedCapability));
+  BOOST_CHECK(protectedName.getPrefix(-1) == changedName.getPrefix(-1));
+  BOOST_CHECK(protectedName[-1] != changedName[-1]);
+  auto localTuning = protectedEndpoint;
+  ++localTuning.noProgressDeadlineMs;
+  certifyNamingEndpoint(localTuning);
+  BOOST_CHECK(ndn::Name(tensorObjectNamePrefix(localTuning)) == protectedName);
   const auto hexWire = [](const ndn::Name& name) {
     std::ostringstream out; out << std::hex << std::setfill('0');
     for (const auto byte : name.wireEncode()) out << std::setw(2) << static_cast<unsigned>(byte);

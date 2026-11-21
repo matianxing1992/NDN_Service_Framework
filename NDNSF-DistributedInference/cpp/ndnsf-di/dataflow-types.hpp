@@ -146,6 +146,8 @@ struct DependencyEdge
   std::uint64_t namingLayerBegin = 0;
   std::uint64_t namingLayerEnd = 0;
   std::string namingPortId;
+  std::string namingCapabilityDigest;
+  std::string publicRequestId;
 };
 
 /** Fail closed unless a dependency bundle is complete for its sealed edge.

@@ -263,7 +263,8 @@ exactTensorSegmentName(const DependencyEdge& edge, std::size_t segment)
 }
 
 void
-validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
+validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member,
+                        const GroupCapabilityV1& capability)
 {
   using namespace ndn_service_framework;
   if (!edge.declaredByV3 || edge.tensors.size() != 1 || edge.producerRole.empty() ||
@@ -279,9 +280,14 @@ validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
       (!n5 && parsed->suffix.size() != 18) ||
       ndn::Name(edge.manifestDataName) != ndn::Name(base).append("MANIFEST"))
     throw std::invalid_argument("C04 tensor reference category or Producer mismatch");
+  if ((n5 || !edge.namingCapabilityDigest.empty()) &&
+      edge.namingCapabilityDigest != canonicalSha256(capability.capabilityDigest))
+    throw std::invalid_argument("C04 tensor reference protection capability mismatch");
   const auto stride = edge.namingOperationStride;
   const auto round = stride == 0 ? 0 : edge.round / stride;
   const auto index = stride == 0 ? edge.round : edge.round % stride;
+  const auto publicationRound = tensorPublicationRound(edge.operationKind, round,
+                                                        edge.namingCapabilityDigest);
   // The same semantic facts the producer named, rebuilt from the sealed edge; the endpoint digest is not part of
   // the representation, so a consumer cannot be made to depend on transport sizing or on the plan digest.
   NativeTensorSemanticFacts facts;
@@ -289,7 +295,7 @@ validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
   facts.attempt = edge.attemptEpoch;
   facts.round = round;
   facts.index = index;
-  facts.phase = stride == 0 ? "execute" : (round == 0 ? "prefill" : "continuation");
+  facts.phase = stride == 0 ? "execute" : (publicationRound == 0 ? "prefill" : "continuation");
   facts.role = edge.producerRole;
   facts.step = edge.namingStepId;
   facts.layerBegin = edge.namingLayerBegin;
@@ -310,6 +316,8 @@ validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
     "ndnsf-naming/tensor-bundle",
     {{1, 5, std::vector<std::uint8_t>(bundle.begin(), bundle.end())}});
   facts.inlineFirstSegment = edge.inlineFirstSegment ? 1 : 0;
+  facts.namingCapabilityDigest = edge.namingCapabilityDigest;
+  facts.publicRequestId = edge.publicRequestId;
   const auto key = computeTensorRepresentationCommitment(facts);
   const auto& suffix = parsed->suffix;
   if (n5) {
@@ -321,11 +329,12 @@ validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
     for (std::size_t index = 0; index < markers.size(); ++index)
       if (suffix.get(index * 2) != ndn::name::Component(markers[index]))
         throw std::invalid_argument("C04 N5 tensor reference field order mismatch");
-    if (suffix.get(1) != ndn::name::Component(edge.requestId) ||
+    const auto requestId = edge.publicRequestId.empty() ? ndn::name::Component(edge.requestId) :
+      makePublicNamingLabelComponent(edge.publicRequestId);
+    if (suffix.get(1) != requestId ||
         suffix.get(3) != makeNamingDecimalComponent(edge.attemptEpoch) ||
-        suffix.get(5) != makeNamingDecimalComponent(round) ||
-        suffix.get(7) != ndn::name::Component(edge.namingOperationStride == 0 ? "execute" :
-          (round == 0 ? "prefill" : "continuation")) ||
+        suffix.get(5) != makeNamingDecimalComponent(publicationRound) ||
+        suffix.get(7) != ndn::name::Component(facts.phase) ||
         suffix.get(9) != ndn::name::Component(edge.producerRole) ||
         suffix.get(11) != ndn::name::Component(edge.namingStepId) ||
         suffix.get(12) != ndn::name::Component("layers"))
@@ -563,7 +572,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
       const auto* producerMember = memberForRank(capability, producerRank);
       if (producerMember == nullptr)
         throw std::invalid_argument("tensor Producer rank is not in the capability");
-      validateTensorReference(edge, *producerMember);
+      validateTensorReference(edge, *producerMember, capability);
       if (!m_groupCoordinator->beginOperation(nowEpochMs())) {
         throw std::runtime_error(
           "NDNSF_DATA_V1 group cannot begin dependency operation");
@@ -1582,7 +1591,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
     const auto* producerMember = memberForRank(capability, producerRank);
     if (producerMember == nullptr || ndn::Name(producerMember->provider) != m_ctx.localProvider())
       throw std::invalid_argument("tensor Producer is not the local Provider");
-    validateTensorReference(edge, *producerMember);
+    validateTensorReference(edge, *producerMember, capability);
     if (!m_groupCoordinator->beginOperation(nowEpochMs())) {
       throw std::runtime_error(
         "NDNSF_DATA_V1 group cannot begin publication operation");

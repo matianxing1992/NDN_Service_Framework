@@ -48,7 +48,7 @@ NativeJson nativeStepsJson(const std::vector<NativeExecutionStepSpec>& steps);
 NativeJson jsonValue(const NativeAssemblyTensorContractV3& value);
 NativeJson jsonValue(const NativeSelectionRoleV3& value);
 NativeJson jsonValue(const NativeExecutionRoleV3& value);
-NativeJson jsonValue(const NativeTensorEndpointV3& value);
+NativeJson jsonValue(const NativeTensorEndpointV3& value, bool includeNamingBinding = true);
 NativeJson jsonValue(const NativeReadinessPredicateV3& value);
 NativeJson jsonValue(const NativeRoleDataflowContractV3& value);
 NativeJson jsonValue(const NativeDeviceBindingV3& value);
@@ -240,7 +240,7 @@ NativeJson jsonValue(const NativeExecutionRoleV3& value)
   return result;
 }
 
-NativeJson jsonValue(const NativeTensorEndpointV3& value)
+NativeJson jsonValue(const NativeTensorEndpointV3& value, bool includeNamingBinding)
 {
   auto result = NativeJson::object();
   result["producer_namespace"] = value.producerNamespace;
@@ -273,6 +273,10 @@ NativeJson jsonValue(const NativeTensorEndpointV3& value)
   result["manifest_digest"] = value.manifestDigest;
   if (value.inlineFirstSegment) result["inline_first_segment"] = true;
   result["security_profile"] = value.securityProfile;
+  if (includeNamingBinding && !value.namingCapabilityDigest.empty())
+    result["naming_capability_digest"] = value.namingCapabilityDigest;
+  if (includeNamingBinding && !value.publicRequestId.empty())
+    result["public_request_id"] = value.publicRequestId;
   result["no_progress_deadline_ms"] = value.noProgressDeadlineMs;
   result["hard_deadline_ms"] = value.hardDeadlineMs;
   // The N5 coordinates are appended only when set, so an endpoint produced before this row keeps the same
@@ -296,6 +300,25 @@ NativeJson jsonValue(const NativeReadinessPredicateV3& value)
   return result;
 }
 
+void appendDataflowNamingBinding(NativeJson& result, const NativeRoleDataflowContractV3& value)
+{
+  const std::string* digest = nullptr;
+  const std::string* publicRequestId = nullptr;
+  for (const auto* endpoints : {&value.mayPublish, &value.mustFetch}) {
+    for (const auto& endpoint : *endpoints) {
+      if (publicRequestId && *publicRequestId != endpoint.publicRequestId)
+        throw std::invalid_argument("role dataflow spans different public requests");
+      publicRequestId = &endpoint.publicRequestId;
+      if (endpoint.sourceKind != "ROLE") continue;
+      if (digest && *digest != endpoint.namingCapabilityDigest)
+        throw std::invalid_argument("role dataflow spans different naming capabilities");
+      digest = &endpoint.namingCapabilityDigest;
+    }
+  }
+  if (digest && !digest->empty()) result["naming_capability_digest"] = *digest;
+  if (publicRequestId && !publicRequestId->empty()) result["public_request_id"] = *publicRequestId;
+}
+
 NativeJson jsonValue(const NativeRoleDataflowContractV3& value)
 {
   auto result = NativeJson::object();
@@ -303,8 +326,15 @@ NativeJson jsonValue(const NativeRoleDataflowContractV3& value)
   result["attempt"] = value.attempt;
   result["plan_digest"] = value.planDigest;
   result["role"] = value.role;
-  result["may_publish"] = jsonArray(value.mayPublish);
-  result["must_fetch"] = jsonArray(value.mustFetch);
+  const auto endpointArray = [](const auto& endpoints) {
+    auto result = NativeJson::array();
+    for (const auto& endpoint : endpoints)
+      result.push_back(jsonValue(endpoint, false));
+    return result;
+  };
+  result["may_publish"] = endpointArray(value.mayPublish);
+  result["must_fetch"] = endpointArray(value.mustFetch);
+  appendDataflowNamingBinding(result, value);
   result["wait_for"] = jsonArray(value.waitFor);
   result["terminal_response_owner"] = value.terminalResponseOwner;
   result["dataflow_digest"] = value.dataflowDigest;
@@ -839,6 +869,11 @@ executionRoleFromV3Json(const boost::property_tree::ptree& node)
 
 void validateNativeTensorEndpointV3(const NativeTensorEndpointV3& endpoint)
 {
+  if (!endpoint.publicRequestId.empty())
+    (void)ndn_service_framework::makePublicNamingLabelComponent(endpoint.publicRequestId);
+  if (!endpoint.namingCapabilityDigest.empty() &&
+      (endpoint.sourceKind != "ROLE" || !isSha256Digest(endpoint.namingCapabilityDigest)))
+    throw std::invalid_argument("invalid tensor naming capability digest");
   if (endpoint.inlineFirstSegment && endpoint.sourceKind != "ROLE")
     throw std::invalid_argument("inline first segment requires a ROLE endpoint");
   if ((endpoint.prefetchBundleBytes == 0) != (endpoint.prefetchSegmentBytes == 0) ||
@@ -890,13 +925,18 @@ void validateNativeTensorEndpointV3(const NativeTensorEndpointV3& endpoint)
 }
 
 NativeTensorEndpointV3
-tensorEndpointFromV3Json(const boost::property_tree::ptree& node)
+tensorEndpointFromV3Json(const boost::property_tree::ptree& node, const std::string& namingCapability,
+                         const std::string& publicRequestId)
 {
+  if (node.get_child_optional("naming_capability_digest") ||
+      node.get_child_optional("public_request_id"))
+    throw std::invalid_argument("tensor naming binding must be declared by its role dataflow");
   NativeTensorEndpointV3 endpoint;
   endpoint.producerNamespace =
     node.get<std::string>("producer_namespace", "");
   endpoint.requester = node.get<std::string>("requester", "");
   endpoint.requestId = node.get<std::string>("request_id", "");
+  endpoint.publicRequestId = publicRequestId;
   endpoint.attempt = node.get<std::uint64_t>("attempt", 0);
   endpoint.planDigest = node.get<std::string>("plan_digest", "");
   endpoint.groupId = node.get<std::string>("group_id", "");
@@ -928,6 +968,8 @@ tensorEndpointFromV3Json(const boost::property_tree::ptree& node)
   endpoint.prefetchBundleBytes = node.get<std::uint64_t>("prefetch_bundle_bytes", 0);
   endpoint.prefetchSegmentBytes = node.get<std::uint64_t>("prefetch_segment_bytes", 0);
   endpoint.inlineFirstSegment = node.get<bool>("inline_first_segment", false);
+  if (endpoint.sourceKind == "ROLE")
+    endpoint.namingCapabilityDigest = namingCapability;
   endpoint.manifestDigest = node.get<std::string>("manifest_digest", "");
   endpoint.securityProfile = node.get<std::string>("security_profile", "");
   endpoint.noProgressDeadlineMs =
@@ -941,7 +983,8 @@ tensorEndpointFromV3Json(const boost::property_tree::ptree& node)
 
 std::vector<NativeTensorEndpointV3>
 tensorEndpointArrayFromV3Json(const boost::property_tree::ptree& node,
-                              const std::string& key)
+                              const std::string& key, const std::string& namingCapability,
+                              const std::string& publicRequestId)
 {
   std::vector<NativeTensorEndpointV3> endpoints;
   const auto child = node.get_child_optional(key);
@@ -949,7 +992,7 @@ tensorEndpointArrayFromV3Json(const boost::property_tree::ptree& node,
     return endpoints;
   }
   for (const auto& item : *child) {
-    endpoints.push_back(tensorEndpointFromV3Json(item.second));
+    endpoints.push_back(tensorEndpointFromV3Json(item.second, namingCapability, publicRequestId));
   }
   return endpoints;
 }
@@ -1131,8 +1174,12 @@ dataflowFromV3Json(const boost::property_tree::ptree& node)
   dataflow.attempt = node.get<std::uint64_t>("attempt", 0);
   dataflow.planDigest = node.get<std::string>("plan_digest", "");
   dataflow.role = node.get<std::string>("role", "");
-  dataflow.mayPublish = tensorEndpointArrayFromV3Json(node, "may_publish");
-  dataflow.mustFetch = tensorEndpointArrayFromV3Json(node, "must_fetch");
+  const auto namingCapability = node.get<std::string>("naming_capability_digest", "");
+  const auto publicRequestId = node.get<std::string>("public_request_id", "");
+  dataflow.mayPublish = tensorEndpointArrayFromV3Json(node, "may_publish",
+                                                     namingCapability, publicRequestId);
+  dataflow.mustFetch = tensorEndpointArrayFromV3Json(node, "must_fetch",
+                                                   namingCapability, publicRequestId);
   if (const auto waitFor = node.get_child_optional("wait_for")) {
     for (const auto& item : *waitFor) {
       dataflow.waitFor.push_back(readinessFromV3Json(item.second));
@@ -1625,6 +1672,7 @@ NativeJson nativeStepsJson(const std::vector<NativeExecutionStepSpec>& steps)
                             {"output_slots", slots(step.outputSlots)},
                             {"local_state_slots", step.localStateSlots}};
     if (!step.artifactEntry.empty()) entry["artifact_entry"] = step.artifactEntry;
+    if (step.sourceLayers.second != 0) entry["source_layers"] = step.sourceLayers;
     result.push_back(std::move(entry));
   }
   return result;
@@ -1682,6 +1730,17 @@ std::vector<NativeExecutionStepSpec> nativeStepsFromJson(const boost::property_t
     spec.inputSlots = slotsOf(step, "input_slots");
     spec.outputSlots = slotsOf(step, "output_slots");
     spec.localStateSlots = stringArrayFromJson(step, "local_state_slots");
+    if (const auto layers = step.get_child_optional("source_layers")) {
+      if (layers->size() != 2 ||
+          std::any_of(layers->begin(), layers->end(), [](const auto& item) {
+            return !item.first.empty() || !item.second.empty();
+          }))
+        throw std::invalid_argument("step source layers require two unsigned endpoints");
+      spec.sourceLayers = {layers->begin()->second.get_value<std::uint64_t>(),
+                           std::next(layers->begin())->second.get_value<std::uint64_t>()};
+      if (spec.sourceLayers.first >= spec.sourceLayers.second)
+        throw std::invalid_argument("step source layers must form a non-empty interval");
+    }
     steps.push_back(std::move(spec));
   }
   return steps;
@@ -2202,6 +2261,13 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   // PropertyTree loses scalar JSON types. Validate optional prefetch numbers
   // from the already parsed typed root before translating the endpoint.
   const auto& typedDataflow = typedRoot.at("dataflow");
+  if (typedDataflow.contains("public_request_id"))
+    (void)ndn_service_framework::makePublicNamingLabelComponent(
+      typedDataflow.at("public_request_id").get<std::string>());
+  if (typedDataflow.contains("naming_capability_digest") &&
+      (!typedDataflow.at("naming_capability_digest").is_string() ||
+       !isSha256Digest(typedDataflow.at("naming_capability_digest").get<std::string>())))
+    throw std::invalid_argument("invalid role dataflow naming capability digest");
   for (const auto* key : {"may_publish", "must_fetch"}) {
     if (!typedDataflow.contains(key)) continue;
     for (const auto& endpoint : typedDataflow.at(key)) {
@@ -2827,6 +2893,8 @@ NativeFixedExecutionTemplateV1 normalizeExecutionTemplate(NativeFixedExecutionTe
       endpoint.attempt = 1;
       endpoint.planDigest = fixedTemplateDigestPlaceholder();
       endpoint.groupId = endpoint.groupEpoch = "fixed-template";
+      endpoint.namingCapabilityDigest.clear();
+      endpoint.publicRequestId.clear();
       endpoint.microbatch = 0;
       endpoint.segmentCount = 1;
       endpoint.noProgressDeadlineMs = endpoint.hardDeadlineMs = 1;
@@ -3032,6 +3100,7 @@ NativeJson dataflowBindingsJson(const NativeRoleDataflowContractV3& flow)
   NativeJson result{{"may_publish", endpointBindingsJson(flow.mayPublish)},
     {"must_fetch", endpointBindingsJson(flow.mustFetch)}, {"wait_for", std::move(readiness)},
     {"dataflow_digest", flow.dataflowDigest}};
+  appendDataflowNamingBinding(result, flow);
   if (flow.endpointRange)
     result["endpoint_range"] = {{"epoch_count", flow.endpointRange->epochCount},
                                 {"operation_stride", flow.endpointRange->operationStride}};
@@ -3043,9 +3112,12 @@ NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
   const NativeFixedExecutionTemplateV1& fixed)
 {
   const bool compact = bindings.contains("endpoint_range");
+  const auto namingCapability = bindings.value("naming_capability_digest", std::string{});
+  const auto publicRequestId = bindings.value("public_request_id", std::string{});
   requireOnlyBindingKeys(bindings,
-    {"may_publish", "must_fetch", "wait_for", "dataflow_digest", "endpoint_range"});
-  if (bindings.size() != (compact ? 5U : 4U))
+    {"may_publish", "must_fetch", "wait_for", "dataflow_digest", "endpoint_range",
+     "naming_capability_digest", "public_request_id"});
+  if (bindings.size() != 4U + compact + !namingCapability.empty() + !publicRequestId.empty())
     throw std::invalid_argument("invocation dataflow binding fields mismatch");
   auto flow = fixed.dataflow;
   if (compact) {
@@ -3075,6 +3147,7 @@ NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
       for (const auto* field : {"tensor_digest", "layout_digest", "target_layout_digest"})
         if (binding.contains(field) != input) throw std::invalid_argument("invocation input binding fields mismatch");
       endpoint.requestId = context.requestId;
+      endpoint.publicRequestId = publicRequestId;
       endpoint.attempt = context.attempt;
       endpoint.planDigest = context.planDigest;
       endpoint.producerNamespace = binding.at("producer_namespace").get<std::string>();
@@ -3092,6 +3165,7 @@ NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
       if (binding.contains("prefetch_bundle_bytes") != binding.contains("prefetch_segment_bytes"))
         throw std::invalid_argument("invocation prefetch binding is incomplete");
       endpoint.inlineFirstSegment = binding.value("inline_first_segment", false);
+      if (!input) endpoint.namingCapabilityDigest = namingCapability;
       if (input) {
         endpoint.tensorDigest = binding.at("tensor_digest").get<std::string>();
         endpoint.layoutDigest = binding.at("layout_digest").get<std::string>();
@@ -3375,9 +3449,20 @@ void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
   }
   const auto& flow = value.at("dataflow");
   requireOnlyBindingKeys(flow,
-    {"may_publish", "must_fetch", "wait_for", "dataflow_digest", "endpoint_range"});
+    {"may_publish", "must_fetch", "wait_for", "dataflow_digest", "endpoint_range",
+     "naming_capability_digest", "public_request_id"});
+  const bool hasNamingCapability = flow.contains("naming_capability_digest");
+  const bool hasPublicRequestId = flow.contains("public_request_id");
+  if (hasPublicRequestId)
+    (void)ndn_service_framework::makePublicNamingLabelComponent(
+      flow.at("public_request_id").get<std::string>());
+  if (hasNamingCapability &&
+      (!flow.at("naming_capability_digest").is_string() ||
+       !isSha256Digest(flow.at("naming_capability_digest").get<std::string>())))
+    throw std::invalid_argument("invalid invocation naming capability digest");
   if (flow.contains("endpoint_range") != rangeInvocation ||
-      flow.size() != (rangeInvocation ? 5U : 4U) || !flow.at("dataflow_digest").is_string() ||
+      flow.size() != 4U + rangeInvocation + hasNamingCapability + hasPublicRequestId ||
+      !flow.at("dataflow_digest").is_string() ||
       !flow.at("wait_for").is_array())
     throw std::invalid_argument("invocation dataflow binding fields mismatch");
   if (rangeInvocation) {
@@ -4660,6 +4745,8 @@ roleSpecFromSelectionProjectionV3Impl(
     edge.namingOperationStride = endpoint.namingOperationStride;
     edge.namingStepId = endpoint.namingStepId;
     edge.namingLayerBegin = endpoint.namingLayerBegin;
+    edge.namingCapabilityDigest = endpoint.namingCapabilityDigest;
+    edge.publicRequestId = endpoint.publicRequestId;
     edge.namingLayerEnd = endpoint.namingLayerEnd;
     edge.namingPortId = endpoint.namingPortId;
     edge.microbatch = endpoint.microbatch;

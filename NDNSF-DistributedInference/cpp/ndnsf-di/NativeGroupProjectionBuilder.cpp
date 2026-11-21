@@ -27,6 +27,7 @@ struct Group {
   std::vector<std::string> providers;
   std::map<std::string, std::uint64_t> rank;
   std::map<std::string, Operation> operations;
+  std::string capabilityDigest;
 };
 }
 
@@ -231,6 +232,7 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
     const auto capability = coordinator.createCapabilityFromRuns(core.requestId, "attempt-" + std::to_string(core.attempt),
       sealed.planDigest, pair.first, 1, std::move(members), std::move(operations), maxBytes,
       context.noProgressMs, core.expiresAtMs - context.nowMs);
+    group.capabilityDigest = "sha256:" + capability.capabilityDigest;
     for (auto& projection : projections) {
       const auto& provider = core.assignment.providerByRole.at(projection.first);
       if (!group.rank.count(provider)) continue;
@@ -273,6 +275,7 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
       const auto& operation = group.operations.at(operationKey);
       endpoint.producerRank = group.rank.at(core.assignment.providerByRole.at(endpoint.producerRole));
       endpoint.round = operation.index;
+      endpoint.namingCapabilityDigest = group.capabilityDigest;
       // The rank and the operation index are part of the endpoint's certified identity, so
       // they must be certified again here. Leaving the pre-remap digests in place makes the
       // compact transport reconstruct an endpoint whose digest no longer describes it, and

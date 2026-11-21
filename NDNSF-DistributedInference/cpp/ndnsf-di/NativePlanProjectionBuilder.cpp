@@ -18,7 +18,7 @@ class NativeStaticProjectionLayout final
   using TensorGeometry = std::tuple<std::string, std::string,
     decltype(NativeAssemblyTensorContractV3{}.shape)>;
   using RoleGeometry = std::tuple<std::string, std::uint64_t,
-    std::vector<TensorGeometry>, std::vector<TensorGeometry>>;
+    std::vector<TensorGeometry>, std::vector<TensorGeometry>, std::uint64_t, std::uint64_t>;
   using TransferGeometry = std::tuple<std::string, std::string,
     std::vector<std::uint64_t>, std::vector<std::uint64_t>,
     std::string, std::string, std::string>;
@@ -28,7 +28,7 @@ class NativeStaticProjectionLayout final
   using SlotGeometry = std::tuple<std::string, std::string,
     decltype(NativeStepSlotSpec{}.shape), std::string, std::string, std::string, std::string>;
   using StepGeometry = std::tuple<std::string, std::string,
-    std::vector<SlotGeometry>, std::vector<SlotGeometry>>;
+    std::vector<SlotGeometry>, std::vector<SlotGeometry>, decltype(NativeExecutionStepSpec{}.sourceLayers)>;
   using StepGeometryKey = std::pair<std::string, std::vector<StepGeometry>>;
   using Identity = std::tuple<std::string, std::string, std::string,
     std::map<std::string, std::string>, std::map<std::string, RoleGeometry>,
@@ -47,7 +47,7 @@ class NativeStaticProjectionLayout final
     };
     for (const auto& step : plan.steps)
       result.second.emplace_back(step.stepId, step.unitId,
-        slots(step.inputSlots), slots(step.outputSlots));
+        slots(step.inputSlots), slots(step.outputSlots), step.sourceLayers);
     return result;
   }
   bool matches(const NativePlacementPlanCore& core) const
@@ -70,7 +70,8 @@ class NativeStaticProjectionLayout final
       const auto& current = core.executionPlan.steps[i];
       if (std::get<0>(cached) != current.stepId || std::get<1>(cached) != current.unitId ||
           !sameSlots(std::get<2>(cached), current.inputSlots) ||
-          !sameSlots(std::get<3>(cached), current.outputSlots)) return false;
+          !sameSlots(std::get<3>(cached), current.outputSlots) ||
+          std::get<4>(cached) != current.sourceLayers) return false;
     }
     if (std::get<0>(identity) != core.candidateDigest || std::get<1>(identity) != core.modelDigest ||
         std::get<2>(identity) != core.graphDigest || std::get<3>(identity) != core.assignment.providerByRole ||
@@ -91,7 +92,9 @@ class NativeStaticProjectionLayout final
       const auto& cached = found->second;
       if (std::get<0>(cached) != role.second.role || std::get<1>(cached) != role.second.rank ||
           !sameTensors(std::get<2>(cached), role.second.expectedInputs) ||
-          !sameTensors(std::get<3>(cached), role.second.expectedOutputs)) return false;
+          !sameTensors(std::get<3>(cached), role.second.expectedOutputs) ||
+          std::get<4>(cached) != role.second.layerBegin ||
+          std::get<5>(cached) != role.second.layerEnd) return false;
     }
     const auto& dependencies = std::get<5>(identity);
     if (dependencies.size() != core.executionPlan.dependencies.size()) return false;
@@ -128,7 +131,8 @@ class NativeStaticProjectionLayout final
     };
     for (const auto& role : core.roleContracts())
       roles.emplace(role.first, RoleGeometry{role.second.role, role.second.rank,
-        tensors(role.second.expectedInputs), tensors(role.second.expectedOutputs)});
+        tensors(role.second.expectedInputs), tensors(role.second.expectedOutputs),
+        role.second.layerBegin, role.second.layerEnd});
     std::vector<DependencyGeometry> dependencies;
     dependencies.reserve(core.executionPlan.dependencies.size());
     for (const auto& dependency : core.executionPlan.dependencies) {
@@ -161,6 +165,16 @@ class NativeStaticProjectionLayout final
   std::map<std::size_t, std::vector<NativeTensorEndpointV3>> endpoints;
 };
 namespace {
+const NativeExecutionStepSpec&
+exactStep(const NativeExecutionPlan& plan, std::string_view id, const std::string& unit)
+{
+  const auto found = std::find_if(plan.steps.begin(), plan.steps.end(),
+    [&](const auto& value) { return value.stepId == id && value.unitId == unit; });
+  if (found == plan.steps.end())
+    throw std::invalid_argument("v2 endpoint has no matching step owner");
+  return *found;
+}
+
 // Borrowed only while building this projection; the sealed plan owns both ports.
 std::pair<const NativeStepSlotSpec*, const NativeStepSlotSpec*>
 exactStepPorts(const NativeExecutionPlan& plan, const NativeDependencySpec& dependency)
@@ -170,14 +184,6 @@ exactStepPorts(const NativeExecutionPlan& plan, const NativeDependencySpec& depe
       (!shared && dependency.consumers.size() != 1) ||
       dependency.tensors.size() != 1 || !dependency.redistributions.empty())
     throw std::invalid_argument("v2 endpoint requires one replicated step tensor");
-  const auto step = [&] (std::string_view id, const std::string& unit)
-    -> const NativeExecutionStepSpec& {
-    const auto found = std::find_if(plan.steps.begin(), plan.steps.end(),
-      [&] (const auto& value) { return value.stepId == id && value.unitId == unit; });
-    if (found == plan.steps.end())
-      throw std::invalid_argument("v2 endpoint has no matching step owner");
-    return *found;
-  };
   const auto slot = [] (const auto& values, std::string_view id)
     -> const NativeStepSlotSpec& {
     const auto found = std::find_if(values.begin(), values.end(),
@@ -186,13 +192,13 @@ exactStepPorts(const NativeExecutionPlan& plan, const NativeDependencySpec& depe
       throw std::invalid_argument("v2 endpoint has no matching step port");
     return *found;
   };
-  const auto& output = slot(step(dependency.producerStepId, dependency.producers.front()).outputSlots,
+  const auto& output = slot(exactStep(plan, dependency.producerStepId, dependency.producers.front()).outputSlots,
                             dependency.producerSlotId);
   const auto& consumer = dependency.consumers.front();
   const auto binding = shared ? findSharedPartialInput(plan, dependency, consumer) :
     std::pair<std::string_view, std::string_view>{dependency.consumerStepId,
                                                  dependency.consumerSlotId};
-  const auto& input = slot(step(binding.first, consumer).inputSlots, binding.second);
+  const auto& input = slot(exactStep(plan, binding.first, consumer).inputSlots, binding.second);
   if (output.source != "LOCAL_STEP" || input.source != "REMOTE_STEP" ||
       input.producerStepId != dependency.producerStepId ||
       input.producerSlotId != dependency.producerSlotId || output.dtype != input.dtype ||
@@ -406,6 +412,7 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
     NativeTensorEndpointV3 e;
     e.requester = core.requesterIdentity;
     e.requestId = core.requestId; e.attempt = core.attempt; e.planDigest = sealed.planDigest;
+    e.publicRequestId = context.publicRequestId;
     e.namingOperationStride = core.generationContract.enabled
       ? core.generationContract.streamingOperationStride : 0;
     e.securityProfile = "NDNSF_DATA_V1"; e.noProgressDeadlineMs = context.noProgressMs;
@@ -416,13 +423,27 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
   // degree. The phase is the object's production class, decided before any output exists.
   const auto applyNamingCoordinates = [&](NativeTensorEndpointV3& endpoint,
                                           const NativeDependencySpec& dependency) {
+    if (dependency.operationKind == "TOKEN_FEEDBACK") {
+      endpoint.namingStepId = "token-feedback";
+      endpoint.namingPortId = endpoint.tensorId;
+      return;
+    }
     endpoint.namingStepId = dependency.producerStepId.empty() ? "role-execution"
       : dependency.producerStepId;
     endpoint.namingPortId = dependency.producerSlotId.empty() ? "role-execution"
       : dependency.producerSlotId;
-    const auto role = core.roleContracts().find(dependency.producers.empty()
-      ? std::string{} : dependency.producers.front());
-    if (role != core.roleContracts().end() && role->second.layerEnd != 0) {
+    const auto role = core.roleContracts().find(endpoint.producerRole);
+    if (!dependency.producerStepId.empty()) {
+      const auto& step = exactStep(core.executionPlan, dependency.producerStepId,
+                                  endpoint.producerRole);
+      const auto [begin, end] = step.sourceLayers;
+      if (end != 0 && (role == core.roleContracts().end() ||
+          begin < role->second.layerBegin || end > role->second.layerEnd))
+        throw std::invalid_argument("tensor step layer range is outside its source role");
+      endpoint.namingLayerBegin = begin;
+      endpoint.namingLayerEnd = end;
+    }
+    else if (role != core.roleContracts().end() && role->second.layerEnd != 0) {
       endpoint.namingLayerBegin = role->second.layerBegin;
       endpoint.namingLayerEnd = role->second.layerEnd;
     }
@@ -527,6 +548,7 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
       e.namingOperationStride = core.generationContract.enabled ?
         core.generationContract.streamingOperationStride : 0;
       e.requestId = core.requestId; e.attempt = core.attempt; e.planDigest = sealed.planDigest;
+      e.publicRequestId = context.publicRequestId;
       e.securityProfile = "NDNSF_DATA_V1"; e.noProgressDeadlineMs = context.noProgressMs;
       e.hardDeadlineMs = core.expiresAtMs - context.nowMs;
       e.producerNamespace = binding.producerNamespaces.at(provider);

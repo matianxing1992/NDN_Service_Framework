@@ -2932,6 +2932,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           failInvocation("DI_SELECTION_REQUEST_MISMATCH");
           return;
         }
+        {
+          const auto publicRequestId = request.getPublicRequestId();
+          const auto& dataflow = selectionProjection->dataflow;
+          for (const auto* endpoints : {&dataflow.mayPublish, &dataflow.mustFetch}) {
+            if (std::any_of(endpoints->begin(), endpoints->end(), [&](const auto& endpoint) {
+                  return endpoint.publicRequestId != publicRequestId;
+                })) {
+              failInvocation("DI_SELECTION_PUBLIC_REQUEST_MISMATCH");
+              return;
+            }
+          }
+        }
         if (!selectionProjection->automaticShapeSeed &&
             !selectionProjection->requestContractDigest.empty()) {
           if (!nativeRequestContractDigestMatches(
