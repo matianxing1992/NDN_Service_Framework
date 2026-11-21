@@ -544,8 +544,25 @@ consistencyName(repo::RepoWriteConsistency consistency)
 std::shared_ptr<ndn_service_framework::ServiceUser>
 makeRepoPublisherUser(NdnsfIntegrationEnvironment& environment, size_t index,
                       const ndn::Name& servicePrefix,
-                      const std::vector<std::string>& operations)
+                      const std::vector<std::string>& operations,
+                      bool faceOwnedValidation = false)
 {
+  class RepoPublisherUser final : public ServiceUser
+  {
+  public:
+    RepoPublisherUser(ndn::Face& face, const ndn::Name& group,
+                      const ndn::security::Certificate& certificate,
+                      const ndn::security::Certificate& authority,
+                      const std::string& trustSchema, bool faceOwnedValidation)
+      : ServiceUser(LocalMockTag{}, face, group, certificate, authority, trustSchema)
+    {
+      if (faceOwnedValidation) {
+        // Commit workers share this validator with the requester. Keep its
+        // stateful schema matcher on the pumped Face, as in production.
+        validator = std::make_shared<MessageValidator>(trustSchema, group, &face);
+      }
+    }
+  };
   auto& keyChain = environment.keyChain();
   const auto providerIdentity = environment.provider(index).getName();
   const auto providerCert = keyChain.getPib().getIdentity(providerIdentity)
@@ -553,10 +570,9 @@ makeRepoPublisherUser(NdnsfIntegrationEnvironment& environment, size_t index,
   const auto authorityCert = keyChain.getPib().getIdentity(
     environment.profile().attributeAuthority)
     .getDefaultKey().getDefaultCertificate();
-  auto publisherUser = std::make_shared<ndn_service_framework::ServiceUser>(
-    ndn_service_framework::ServiceUser::LocalMockTag{},
+  auto publisherUser = std::make_shared<RepoPublisherUser>(
     environment.providerFace(index), environment.profile().groupPrefix,
-    providerCert, authorityCert, environment.profile().trustSchemaPath);
+    providerCert, authorityCert, environment.profile().trustSchemaPath, faceOwnedValidation);
   publisherUser->useSigningKeyChainForTest(keyChain);
 
   ndn::svs::SecurityOptions security(keyChain);
@@ -2760,7 +2776,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
   BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
-  auto sourceWriter = makeRepoPublisherUser(environment, 0, servicePrefix, operations);
+  auto sourceWriter = makeRepoPublisherUser(environment, 0, servicePrefix, operations, true);
   auto secondOwner = makeRepoPublisherUser(environment, 2, servicePrefix, operations);
   // The full packet index requires Core's protected segmented response path.
   // Model the configured Controller state through maintained admission APIs;
