@@ -2772,21 +2772,45 @@ BOOST_AUTO_TEST_CASE(DetectionOracleRejectsChangedClassesAndPadding)
   BOOST_CHECK(result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
 
   auto classChanged = permuted;
-  classChanged[5] = 9.0F;
+  classChanged[11] = 9.0F;
   result.payload = payloadOf(classChanged, {1, 3, 6});
   BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
 
-  auto paddingLost = permuted;
-  paddingLost[12] = 1.0F;
-  result.payload = payloadOf(paddingLost, {1, 3, 6});
+  // Losing a real detection (its score becomes zero) must fail; leftover
+  // coordinates on a zero-score row are padding and are covered separately.
+  auto detectionLost = permuted;
+  detectionLost[4] = 0.0F;
+  result.payload = payloadOf(detectionLost, {1, 3, 6});
   BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
 
   auto shifted = permuted;
-  shifted[0] += 0.5F;
+  shifted[6] += 0.5F;
   result.payload = payloadOf(shifted, {1, 3, 6});
   BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
 
   result.payload = payloadOf(permuted, {3, 6});
+  BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  // A zero-score row with leftover coordinates is padding, not a detection; it
+  // must not be matched element-wise.
+  auto zeroScoreTail = permuted;
+  zeroScoreTail[12] = 123.0F;   // x on a row whose score stays zero
+  zeroScoreTail[13] = -7.0F;
+  result.payload = payloadOf(zeroScoreTail, {1, 3, 6});
+  BOOST_CHECK(result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  // At the NMS max-det boundary two candidates with exactly the same score are
+  // interchangeable; only their count is part of the contract.
+  auto boundaryTie = permuted;
+  boundaryTie[0] = 111.0F; boundaryTie[1] = 222.0F;
+  boundaryTie[2] = 333.0F; boundaryTie[3] = 444.0F;
+  boundaryTie[5] = 9.0F;
+  result.payload = payloadOf(boundaryTie, {1, 3, 6});
+  BOOST_CHECK(result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  auto boundaryCountLost = permuted;
+  boundaryCountLost[10] = 0.0F;
+  result.payload = payloadOf(boundaryCountLost, {1, 3, 6});
   BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
 }
 

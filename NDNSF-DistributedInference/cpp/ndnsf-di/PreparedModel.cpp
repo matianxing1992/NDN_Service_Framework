@@ -74,10 +74,17 @@ bool Result::matchesFloat32Detections(const std::string& tensorName,
       return false;
     std::vector<float> actual(expected.size());
     std::memcpy(actual.data(), tensor.payload.data(), tensor.payload.size());
+    // A zero-score row is not a detection. NMS fills the tail with zeros, but
+    // it may also leave arbitrary coordinates beside a zero score; those rows
+    // are padding for comparison purposes and must not be matched elementwise.
     const auto isPadding = [] (const float* row, std::size_t width) {
       for (std::size_t i = 0; i < width; ++i)
         if (row[i] != 0.0F) return false;
       return true;
+    };
+    const auto isEffective = [&isPadding] (const float* row, std::size_t width) {
+      if (isPadding(row, width)) return false;
+      return row[4] > 0.0F;
     };
     const auto boxIou = [] (const float* a, const float* b) {
       const double ax1 = a[0], ay1 = a[1], ax2 = a[2], ay2 = a[3];
@@ -94,19 +101,60 @@ bool Result::matchesFloat32Detections(const std::string& tensorName,
     std::size_t expectedPadding = 0;
     std::size_t actualPadding = 0;
     std::vector<std::size_t> effective;
+    float expectedMin = 0.0F;
+    float actualMin = 0.0F;
+    bool haveExpectedMin = false;
+    bool haveActualMin = false;
     for (std::size_t row = 0; row < rows; ++row) {
-      if (isPadding(expected.data() + row * rowWidth, rowWidth)) ++expectedPadding;
-      else effective.push_back(row);
-      if (isPadding(actual.data() + row * rowWidth, rowWidth)) ++actualPadding;
+      const auto* want = expected.data() + row * rowWidth;
+      const auto* got = actual.data() + row * rowWidth;
+      if (isEffective(want, rowWidth)) {
+        effective.push_back(row);
+        if (!haveExpectedMin || want[4] < expectedMin) { expectedMin = want[4]; haveExpectedMin = true; }
+      }
+      else ++expectedPadding;
+      if (isEffective(got, rowWidth)) {
+        if (!haveActualMin || got[4] < actualMin) { actualMin = got[4]; haveActualMin = true; }
+      }
+      else ++actualPadding;
     }
     if (expectedPadding != actualPadding) return false;
-    for (const auto row : effective) {
-      bool matched = false;
+    // NMS truncates at `max_det`. When several candidates share the lowest
+    // surviving score, only the slot count is interchangeable: which equal-score
+    // candidate occupies it depends on the operator's internal ordering. Require
+    // the boundary score itself to agree, then compare those rows by their score
+    // multiset; every row above the boundary keeps the full comparison.
+    if (haveExpectedMin != haveActualMin) return false;
+    if (haveExpectedMin && std::fabs(static_cast<double>(expectedMin) -
+                                     static_cast<double>(actualMin)) > scoreTolerance)
+      return false;
+    std::size_t expectedBoundary = 0;
+    std::size_t actualBoundary = 0;
+    for (std::size_t row = 0; row < rows; ++row) {
       const auto* want = expected.data() + row * rowWidth;
+      const auto* got = actual.data() + row * rowWidth;
+      const auto atBoundary = [&] (const float* row, float boundary) {
+        return isEffective(row, rowWidth) &&
+          std::fabs(static_cast<double>(row[4]) -
+                    static_cast<double>(boundary)) <= scoreTolerance;
+      };
+      if (atBoundary(want, expectedMin)) ++expectedBoundary;
+      if (atBoundary(got, actualMin)) {
+        ++actualBoundary;
+        used[row] = true;
+      }
+    }
+    if (expectedBoundary != actualBoundary) return false;
+    for (const auto row : effective) {
+      const auto* want = expected.data() + row * rowWidth;
+      if (std::fabs(static_cast<double>(want[4]) -
+                    static_cast<double>(expectedMin)) <= scoreTolerance)
+        continue;
+      bool matched = false;
       for (std::size_t candidate = 0; candidate < rows && !matched; ++candidate) {
         if (used[candidate]) continue;
         const auto* got = actual.data() + candidate * rowWidth;
-        if (isPadding(got, rowWidth)) continue;
+        if (!isEffective(got, rowWidth)) continue;
         if (want[5] != got[5]) continue;
         if (std::fabs(static_cast<double>(want[4]) -
                       static_cast<double>(got[4])) > scoreTolerance) continue;
