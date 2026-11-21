@@ -1420,12 +1420,14 @@ private:
  * two kinds of edge have to coexist inside one DependencyIo. Every other method is forwarded
  * to the network implementation unchanged.
  */
-class SelfFeedbackDependencyIo final : public DependencyIo
+class SelfFeedbackDependencyIo final : public DependencyIo,
+                                       public PromptCancellableDependencyIo
 {
 public:
   SelfFeedbackDependencyIo(std::shared_ptr<DependencyIo> network,
                            std::shared_ptr<DependencyIo> local)
     : m_network(std::move(network)), m_local(std::move(local))
+    , m_cancellable(dynamic_cast<PromptCancellableDependencyIo*>(m_network.get()))
   {
   }
 
@@ -1443,6 +1445,34 @@ public:
     return m_network->prefetchInput(sessionId, edge);
   }
 
+  bool
+  supportsPromptPrefetchCancellation(const DependencyEdge& edge) const noexcept final
+  {
+    return !isSelfFeedback(edge) && m_cancellable &&
+           m_cancellable->supportsPromptPrefetchCancellation(edge);
+  }
+
+  PrefetchOperation
+  prefetchInputWithFirstReadBarrier(const std::string& sessionId,
+                                   const DependencyEdge& edge) final
+  {
+    if (!supportsPromptPrefetchCancellation(edge))
+      throw std::invalid_argument("feedback dependency cannot be prefetched with a read barrier");
+    return m_cancellable->prefetchInputWithFirstReadBarrier(sessionId, edge);
+  }
+
+  void
+  cancelPendingPrefetches() noexcept final
+  {
+    if (m_cancellable) m_cancellable->cancelPendingPrefetches();
+  }
+
+  void
+  drainPendingPrefetches() noexcept final
+  {
+    if (m_cancellable) m_cancellable->drainPendingPrefetches();
+  }
+
   void
   publishOutput(const std::string& sessionId,
                 const DependencyEdge& edge,
@@ -1455,6 +1485,7 @@ public:
 private:
   std::shared_ptr<DependencyIo> m_network;
   std::shared_ptr<DependencyIo> m_local;
+  PromptCancellableDependencyIo* const m_cancellable;
 };
 
 bool

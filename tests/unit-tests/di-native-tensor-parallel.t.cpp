@@ -3269,9 +3269,40 @@ public:
 /** DependencyIo whose fetches never become ready, so a role's declared input
  * stays pending and the worker's dependency deadline is what ends the unit.
  */
-class NeverReadyDependencyIo final : public DependencyIo
+class NeverReadyDependencyIo final : public DependencyIo,
+                                     public PromptCancellableDependencyIo
 {
 public:
+  explicit
+  NeverReadyDependencyIo(bool canPrefetch = false)
+    : m_canPrefetch(canPrefetch)
+  {
+  }
+
+  bool
+  supportsPromptPrefetchCancellation(const DependencyEdge& edge) const noexcept final
+  {
+    return m_canPrefetch && edge.useNdnsfDataV1;
+  }
+
+  PrefetchOperation
+  prefetchInputWithFirstReadBarrier(const std::string& sessionId,
+                                   const DependencyEdge& edge) final
+  {
+    auto result = prefetchInput(sessionId, edge);
+    std::promise<void> started;
+    auto barrier = started.get_future().share();
+    started.set_value();
+    return {std::move(result), std::move(barrier)};
+  }
+
+  void
+  cancelPendingPrefetches() noexcept final
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    promises.clear();
+  }
+
   std::future<TensorBundle>
   prefetchInput(const std::string&, const DependencyEdge&) override
   {
@@ -3295,6 +3326,9 @@ public:
   std::atomic<std::size_t> publishCalls{0};
   std::mutex mutex;
   std::vector<std::promise<TensorBundle>> promises;
+
+private:
+  const bool m_canPrefetch;
 };
 
 /** Preparation callback that counts invocations. Returning a null runner is
@@ -8973,8 +9007,21 @@ BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
   assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
   auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
 
+  std::size_t peerInputs = 0;
+  for (auto& edge : role.inputs) {
+    if (edge.operationKind == "TENSOR_PARTIAL" && !edge.consumerStepId.empty()) {
+      edge.useNdnsfDataV1 = true;
+      edge.declaredByV3 = true;
+      edge.manifestDataName = edge.plannedDataName + "/MANIFEST";
+      ++peerInputs;
+    }
+  }
+  BOOST_REQUIRE_EQUAL(peerInputs, 2U);
+  auto io = std::make_shared<NeverReadyDependencyIo>(true);
   std::atomic<std::size_t> subgraphCalls{0};
-  const auto runner = [&subgraphCalls] (const RoleExecutionContext& ctx) {
+  std::atomic<std::size_t> readsAtFirstSubgraph{0};
+  const auto runner = [&] (const RoleExecutionContext& ctx) {
+    if (subgraphCalls == 0) readsAtFirstSubgraph = io->prefetchCalls.load();
     ++subgraphCalls;
     std::map<std::string, TensorBundle> outputs;
     for (const auto& slot : ctx.activeStep->outputSlots) {
@@ -9013,7 +9060,6 @@ BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
     }
   }
 
-  auto io = std::make_shared<NeverReadyDependencyIo>();
   // Long timeout so the case is about progress, not the deadline.
   ProviderRoleWorker worker(2, 1, 16, std::chrono::seconds(5));
   auto future = worker.executeAsync("progressive-session", std::move(role), io,
@@ -9028,6 +9074,7 @@ BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
   }
   BOOST_CHECK_MESSAGE(subgraphCalls.load() >= 1,
     "the unit did not run its local steps while its peer was silent");
+  BOOST_CHECK_EQUAL(readsAtFirstSubgraph.load(), peerInputs);
 
   // It must still finish: the missing contribution ends the unit rather than
   // holding a compute worker, so the promise resolves with a failure.
@@ -9040,6 +9087,7 @@ BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
     BOOST_CHECK(message.find("DEADLINE_EXPIRED") != std::string::npos ||
                 message.find("CANCELLED") != std::string::npos);
   }
+  BOOST_CHECK_EQUAL(io->prefetchCalls.load(), peerInputs);
 }
 
 
@@ -9068,8 +9116,9 @@ BOOST_AUTO_TEST_CASE(AStepPublishesItsPartialBeforeTheUnitFinishes)
   std::atomic<std::size_t> stepsRun{0};
   std::atomic<std::size_t> stepsAtFirstPublish{std::numeric_limits<std::size_t>::max()};
   auto io = std::make_shared<CountingDependencyIo>();
-  io->onPublish = [&stepsRun, &stepsAtFirstPublish, io] (const std::string& scope) {
-    io->publishedScopes.insert(scope);
+  std::set<std::string> publishedScopes;
+  io->onPublish = [&stepsRun, &stepsAtFirstPublish, &publishedScopes] (const std::string& scope) {
+    publishedScopes.insert(scope);
     const auto observed = stepsRun.load();
     std::size_t expected = std::numeric_limits<std::size_t>::max();
     stepsAtFirstPublish.compare_exchange_strong(expected, observed);
@@ -9149,7 +9198,7 @@ BOOST_AUTO_TEST_CASE(AStepPublishesItsPartialBeforeTheUnitFinishes)
   // And nothing was published twice: the count equals the number of declared
   // output edges, so the final pass did not resend what the steps already sent.
   BOOST_CHECK_EQUAL(io->publishCalls.load(), roleOutputCount);
-  BOOST_CHECK_EQUAL(io->publishedScopes.size(), roleOutputCount);
+  BOOST_CHECK_EQUAL(publishedScopes.size(), roleOutputCount);
 }
 
 

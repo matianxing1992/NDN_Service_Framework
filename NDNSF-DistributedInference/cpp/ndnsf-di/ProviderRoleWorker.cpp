@@ -603,6 +603,7 @@ ProviderRoleWorker::executeAsyncImpl(
 
   std::vector<PendingInput> pendingInputs;
   pendingInputs.reserve(item.role.inputs.size());
+  const auto* cancellable = dynamic_cast<const PromptCancellableDependencyIo*>(item.io.get());
   try {
     for (const auto& edge : item.role.inputs) {
       InputFetchTiming timing;
@@ -649,12 +650,13 @@ ProviderRoleWorker::executeAsyncImpl(
            {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
         continue;
       }
-      // A step-carrying unit must not sign an Interest for a peer partial before the step
-      // that consumes it runs. Deferring only the wait is not enough: the Interest is
-      // issued when the prefetch is submitted, so two ranks each request a partial the
-      // other has not computed yet and neither ever starts. The step loop starts this
-      // fetch itself, at the moment it needs the value.
-      if (item.role.steps && !item.role.steps->empty() && !edge.consumerStepId.empty()) {
+      // Start authenticated exact peer reads for this epoch without gating the role on them.
+      // Other step-bound transports retain demand-driven reads and their existing lifetimes.
+      const bool prefetchPeer = edge.operationKind == "TENSOR_PARTIAL" && edge.useNdnsfDataV1 &&
+        edge.declaredByV3 && !edge.manifestDataName.empty() && cancellable &&
+        cancellable->supportsPromptPrefetchCancellation(edge);
+      if (item.role.steps && !item.role.steps->empty() && !edge.consumerStepId.empty() &&
+          !prefetchPeer) {
         item.deferredInputsByScope.emplace(edge.scope, edge);
         item.inputTimings.push_back(std::move(timing));
         continue;
@@ -1474,9 +1476,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         }
       }
       if (admitted == ctx.inputsByScope.end()) {
-        // A deferred edge is started here, on the step that needs it. This is the only
-        // place the Interest is signed for a peer partial, so the producing rank has
-        // already had its chance to run the step that publishes it.
+        // Start any demand-driven edge here. An exact peer prefetch is already in flight.
         startDeferred(edge);
         const auto pending = item.pendingInputsByScope.find(edge.scope);
         if (pending == item.pendingInputsByScope.end()) {

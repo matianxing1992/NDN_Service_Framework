@@ -1500,9 +1500,9 @@ bool
 NdnsfCollaborationDependencyIo::supportsPromptPrefetchCancellation(
   const DependencyEdge& edge) const noexcept
 {
-  // DataV1 exact fetches accept cancellation polling and local segment waits
-  // are condition-variable-backed. Legacy fetchLarge has no cancel contract.
-  return edge.useNdnsfDataV1;
+  // Speculation requires a request-owned pool. A last future from the
+  // compatibility std::async path can block when the compute worker releases it.
+  return edge.useNdnsfDataV1 && m_prefetchWorkers != nullptr;
 }
 
 void
