@@ -817,13 +817,18 @@ approval again or hide an exception in a special-case branch.
   same toolchain. If a toolchain change is necessary, reconfigure the same
   maintained tree, rebuild the affected targets and record the new artifact
   identity. Re-baseline measurements compared across the change.
-- Only when the current host has **more than 100 GB total physical RAM**
-  (`MemTotal` from `/proc/meminfo`, with 100 GB = 100,000,000,000 bytes), remove
-  the fixed compilation-job ceiling and default to the available CPU count
-  (`nproc`). Explicit job counts must remain positive integers. This applies to
-  the OGMA Ubuntu20.04 VM, which has 416 GiB configured RAM and 28 vCPUs.
-  Hosts at or below 100 GB, or with unavailable memory information, retain the
-  existing supported counts 1, 2, 4 and 6, defaulting to six jobs.
+- Use total physical RAM (`MemTotal` from `/proc/meminfo`, with
+  1 GB = 1,000,000,000 bytes) to set the default compiler concurrency and
+  ceiling.
+  - At or below 12 GB, use four jobs by default and cap concurrency at four.
+  - Above 12 GB through 16 GB, use six jobs by default and cap concurrency at six.
+  - Above 16 GB and below 100 GB, or when memory is unknown, keep the existing
+    six-job default and ceiling.
+  - At or above 100 GB, default to the available CPU count (`nproc`) with no fixed
+    job ceiling. This applies to the OGMA Ubuntu 20.04 VM with 416 GiB RAM
+    and 28 vCPUs.
+  At or below the six-job ceiling, use supported counts 1, 2, 4 and 6 as
+  permitted by the host tier. Explicit job counts must be positive integers.
   Do not impose an artificial compiler memory cap or a desktop-headroom admission gate.
   Do not serialize large source units: Waf's requested job count controls all
   compilation tasks. Lower concurrency only after an observed OOM or at the
@@ -839,8 +844,20 @@ approval again or hide an exception in a special-case branch.
 - Preserve isolated process ownership, build locking and OOM termination so a
   failed compiler does not leave other workers running. Inherit the host's swap
   configuration; do not set MemorySwap/MemorySwapMax or change system settings.
-- The helper may be local-only. If absent, use Waf with `--jobs=6` and equivalent
-  process ownership/cleanup. Reading or editing source needs no build launcher.
+- The helper may be local-only. If absent, pass the applicable memory-tier
+  job count to Waf and preserve equivalent process ownership and cleanup.
+  Reading or editing source needs no build launcher.
+- Install each host dependency once in its maintained system-wide prefix.
+  Headers, pkg-config metadata, link inputs and runtime-loaded libraries must
+  resolve to the same installed version. Before reusing a dependency, verify
+  the selected prefix, source or package identity and required ABI. Use the
+  maintained installer to upgrade the existing installation in place. Keep
+  build and staging copies outside the active dependency search paths.
+  Rebuild affected consumers after an ABI or prefix change and check actual
+  library resolution without loader overrides. Retire obsolete installations
+  after checking process and consumer references. Keep rollback material
+  outside active compiler, pkg-config and loader search paths. Repository
+  build trees and sealed container SDKs retain their own declared boundaries.
 - Keep exactly two reusable host NDNSF build trees in this checkout: `build/`
   for ordinary builds, release candidates and global installation, and
   `build-ASAN-UBSAN/` for ASAN/UBSAN diagnostics and tests. Reuse one tree per
