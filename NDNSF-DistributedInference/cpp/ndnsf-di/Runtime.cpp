@@ -1837,6 +1837,13 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
                     "Runtime owner closed, Core failed, or publication deadline expired");
   };
 
+  // Reject missing protection before starting Core transport or publishing anything.
+  current();
+  const auto fileProtection = nativeFileProtectionKeyFromEnvironment();
+  if (!fileProtection)
+    throw DiError("MODEL_PROTECTION_REQUIRED", "local", "model-publication",
+                  "NDNSF_FILE_KEYRING is required for stored model publication");
+
   ensureRuntimeCoreTransport(state);
   std::shared_ptr<ndn_service_framework::ServiceUser> serviceUser;
   {
@@ -1851,16 +1858,6 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
     throw DiError("WOULD_DEADLOCK", "local", "model-publication",
                   "blocking model publication cannot run on the Face thread");
   current();
-
-  // Resolve the file-protection configuration before anything is written: a malformed key ring
-  // must fail the preparation, not the export that happens after the Repo already holds objects.
-  const auto fileProtection = nativeFileProtectionKeyFromEnvironment();
-  // A preparation without a key would publish the model and hand out a handle that carries the master key in clear.
-  // Refusing here - before the Repo holds anything - is the only place that keeps the fallback from existing while the
-  // primitives keep supporting the legacy layouts their own tests need.
-  if (!fileProtection)
-    throw DiError("MODEL_PROTECTION_REQUIRED", "local", "model-publication",
-                  "no file-protection key is configured (NDNSF_FILE_KEYRING); refusing to publish an unsealed model");
 
   auto spec = preparationSpec(frozen, modelKey, state->config.repositorySourceLoader,
                               state->config.repositorySourceProvider);
