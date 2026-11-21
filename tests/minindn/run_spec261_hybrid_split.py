@@ -316,6 +316,82 @@ def check_wan_artifacts(run_root: Path, owners: dict, selection: str) -> dict:
     return artifacts
 
 
+def check_whole_model_tp(run_root: Path, requester_log: str, warm: bool) -> dict:
+    selection = "NDNSF_DI_NATIVE_SELECTION_COMMITTED requestId="
+    committed = [line for line in requester_log.splitlines() if selection in line]
+    if len(committed) != 1 or "NATIVE_NUMERICAL_ORACLE_PASS tensor=predictions values=1800" \
+            not in requester_log:
+        raise RuntimeError("whole-model TP requester lacks a unique verified result")
+    session = committed[0].split(selection, 1)[1].split()[0]
+    plan = committed[0].split(" planDigest=", 1)[1].split()[0]
+    owners = {"Rank0": "provider", "Rank1": "provider2"}
+    matched = {}
+    cache = {}
+    completed = []
+    terminal = []
+    onnx_ms = {role: [] for role in owners}
+    timing = f"NDNSF_DI_ONNX_TIMING session={session} "
+    marker = "NDNSF_DI_DEPENDENCY_OBJECT "
+    for node in owners.values():
+        with (run_root / f"{node}.log").open(errors="replace") as stream:
+            for line in stream:
+                if timing in line:
+                    fields = dict(item.split("=", 1) for item in line.split(timing, 1)[1].split())
+                    role = fields["role"]
+                    elapsed = float(fields["run_ms"])
+                    if owners.get(role) != node or fields["state_io_binding"] != "host" or \
+                            not 0 <= elapsed < float("inf"):
+                        raise RuntimeError("whole-model TP CPU timing does not match its role")
+                    onnx_ms[role].append(elapsed)
+                if f" requestId={session} " in line and " role=" in line:
+                    role = line.split(" role=", 1)[1].split()[0]
+                    if "stage=EXECUTION_COMPLETED status=observed" in line:
+                        if f" planDigest={plan} " not in line:
+                            raise RuntimeError("whole-model TP execution used a different plan")
+                        completed.append((node, role))
+                    if "stage=TERMINAL status=observed" in line:
+                        terminal.append((node, role))
+                    if "phase=CACHE_ACQUIRE_DONE" in line or "phase=RUNNER_REUSE_HIT" in line:
+                        if owners.get(role) != node or role in cache:
+                            raise RuntimeError("whole-model TP role cache ownership differs")
+                        cache[role] = line.split(" detail=", 1)[1].split()[0]
+                if marker not in line or f" session={session} " not in line:
+                    continue
+                fields = dict(item.split("=", 1) for item in line.split(marker, 1)[1].split())
+                source, target = fields["producer"], fields["consumer"]
+                if fields["status"] != "ok" or {source, target} != set(owners):
+                    continue
+                direction, name = fields["direction"], fields["planned_name"]
+                endpoint = {"publish-exact-ndn": source, "fetch-exact-ndn": target}.get(direction)
+                if owners.get(endpoint) != node or not name.startswith(
+                        f"/8=example/8=hello/8={owners[source]}/"):
+                    raise RuntimeError("whole-model TP handoff used a foreign producer or receiver")
+                scope = fields["scope"].rsplit("/", 1)[-1]
+                identity = (source, target, name, int(fields["encoded_payload_bytes"]))
+                previous, directions = matched.setdefault(scope, (identity, set()))
+                if previous != identity or direction in directions:
+                    raise RuntimeError(f"whole-model TP handoff differs across endpoints: {scope}")
+                directions.add(direction)
+    expected = {f"source-tp-{index}" for index in range(1, 240)}
+    if set(matched) != expected or any(
+            kinds != {"publish-exact-ndn", "fetch-exact-ndn"} for _, kinds in matched.values()):
+        raise RuntimeError(f"whole-model TP protected handoffs incomplete: {len(matched)}")
+    if len({identity[2] for identity, _ in matched.values()}) != len(expected):
+        raise RuntimeError("whole-model TP reused a protected object name across dependencies")
+    cache_modes = {"template-hit", "assembled-disk-hit", "live-runner"} if warm else {"assembled-built"}
+    if (sorted(completed) != sorted((node, role) for role, node in owners.items()) or
+            terminal != [("provider", "Rank0")] or set(cache) != set(owners) or
+            not set(cache.values()) <= cache_modes or
+            {role: len(times) for role, times in onnx_ms.items()} != {"Rank0": 162, "Rank1": 119}):
+        raise RuntimeError(f"whole-model TP completion, call counts or cache path differ: {cache}")
+    return {"request": session, "planDigest": plan, "handoffs": len(matched),
+            "tpEncodedBytes": sum(identity[3] for identity, _ in matched.values()),
+            "roleCache": cache, "terminalRole": "Rank0",
+            "onnxExecution": {role: {"calls": len(times), "runMs": round(sum(times), 3)}
+                              for role, times in onnx_ms.items()},
+            "invocationWire": check_invocation_wire(requester_log, session, owners)}
+
+
 def check_wan_handoffs(run_root: Path, requester_log: str, warm: bool) -> dict:
     selection = "NDNSF_DI_NATIVE_SELECTION_COMMITTED requestId="
     selections = [line for line in requester_log.splitlines() if selection in line]
@@ -479,12 +555,52 @@ def check_ffn_cancellation(run_root: Path, blocks: bool) -> dict:
     return {"request": session, **counts}
 
 
+def check_tp_cancellation(run_root: Path, case: str) -> dict:
+    session = (run_root / "cancelled-request.txt").read_text().strip()
+    phase = f"{case}-tp-cancel"
+    requester = (run_root / f"requester-{phase}.log").read_text(errors="replace")
+    marker = f"NDNSF_DI_NATIVE_CANCELLATION_RECEIPT requestId={session} "
+    receipts = [line.split(marker, 1)[1] for line in requester.splitlines() if marker in line]
+    if len(receipts) != 1:
+        raise RuntimeError("cancelled YOLO request has no unique native cancellation receipt")
+    counts = {key: int(value) for key, value in
+              (field.split("=", 1) for field in receipts[0].split())}
+    if (counts.get("expected") != 2 or counts.get("drained") != 2 or
+            f"NATIVE_REQUEST_CANCEL_DRAINED request={session}" not in requester or
+            "NATIVE_REQUEST_INTERRUPTED" not in requester or
+            (run_root / "requester" / f"output-{phase}.bin").exists()):
+        raise RuntimeError(f"incomplete YOLO cancellation or drain receipt: {counts}")
+
+    withheld = "/8=step/8=Rank1%2Fcall%2F0/"
+    left = (run_root / "provider.log").read_text(errors="replace").splitlines()
+    right = (run_root / "provider2-fault.log").read_text(errors="replace").splitlines()
+    if not any(f"requestId={session} " in line and "stage=DEPENDENCY_FETCH status=begin" in line
+               and "role=Rank0 " in line and withheld in line for line in left):
+        raise RuntimeError("YOLO Rank0 did not wait on its required Rank1 contribution")
+    for line in left + right:
+        if session not in line:
+            continue
+        if (("direction=publish-exact-ndn" in line and withheld in line) or
+                "stage=EXECUTION_COMPLETED status=observed" in line or
+                "stage=TERMINAL status=observed" in line):
+            raise RuntimeError("cancelled YOLO execution crossed its publication fence")
+    return {"request": session, **counts}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scratch-root", type=Path, required=True)
     parser.add_argument("--prefix", type=Path, default=Path("/usr/local"))
     parser.add_argument("--variant", choices=["26n", "11n", "ffn", "attention-ffn", "wan"], default="26n")
+    parser.add_argument("--whole-model-tp", action="store_true",
+                        help="run the two-rank whole-model source plan for YOLO26n")
+    parser.add_argument("--matched-tp", action="store_true",
+                        help="compare full, cold TP and warm TP on one fixed case")
+    parser.add_argument("--tp-cancel", action="store_true",
+                        help="cancel with a withheld YOLO TP contribution, then recover")
+    parser.add_argument("--face-transport", choices=("udp", "tcp"), default="udp",
+                        help="transport for inter-node NFD faces")
     parser.add_argument("--ffn-fixture", type=Path, help="output of prepare-ffn.py")
     parser.add_argument("--wan-reference", type=Path, help="frozen input.bundle and mixed oracle.json")
     parser.add_argument("--ffn-cancel", action="store_true")
@@ -495,6 +611,12 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--nfd-log-level", default="NONE", choices=("NONE", "WARN", "DEBUG"))
     args = parser.parse_args()
+    if args.whole_model_tp and args.variant != "26n":
+        parser.error("--whole-model-tp requires --variant 26n")
+    if args.matched_tp and (not args.whole_model_tp or len(args.case) != 1):
+        parser.error("--matched-tp requires --whole-model-tp and one --case")
+    if args.tp_cancel and (not args.whole_model_tp or len(args.case) != 1 or args.matched_tp):
+        parser.error("--tp-cancel requires --whole-model-tp and one --case without --matched-tp")
     wan = args.variant == "wan"
     blocks = args.variant == "attention-ffn"
     if wan != (args.wan_reference is not None) or (wan and args.ffn_cancel):
@@ -523,7 +645,7 @@ def main() -> int:
             "worker": "libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker",
         }.items()
     }
-    if args.ffn_cancel:
+    if args.ffn_cancel or args.tp_cancel:
         installed["fault-provider"] = prefix / "bin/di-native-fault-provider"
     missing = [str(path) for path in installed.values() if not path.is_file()]
     if missing:
@@ -533,6 +655,9 @@ def main() -> int:
         "schema": "spec263-minindn-hybrid-v1" if args.ffn_fixture else "spec261-minindn-hybrid-v1",
         "status": "IN_PROGRESS",
         "variant": args.variant,
+        "wholeModelTensorParallel": args.whole_model_tp,
+        "matchedTensorParallel": args.matched_tp,
+        "faceTransport": args.face_transport,
         "topologySha256": digest(args.topology),
         "harnessSha256": digest(Path(__file__)),
         "installed": {name: {"path": str(path), "sha256": digest(path)}
@@ -549,6 +674,16 @@ def main() -> int:
         files = ("model.onnx", "oracle.json") + (
             ("input.bundle", "source-anchors.json") if blocks else ("input.f32",))
         result["fixture"] = {name: digest(args.ffn_fixture / name) for name in files}
+    elif args.whole_model_tp:
+        asset = Path(os.environ.get("SPEC261_ASSET_ROOT",
+                                    "/usr/local/lib/ndnsf/spec261/models")) / "yolo26n"
+        result["fixture"] = {name: digest(asset / name)
+                             for name in ("yolo26n.onnx", "yolo26n.weights")}
+        result["inputs"] = {
+            case: {name: digest(asset / "cases" / case / name)
+                   for name in ("input.f32", "oracle.json")}
+            for case in args.case
+        }
 
     def persist() -> None:
         receipt.write_text(json.dumps(result, indent=1, sort_keys=True), encoding="utf-8")
@@ -639,7 +774,9 @@ def main() -> int:
             return None
 
         hosts = list(ndn.net.hosts)
+        actor_routes = {}
         for node in hosts:
+            actor_routes[node.name] = {}
             node.cmd("nfdc strategy set /example/hello /localhost/nfd/strategy/multicast")
             for other in hosts:
                 if other is node:
@@ -649,14 +786,25 @@ def main() -> int:
                     # Not a direct neighbor: reachability comes from the
                     # neighbors' own faces and the multicast strategy.
                     continue
-                face = Nfdc.createFace(node, address)
+                face = Nfdc.createFace(node, address, protocol=args.face_transport)
                 if str(face) == "-1":
                     raise RuntimeError("cannot create a face from " + node.name +
                                        " to " + other.name)
                 node.cmd("nfdc route add /example/hello " + str(face))
                 # Keep discovery multicast and send Producer-owned objects along direct links.
                 for actor_prefix in ACTOR_PREFIXES.get(other.name, ()):
-                    node.cmd("nfdc route add " + actor_prefix + " " + str(face))
+                    Nfdc.registerRoute(node, actor_prefix, str(face),
+                                       captureFlag=args.whole_model_tp)
+                    actor_routes[node.name][actor_prefix] = str(face)
+            if args.whole_model_tp:
+                fib = dict(line.strip().split(" nexthops=", 1)
+                           for line in node.cmd("nfdc fib list").splitlines()
+                           if " nexthops=" in line)
+                for actor_prefix, face in actor_routes[node.name].items():
+                    if fib.get(actor_prefix) != f"{{faceid={face} (cost=0)}}":
+                        raise RuntimeError(f"{node.name} lacks a direct captured route to {actor_prefix}")
+        if args.whole_model_tp:
+            result["actorDirectRoutes"] = actor_routes
         result["phases"].append({"phase": "routes-ready", "nodes": len(hosts)})
         persist()
 
@@ -665,6 +813,9 @@ def main() -> int:
         driver_log = "ndnsf.di.NativeRequester=WARN"
         if args.ffn_fixture:
             driver_log += ":ndnsf.di.Spec220PreparationTrace=DEBUG"
+        if args.whole_model_tp:
+            driver_log += (":ndn_service_framework.ServiceUser=INFO"
+                           ":ndn_service_framework.ServiceProvider=INFO")
         environment.setdefault("NDN_LOG", driver_log)
         for role, node in ROLE_NODE.items():
             environment["SPEC261_TRANSPORT_" + role] = transports[node]
@@ -680,6 +831,9 @@ def main() -> int:
                 (["--cache", str(args.ffn_fixture.resolve())] if args.ffn_fixture else []) +
                 (["--wan-reference", str(args.wan_reference.resolve())] if wan else []) +
                 (["--ffn-cancel"] if args.ffn_cancel else []) +
+                (["--whole-model-tp"] if args.whole_model_tp else []) +
+                (["--matched-tp"] if args.matched_tp else []) +
+                (["--tp-cancel"] if args.tp_cancel else []) +
                 [item for case in args.case for item in ("--case", case)],
                 cwd=scratch, env=environment, stdout=stream,
                 stderr=subprocess.STDOUT)
@@ -687,6 +841,10 @@ def main() -> int:
         result["driverExit"] = driver_process.returncode
         requester_log = run_root / "requester.log"
         phases = ("full", "hybrid-cold", "hybrid-warm") if args.ffn_fixture else args.case
+        if args.matched_tp:
+            phases = [f"{args.case[0]}-{suffix}" for suffix in ("full", "tp-cold", "tp-warm")]
+        if args.tp_cancel:
+            phases = [f"{args.case[0]}-tp-recovery"]
         if args.ffn_cancel:
             phases += ("hybrid-recovery",)
         case_logs = [run_root / f"requester-{case}.log" for case in phases]
@@ -700,10 +858,15 @@ def main() -> int:
             (texts[1:] if phases else texts[:1]))
         result["status"] = "PASS" if passed else "FAIL"
         if not passed:
-            failure = next((line for source in texts for line in source.splitlines()
-                            if "NATIVE_REQUEST_STAGE_FAILED" in line), None)
+            first = next((source.splitlines() for source in texts
+                          if "NATIVE_REQUEST_STAGE_FAILED" in source), [])
+            failure = next((line for line in first if " domain=" in line and
+                            line.startswith("NATIVE_") and " boundary=" in line), None)
+            if failure is None:
+                failure = next((line for line in first
+                                if "NATIVE_REQUEST_STAGE_FAILED" in line), None)
             result["firstFailure"] = failure or "native driver did not report the oracle pass"
-        if args.ffn_fixture:
+        if args.ffn_fixture or args.whole_model_tp:
             trials = run_root / "requester-trials.jsonl"
             if trials.exists():
                 result["requesterTrials"] = [json.loads(line) for line in trials.read_text().splitlines()]
@@ -712,6 +875,40 @@ def main() -> int:
                 result["actorCleanup"] = json.loads(cleanup.read_text())
                 result["forcedCleanup"] |= any(actor["exit"] in (None, -signal.SIGKILL)
                                                for actor in result["actorCleanup"])
+        if args.matched_tp and passed:
+            records = result["requesterTrials"]
+            if ([row["phase"] for row in records] != phases or
+                    len({row["inputSha256"] for row in records}) != 1 or
+                    any(row["exit"] != 0 for row in records)):
+                raise RuntimeError("matched TP trial inventory differs from the frozen input")
+            result["exactOutputMatch"] = len({row["outputSha256"] for row in records}) == 1
+            sessions = []
+            for log in texts[1:]:
+                marker = "NDNSF_DI_NATIVE_SELECTION_COMMITTED requestId="
+                ids = [line.split(marker, 1)[1].split()[0]
+                       for line in log.splitlines() if marker in line]
+                if len(ids) != 1:
+                    raise RuntimeError("matched TP trial did not commit exactly one Selection")
+                sessions.extend(ids)
+            if len(set(sessions)) != len(phases):
+                raise RuntimeError("matched TP trials reused a request identity")
+            result["matchedRequestIds"] = sessions
+            result["tensorParallelExecutions"] = [
+                check_whole_model_tp(run_root, log, warm)
+                for log, warm in zip(texts[2:], (False, True))
+            ]
+        if args.tp_cancel and passed:
+            case = args.case[0]
+            result["cancellation"] = check_tp_cancellation(run_root, case)
+            result["recovery"] = check_whole_model_tp(run_root, texts[-1], warm=True)
+            if result["cancellation"]["request"] == result["recovery"]["request"]:
+                raise RuntimeError("YOLO recovery reused a cancelled request identity")
+            exits = {actor["pid"]: actor["exit"] for actor in result.get("actorCleanup", [])}
+            cancelled = int((run_root / f"requester-{case}-tp-cancel.pid").read_text())
+            if exits.get(cancelled) != 1 or any(
+                    code != 0 for pid, code in exits.items() if pid != cancelled):
+                raise RuntimeError(f"unexpected YOLO cancellation actor exits: {exits}")
+        if args.ffn_fixture:
             if args.ffn_cancel and any(trial["phase"] == "hybrid-cancel"
                                        for trial in result.get("requesterTrials", [])):
                 result["cancellation"] = check_ffn_cancellation(run_root, blocks)

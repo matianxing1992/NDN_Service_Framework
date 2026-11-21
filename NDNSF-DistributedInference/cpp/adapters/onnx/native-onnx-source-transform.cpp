@@ -151,7 +151,7 @@ sliceProjectionInitializer(onnx::TensorProto& tensor, std::uint64_t rows, std::u
       rows == 0 || columns == 0 ||
       rows > std::numeric_limits<std::size_t>::max() / itemBytes / columns ||
       rowBegin >= rowEnd || rowEnd > rows || columnBegin >= columnEnd || columnEnd > columns)
-    throw std::invalid_argument("invalid paired FFN initializer dimensions");
+    throw std::invalid_argument("invalid source initializer slice dimensions");
   const auto elements = rows * columns;
   const auto rowBytes = (columnEnd - columnBegin) * itemBytes;
   const auto sliceBytes = (rowEnd - rowBegin) * rowBytes;
@@ -161,16 +161,16 @@ sliceProjectionInitializer(onnx::TensorProto& tensor, std::uint64_t rows, std::u
     throw std::invalid_argument("invalid projection initializer storage fields");
   if (tensor.data_location() == onnx::TensorProto::EXTERNAL || !tensor.external_data().empty()) {
     if (!external || !append)
-      throw std::invalid_argument("invalid paired FFN external storage");
+      throw std::invalid_argument("invalid source initializer external storage");
     const auto start = canonicalExternalOffset(tensor, elements * itemBytes);
     if (sidecarOffset > std::numeric_limits<std::uint64_t>::max() - sliceBytes)
-      throw std::invalid_argument("invalid paired FFN external range");
+      throw std::invalid_argument("invalid source initializer external range");
     const auto copyRange = [&] (std::uint64_t position, std::uint64_t remaining) {
       while (remaining != 0) {
         const auto window = std::min(remaining, NativeCanonicalMaterialBundleMaxBytes);
         const auto bytes = external("model.onnx.data", position, window);
         if (bytes.size() != window)
-          throw std::invalid_argument("short paired FFN external read");
+          throw std::invalid_argument("short source initializer external read");
         append(bytes);
         position += window;
         remaining -= window;
@@ -194,7 +194,7 @@ sliceProjectionInitializer(onnx::TensorProto& tensor, std::uint64_t rows, std::u
                                      tensor.float_data_size() != 0)) ||
       (tensor.raw_data().empty() &&
        (!isFloat || static_cast<std::uint64_t>(tensor.float_data_size()) != elements)))
-    throw std::invalid_argument("invalid paired FFN initializer storage");
+    throw std::invalid_argument("invalid source initializer storage");
 
   const auto typedFloatBytes = tensor.raw_data().empty() ? rawBytes(tensor, {})
                                                         : std::vector<std::uint8_t>{};
@@ -361,7 +361,453 @@ lowerFfnPair(onnx::ModelProto& model, const NativeOnnxSourceTransformV1& transfo
   if (!hasExternal) onnx::checker::check_model(model);
 }
 
+std::vector<std::uint64_t>
+staticFp32Shape(const onnx::GraphProto& graph, const std::string& name)
+{
+  const auto& initializers = graph.initializer();
+  const auto initializer = std::find_if(initializers.begin(), initializers.end(),
+    [&] (const auto& candidate) { return candidate.name() == name; });
+  if (initializer != initializers.end()) {
+    if (name.empty() || initializer->data_type() != onnx::TensorProto::FLOAT ||
+        std::any_of(initializer->dims().begin(), initializer->dims().end(),
+                    [] (auto dim) { return dim <= 0; }))
+      throw std::invalid_argument("source layout requires a static FP32 initializer");
+    return {initializer->dims().begin(), initializer->dims().end()};
+  }
+  const auto find = [&] (const auto& ports) -> const onnx::ValueInfoProto* {
+    const auto port = std::find_if(ports.begin(), ports.end(),
+      [&] (const auto& candidate) { return candidate.name() == name; });
+    return port == ports.end() ? nullptr : &*port;
+  };
+  const auto* port = find(graph.input());
+  if (port == nullptr) port = find(graph.output());
+  if (port == nullptr) port = find(graph.value_info());
+  if (name.empty() || port == nullptr || !port->type().has_tensor_type())
+    throw std::invalid_argument("source layout has no typed ONNX port");
+  const auto& tensor = port->type().tensor_type();
+  if (tensor.elem_type() != onnx::TensorProto::FLOAT || !tensor.has_shape())
+    throw std::invalid_argument("source layout requires an FP32 port with a declared shape");
+  std::vector<std::uint64_t> result;
+  for (const auto& dim : tensor.shape().dim()) {
+    if (!dim.has_dim_value() || dim.dim_value() <= 0)
+      throw std::invalid_argument("source layout requires positive static dimensions");
+    result.push_back(dim.dim_value());
+  }
+  return result;
+}
+
+std::vector<std::uint64_t>
+rowMajorStrides(const std::vector<std::uint64_t>& shape)
+{
+  std::vector<std::uint64_t> result(shape.size() + 1, 1);
+  for (auto axis = shape.size(); axis > 0; --axis) {
+    const auto dim = shape[axis - 1];
+    if (result[axis] > std::numeric_limits<std::uint64_t>::max() / dim)
+      throw std::invalid_argument("source layout shape size overflows");
+    result[axis - 1] = result[axis] * dim;
+  }
+  return result;
+}
+
 } // namespace
+
+std::array<NativeOnnxConvShard, 2>
+inspectNativeOnnxConvOutputShards(const onnx::ModelProto& model, const onnx::NodeProto& node)
+{
+  if (!node.domain().empty() || node.op_type() != "Conv" || node.input_size() < 2 ||
+      node.input_size() > 3 || node.input(0).empty() || node.input(1).empty() ||
+      node.output_size() != 1 || node.output(0).empty())
+    throw std::invalid_argument("output-channel partition requires a standard Conv");
+
+  std::int64_t groups = 1;
+  bool explicitGroup = false;
+  for (const auto& attr : node.attribute()) {
+    if (attr.name() != "group") continue;
+    if (explicitGroup || attr.type() != onnx::AttributeProto::INT || attr.i() <= 0)
+      throw std::invalid_argument("invalid Conv group");
+    groups = attr.i();
+    explicitGroup = true;
+  }
+
+  const auto initializer = [&] (int index) -> const onnx::TensorProto& {
+    const auto& tensors = model.graph().initializer();
+    const auto it = std::find_if(tensors.begin(), tensors.end(), [&] (const auto& tensor) {
+      return tensor.name() == node.input(index);
+    });
+    if (it == tensors.end() || it->data_type() != onnx::TensorProto::FLOAT)
+      throw std::invalid_argument("Conv partition requires constant FP32 weights and bias");
+    return *it;
+  };
+  const auto& weight = initializer(1);
+  if (weight.dims_size() != 4 ||
+      std::any_of(weight.dims().begin(), weight.dims().end(), [] (auto dim) { return dim <= 0; }))
+    throw std::invalid_argument("Conv partition requires positive NCHW kernel dimensions");
+  const auto outputChannels = weight.dims(0);
+  const auto inputsPerGroup = weight.dims(1);
+  if (outputChannels < 2 || outputChannels % groups != 0 ||
+      inputsPerGroup > std::numeric_limits<std::int64_t>::max() / groups)
+    throw std::invalid_argument("Conv partition has incompatible group or channel counts");
+  if (node.input_size() == 3 && !node.input(2).empty()) {
+    const auto& bias = initializer(2);
+    if (bias.dims_size() != 1 || bias.dims(0) != outputChannels)
+      throw std::invalid_argument("Conv bias width differs from output channels");
+  }
+
+  const auto channels = static_cast<std::uint64_t>(inputsPerGroup);
+  const auto outputs = static_cast<std::uint64_t>(outputChannels);
+  std::array<NativeOnnxConvShard, 2> result;
+  if (groups == 1) {
+    const auto ranges = nativeConvInputChannelRanges(outputs, result.size());
+    for (std::size_t rank = 0; rank < result.size(); ++rank)
+      result[rank] = {0, channels, ranges[rank].first, ranges[rank].second, 1};
+    return result;
+  }
+  const auto ranges = nativeConvInputChannelRanges(groups, result.size());
+  const auto outputsPerGroup = outputs / groups;
+  for (std::size_t rank = 0; rank < result.size(); ++rank) {
+    const auto [begin, end] = ranges[rank];
+    result[rank] = {begin * channels, end * channels,
+                    begin * outputsPerGroup, end * outputsPerGroup, end - begin};
+  }
+  return result;
+}
+
+void
+sliceNativeOnnxConvOutput(onnx::ModelProto& model, onnx::NodeProto& node, std::size_t rank,
+  const NativeOnnxConvShard& admitted, const NativeOnnxExternalReader& external,
+  const NativeOnnxExternalAppender& append, std::uint64_t& sidecarOffset)
+{
+  const auto shards = inspectNativeOnnxConvOutputShards(model, node);
+  if (rank >= shards.size())
+    throw std::invalid_argument("Conv output slice requires a bound rank");
+  const auto& shard = shards[rank];
+  if (admitted.inputBegin != shard.inputBegin || admitted.inputEnd != shard.inputEnd ||
+      admitted.outputBegin != shard.outputBegin || admitted.outputEnd != shard.outputEnd ||
+      admitted.groups != shard.groups)
+    throw std::invalid_argument("Conv output slice differs from the admitted group geometry");
+
+  auto& graph = *model.mutable_graph();
+  const auto requirePrivateInitializer = [&] (const std::string& name) {
+    std::size_t users = 0;
+    for (const auto& consumer : graph.node())
+      users += std::count(consumer.input().begin(), consumer.input().end(), name);
+    const auto hasPort = [&] (const auto& ports) {
+      return std::any_of(ports.begin(), ports.end(),
+                         [&] (const auto& port) { return port.name() == name; });
+    };
+    if (users != 1 || hasPort(graph.input()) || hasPort(graph.output()))
+      throw std::invalid_argument("Conv output slice requires a private initializer");
+  };
+  requirePrivateInitializer(node.input(1));
+  const bool hasBias = node.input_size() == 3 && !node.input(2).empty();
+  if (hasBias) requirePrivateInitializer(node.input(2));
+
+  auto& weight = *findInitializer(model, node.input(1));
+  const auto outputs = static_cast<std::uint64_t>(weight.dims(0));
+  std::uint64_t columns = 1;
+  for (int axis = 1; axis < weight.dims_size(); ++axis) {
+    const auto dim = static_cast<std::uint64_t>(weight.dims(axis));
+    if (columns > std::numeric_limits<std::uint64_t>::max() / dim)
+      throw std::invalid_argument("Conv output slice kernel size overflows");
+    columns *= dim;
+  }
+  sliceProjectionInitializer(weight, outputs, columns, shard.outputBegin, shard.outputEnd,
+                             0, columns, external, append, sidecarOffset);
+  const auto width = static_cast<std::int64_t>(shard.outputEnd - shard.outputBegin);
+  weight.set_dims(0, width);
+  if (hasBias) {
+    auto& bias = *findInitializer(model, node.input(2));
+    sliceProjectionInitializer(bias, outputs, 1, shard.outputBegin, shard.outputEnd,
+                               0, 1, external, append, sidecarOffset);
+    bias.set_dims(0, width);
+  }
+  for (auto& attr : *node.mutable_attribute()) {
+    if (attr.name() == "group") attr.set_i(shard.groups);
+  }
+}
+
+std::vector<std::pair<std::uint64_t, std::uint64_t>>
+inspectNativeOnnxAttentionHeadShards(const onnx::ModelProto& model, const onnx::NodeProto& node)
+{
+  const bool matmul = node.op_type() == "MatMul";
+  if ((!matmul && node.op_type() != "Softmax") || !node.domain().empty() ||
+      node.input_size() != (matmul ? 2 : 1) || node.output_size() != 1)
+    throw std::invalid_argument("attention head partition requires standard MatMul or Softmax");
+
+  const auto shapeOf = [&] (const std::string& name) {
+    auto shape = staticFp32Shape(model.graph(), name);
+    if (shape.size() != 4)
+      throw std::invalid_argument("attention head partition requires rank-four FP32 ports");
+    return shape;
+  };
+
+  const auto input = shapeOf(node.input(0));
+  const auto output = shapeOf(node.output(0));
+  if (matmul) {
+    const auto right = shapeOf(node.input(1));
+    if (node.attribute_size() != 0 || input[0] != right[0] || input[1] != right[1] ||
+        input[3] != right[2] || output != std::vector{input[0], input[1], input[2], right[3]})
+      throw std::invalid_argument("attention MatMul batch, head or contraction geometry differs");
+  }
+  else {
+    const auto& opsets = model.opset_import();
+    const auto opset = std::find_if(opsets.begin(), opsets.end(),
+      [] (const auto& candidate) { return candidate.domain().empty(); });
+    if (opset == opsets.end() || opset->version() < 13 || output != input ||
+        node.attribute_size() > 1)
+      throw std::invalid_argument("attention Softmax requires modern unchanged score geometry");
+    if (node.attribute_size() == 1) {
+      const auto& axis = node.attribute(0);
+      if (axis.name() != "axis" || axis.type() != onnx::AttributeProto::INT ||
+          (axis.i() != -1 && axis.i() != 3))
+        throw std::invalid_argument("attention Softmax must normalize over its complete key axis");
+    }
+  }
+  return nativeConvInputChannelRanges(input[1], 2);
+}
+
+std::optional<NativeOnnxTwoRankLayout>
+inspectNativeOnnxReshapeLayout(const onnx::ModelProto& model, const onnx::NodeProto& node,
+                              NativeOnnxTwoRankLayout inputLayout)
+{
+  if (node.op_type() != "Reshape" || !node.domain().empty() || node.input_size() != 2 ||
+      node.input(1).empty() || node.output_size() != 1)
+    throw std::invalid_argument("source layout requires a standard Reshape");
+  const auto input = staticFp32Shape(model.graph(), node.input(0));
+  const auto output = staticFp32Shape(model.graph(), node.output(0));
+  const auto [axis, split] = inputLayout;
+  if (axis >= input.size() || split == 0 || split >= input[axis])
+    throw std::invalid_argument("invalid Reshape input shard");
+  const auto inputStrides = rowMajorStrides(input);
+  const auto outputStrides = rowMajorStrides(output);
+  if (inputStrides.front() != outputStrides.front())
+    throw std::invalid_argument("Reshape changes source element count");
+
+  // A rank owns a contiguous interval within each outer row. Preserve both
+  // the row boundaries and the rank boundary in logical element order.
+  const auto row = inputStrides[axis];
+  const auto cut = split * inputStrides[axis + 1];
+  for (std::size_t outputAxis = 0; outputAxis < output.size(); ++outputAxis) {
+    const auto stride = outputStrides[outputAxis + 1];
+    if (outputStrides[outputAxis] == row && cut % stride == 0)
+      return NativeOnnxTwoRankLayout{outputAxis, cut / stride};
+  }
+  return std::nullopt;
+}
+
+namespace {
+
+using Layouts = std::map<std::string, NativeOnnxTwoRankLayout>;
+
+std::size_t
+sourceAxis(const onnx::NodeProto& node, std::size_t rank)
+{
+  const auto& attrs = node.attribute();
+  const auto axis = std::find_if(attrs.begin(), attrs.end(),
+    [] (const auto& attr) { return attr.name() == "axis"; });
+  std::int64_t index = 0;
+  if (axis != attrs.end()) {
+    if (axis->type() != onnx::AttributeProto::INT)
+      throw std::invalid_argument("invalid source layout axis type");
+    index = axis->i();
+  }
+  const auto dimensions = static_cast<std::int64_t>(rank);
+  if (index < -dimensions || index >= dimensions)
+    throw std::invalid_argument("source layout axis is outside the tensor rank");
+  return index < 0 ? index + dimensions : index;
+}
+
+void
+mapConcatPieces(const onnx::GraphProto& graph, const onnx::NodeProto& node,
+                const Layouts& layouts, std::size_t axis, NativeOnnxNodeLayout& result)
+{
+  const auto out = staticFp32Shape(graph, node.output(0));
+  const auto targets = nativeConvInputChannelRanges(out.at(axis), 2);
+  std::uint64_t offset = 0;
+  for (int port = 0; port < node.input_size(); ++port) {
+    const auto source = staticFp32Shape(graph, node.input(port));
+    if (source.size() != out.size())
+      throw std::invalid_argument("Concat source ranks differ");
+    for (std::size_t dimension = 0; dimension < out.size(); ++dimension)
+      if (dimension != axis && source[dimension] != out[dimension])
+        throw std::invalid_argument("Concat source shape differs outside its axis");
+    const auto found = layouts.find(node.input(port));
+    if (source[axis] > out[axis] - offset ||
+        (found != layouts.end() &&
+         (found->second.axis != axis || found->second.split >= source[axis])))
+      throw std::invalid_argument("Concat source shard does not match its declared layout");
+    const auto split = found == layouts.end() ? source[axis] : found->second.split;
+    for (const std::size_t producer : {0U, 1U}) {
+      const auto first = offset + (producer == 0 ? 0 : split);
+      const auto last = offset + (producer == 0 ? split : source[axis]);
+      for (std::size_t consumer = 0; consumer < targets.size(); ++consumer) {
+        const auto begin = std::max(first, targets[consumer].first);
+        const auto end = std::min(last, targets[consumer].second);
+        if (begin < end)
+          result.concatPieces.push_back({static_cast<std::size_t>(port), producer, consumer,
+                                         begin - offset, end - offset, begin});
+      }
+    }
+    offset += source[axis];
+  }
+  if (offset != out[axis])
+    throw std::invalid_argument("Concat inputs do not cover its output");
+  result.outputs.emplace(node.output(0), NativeOnnxTwoRankLayout{axis, targets[0].second});
+}
+
+std::size_t
+transposeShardAxis(const onnx::NodeProto& node, const std::vector<std::uint64_t>& input,
+                   const std::vector<std::uint64_t>& output, std::size_t shardedAxis)
+{
+  if (input.size() != output.size() || node.attribute_size() > 1)
+    throw std::invalid_argument("Transpose changes source rank");
+  std::set<std::size_t> axes;
+  std::size_t mapped = 0;
+  for (std::size_t axis = 0; axis < input.size(); ++axis) {
+    auto from = static_cast<std::int64_t>(input.size() - axis - 1);
+    if (node.attribute_size() == 1) {
+      const auto& perm = node.attribute(0);
+      if (perm.name() != "perm" || perm.type() != onnx::AttributeProto::INTS ||
+          static_cast<std::size_t>(perm.ints_size()) != input.size())
+        throw std::invalid_argument("Transpose source permutation is invalid");
+      from = perm.ints(axis);
+    }
+    if (from < 0 || static_cast<std::uint64_t>(from) >= input.size() ||
+        !axes.insert(from).second || output[axis] != input[from])
+      throw std::invalid_argument("Transpose source permutation does not cover the declared shape");
+    if (static_cast<std::size_t>(from) == shardedAxis) mapped = axis;
+  }
+  return mapped;
+}
+
+} // namespace
+
+std::vector<NativeOnnxNodeLayout>
+deriveNativeOnnxTwoRankLayouts(const onnx::ModelProto& model,
+                               const std::function<void()>& requireActive)
+{
+  const auto& graph = model.graph();
+  const std::set<std::string_view> owned{
+    "Add", "ArgMax", "Cast", "Concat", "Constant", "ConstantOfShape", "Div", "Equal",
+    "Expand", "Flatten", "Gather", "GatherElements", "GatherND", "Greater", "MaxPool", "Mod",
+    "Mul", "NonMaxSuppression", "NonZero", "Pad", "ReduceMax", "Reshape", "Resize",
+    "ScatterND", "Shape", "Sigmoid", "Slice", "Split", "Squeeze", "Sub", "Tile", "TopK",
+    "Transpose", "Unsqueeze", "Where"};
+  std::set<std::string> defined;
+  for (const auto& input : graph.input()) defined.insert(input.name());
+  for (const auto& tensor : graph.initializer()) defined.insert(tensor.name());
+  Layouts layouts;
+  std::vector<NativeOnnxNodeLayout> result;
+  result.reserve(graph.node_size());
+  for (const auto& node : graph.node()) {
+    if (requireActive) requireActive();
+    auto& next = result.emplace_back();
+    for (const auto& input : node.input())
+      if (!input.empty() && defined.count(input) == 0)
+        throw std::invalid_argument("source layout input is unavailable: " + input);
+    const auto& op = node.op_type();
+    if (!node.domain().empty() ||
+        (op != "Conv" && op != "MatMul" && op != "Softmax" && !owned.count(op)))
+      throw std::invalid_argument("unsupported two-rank ONNX operator: " + op);
+    const auto first = node.input_size() == 0 ? layouts.end() : layouts.find(node.input(0));
+
+    if (op == "Conv") {
+      next.convolution = inspectNativeOnnxConvOutputShards(model, node);
+      const auto& rank0 = next.convolution->front();
+      const auto& rank1 = next.convolution->back();
+      const auto inputShape = staticFp32Shape(graph, node.input(0));
+      const auto outputShape = staticFp32Shape(graph, node.output(0));
+      if (inputShape.size() != 4 || outputShape.size() != 4 ||
+          rank1.inputEnd != inputShape[1] || rank1.outputEnd != outputShape[1])
+        throw std::invalid_argument("Conv channels differ from the source ports");
+      if (first != layouts.end() && (rank1.inputBegin == 0 ||
+          !(first->second == NativeOnnxTwoRankLayout{1, rank0.inputEnd})))
+        next.reconstructInputs.push_back(first->first);
+      next.outputs.emplace(node.output(0), NativeOnnxTwoRankLayout{1, rank0.outputEnd});
+    }
+    else if (op == "MatMul" || op == "Softmax") {
+      const auto ranges = inspectNativeOnnxAttentionHeadShards(model, node);
+      const NativeOnnxTwoRankLayout expected{1, ranges.front().second};
+      for (const auto& input : node.input())
+        if (const auto found = layouts.find(input); found == layouts.end() ||
+            !(found->second == expected))
+          throw std::invalid_argument("source attention operand does not preserve whole heads: " +
+                                      input);
+      next.outputs.emplace(node.output(0), expected);
+    }
+    else if (op == "Reshape" && first != layouts.end()) {
+      if (const auto layout = inspectNativeOnnxReshapeLayout(model, node, first->second))
+        next.outputs.emplace(node.output(0), *layout);
+    }
+    else if (op == "Transpose" && first != layouts.end()) {
+      const auto from = staticFp32Shape(graph, node.input(0));
+      const auto to = staticFp32Shape(graph, node.output(0));
+      const auto axis = transposeShardAxis(node, from, to, first->second.axis);
+      next.outputs.emplace(node.output(0), NativeOnnxTwoRankLayout{axis, first->second.split});
+    }
+    else if (op == "Split" && first != layouts.end()) {
+      const auto shape = staticFp32Shape(graph, node.input(0));
+      const auto axis = sourceAxis(node, shape.size());
+      if (axis != first->second.axis) {
+        std::uint64_t covered = 0;
+        for (const auto& output : node.output()) {
+          const auto target = staticFp32Shape(graph, output);
+          if (target.size() != shape.size() || target[axis] > shape[axis] - covered)
+            throw std::invalid_argument("Split output is outside the source shape");
+          for (std::size_t dim = 0; dim < shape.size(); ++dim)
+            if (dim != axis && target[dim] != shape[dim])
+              throw std::invalid_argument("Split changes an unselected source axis");
+          covered += target[axis];
+          next.outputs.emplace(output, first->second);
+        }
+        if (covered != shape[axis])
+          throw std::invalid_argument("Split outputs do not cover the source axis");
+      }
+    }
+    else if (op == "Concat" && first != layouts.end()) {
+      const auto output = staticFp32Shape(graph, node.output(0));
+      const auto axis = sourceAxis(node, output.size());
+      if (axis == first->second.axis && std::all_of(node.input().begin(), node.input().end(),
+          [&] (const auto& port) {
+            const auto found = layouts.find(port);
+            return found == layouts.end() || found->second.axis == axis;
+          })) {
+        mapConcatPieces(graph, node, layouts, axis, next);
+      }
+    }
+    else if ((op == "Sigmoid" || op == "Add" || op == "Mul" || op == "MaxPool") &&
+             first != layouts.end() && node.output_size() == 1) {
+      const auto from = staticFp32Shape(graph, node.input(0));
+      const auto to = staticFp32Shape(graph, node.output(0));
+      const auto layout = first->second;
+      const bool localInputs = (op != "Add" && op != "Mul") ||
+        std::all_of(node.input().begin() + 1, node.input().end(), [&] (const auto& name) {
+          const auto found = layouts.find(name);
+          if (found != layouts.end())
+            return found->second == layout && staticFp32Shape(graph, name) == from;
+          return staticFp32Shape(graph, name).empty();
+        });
+      const bool preservesShape = op == "MaxPool"
+        ? from.size() == 4 && to.size() == 4 && layout.axis == 1 && from[1] == to[1]
+        : from == to;
+      if (localInputs && preservesShape)
+        next.outputs.emplace(node.output(0), layout);
+    }
+
+    if (next.outputs.empty())
+      for (const auto& input : node.input())
+        if (layouts.count(input)) next.reconstructInputs.push_back(input);
+    for (const auto& name : node.output()) {
+      if (name.empty() || !defined.insert(name).second)
+        throw std::invalid_argument("ambiguous ONNX source output: " + name);
+    }
+    layouts.insert(next.outputs.begin(), next.outputs.end());
+  }
+  for (const auto& output : graph.output())
+    if (!defined.count(output.name()))
+      throw std::invalid_argument("undefined ONNX terminal output");
+  return result;
+}
 
 NativeOnnxLinearProjection
 inspectNativeOnnxLinearProjection(const onnx::ModelProto& model, const onnx::NodeProto& node)
@@ -977,12 +1423,16 @@ NativeCanonicalMaterializedFiles
 materializeNativeOnnxEntrySource(const NativeCanonicalSource& source,
   const NativeOnnxSourceEntryRecipeV1& entry, const std::vector<std::uint64_t>& sourceOrdinals,
   const NativeExecutionStepSpec& call, const NativeAssemblyControl& control,
-  const NativeOnnxExternalAppender& append)
+  const NativeOnnxExternalAppender& append,
+  const NativeOnnxSourceEntryProgramV1* tensorProgram)
 {
   control.requireActive();
   entry.transform.validate();
+  const bool tensorEntry = entry.transform.kind == "tensor-layout-entry";
   if (!source.materialManifest ||
-      (entry.transform.kind != "ffn-pair-partial" && !entry.transform.isAttention()) ||
+      tensorEntry != (tensorProgram != nullptr) ||
+      (!tensorEntry && entry.transform.kind != "ffn-pair-partial" &&
+       !entry.transform.isAttention()) ||
       call.operation != "CALL_SUBGRAPH" || !call.localStateSlots.empty() ||
       call.artifactEntry != entry.entryId || call.inputSlots.empty() ||
       call.outputSlots.empty() || entry.sourceNodes.size() != sourceOrdinals.size())
@@ -1001,8 +1451,10 @@ materializeNativeOnnxEntrySource(const NativeCanonicalSource& source,
     for (const auto& slot : slots) result.push_back({slot.slotId, slot.dtype, slot.shape});
     return result;
   };
-  const auto inputs = ports(entry.transform.originalPorts(call.inputSlots, false));
-  const auto outputs = ports(entry.transform.originalPorts(call.outputSlots, true));
+  const auto inputs = tensorEntry ? std::vector<NativeAssemblyTensorContractV3>{}
+                                  : ports(entry.transform.originalPorts(call.inputSlots, false));
+  const auto outputs = tensorEntry ? std::vector<NativeAssemblyTensorContractV3>{}
+                                   : ports(entry.transform.originalPorts(call.outputSlots, true));
   auto selected = selectNativeCanonicalMaterialPayloads(*source.materialManifest, sourceOrdinals,
     {}, control.requireActive);
   NativeCanonicalSource entrySource;
@@ -1021,8 +1473,350 @@ materializeNativeOnnxEntrySource(const NativeCanonicalSource& source,
   }
   if (!selected.empty())
     throw std::runtime_error("DI_CANONICAL_SOURCE_ENTRY_MATERIAL_MISSING");
-  return materializeNativeCanonicalModelFiles(entrySource, sourceOrdinals, inputs, outputs,
-                                               control, append);
+  auto files = materializeNativeCanonicalModelFiles(entrySource, sourceOrdinals, inputs, outputs,
+                                                    control, append);
+  if (tensorEntry) {
+    onnx::ModelProto model;
+    if (files.modelBytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        !model.ParseFromArray(files.modelBytes.data(), static_cast<int>(files.modelBytes.size())))
+      throw std::invalid_argument("source tensor entry graph could not be decoded");
+    bindNativeOnnxTensorEntrySource(model, *tensorProgram, call);
+    const auto size = model.ByteSizeLong();
+    if (files.initializerBytes > control.maxAssembledBytes ||
+        size > control.maxAssembledBytes - files.initializerBytes ||
+        size > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+      throw std::runtime_error("DI_CANONICAL_SOURCE_ENTRY_MATERIAL_LIMIT");
+    files.modelBytes.resize(size);
+    if (!model.SerializeToArray(files.modelBytes.data(), static_cast<int>(size)))
+      throw std::runtime_error("DI_CANONICAL_SOURCE_ENTRY_SERIALIZE_FAILED");
+  }
+  return files;
+}
+
+void
+bindNativeOnnxTensorEntrySource(onnx::ModelProto& source,
+  const NativeOnnxSourceEntryProgramV1& program, const NativeExecutionStepSpec& call)
+{
+  auto& graph = *source.mutable_graph();
+  std::map<std::string, const onnx::ValueInfoProto*> values;
+  for (const auto* group : {&graph.input(), &graph.output(), &graph.value_info()}) {
+    for (const auto& value : *group)
+      values.try_emplace(value.name(), &value);
+  }
+  std::set<std::string> local;
+  for (const auto& initializer : graph.initializer()) local.insert(initializer.name());
+  std::set<std::string> inputs;
+  std::set<std::string> produced;
+  for (const auto& node : graph.node()) {
+    for (const auto& name : node.input()) {
+      if (!name.empty() && !local.count(name)) inputs.insert(name);
+    }
+    for (const auto& name : node.output()) {
+      if (!name.empty()) {
+        if (inputs.count(name) || !local.insert(name).second)
+          throw std::invalid_argument("original source entry has a forward or duplicate definition");
+        produced.insert(name);
+      }
+    }
+  }
+  const auto findValue = [&] (const std::string& name) -> const onnx::ValueInfoProto& {
+    const auto found = values.find(name);
+    if (found == values.end() || !found->second->type().has_tensor_type() ||
+        !found->second->type().tensor_type().has_shape())
+      throw std::invalid_argument("source entry operand lacks original tensor type: " + name);
+    return *found->second;
+  };
+  const auto checkSlots = [&] (const auto& slots, const auto& permitted) {
+    std::set<std::string> used;
+    for (const auto& slot : slots) {
+      const auto position = program.tensorPorts.find(slot.slotId);
+      if (position == program.tensorPorts.end() || !permitted.count(position->second.sourceName))
+        throw std::invalid_argument("physical CALL port is foreign to its original source entry");
+      const auto& binding = position->second;
+      const auto& tensor = findValue(binding.sourceName).type().tensor_type();
+      NativeTensorContract original;
+      original.name = binding.sourceName;
+      if (tensor.elem_type() == onnx::TensorProto::FLOAT) original.dtype = "float32";
+      if (tensor.elem_type() == onnx::TensorProto::INT64) original.dtype = "int64";
+      for (const auto& dim : tensor.shape().dim()) {
+        if (!dim.has_dim_value() || dim.dim_value() <= 0)
+          throw std::invalid_argument("source entry operand does not have an exact shape");
+        original.shape.emplace_back(dim.dim_value());
+      }
+      binding.validateSourceTensor(slot, original);
+      used.insert(binding.sourceName);
+    }
+    return used;
+  };
+  checkSlots(call.inputSlots, inputs);
+  const auto outputs = checkSlots(call.outputSlots, produced);
+  std::vector<onnx::ValueInfoProto> originalInputs;
+  originalInputs.reserve(inputs.size());
+  for (const auto& name : inputs) originalInputs.push_back(findValue(name));
+  std::vector<onnx::ValueInfoProto> originalOutputs;
+  originalOutputs.reserve(outputs.size());
+  for (const auto& name : outputs) originalOutputs.push_back(findValue(name));
+  graph.clear_input();
+  graph.clear_output();
+  for (auto& input : originalInputs) *graph.add_input() = std::move(input);
+  for (auto& output : originalOutputs) *graph.add_output() = std::move(output);
+}
+
+onnx::ModelProto
+lowerNativeOnnxTensorEntry(onnx::ModelProto source,
+  const NativeOnnxSourceEntryProgramV1& program, const NativeExecutionStepSpec& call,
+  std::size_t rank, const NativeAssemblyControl& control, const NativeOnnxExternalReader& external,
+  const NativeOnnxExternalAppender& append)
+{
+  control.requireActive();
+  const auto& layouts = program.tensorLayouts;
+  const auto [begin, end] = call.sourceLayers;
+  if (rank >= 2 || end <= begin || end > layouts.size() ||
+      end - begin != static_cast<std::size_t>(source.graph().node_size()))
+    throw std::invalid_argument("tensor lowering source interval differs from its CALL");
+  bindNativeOnnxTensorEntrySource(source, program, call);
+
+  struct Piece
+  {
+    std::string name;
+    std::optional<NativeOnnxTransferRange> range;
+  };
+  const auto& original = source.graph();
+  std::map<std::string, NativeOnnxTwoRankLayout> sourceLayouts;
+  for (const auto& decision : layouts)
+    sourceLayouts.insert(decision.outputs.begin(), decision.outputs.end());
+  std::map<std::string, std::vector<Piece>> available;
+  std::set<std::string> names;
+  for (const auto& value : original.value_info()) names.insert(value.name());
+  for (const auto& node : original.node()) names.insert(node.output().begin(), node.output().end());
+  for (const auto& initializer : original.initializer()) {
+    names.insert(initializer.name());
+    available[initializer.name()].push_back({initializer.name(), {}});
+  }
+  for (const auto* slots : {&call.inputSlots, &call.outputSlots}) {
+    for (const auto& slot : *slots) names.insert(slot.slotId);
+  }
+
+  std::size_t serial = 0;
+  const auto fresh = [&] {
+    std::string name;
+    do name = "__ndnsf_tp_" + std::to_string(serial++); while (!names.insert(name).second);
+    return name;
+  };
+  const auto makePort = [] (const NativeStepSlotSpec& slot) {
+    onnx::ValueInfoProto value;
+    value.set_name(slot.slotId);
+    auto& type = *value.mutable_type()->mutable_tensor_type();
+    if (slot.dtype != "float32" && slot.dtype != "int64")
+      throw std::invalid_argument("tensor lowering has an unsupported CALL dtype");
+    type.set_elem_type(slot.dtype == "float32" ? onnx::TensorProto::FLOAT :
+                                                onnx::TensorProto::INT64);
+    auto& shape = *type.mutable_shape();
+    for (const auto& axis : slot.shape)
+      shape.add_dim()->set_dim_value(std::get<std::int64_t>(axis));
+    return value;
+  };
+
+  std::vector<onnx::NodeProto> instructions;
+  std::vector<onnx::TensorProto> addedInitializers;
+  const auto integers = [&] (const std::vector<std::int64_t>& values) {
+    auto& tensor = addedInitializers.emplace_back();
+    tensor.set_name(fresh());
+    tensor.set_data_type(onnx::TensorProto::INT64);
+    tensor.add_dims(values.size());
+    for (const auto value : values) tensor.add_int64_data(value);
+    return tensor.name();
+  };
+  const auto concat = [&] (const std::vector<std::string>& inputs, std::size_t axis) {
+    if (inputs.empty()) throw std::invalid_argument("tensor lowering has no Concat pieces");
+    if (inputs.size() == 1) return inputs.front();
+    auto& node = instructions.emplace_back();
+    node.set_op_type("Concat");
+    for (const auto& input : inputs) node.add_input(input);
+    auto& attr = *node.add_attribute();
+    attr.set_name("axis");
+    attr.set_type(onnx::AttributeProto::INT);
+    attr.set_i(axis);
+    node.add_output(fresh());
+    return node.output(0);
+  };
+  const auto slice = [&] (const std::string& input, std::size_t axis,
+                          std::uint64_t first, std::uint64_t last) {
+    auto& node = instructions.emplace_back();
+    node.set_op_type("Slice");
+    node.add_input(input);
+    node.add_input(integers({static_cast<std::int64_t>(first)}));
+    node.add_input(integers({static_cast<std::int64_t>(last)}));
+    node.add_input(integers({static_cast<std::int64_t>(axis)}));
+    node.add_output(fresh());
+    return node.output(0);
+  };
+  const auto rangeFor = [&] (const std::string& name, NativeOnnxTwoRankLayout layout) {
+    const auto extent = staticFp32Shape(original, name).at(layout.axis);
+    if (layout.split == 0 || layout.split >= extent)
+      throw std::invalid_argument("tensor lowering has a split outside the source extent");
+    return NativeOnnxTransferRange{layout.axis, rank == 0 ? 0 : layout.split,
+                                   rank == 0 ? layout.split : extent};
+  };
+  const auto resolve = [&] (const std::string& name,
+                            std::optional<NativeOnnxTransferRange> wanted = {}) {
+    const auto found = available.find(name);
+    if (found == available.end())
+      throw std::invalid_argument("tensor lowering lacks source operand: " + name);
+    const auto& pieces = found->second;
+    for (const auto& p : pieces) {
+      if (p.range == wanted) return p.name;
+      if (!p.range && wanted)
+        return slice(p.name, wanted->axis, wanted->begin, wanted->end);
+    }
+    if (!wanted) {
+      const auto axis = pieces.front().range->axis;
+      wanted = NativeOnnxTransferRange{axis, 0, staticFp32Shape(original, name).at(axis)};
+    }
+    std::vector<std::string> inputs;
+    for (auto offset = wanted->begin; offset < wanted->end;) {
+      const Piece* best = nullptr;
+      for (const auto& p : pieces) {
+        if (!p.range || p.range->axis != wanted->axis ||
+            p.range->begin > offset || p.range->end <= offset)
+          continue;
+        if (best == nullptr || p.range->end > best->range->end) best = &p;
+      }
+      if (best == nullptr)
+        throw std::invalid_argument("tensor lowering has incomplete slice coverage: " + name);
+      const auto stop = std::min(wanted->end, best->range->end);
+      inputs.push_back(best->range->begin == offset && best->range->end == stop
+        ? best->name : slice(best->name, wanted->axis, offset - best->range->begin,
+                             stop - best->range->begin));
+      offset = stop;
+    }
+    return concat(inputs, wanted->axis);
+  };
+  for (const auto& slot : call.inputSlots) {
+    const auto& binding = program.tensorPorts.at(slot.slotId);
+    available[binding.sourceName].push_back({slot.slotId, binding.range});
+  }
+  auto& graph = *source.mutable_graph();
+  std::set<std::string> slicedInitializers;
+  std::uint64_t offset = 0;
+  std::uint64_t emitted = 0;
+  const auto appendBounded = [&] (const std::vector<std::uint8_t>& bytes) {
+    control.requireActive();
+    if (!append || bytes.size() > control.maxAssembledBytes - emitted)
+      throw std::invalid_argument("tensor lowering exceeds its initializer output budget");
+    append(bytes);
+    emitted += bytes.size();
+  };
+  for (std::size_t ordinal = begin; ordinal < end; ++ordinal) {
+    control.requireActive();
+    auto& originalNode = *graph.mutable_node(ordinal - begin);
+    const auto& layout = layouts[ordinal];
+    const auto& operation = originalNode.op_type();
+    if (layout.outputs.empty() && rank != 0)
+      throw std::invalid_argument("original owned operator is outside its admitted rank");
+    auto node = originalNode;
+    if (layout.convolution) {
+      const auto& shard = layout.convolution->at(rank);
+      const auto extent = staticFp32Shape(original, node.input(0)).at(1);
+      const auto wanted = shard.inputBegin == 0 && shard.inputEnd == extent
+        ? std::optional<NativeOnnxTransferRange>{}
+        : NativeOnnxTransferRange{1, shard.inputBegin, shard.inputEnd};
+      node.set_input(0, resolve(node.input(0), wanted));
+      sliceNativeOnnxConvOutput(source, originalNode, rank, shard, external, appendBounded,
+                                offset);
+      *node.mutable_attribute() = originalNode.attribute();
+      slicedInitializers.insert(node.input(1));
+      if (node.input_size() == 3 && !node.input(2).empty())
+        slicedInitializers.insert(node.input(2));
+    }
+    else if (!layout.concatPieces.empty()) {
+      std::vector<std::string> inputs;
+      const auto axis = layout.outputs.at(node.output(0)).axis;
+      for (const auto& piece : layout.concatPieces) {
+        if (piece.consumer == rank)
+          inputs.push_back(resolve(node.input(piece.input),
+                                  NativeOnnxTransferRange{axis, piece.begin, piece.end}));
+      }
+      node.clear_input();
+      for (const auto& input : inputs) node.add_input(input);
+    }
+    else {
+      for (int input = 0; input < node.input_size(); ++input) {
+        const auto name = node.input(input);
+        if (name.empty()) continue;
+        if (!layout.outputs.empty() && operation == "Reshape" && input == 1) {
+          const auto& output = node.output(0);
+          auto shape = staticFp32Shape(original, output);
+          const auto range = rangeFor(output, layout.outputs.at(output));
+          shape[range.axis] = range.end - range.begin;
+          node.set_input(input, integers({shape.begin(), shape.end()}));
+          continue;
+        }
+        const auto found = sourceLayouts.find(name);
+        const auto wanted = layout.outputs.empty() || found == sourceLayouts.end()
+          ? std::optional<NativeOnnxTransferRange>{} : rangeFor(name, found->second);
+        node.set_input(input, resolve(name, wanted));
+      }
+    }
+    for (int output = 0; output < node.output_size(); ++output) {
+      const auto name = node.output(output);
+      const auto found = layout.outputs.find(name);
+      const auto range = found == layout.outputs.end()
+        ? std::optional<NativeOnnxTransferRange>{} : rangeFor(name, found->second);
+      node.set_output(output, fresh());
+      available[name].push_back({node.output(output), range});
+    }
+    instructions.push_back(std::move(node));
+  }
+
+  for (const auto& slot : call.outputSlots) {
+    const auto& binding = program.tensorPorts.at(slot.slotId);
+    const auto value = resolve(binding.sourceName, binding.range);
+    auto& node = instructions.emplace_back();
+    node.set_op_type("Identity");
+    node.add_input(value);
+    node.add_output(slot.slotId);
+  }
+
+  for (auto& initializer : *graph.mutable_initializer()) {
+    if (initializer.data_location() != onnx::TensorProto::EXTERNAL ||
+        slicedInitializers.count(initializer.name()))
+      continue;
+    if (!external || !append)
+      throw std::invalid_argument("tensor lowering requires an external initializer reader");
+    std::uint64_t length = 0;
+    for (const auto& field : initializer.external_data()) {
+      if (field.key() == "length") length = parseExternalCoordinate(field.value());
+    }
+    const auto position = canonicalExternalOffset(initializer, length);
+    if (length > control.maxAssembledBytes || offset > control.maxAssembledBytes - length)
+      throw std::invalid_argument("tensor lowering exceeds initializer budget");
+    for (std::uint64_t read = 0; read < length;) {
+      control.requireActive();
+      const auto count = std::min(length - read, NativeCanonicalMaterialBundleMaxBytes);
+      const auto bytes = external("model.onnx.data", position + read, count);
+      if (bytes.size() != count) throw std::invalid_argument("tensor lowering short initializer read");
+      appendBounded(bytes);
+      read += count;
+    }
+    for (auto& field : *initializer.mutable_external_data()) {
+      if (field.key() == "offset") field.set_value(std::to_string(offset));
+    }
+    offset += length;
+  }
+
+  graph.clear_node();
+  graph.clear_input();
+  graph.clear_output();
+  graph.clear_value_info();
+  for (auto& node : instructions) *graph.add_node() = std::move(node);
+  for (auto& initializer : addedInitializers) *graph.add_initializer() = std::move(initializer);
+  for (const auto& slot : call.inputSlots) *graph.add_input() = makePort(slot);
+  for (const auto& slot : call.outputSlots) *graph.add_output() = makePort(slot);
+  if (emitted != offset || source.ByteSizeLong() > control.maxAssembledBytes - emitted)
+    throw std::invalid_argument("tensor lowering exceeds its complete artifact budget");
+  if (!hasExternalInitializers(source)) onnx::checker::check_model(source);
+  return source;
 }
 
 onnx::ModelProto

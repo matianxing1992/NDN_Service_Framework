@@ -15,6 +15,7 @@
     "tests/fixtures/gpu-query.cpp": "di",
     "tests/fixtures/spec261/ort-detection-oracle.cpp": "di",
     "tests/standalone/native-source-inspect.cpp": "di",
+    "tests/standalone/native-yolo-tp-checkpoints.cpp": "di",
     "tests/fixtures/spec220/ort-required-operators.cpp": "di",
     "tests/fixtures/spec220/ort-runtime-probe.cpp": "di",
     "tests/fixtures/spec221/kv-failure-oracle.cpp": "di",

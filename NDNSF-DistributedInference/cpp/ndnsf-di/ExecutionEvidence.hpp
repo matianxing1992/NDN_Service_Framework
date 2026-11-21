@@ -65,6 +65,13 @@ struct ExecutionEvidence
   // consumers such as Reshape; the first real request supplies the producer's
   // tensors and is the executable evidence for this session.
   bool warmupSkippedUnrankedInput = false;
+  // A sealed CPU entry waits for its actual producer-bound input values.
+  bool warmupDeferredDependencyInput = false;
+  bool warmupReady() const
+  {
+    return warmupCompleted || (runnerKind == RunnerKind::OnnxRuntimeCpu &&
+      deviceKind == "cpu" && (warmupSkippedUnrankedInput || warmupDeferredDependencyInput));
+  }
   std::string gpuUuid;
   std::vector<std::string> gpuUuids;
   std::string providerProfilePath;

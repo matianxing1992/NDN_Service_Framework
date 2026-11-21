@@ -4343,26 +4343,52 @@ void validateNativeAssembly(const NativeSelectionRoleV3& role)
       if (role.adapterId == "qwen" || role.tensorParallelDegree != 2 ||
           role.tensorParallelRank >= 2 || role.tensorShardV1.empty())
         throw std::invalid_argument("role paired FFN geometry is incomplete");
-      // Stage axes describe the first sharded entry. Replicated source
-      // components can precede it, for example the block's input LayerNorm.
-      const auto recipe = [&] {
-        if (!entryProgram) return NativeOnnxSourceTransformV1::parse(role.sourceTransformV1);
+      struct SourceAxis
+      {
+        std::string name;
+        std::uint64_t begin;
+        std::uint64_t end;
+        std::uint64_t extent;
+      };
+      const auto fromLegacy = [&] (const NativeOnnxSourceTransformV1& recipe) {
+        const auto ranges = nativeConvInputChannelRanges(recipe.extent, 2);
+        if (ranges[role.tensorParallelRank] != std::make_pair(recipe.begin, recipe.end))
+          throw std::invalid_argument("role source axis differs from its rank");
+        return SourceAxis{recipe.axis, recipe.begin, recipe.end, recipe.extent};
+      };
+      const auto sourceAxis = [&] {
+        if (!entryProgram)
+          return fromLegacy(NativeOnnxSourceTransformV1::parse(role.sourceTransformV1));
         const auto program = NativeOnnxSourceEntryProgramV1::parse(role.sourceTransformV1);
         (void)program.bindSourceOrdinals(role.nodeIndices);
+        if (!program.tensorLayouts.empty()) {
+          const auto firstConv = std::find_if(program.tensorLayouts.begin(),
+            program.tensorLayouts.end(),
+            [] (const auto& layout) { return layout.convolution.has_value(); });
+          if (firstConv == program.tensorLayouts.end())
+            throw std::invalid_argument("source entry program has no sharded Conv geometry");
+          const auto& geometry = *firstConv->convolution;
+          const auto& local = geometry.at(role.tensorParallelRank);
+          if (geometry.front().outputBegin != 0 ||
+              geometry.front().outputEnd != geometry.back().outputBegin)
+            throw std::invalid_argument("source Conv rank axes do not cover the output");
+          return SourceAxis{"conv-output-channel", local.outputBegin, local.outputEnd,
+                            geometry.back().outputEnd};
+        }
+        // Legacy stage axes describe the first sharded entry, after any
+        // replicated source components such as a block's input LayerNorm.
         const auto firstShard = std::find_if(program.entries.begin(), program.entries.end(),
           [] (const auto& entry) { return entry.transform.extent != 0; });
         if (firstShard == program.entries.end())
           throw std::invalid_argument("source entry program has no sharded geometry");
-        return firstShard->transform;
+        return fromLegacy(firstShard->transform);
       }();
-      const auto ranges = nativeConvInputChannelRanges(recipe.extent, 2);
       const auto shard = parseNativeTensorShardV1(role.tensorShardV1);
       const auto& axes = shard.at("axes");
-      if (ranges[role.tensorParallelRank] != std::make_pair(recipe.begin, recipe.end) ||
-          axes.size() != 1 || axes[0].at("axis") != recipe.axis ||
-          axes[0].at("begin") != recipe.begin || axes[0].at("end") != recipe.end ||
-          axes[0].at("extent") != recipe.extent)
-        throw std::invalid_argument("role paired FFN axis differs from its rank recipe");
+      if (axes.size() != 1 || axes[0].at("axis") != sourceAxis.name ||
+          axes[0].at("begin") != sourceAxis.begin || axes[0].at("end") != sourceAxis.end ||
+          axes[0].at("extent") != sourceAxis.extent)
+        throw std::invalid_argument("role source axis differs from its rank recipe");
     }
   }
   if (!role.tensorShardV1.empty()) {

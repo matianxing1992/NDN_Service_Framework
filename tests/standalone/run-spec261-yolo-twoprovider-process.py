@@ -25,6 +25,12 @@ parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--cache', type=Path, default=None)
 parser.add_argument('--variant', choices=['26n','11n','ffn','attention-ffn','wan'], default='26n')
+parser.add_argument('--whole-model-tp', action='store_true',
+                    help='use the two-rank whole-model source plan for YOLO26n')
+parser.add_argument('--matched-tp', action='store_true',
+                    help='run full, cold TP and warm TP requests on one fixed case')
+parser.add_argument('--tp-cancel', action='store_true',
+                    help='cancel with the first YOLO Rank1 contribution withheld, then recover')
 parser.add_argument('--wan-reference', type=Path, help='frozen input.bundle and mixed oracle.json')
 parser.add_argument('--boundary', default='onnx-node-3')
 parser.add_argument('--case', action='append', default=[],
@@ -38,6 +44,12 @@ parser.add_argument('--revoke', action='store_true',
 parser.add_argument('--ffn-cancel', action='store_true',
                     help='withhold the first Rank1 partial and cancel the in-flight FFN request')
 args=parser.parse_args()
+if args.whole_model_tp and args.variant != '26n':
+ parser.error('--whole-model-tp requires --variant 26n')
+if args.matched_tp and (not args.whole_model_tp or len(args.case) != 1):
+ parser.error('--matched-tp requires --whole-model-tp and one --case')
+if args.tp_cancel and (not args.whole_model_tp or len(args.case) != 1 or args.matched_tp):
+ parser.error('--tp-cancel requires --whole-model-tp and one --case without --matched-tp')
 BUILD=args.build.resolve()
 CONTROLLER = b.native_program(BUILD, 'App_ServiceController')
 AUTHORITY = b.native_program(BUILD, 'DI_NativeArtifactAuthority')
@@ -142,12 +154,16 @@ elif ffn:
  ]
 else:
  source.update(initializer_file='model.weights', initializer_digest=subject['initializer'])
- splitter.update(boundary_node=args.boundary, input_channels=16, conv_input_axis='input-channel',
-  activation_shape=[1,16,320,320], partial_shape=[1,32,160,160], activation_dtype='float32',
-  conv_input_tensor=subject['conv_input'], conv_weight_initializer=subject['conv_weight'],
-  conv_bias_initializer=subject['conv_bias'], conv_output_tensor=subject['conv_output'],
-  conv_weight_bytes=18432, conv_bias_bytes=128, conv_pads=[1,1,1,1],
-  conv_strides=[2,2], conv_dilations=[1,1])
+ if args.whole_model_tp:
+  splitter.update(selection_mode='tensor_parallel', roles=['Rank0', 'Rank1'],
+                  input_ingress_role='Rank0', result_egress_role='Rank0')
+ else:
+  splitter.update(boundary_node=args.boundary, input_channels=16, conv_input_axis='input-channel',
+   activation_shape=[1,16,320,320], partial_shape=[1,32,160,160], activation_dtype='float32',
+   conv_input_tensor=subject['conv_input'], conv_weight_initializer=subject['conv_weight'],
+   conv_bias_initializer=subject['conv_bias'], conv_output_tensor=subject['conv_output'],
+   conv_weight_bytes=18432, conv_bias_bytes=128, conv_pads=[1,1,1,1],
+   conv_strides=[2,2], conv_dilations=[1,1])
 catalog={"schema":"ndnsf-di-native-request-catalog-v1","model":json.loads(canonical_bytes(model).decode()),"source":source,"recipe":{"artifact_profile_digest":profile,"assembler_descriptor_digest":asm,"backend_abi":"onnxruntime-cpu-v1","precision":"float32","quantization":"none","layout":"native","padding":"none","protection_epoch":"epoch-1","max_source_bytes":67108864,"max_assembled_bytes":134217728,"max_nodes":subject['max_nodes']},"publication":{"artifact_root":"/Model/"+subject['name']+"/artifacts","package_manifest_digest":package},"input_format":"OPAQUE","max_payload_bytes":8388608,"splitter":splitter,"node_mapping":{},"state_inputs":{},"state_outputs":{}}
 if wan:
  wan_source_bytes = 1792 << 20
@@ -336,7 +352,7 @@ def network_bytes():
  return counters
 
 
-def wait_wan_phase(process, actors, timeout):
+def wait_measured_phase(process, actors, timeout):
  deadline = time.monotonic() + timeout
  peak_rss = {role: 0 for role in actors}
  peak_total = 0
@@ -413,7 +429,8 @@ try:
   log_tag = tag
   if fault:
    pm[0] = str(b.native_program(BUILD, 'di-native-fault-provider'))
-   pm += ['--fault-type', 'late-old-output', '--fault-role', 'Rank1', '--fault-delay-ms', '2000']
+   pm += ['--fault-type', 'late-old-output', '--fault-role', 'Rank1',
+          '--fault-delay-ms', '4500' if args.tp_cancel else '2000']
    log_tag += '-fault'
   pe['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY']=str(run_root/(tag+'/authority-public.pem'));pe['SPEC181_PROVIDER_RECIPIENT_KEY_MAP']=str(run_root/(tag+'/recipient-key-map.json'));pe['NDNSF_DI_WORKER_BINARY']=str(WORKER)
   ps=launch(pm,pe,log_tag,tag);children.append(ps); b.wait_marker(ps,run_root/(log_tag+'.log'),'NDNSF_DI_NATIVE_PROVIDER_READY',60)
@@ -498,7 +515,7 @@ try:
     process.send_signal(signal.SIGINT)
     (run_root / 'cancelled-request.txt').write_text(session + '\n')
    if wan:
-    measurements = wait_wan_phase(process, {**running, "requester": process,
+    measurements = wait_measured_phase(process, {**running, "requester": process,
                                             "controller": c, "authority": a},
                                   (rc['limits']['bootstrap_ms'] +
                                    rc['request']['timeout_ms']) / 1000 + 30)
@@ -542,19 +559,90 @@ try:
    cfg=json.loads((run_root/'requester/config.json').read_text())
    cfg['oracle']={'tensor':subject['output'],'float32':values,'tolerance':1e-4,
      'row_width':6,'detections':True,'coordinate_tolerance':0.01,'score_tolerance':1e-4,'iou_floor':0.999}
-   config_path=run_root/'requester'/('config-'+name+'.json')
-   config_path.write_text(json.dumps(cfg))
-   rqc=launch([str(REQUESTER),'--config',str(config_path),'--input',str(input_path),
-               '--output',str(run_root/'requester'/('output-'+name+'.bin'))],re,'requester-'+name,'requester')
-   children.append(rqc)
-   try:
-    rqc.wait(timeout=180)
-   except subprocess.TimeoutExpired:
-    b.stop(rqc)
-    failures.append(name+':timeout')
-    continue
-   print('requester case',name,'rc',rqc.returncode)
-   if rqc.returncode: failures.append(name)
+   phases = [name + '-' + suffix for suffix in ('full', 'tp-cold', 'tp-warm')] \
+    if args.matched_tp else [name]
+   if args.tp_cancel:
+    phases = [name + '-tp-cancel', name + '-tp-recovery']
+   for phase in phases:
+    cancelling = args.tp_cancel and phase.endswith('-tp-cancel')
+    if cancelling:
+     b.stop(running['provider2'])
+     running['provider2'] = start_provider('/example/hello/provider2', 'Rank1,Suffix',
+                                          'provider2', offer2priv, fault=True)
+    elif args.tp_cancel:
+     if b.stop(running['provider2'], timeout=15) != 0:
+      raise RuntimeError('cancelled YOLO fault Provider did not exit cleanly')
+     running['provider2'] = start_provider('/example/hello/provider2', 'Rank1,Suffix',
+                                          'provider2', offer2priv)
+    phase_config = json.loads(json.dumps(cfg))
+    if args.matched_tp:
+     if phase.endswith('-full'):
+      phase_config['catalog']['splitter'] = {
+       'kind': 'ONNX_SOURCE', 'selection_mode': 'full', 'roles': ['Prefix'],
+       'input_ingress_role': 'Prefix', 'result_egress_role': 'Prefix',
+      }
+      placements = {'Prefix': '/example/hello/provider'}
+     else:
+      placements = {'Rank0': '/example/hello/provider', 'Rank1': '/example/hello/provider2'}
+     phase_config['fixed_placement'] = {'role_providers': placements}
+    config_path = run_root/'requester'/('config-'+phase+'.json')
+    output_path = run_root/'requester'/('output-'+phase+'.bin')
+    config_path.write_text(json.dumps(phase_config))
+    if args.matched_tp:
+     interfaces_before = network_bytes()
+     before = resource.getrusage(resource.RUSAGE_CHILDREN)
+     started = time.monotonic()
+    rqc = launch([str(REQUESTER), '--config', str(config_path), '--input', str(input_path),
+                  '--output', str(output_path)], re, 'requester-'+phase, 'requester')
+    children.append(rqc)
+    if cancelling:
+     fault_log = run_root / 'provider2-fault.log'
+     injected = 'NDNSF_DI_EXPERIMENT_FAULT_INJECTED type=late-old-output role=Rank1 session='
+     b.wait_marker(rqc, fault_log, injected, timeout=150)
+     session = next(line.split(injected, 1)[1].split()[0]
+                    for line in fault_log.read_text(errors='replace').splitlines()
+                    if injected in line)
+     marker = f'DEPENDENCY_FETCH status=begin requestId={session} '
+     withheld = '/8=step/8=Rank1%2Fcall%2F0/'
+     deadline = time.monotonic() + 4
+     while time.monotonic() < deadline and rqc.poll() is None:
+      lines = (run_root / 'provider.log').read_text(errors='replace').splitlines()
+      if any(marker in line and ' role=Rank0 ' in line and withheld in line for line in lines):
+       break
+      time.sleep(0.025)
+     else:
+      raise RuntimeError('Rank0 did not wait on the withheld YOLO contribution')
+     rqc.send_signal(signal.SIGINT)
+     (run_root / 'cancelled-request.txt').write_text(session + '\n')
+    try:
+     if args.matched_tp:
+      usage = wait_measured_phase(rqc, {**running, 'requester': rqc,
+                                        'controller': c, 'authority': a}, 180)
+     else:
+      rqc.wait(timeout=180)
+    except subprocess.TimeoutExpired:
+     b.stop(rqc)
+     failures.append(phase+':timeout')
+     break
+    print('requester case', phase, 'rc', rqc.returncode)
+    if args.matched_tp:
+     after = resource.getrusage(resource.RUSAGE_CHILDREN)
+     usage.update(phase=phase, exit=rqc.returncode,
+                  requesterWallMs=round((time.monotonic() - started) * 1000, 3),
+                  requesterCpuMs=round((after.ru_utime + after.ru_stime -
+                                       before.ru_utime - before.ru_stime) * 1000, 3),
+                  inputSha256=hashlib.sha256(input_path.read_bytes()).hexdigest())
+     usage['nodeInterfaceBytes'] = {
+      role: {'rx': counts[0] - interfaces_before[role][0],
+             'tx': counts[1] - interfaces_before[role][1]}
+      for role, counts in network_bytes().items()}
+     if rqc.returncode == 0:
+      usage['outputSha256'] = hashlib.sha256(output_path.read_bytes()).hexdigest()
+     with (run_root/'requester-trials.jsonl').open('a') as trials:
+      trials.write(json.dumps(usage) + '\n')
+    if rqc.returncode != (1 if cancelling else 0):
+     failures.append(phase)
+     break
   print('ROOT',run_root)
   if failures:
    raise SystemExit(1)
@@ -593,5 +681,5 @@ try:
   print('NATIVE_REQUEST_REVOKE_ORCHESTRATION_COMPLETE')
 finally:
  exits = [{'pid': p.pid, 'exit': b.stop(p)} for p in reversed(children)]
- if ffn:
+ if ffn or args.whole_model_tp:
   (run_root / 'process-cleanup.json').write_text(json.dumps(exits) + '\n')

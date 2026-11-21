@@ -3575,6 +3575,7 @@ prepareNativeCanonicalOnnxRole(
       if (isEntryProgram) {
         const auto program = NativeOnnxSourceEntryProgramV1::parse(role.sourceTransformV1);
         program.validateRank(projection.plan, role.selectedRole, role.tensorParallelRank);
+        const bool tensorProgram = !program.tensorLayouts.empty();
         const auto windows = program.bindSourceOrdinals(role.nodeIndices);
         const auto outputRoot = rootPath / "source-program";
         const auto makePrivateDirectory = [&] (const auto& directory) {
@@ -3622,7 +3623,7 @@ prepareNativeCanonicalOnnxRole(
           auto raw = materializeNativeOnnxEntrySource(canonicalSource, entry, windows[index],
             *matched, assemblyControl, [&] (const auto& bytes) {
               appendFile(unslicedFd, unslicedPath, bytes);
-            });
+            }, tensorProgram ? &program : nullptr);
           closeFile(unslicedFd);
           auto sidecarControl = assemblyControl;
           sidecarControl.maxSourceBytes = assemblyControl.maxAssembledBytes;
@@ -3635,7 +3636,7 @@ prepareNativeCanonicalOnnxRole(
               !model.ParseFromArray(raw.modelBytes.data(), static_cast<int>(raw.modelBytes.size())))
             throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_MATERIALIZED_GRAPH_INVALID");
           OPENSSL_cleanse(raw.modelBytes.data(), raw.modelBytes.size());
-          const auto readEntry = [&] (const auto& location, auto offset, auto count) {
+          const auto readEntry = [&] (const std::string& location, auto offset, auto count) {
               assemblyControl.requireActive();
               if (location != "model.onnx.data" || !original)
                 throw std::runtime_error("DI_CANONICAL_SOURCE_ENTRY_SIDECAR_MISSING");
@@ -3647,10 +3648,21 @@ prepareNativeCanonicalOnnxRole(
               appendFile(sidecarFd, sidecarPath, bytes);
               outputBytes += bytes.size();
             };
-          auto modelOut = entry.transform.isAttention()
-            ? applyNativeOnnxSourceTransform(model, entry.transform, readEntry, writeEntry)
-            : lowerNativeMaterializedFfnEntry(std::move(model), entry.transform,
-                                               windows[index], readEntry, writeEntry);
+          onnx::ModelProto modelOut;
+          if (tensorProgram) {
+            auto bounded = assemblyControl;
+            bounded.maxAssembledBytes = std::min(bounded.maxAssembledBytes,
+                                                  role.maxAssembledBytes - outputBytes);
+            modelOut = lowerNativeOnnxTensorEntry(std::move(model), program, *matched,
+              role.tensorParallelRank, bounded, readEntry, writeEntry);
+          }
+          else if (entry.transform.isAttention()) {
+            modelOut = applyNativeOnnxSourceTransform(model, entry.transform, readEntry, writeEntry);
+          }
+          else {
+            modelOut = lowerNativeMaterializedFfnEntry(std::move(model), entry.transform,
+                                                       windows[index], readEntry, writeEntry);
+          }
           if (entry.transform.kind == "attention-source-component" && original) {
             for (std::uint64_t offset = 0; offset < raw.initializerBytes;) {
               const auto count = std::min(raw.initializerBytes - offset,

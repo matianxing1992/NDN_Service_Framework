@@ -337,14 +337,18 @@ sessionIdentity(const NativeModelRunnerSpec& spec,
     throw std::invalid_argument("AUTOMATIC_IO_LIMIT");
   const auto protectedIdentity = metadata({"protectedResidentIdentity"});
   if (!protectedIdentity.empty()) {
-    if (automaticIo == spec.metadata.end())
-      return protectedIdentity;
+    if (automaticIo == spec.metadata.end()) {
+      if (!spec.deferDependencyInputWarmup) return protectedIdentity;
+      const auto framed = "ndnsf-di-deferred-dependency-warmup:" + protectedIdentity;
+      return sha256TensorBytes(std::vector<std::uint8_t>(framed.begin(), framed.end()));
+    }
     auto framed = std::string(automaticSource == spec.metadata.end()
       ? "ndnsf-di-protected-session-io-v1:" : "ndnsf-di-protected-session-source-v1:") +
       std::to_string(protectedIdentity.size()) + ":" + protectedIdentity +
       std::to_string(automaticIo->second.size()) + ":" + automaticIo->second;
     if (automaticSource != spec.metadata.end())
       framed += std::to_string(automaticSource->second.size()) + ":" + automaticSource->second;
+    if (spec.deferDependencyInputWarmup) framed += ":deferred-dependency-warmup";
     return sha256TensorBytes(std::vector<std::uint8_t>(framed.begin(), framed.end()));
   }
   const auto modelDigest = metadata({"assembledModelDigest", "artifactDigest",
@@ -363,6 +367,7 @@ sessionIdentity(const NativeModelRunnerSpec& spec,
     canonical << value.size() << ':' << value;
   };
   frame("ndnsf-di-onnx-resident-session-v1");
+  if (spec.deferDependencyInputWarmup) frame("deferred-dependency-warmup");
   for (const auto* value : {&modelDigest, &graphDigest, &initializerDigest,
                             &recipeDigest, &backendAbi}) {
     frame(*value);
@@ -536,7 +541,10 @@ makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
   // CPU kernels prepare constant weights once instead of converting them on
   // every token. Keep the bounded CUDA session policy separate from CPU tuning.
   if (selection.selectedProvider == "cpu") {
-    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+    // A sealed dependency entry may be entirely shape arithmetic. Preserve
+    // its executable nodes so the request's device profile can attest it.
+    options.SetGraphOptimizationLevel(spec.deferDependencyInputWarmup
+      ? GraphOptimizationLevel::ORT_DISABLE_ALL : GraphOptimizationLevel::ORT_ENABLE_BASIC);
   }
   else {
     options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_DISABLE_ALL);
@@ -1255,6 +1263,7 @@ public:
   // Shared by the load owner and every cache-hit wrapper so a skipped
   // unranked-input warm-up is not reported as a completed warm-up.
   bool warmupSkippedUnrankedInput = false;
+  bool warmupDeferredDependencyInput = false;
 };
 
 class OnnxRuntimeModelRunner::Impl
@@ -1632,6 +1641,8 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
     // object but does not repeat warmup.
     if (m_impl->sharedSession->warmupSkippedUnrankedInput)
       m_evidence->warmupSkippedUnrankedInput = true;
+    else if (m_impl->sharedSession->warmupDeferredDependencyInput)
+      m_evidence->warmupDeferredDependencyInput = true;
     else
       m_evidence->warmupCompleted = true;
     m_evidence->validate();
@@ -1724,6 +1735,16 @@ OnnxRuntimeModelRunner::warmup()
   }
   Ort::AllocatorWithDefaultOptions allocator;
   const auto inputCount = m_impl->session.GetInputCount();
+  if (m_spec.deferDependencyInputWarmup && m_impl->selection.selectedProvider == "cpu") {
+    // A sealed CPU entry receives real values from its admitted producer
+    // slots. A valid static shape does not make a fabricated value admissible.
+    m_impl->sharedSession->warmupDeferredDependencyInput = true;
+    if (m_evidence) {
+      m_evidence->warmupDeferredDependencyInput = true;
+      m_evidence->validate();
+    }
+    return;
+  }
   for (std::size_t index = 0; index < inputCount; ++index) {
     auto name = m_impl->session.GetInputNameAllocated(index, allocator);
     const std::string inputName(name.get());

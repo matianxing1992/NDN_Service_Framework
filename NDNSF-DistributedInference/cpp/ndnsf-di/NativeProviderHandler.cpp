@@ -1912,8 +1912,7 @@ validateNativeProviderRuntimeReadiness(
   if (!evidence.loadCompleted) {
     return "DI_RUNTIME_MODEL_NOT_LOADED";
   }
-  if (!evidence.warmupCompleted &&
-      !(evidence.warmupSkippedUnrankedInput && evidence.deviceKind == "cpu")) {
+  if (!evidence.warmupReady()) {
     return "DI_RUNTIME_WARMUP_INCOMPLETE";
   }
   if (std::find(evidence.roles.begin(), evidence.roles.end(), expectedRole) ==
@@ -2045,6 +2044,9 @@ validateNativePreparedRunnerSpec(
     auto expected = spec;
     expected.metadata.erase("sourceEntryProgram");
     sourceProgram = detail::bindNativeSourceProgramEntries(projection, expected);
+    if (spec.sourceProgramDependencyEntries != expected.sourceProgramDependencyEntries ||
+        spec.deferDependencyInputWarmup)
+      return "DI_PROVIDER_SOURCE_PROGRAM_ENTRY_MISMATCH";
     if (sourceProgram && metadataValue(spec, {"sourceEntryProgram"}) !=
                          expected.metadata.at("sourceEntryProgram"))
       return "DI_PROVIDER_SOURCE_PROGRAM_ENTRY_MISMATCH";

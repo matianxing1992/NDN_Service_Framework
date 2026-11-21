@@ -1,7 +1,11 @@
 #ifndef NDNSF_DI_NATIVE_SOURCE_TRANSFORM_HPP
 #define NDNSF_DI_NATIVE_SOURCE_TRANSFORM_HPP
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,9 +17,37 @@ inline constexpr const char* NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1 =
   "onnx-source-entry-program-v1";
 inline constexpr const char* NATIVE_SOURCE_ATTENTION_ENTRY_CAPABILITY_V1 =
   "onnx-source-attention-entry-v1";
+inline constexpr const char* NATIVE_SOURCE_TENSOR_LAYOUT_CAPABILITY_V1 =
+  "onnx-source-tensor-layout-v1";
 
 struct NativeExecutionPlan;
+struct NativeExecutionStepSpec;
 struct NativeStepSlotSpec;
+struct NativeTensorContract;
+
+struct NativeOnnxTransferRange
+{
+  std::size_t axis;
+  std::uint64_t begin;
+  std::uint64_t end;
+
+  bool operator==(const NativeOnnxTransferRange& other) const
+  {
+    return axis == other.axis && begin == other.begin && end == other.end;
+  }
+};
+
+/** The original ONNX operand and optional slice behind a physical CALL slot. */
+struct NativeOnnxEntryPort
+{
+  std::string sourceName;
+  std::optional<NativeOnnxTransferRange> range;
+
+  std::string slotId() const;
+  std::string layoutDigest(const std::string& graphDigest) const;
+  void validateSourceTensor(const NativeStepSlotSpec& slot,
+                            const NativeTensorContract& source) const;
+};
 
 /** Versioned lowering instruction carried by a transformed ONNX role recipe.
  *
@@ -56,6 +88,7 @@ struct NativeOnnxSourceTransformV1
   static NativeOnnxSourceTransformV1 parse(const std::string& wire);
   bool isAttention() const;
   bool isRmsNorm() const;
+  bool hasExplicitEntryPorts() const;
   std::vector<NativeStepSlotSpec>
   originalPorts(const std::vector<NativeStepSlotSpec>& slots, bool outputs) const;
 };
@@ -69,12 +102,59 @@ struct NativeOnnxSourceEntryRecipeV1
   NativeOnnxSourceTransformV1 transform;
   std::vector<std::string> inputPorts;
   std::vector<std::string> outputPorts;
+  std::string tensorBoundaryDigest{};
+
+  static NativeOnnxSourceEntryRecipeV1 fromTensorStep(const NativeExecutionStepSpec& step);
+};
+
+/** Logical NCHW channel ranges and the original groups executed by one Conv rank. */
+struct NativeOnnxConvShard
+{
+  std::uint64_t inputBegin;
+  std::uint64_t inputEnd;
+  std::uint64_t outputBegin;
+  std::uint64_t outputEnd;
+  std::uint64_t groups;
+};
+
+/** Two contiguous rank ranges, [0, split) and [split, shape[axis]). */
+struct NativeOnnxTwoRankLayout
+{
+  std::size_t axis;
+  std::uint64_t split;
+
+  bool operator==(const NativeOnnxTwoRankLayout& other) const
+  {
+    return axis == other.axis && split == other.split;
+  }
+};
+
+/** One source interval needed to reconstruct a rank's logical Concat output. */
+struct NativeOnnxConcatPiece
+{
+  std::size_t input;
+  std::size_t producer;
+  std::size_t consumer;
+  std::uint64_t begin;
+  std::uint64_t end;
+  std::uint64_t outputBegin;
+};
+
+/** Layout decisions in original node order. Unsharded computations belong to rank zero. */
+struct NativeOnnxNodeLayout
+{
+  std::map<std::string, NativeOnnxTwoRankLayout> outputs;
+  std::vector<std::string> reconstructInputs;
+  std::vector<NativeOnnxConcatPiece> concatPieces;
+  std::optional<std::array<NativeOnnxConvShard, 2>> convolution;
 };
 
 /** Bind every derived graph of a generic ONNX rank into its signed role recipe. */
 struct NativeOnnxSourceEntryProgramV1
 {
   std::vector<NativeOnnxSourceEntryRecipeV1> entries;
+  std::map<std::string, NativeOnnxEntryPort> tensorPorts{};
+  std::vector<NativeOnnxNodeLayout> tensorLayouts{};
 
   void validate() const;
   void validateRank(const NativeExecutionPlan& plan, const std::string& role,

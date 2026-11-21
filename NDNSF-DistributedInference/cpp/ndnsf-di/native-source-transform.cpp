@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -10,6 +11,99 @@
 #include <stdexcept>
 
 namespace ndnsf::di {
+namespace {
+
+constexpr auto TENSOR_LAYOUT_ENTRY = "tensor-layout-entry";
+
+bool
+isDigest(const std::string& value)
+{
+  return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
+    std::all_of(value.begin() + 7, value.end(), [] (char digit) {
+      return (digit >= '0' && digit <= '9') || (digit >= 'a' && digit <= 'f');
+    });
+}
+
+std::string
+computeTensorBoundaryDigest(const NativeExecutionStepSpec& step)
+{
+  const auto encode = [] (const auto& ports) {
+    auto values = NativeJson::array();
+    for (const auto& port : ports) {
+      if ((port.dtype != "float32" && port.dtype != "int64") || !isDigest(port.layoutDigest))
+        throw std::invalid_argument("source tensor entry has unsupported dtype or layout");
+      auto shape = NativeJson::array();
+      for (const auto& dim : port.shape) {
+        const auto* value = std::get_if<std::int64_t>(&dim);
+        if (value == nullptr || *value <= 0)
+          throw std::invalid_argument("source tensor entry requires static dimensions");
+        shape.push_back(*value);
+      }
+      values.push_back({{"slot", port.slotId}, {"dtype", port.dtype},
+                        {"shape", std::move(shape)}, {"layout", port.layoutDigest}});
+    }
+    return values;
+  };
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"inputs", encode(step.inputSlots)}, {"outputs", encode(step.outputSlots)}}));
+}
+
+} // namespace
+
+std::string
+NativeOnnxEntryPort::slotId() const
+{
+  if (sourceName.empty() || (range && range->begin >= range->end))
+    throw std::invalid_argument("source tensor port has no operand or a reversed slice");
+  if (!range) return sourceName;
+  return sourceName + "/slice/" + std::to_string(range->axis) + "/" +
+    std::to_string(range->begin) + "/" + std::to_string(range->end);
+}
+
+std::string
+NativeOnnxEntryPort::layoutDigest(const std::string& graphDigest) const
+{
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"graph", graphDigest}, {"source", sourceName}, {"physical_slot", slotId()}}));
+}
+
+void
+NativeOnnxEntryPort::validateSourceTensor(const NativeStepSlotSpec& slot,
+                                        const NativeTensorContract& source) const
+{
+  if (slot.slotId != slotId() || sourceName != source.name || slot.dtype != source.dtype)
+    throw std::invalid_argument("physical CALL port differs from its original ONNX operand");
+  auto shape = source.shape;
+  if (range) {
+    if (range->axis >= shape.size())
+      throw std::invalid_argument("source tensor port slice axis is outside its original shape");
+    auto& axis = shape[range->axis];
+    const auto* extent = std::get_if<std::int64_t>(&axis);
+    if (extent == nullptr || *extent <= 0 || range->end > static_cast<std::uint64_t>(*extent))
+      throw std::invalid_argument("source tensor port slice exceeds the original axis extent");
+    axis = static_cast<std::int64_t>(range->end - range->begin);
+  }
+  if (slot.shape != shape)
+    throw std::invalid_argument("physical CALL port shape differs from its original ONNX operand");
+}
+
+NativeOnnxSourceEntryRecipeV1
+NativeOnnxSourceEntryRecipeV1::fromTensorStep(const NativeExecutionStepSpec& step)
+{
+  const auto [begin, end] = step.sourceLayers;
+  if (step.operation != "CALL_SUBGRAPH" || end <= begin)
+    throw std::invalid_argument("tensor entry requires a CALL with an original source interval");
+  NativeOnnxSourceEntryRecipeV1 entry;
+  entry.entryId = step.artifactEntry;
+  for (auto ordinal = begin; ordinal < end; ++ordinal)
+    entry.sourceNodes.push_back("onnx-node-" + std::to_string(ordinal));
+  entry.transform.kind = TENSOR_LAYOUT_ENTRY;
+  entry.transform.node = entry.sourceNodes.front();
+  for (const auto& port : step.inputSlots) entry.inputPorts.push_back(port.slotId);
+  for (const auto& port : step.outputSlots) entry.outputPorts.push_back(port.slotId);
+  entry.tensorBoundaryDigest = computeTensorBoundaryDigest(step);
+  return entry;
+}
 
 std::uint64_t
 nativeFfnSliceBytes(std::uint64_t sourceBytes, std::uint64_t extent, std::uint64_t width)
@@ -70,6 +164,13 @@ NativeOnnxSourceTransformV1::validate() const
         !pads.empty() || !strides.empty() || !dilations.empty())
       throw std::invalid_argument("invalid source attention head recipe");
   }
+  else if (kind == TENSOR_LAYOUT_ENTRY) {
+    if (node.empty() || !axis.empty() || begin != 0 || end != 0 || extent != 0 ||
+        !sourceConv.empty() || !input.empty() || !output.empty() || !weight.empty() ||
+        !bias.empty() || !downNode.empty() || !downWeight.empty() || !pads.empty() ||
+        !strides.empty() || !dilations.empty())
+      throw std::invalid_argument("source tensor layout entry has unexpected transform fields");
+  }
   else {
     throw std::invalid_argument("source transform kind is unsupported");
   }
@@ -89,6 +190,12 @@ bool
 NativeOnnxSourceTransformV1::isRmsNorm() const
 {
   return kind == "attention-rms-stat" || kind == "attention-rms-normalize";
+}
+
+bool
+NativeOnnxSourceTransformV1::hasExplicitEntryPorts() const
+{
+  return isAttention() || kind == TENSOR_LAYOUT_ENTRY;
 }
 
 std::vector<NativeStepSlotSpec>
@@ -173,7 +280,7 @@ NativeOnnxSourceTransformV1::canonicalJson() const
     }
     else value["attentionPorts"] = attentionPorts;
   }
-  else if (kind != "attention-source-component") {
+  else if (kind != "attention-source-component" && kind != TENSOR_LAYOUT_ENTRY) {
     value["sourceConv"] = sourceConv;
     value["bias"] = bias;
     value["partial"] = output;
@@ -215,7 +322,7 @@ NativeOnnxSourceTransformV1::parse(const std::string& wire)
     result.downWeight = value.value("downWeight", std::string{});
   }
   result.validate();
-  if ((result.kind == "ffn-pair-partial" || result.isAttention()) &&
+  if ((result.kind == "ffn-pair-partial" || result.hasExplicitEntryPorts()) &&
       result.canonicalJson() != nativeCanonicalJson(value))
     throw std::invalid_argument("source transform has unexpected fields");
   return result;
@@ -229,22 +336,24 @@ NativeOnnxSourceEntryProgramV1::validate() const
   std::set<std::string> entryIds;
   std::set<std::string> sourceNodes;
   std::map<std::string, const NativeOnnxSourceEntryRecipeV1*> pendingStats;
+  const bool tensorProgram = entries.front().transform.kind == TENSOR_LAYOUT_ENTRY;
+  std::set<std::string> referencedPorts;
   for (const auto& entry : entries) {
     entry.transform.validate();
     if (entry.entryId.empty() || !entryIds.insert(entry.entryId).second)
       throw std::invalid_argument("source entry program has an invalid entry identity");
     const auto& transform = entry.transform;
-    if (transform.isAttention()) {
+    if (transform.hasExplicitEntryPorts()) {
       if (entry.sourceNodes.empty() ||
           std::find(entry.sourceNodes.begin(), entry.sourceNodes.end(), transform.node) ==
             entry.sourceNodes.end())
-        throw std::invalid_argument("source attention entry does not cover its anchor");
+        throw std::invalid_argument("source graph entry does not cover its anchor");
       const auto check = [] (const auto& ports) {
         const std::set<std::string> unique(ports.begin(), ports.end());
         return !ports.empty() && unique.size() == ports.size() && unique.count("") == 0;
       };
       if (!check(entry.inputPorts) || !check(entry.outputPorts))
-        throw std::invalid_argument("source attention entry has an incomplete graph ABI");
+        throw std::invalid_argument("source graph entry has an incomplete graph ABI");
       if (transform.isRmsNorm() &&
           (entry.sourceNodes.size() != 6 || entry.sourceNodes.front() != transform.node))
         throw std::invalid_argument("source RMSNorm entry must cover its six original nodes");
@@ -253,8 +362,16 @@ NativeOnnxSourceEntryProgramV1::validate() const
         entry.sourceNodes.size() != (transform.bias.empty() ? 3 : 4) ||
         entry.sourceNodes.front() != transform.node || entry.sourceNodes.back() != transform.downNode)
       throw std::invalid_argument("source entry program does not describe a complete FFN entry");
-    if (!transform.isAttention() && (!entry.inputPorts.empty() || !entry.outputPorts.empty()))
+    if (!transform.hasExplicitEntryPorts() &&
+        (!entry.inputPorts.empty() || !entry.outputPorts.empty()))
       throw std::invalid_argument("legacy FFN entry has a duplicate CALL ABI");
+    if ((transform.kind == TENSOR_LAYOUT_ENTRY) != tensorProgram ||
+        (tensorProgram ? !isDigest(entry.tensorBoundaryDigest) : !entry.tensorBoundaryDigest.empty()))
+      throw std::invalid_argument("source entry has an invalid tensor boundary digest");
+    if (tensorProgram) {
+      referencedPorts.insert(entry.inputPorts.begin(), entry.inputPorts.end());
+      referencedPorts.insert(entry.outputPorts.begin(), entry.outputPorts.end());
+    }
     if (transform.kind == "attention-rms-stat") {
       if (!pendingStats.emplace(transform.node, &entry).second)
         throw std::invalid_argument("source RMSNorm repeats its statistics entry");
@@ -276,6 +393,36 @@ NativeOnnxSourceEntryProgramV1::validate() const
   }
   if (!pendingStats.empty())
     throw std::invalid_argument("source RMSNorm statistics have no normalization entry");
+  if (tensorPorts.size() != referencedPorts.size())
+    throw std::invalid_argument("source program tensor port inventory is incomplete or foreign");
+  for (const auto& [slot, binding] : tensorPorts) {
+    if (referencedPorts.count(slot) == 0 || slot != binding.slotId())
+      throw std::invalid_argument("source program tensor port has a mismatched operand or slice");
+  }
+  if (tensorProgram == tensorLayouts.empty())
+    throw std::invalid_argument("source program does not bind its operator layouts");
+  std::set<std::string> layoutOutputs;
+  for (const auto& layout : tensorLayouts) {
+    if ((layout.convolution || !layout.concatPieces.empty()) && layout.outputs.size() != 1)
+      throw std::invalid_argument("source operator layout has an invalid output count");
+    if (layout.convolution && !layout.concatPieces.empty())
+      throw std::invalid_argument("source operator layout mixes Conv and Concat");
+    for (const auto& [name, split] : layout.outputs) {
+      if (name.empty() || split.split == 0 || !layoutOutputs.insert(name).second)
+        throw std::invalid_argument("source operator layout has an invalid tensor partition");
+    }
+    if (layout.convolution) {
+      for (const auto& shard : *layout.convolution) {
+        if (shard.inputBegin >= shard.inputEnd || shard.outputBegin >= shard.outputEnd ||
+            shard.groups == 0)
+          throw std::invalid_argument("source Conv layout has an invalid shard");
+      }
+    }
+    for (const auto& piece : layout.concatPieces) {
+      if (piece.producer >= 2 || piece.consumer >= 2 || piece.begin >= piece.end)
+        throw std::invalid_argument("source Concat layout has an invalid piece");
+    }
+  }
 }
 
 void
@@ -292,6 +439,15 @@ NativeOnnxSourceEntryProgramV1::validateRank(const NativeExecutionPlan& plan,
       stage == plan.stageLayout.end() || stage->degree() != 2 || rank >= 2 ||
       stage->unitRoleIds[rank] != role)
     throw std::invalid_argument("source entry program requires a bound degree-two V2 rank");
+  if (!tensorLayouts.empty()) {
+    std::vector<std::string> expected;
+    for (std::size_t ordinal = 0; ordinal < tensorLayouts.size(); ++ordinal) {
+      if (rank == 0 || !tensorLayouts[ordinal].outputs.empty())
+        expected.push_back("onnx-node-" + std::to_string(ordinal));
+    }
+    if (expected != sourceNodeCover())
+      throw std::invalid_argument("source operator layouts differ from the sealed rank cover");
+  }
 
   const auto findStep = [&] (const std::string& id) -> const NativeExecutionStepSpec* {
     const auto found = std::find_if(plan.steps.begin(), plan.steps.end(),
@@ -332,7 +488,7 @@ NativeOnnxSourceEntryProgramV1::validateRank(const NativeExecutionPlan& plan,
       throw std::invalid_argument("source entry program does not cover the rank CALLs");
     const auto& entry = entries[next++];
     const auto& transform = entry.transform;
-    if (transform.kind != "attention-source-component") {
+    if (transform.kind != "attention-source-component" && transform.kind != TENSOR_LAYOUT_ENTRY) {
       const auto ranges = nativeConvInputChannelRanges(transform.extent, 2);
       if (ranges[rank] != std::make_pair(transform.begin, transform.end))
         throw std::invalid_argument("source entry program range differs from the rank");
@@ -340,14 +496,33 @@ NativeOnnxSourceEntryProgramV1::validateRank(const NativeExecutionPlan& plan,
     if (step.artifactEntry != entry.entryId || !step.localStateSlots.empty() ||
         step.inputSlots.empty() || step.outputSlots.empty())
       throw std::invalid_argument("source entry program does not bind the ordered CALL ports");
-    if (transform.isAttention()) {
+    if (transform.hasExplicitEntryPorts()) {
       const auto matches = [] (const auto& names, const auto& slots) {
         return std::equal(names.begin(), names.end(), slots.begin(), slots.end(),
                           [] (const auto& name, const auto& slot) { return name == slot.slotId; });
       };
       if (!matches(entry.inputPorts, step.inputSlots) ||
           !matches(entry.outputPorts, step.outputSlots))
-        throw std::invalid_argument("source attention graph ABI differs from its sealed CALL");
+        throw std::invalid_argument("source graph ABI differs from its sealed CALL");
+      if (transform.kind == TENSOR_LAYOUT_ENTRY) {
+        const auto [begin, end] = step.sourceLayers;
+        if (plan.stageLayout.size() != 1 || end <= begin ||
+            entry.sourceNodes.size() != end - begin ||
+            entry.tensorBoundaryDigest != computeTensorBoundaryDigest(step))
+          throw std::invalid_argument("source tensor entry differs from its sealed CALL");
+        for (std::size_t index = 0; index < entry.sourceNodes.size(); ++index) {
+          if (entry.sourceNodes[index] != "onnx-node-" + std::to_string(begin + index))
+            throw std::invalid_argument("source tensor entry differs from its sealed ordinal");
+        }
+        for (const auto* slots : {&step.inputSlots, &step.outputSlots}) {
+          for (const auto& slot : *slots) {
+            if (slot.layoutDigest != tensorPorts.at(slot.slotId).layoutDigest(
+                  stage->sourceRegionDigest))
+              throw std::invalid_argument("source tensor entry layout differs from its source graph");
+          }
+        }
+        continue;
+      }
       for (const auto& input : step.inputSlots) {
         if ((input.source == "LOCAL_STEP" || input.source == "REMOTE_STEP") &&
             input.producerSlotId != input.slotId)
@@ -426,14 +601,47 @@ NativeOnnxSourceEntryProgramV1::canonicalJson() const
   for (const auto& entry : entries) {
     auto value = NativeJson{{"entryId", entry.entryId}, {"sourceNodes", entry.sourceNodes},
                             {"transform", nativeParseJson(entry.transform.canonicalJson())}};
-    if (entry.transform.isAttention()) {
+    if (entry.transform.hasExplicitEntryPorts()) {
       value["inputPorts"] = entry.inputPorts;
       value["outputPorts"] = entry.outputPorts;
     }
+    if (!entry.tensorBoundaryDigest.empty())
+      value["tensorBoundaryDigest"] = entry.tensorBoundaryDigest;
     values.push_back(std::move(value));
   }
-  return nativeCanonicalJson({{"schema", NATIVE_SOURCE_ENTRY_PROGRAM_V1},
-                             {"entries", std::move(values)}});
+  NativeJson result{{"schema", NATIVE_SOURCE_ENTRY_PROGRAM_V1}, {"entries", std::move(values)}};
+  if (!tensorPorts.empty()) {
+    auto& ports = result["tensorPorts"] = NativeJson::object();
+    for (const auto& [slot, binding] : tensorPorts) {
+      auto& port = ports[slot] = NativeJson{{"source", binding.sourceName}};
+      if (binding.range)
+        port["slice"] = {binding.range->axis, binding.range->begin, binding.range->end};
+    }
+  }
+  if (!tensorLayouts.empty()) {
+    auto& layouts = result["tensorLayouts"] = NativeJson::array();
+    for (const auto& layout : tensorLayouts) {
+      auto& value = layouts.emplace_back(NativeJson::object());
+      if (!layout.outputs.empty()) {
+        auto& outputs = value["outputs"] = NativeJson::object();
+        for (const auto& [name, split] : layout.outputs)
+          outputs[name] = {split.axis, split.split};
+      }
+      if (layout.convolution) {
+        auto& conv = value["conv"] = NativeJson::array();
+        for (const auto& shard : *layout.convolution)
+          conv.push_back({shard.inputBegin, shard.inputEnd, shard.outputBegin,
+                          shard.outputEnd, shard.groups});
+      }
+      if (!layout.concatPieces.empty()) {
+        auto& concat = value["concat"] = NativeJson::array();
+        for (const auto& piece : layout.concatPieces)
+          concat.push_back({piece.input, piece.producer, piece.consumer,
+                            piece.begin, piece.end, piece.outputBegin});
+      }
+    }
+  }
+  return nativeCanonicalJson(result);
 }
 
 std::vector<std::vector<std::uint64_t>>
@@ -458,7 +666,8 @@ NativeOnnxSourceEntryProgramV1::bindSourceOrdinals(
       if (next == roleOrdinals.size() ||
           node != "onnx-node-" + std::to_string(roleOrdinals[next]) ||
           (next != 0 && (roleOrdinals[next] <= roleOrdinals[next - 1] ||
-                        roleOrdinals[next] - roleOrdinals[next - 1] != 1)))
+                        ((entry.transform.kind != TENSOR_LAYOUT_ENTRY || !window.empty()) &&
+                         roleOrdinals[next] - roleOrdinals[next - 1] != 1))))
         throw std::invalid_argument("source entry ordinals differ from the sealed role");
       window.push_back(roleOrdinals[next++]);
     }
@@ -492,7 +701,55 @@ NativeOnnxSourceEntryProgramV1::parse(const std::string& wire)
       entry.at("sourceNodes").get<std::vector<std::string>>(),
       NativeOnnxSourceTransformV1::parse(nativeCanonicalJson(entry.at("transform"))),
       entry.value("inputPorts", std::vector<std::string>{}),
-      entry.value("outputPorts", std::vector<std::string>{})});
+      entry.value("outputPorts", std::vector<std::string>{}),
+      entry.value("tensorBoundaryDigest", std::string{})});
+  }
+  if (value.contains("tensorPorts")) {
+    const auto& ports = value.at("tensorPorts");
+    if (!ports.is_object())
+      throw std::invalid_argument("source program tensor ports must be an object");
+    for (auto item = ports.begin(); item != ports.end(); ++item) {
+      NativeOnnxEntryPort binding{item->at("source").get<std::string>(), {}};
+      if (item->contains("slice")) {
+        const auto& range = item->at("slice");
+        if (!range.is_array() || range.size() != 3 ||
+            !std::all_of(range.begin(), range.end(), [] (const auto& n) {
+              return n.is_number_unsigned();
+            }))
+          throw std::invalid_argument("source program tensor port has an invalid slice");
+        binding.range = NativeOnnxTransferRange{range[0].get<std::size_t>(),
+          range[1].get<std::uint64_t>(), range[2].get<std::uint64_t>()};
+      }
+      program.tensorPorts.emplace(item.key(), std::move(binding));
+    }
+  }
+  if (value.contains("tensorLayouts")) {
+    const auto& layouts = value.at("tensorLayouts");
+    if (!layouts.is_array())
+      throw std::invalid_argument("source operator layouts must be an array");
+    for (const auto& row : layouts) {
+      auto& layout = program.tensorLayouts.emplace_back();
+      if (row.contains("outputs")) {
+        for (const auto& [name, coordinates] : row.at("outputs").items()) {
+          const auto axes = coordinates.get<std::array<std::uint64_t, 2>>();
+          layout.outputs.emplace(name, NativeOnnxTwoRankLayout{axes[0], axes[1]});
+        }
+      }
+      if (row.contains("conv")) {
+        const auto shards = row.at("conv").get<std::array<std::array<std::uint64_t, 5>, 2>>();
+        layout.convolution.emplace();
+        for (std::size_t rank = 0; rank < shards.size(); ++rank) {
+          const auto& v = shards[rank];
+          layout.convolution->at(rank) = {v[0], v[1], v[2], v[3], v[4]};
+        }
+      }
+      if (row.contains("concat")) {
+        for (const auto& piece : row.at("concat")) {
+          const auto v = piece.get<std::array<std::uint64_t, 6>>();
+          layout.concatPieces.push_back({v[0], v[1], v[2], v[3], v[4], v[5]});
+        }
+      }
+    }
   }
   program.validate();
   if (program.canonicalJson() != nativeCanonicalJson(value))

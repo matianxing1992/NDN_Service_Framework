@@ -19,6 +19,7 @@ bool
 bindNativeSourceProgramEntries(const NativeSelectionProjectionV3& projection,
                                NativeModelRunnerSpec& spec)
 {
+  spec.sourceProgramDependencyEntries.clear();
   const auto& role = projection.assemblyContract();
   const bool programRole = !role.sourceTransformV1.empty() &&
     nativeParseJson(role.sourceTransformV1).value("schema", std::string{}) ==
@@ -42,6 +43,15 @@ bindNativeSourceProgramEntries(const NativeSelectionProjectionV3& projection,
   for (std::size_t index = 0; index < entries.size(); ++index) {
     if (entries[index].entryId != program.entries[index].entryId)
       throw std::invalid_argument("source program files have a different CALL order");
+  }
+  if (!program.tensorLayouts.empty()) {
+    for (const auto& call : projection.plan.steps) {
+      if (call.unitId == role.selectedRole && call.operation == "CALL_SUBGRAPH" &&
+          std::any_of(call.inputSlots.begin(), call.inputSlots.end(), [] (const auto& slot) {
+            return slot.source == "LOCAL_STEP" || slot.source == "REMOTE_STEP";
+          }))
+        spec.sourceProgramDependencyEntries.push_back(call.artifactEntry);
+    }
   }
   spec.metadata["sourceEntryProgram"] = program.canonicalJson();
   return true;

@@ -5,9 +5,13 @@
 
 #include <onnx/onnx_pb.h>
 
+#include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ndnsf::di {
@@ -24,6 +28,35 @@ using NativeOnnxExternalReader =
 
 /** Append to a new, empty model.onnx.data owned by the caller. */
 using NativeOnnxExternalAppender = std::function<void(const std::vector<std::uint8_t>&)>;
+
+/** Derive two nonempty output shards, keeping grouped Conv inputs with their groups. */
+std::array<NativeOnnxConvShard, 2>
+inspectNativeOnnxConvOutputShards(const onnx::ModelProto& model, const onnx::NodeProto& node);
+
+/** Slice verified Conv weights and bias after the caller binds the local input range.
+ * The caller owns graph boundary port types and rewriting other sidecar references. */
+void
+sliceNativeOnnxConvOutput(onnx::ModelProto& model, onnx::NodeProto& node, std::size_t rank,
+  const NativeOnnxConvShard& admitted, const NativeOnnxExternalReader& external,
+  const NativeOnnxExternalAppender& append, std::uint64_t& sidecarOffset);
+
+/** Derive the two head ranges for one static [batch, heads, rows, columns] operation.
+ *
+ * The caller must prove that both MatMul inputs share the same logical head order
+ * and that Softmax consumes the complete key axis of the corresponding scores.
+ */
+std::vector<std::pair<std::uint64_t, std::uint64_t>>
+inspectNativeOnnxAttentionHeadShards(const onnx::ModelProto& model, const onnx::NodeProto& node);
+
+/** Map a shard through a static ONNX Reshape if local execution keeps its elements. */
+std::optional<NativeOnnxTwoRankLayout>
+inspectNativeOnnxReshapeLayout(const onnx::ModelProto& model, const onnx::NodeProto& node,
+                              NativeOnnxTwoRankLayout inputLayout);
+
+/** Analyze static ONNX ports and propagate the two-rank layout along original SSA edges. */
+std::vector<NativeOnnxNodeLayout>
+deriveNativeOnnxTwoRankLayouts(const onnx::ModelProto& model,
+                               const std::function<void()>& requireActive = {});
 
 /** Geometry of a dense or symmetric block-32 linear projection. */
 struct NativeOnnxLinearProjection
@@ -103,6 +136,20 @@ NativeCanonicalMaterializedFiles
 materializeNativeOnnxEntrySource(const NativeCanonicalSource& source,
   const NativeOnnxSourceEntryRecipeV1& entry, const std::vector<std::uint64_t>& sourceOrdinals,
   const NativeExecutionStepSpec& call, const NativeAssemblyControl& control,
+  const NativeOnnxExternalAppender& append,
+  const NativeOnnxSourceEntryProgramV1* tensorProgram = nullptr);
+
+/** Check physical slots against authenticated ONNX ValueInfo and recover the original
+ * inputs and requested outputs for an entry before tensor-layout lowering. */
+void
+bindNativeOnnxTensorEntrySource(onnx::ModelProto& source,
+  const NativeOnnxSourceEntryProgramV1& program, const NativeExecutionStepSpec& call);
+
+/** Lower one recovered source window to its exact physical CALL ABI. */
+onnx::ModelProto
+lowerNativeOnnxTensorEntry(onnx::ModelProto source,
+  const NativeOnnxSourceEntryProgramV1& program, const NativeExecutionStepSpec& call,
+  std::size_t rank, const NativeAssemblyControl& control, const NativeOnnxExternalReader& external,
   const NativeOnnxExternalAppender& append);
 
 } // namespace ndnsf::di

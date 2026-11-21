@@ -963,10 +963,12 @@ nativePlanRequiredCapabilities(const NativeSplitCandidate& candidate)
   bool ffnPair = false;
   bool sourceProgram = false;
   bool attentionEntry = false;
+  bool tensorLayout = false;
   for (const auto& [role, wire] : candidate.sourceTransformByRole) {
     const auto transform = nativeParseJson(wire);
     if (transform.value("schema", std::string{}) == NATIVE_SOURCE_ENTRY_PROGRAM_V1) {
       sourceProgram = true;
+      tensorLayout |= transform.contains("tensorLayouts");
       for (const auto& entry : transform.at("entries")) {
         const auto kind = entry.at("transform").at("kind").get<std::string>();
         ffnPair |= kind == "ffn-pair-partial";
@@ -982,6 +984,7 @@ nativePlanRequiredCapabilities(const NativeSplitCandidate& candidate)
   if (ffnPair) required.emplace_back(NATIVE_FFN_PAIR_CAPABILITY_V1);
   if (sourceProgram) required.emplace_back(NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1);
   if (attentionEntry) required.emplace_back(NATIVE_SOURCE_ATTENTION_ENTRY_CAPABILITY_V1);
+  if (tensorLayout) required.emplace_back(NATIVE_SOURCE_TENSOR_LAYOUT_CAPABILITY_V1);
   return required;
 }
 
@@ -1013,6 +1016,16 @@ nativeDistinctProviderPairs(const NativeSplitCandidate& candidate)
     if (isProgram(leftWire)) {
       auto left = NativeOnnxSourceEntryProgramV1::parse(leftWire);
       const auto right = NativeOnnxSourceEntryProgramV1::parse(rightWire);
+      if (!left.tensorLayouts.empty() || !right.tensorLayouts.empty()) {
+        if (left.tensorLayouts.empty() || right.tensorLayouts.empty() ||
+            nativeParseJson(leftWire).at("tensorLayouts") !=
+              nativeParseJson(rightWire).at("tensorLayouts"))
+          throw std::invalid_argument("source peers bind different whole-model tensor layouts");
+        left.validateRank(candidate.executionPlan, stage.unitRoleIds[0], 0);
+        right.validateRank(candidate.executionPlan, stage.unitRoleIds[1], 1);
+        pairs.emplace_back(stage.unitRoleIds[0], stage.unitRoleIds[1]);
+        continue;
+      }
       const bool hasRankZeroEpilogue = left.entries.size() == right.entries.size() + 1 &&
         !right.entries.empty() &&
         right.entries.back().transform.kind == "ffn-pair-partial" &&

@@ -436,6 +436,16 @@ struct NativeOnnxGraphInspection
   std::map<std::string, std::vector<std::uint64_t>> initializerConsumers;
 };
 
+struct NativeOnnxNodeLayout;
+
+/** Inspect the same bounded, verified ONNX graph used by native planning and
+ * derive per-ordinal tensor layouts from that graph's typed shape facts.
+ * On success, layouts replaces the caller's contents. */
+NativeOnnxGraphInspection
+inspectNativeOnnxTensorParallelGraph(const NativeCanonicalSource& source,
+  const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control,
+  std::vector<NativeOnnxNodeLayout>& layouts);
+
 /** Inspect owned ONNX bytes using official shape inference and the maintained
  * adapter-bound planning schema. Deep attribute tensors are materialized into
  * the graph copy; large top-level external initializers remain range-bound and

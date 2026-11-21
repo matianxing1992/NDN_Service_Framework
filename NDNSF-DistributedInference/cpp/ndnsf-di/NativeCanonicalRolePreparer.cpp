@@ -568,11 +568,13 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     const auto transform = candidate.sourceTransformByRole.find(name);
     std::optional<NativeOnnxSourceTransformV1> sourceTransform;
     std::vector<NativeOnnxSourceEntryRecipeV1> sourceEntries;
+    bool tensorLayoutProgram = false;
     if (transform != candidate.sourceTransformByRole.end()) {
       const auto schema = nativeParseJson(transform->second).value("schema", std::string{});
       if (schema == NATIVE_SOURCE_ENTRY_PROGRAM_V1) {
         auto program = NativeOnnxSourceEntryProgramV1::parse(transform->second);
         program.validateRank(candidate.executionPlan, name, shardRank);
+        tensorLayoutProgram = !program.tensorLayouts.empty();
         sourceEntries = std::move(program.entries);
         for (const auto& entry : sourceEntries) {
           control.requireActive();
@@ -590,6 +592,23 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
             candidate.executionPlan.steps.end(), [&] (const auto& step) {
               return step.unitId == name && step.artifactEntry == entry.entryId;
             });
+          if (tensorLayoutProgram) {
+            if (call == candidate.executionPlan.steps.end())
+              throw std::invalid_argument("tensor source entry has no CALL");
+            const auto check = [&] (const auto& slots, const auto& original) {
+              for (const auto& slot : slots) {
+                const auto& binding = program.tensorPorts.at(slot.slotId);
+                const auto port = original.find(binding.sourceName);
+                if (port == original.end())
+                  throw std::invalid_argument("tensor source slot is outside the original frontier");
+                const auto& value = port->second;
+                binding.validateSourceTensor(slot, {value.name, value.dtype, value.shape, {}});
+              }
+            };
+            check(call->inputSlots, frontier.inputs);
+            check(call->outputSlots, frontier.outputs);
+            continue;
+          }
           const auto matchesPorts = [] (const auto& ports, const auto& slots) {
             return ports.size() == slots.size() &&
               std::all_of(slots.begin(), slots.end(), [&] (const auto& slot) {
@@ -635,6 +654,21 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
         const auto& slice = entry.transform;
         const auto width = slice.end - slice.begin;
         const auto& consumers = m_sourceGraph.initializerConsumers;
+        if (tensorLayoutProgram) {
+          std::set<std::uint64_t> entryNodes;
+          for (const auto& node : entry.sourceNodes) entryNodes.insert(m_mapping.at(node).front());
+          for (const auto& initializer : initializers) {
+            const auto& users = consumers.at(initializer);
+            if (std::any_of(users.begin(), users.end(),
+                            [&] (auto node) { return entryNodes.count(node) != 0; })) {
+              const auto& bytes = metadata.at("tensors").at(initializer).at("sizeBytes");
+              if (!bytes.is_number_unsigned())
+                throw std::invalid_argument("tensor source entry initializer size is unknown");
+              chargeBytes(bytes.get<std::uint64_t>());
+            }
+          }
+          continue;
+        }
         if (slice.isAttention()) {
           std::set<std::uint64_t> entryNodes;
           for (const auto& node : entry.sourceNodes) entryNodes.insert(m_mapping.at(node).front());
@@ -727,10 +761,17 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
       NativeSelectionRoleV3 role;
       role.role = name; role.selectedRole = degree == 1 ? name : name + "#" + std::to_string(rank);
       role.rank = rank; role.roleKind = degree > 1 ? "HYBRID_RANK" : roleKind(name);
+      if (tensorLayoutProgram) role.roleKind = "HYBRID_RANK";
       if (role.roleKind == "COMPONENT_SET" && !layers.empty() &&
           (model.descriptor.adapterId == "qwen" || model.descriptor.adapterId == "llama"))
         role.roleKind = "PIPELINE_RANGE";
-      if (role.roleKind != "COMPONENT_SET") {
+      if (tensorLayoutProgram) {
+        // CALL source intervals use canonical ONNX ordinals. Rank1 owns a
+        // sparse set, so its ordinal envelope differs from its node count.
+        role.layerBegin = *owned.begin();
+        role.layerEnd = *owned.rbegin() + 1;
+      }
+      else if (role.roleKind != "COMPONENT_SET") {
         role.layerBegin = layers.empty() ? 0 : *layers.begin();
         role.layerEnd = layers.empty() ? planningIndices.size() : *layers.rbegin() + 1;
       }

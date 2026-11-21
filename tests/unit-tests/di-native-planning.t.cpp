@@ -142,6 +142,231 @@ checkQwenPlannerMigration(NativeSplitCandidate& actual, const NativeJson& frozen
 
 BOOST_AUTO_TEST_SUITE(Spec182NativePlanning)
 
+BOOST_AUTO_TEST_CASE(NativeConvOutputShardsPreserveGroupsAndBiasWidth)
+{
+  onnx::ModelProto model;
+  auto& graph = *model.mutable_graph();
+  auto& node = *graph.add_node();
+  node.set_op_type("Conv");
+  node.add_input("images");
+  node.add_input("weight");
+  node.add_input("bias");
+  node.add_output("features");
+  auto& weight = *graph.add_initializer();
+  weight.set_name("weight");
+  weight.set_data_type(onnx::TensorProto::FLOAT);
+  for (const auto extent : {5, 2, 1, 1}) weight.add_dims(extent);
+  auto& bias = *graph.add_initializer();
+  bias.set_name("bias");
+  bias.set_data_type(onnx::TensorProto::FLOAT);
+  bias.add_dims(5);
+
+  const auto ordinary = inspectNativeOnnxConvOutputShards(model, node);
+  BOOST_TEST(ordinary[0].inputEnd == 2U);
+  BOOST_TEST(ordinary[1].inputBegin == 0U);
+  BOOST_TEST(ordinary[0].outputEnd == 3U);
+  BOOST_TEST(ordinary[1].outputBegin == 3U);
+  BOOST_TEST(ordinary[1].outputEnd == 5U);
+
+  auto& attr = *node.add_attribute();
+  attr.set_name("group");
+  attr.set_type(onnx::AttributeProto::INT);
+  attr.set_i(3);
+  BOOST_CHECK_THROW(inspectNativeOnnxConvOutputShards(model, node), std::invalid_argument);
+  weight.set_dims(0, 9);
+  BOOST_CHECK_THROW(inspectNativeOnnxConvOutputShards(model, node), std::invalid_argument);
+  bias.set_dims(0, 9);
+  const auto grouped = inspectNativeOnnxConvOutputShards(model, node);
+  BOOST_TEST(grouped[0].inputBegin == 0U);
+  BOOST_TEST(grouped[0].inputEnd == 4U);
+  BOOST_TEST(grouped[1].inputBegin == 4U);
+  BOOST_TEST(grouped[1].inputEnd == 6U);
+  BOOST_TEST(grouped[0].outputEnd == 6U);
+  BOOST_TEST(grouped[1].outputBegin == 6U);
+  BOOST_TEST(grouped[1].outputEnd == 9U);
+  BOOST_TEST(grouped[0].groups == 2U);
+  BOOST_TEST(grouped[1].groups == 1U);
+
+  for (int value = 0; value < 18; ++value) weight.add_float_data(value);
+  for (int value = 0; value < 9; ++value) bias.add_float_data(100 + value);
+  std::uint64_t sidecarOffset = 0;
+  auto invalid = grouped[1];
+  --invalid.inputBegin;
+  BOOST_CHECK_THROW(sliceNativeOnnxConvOutput(model, node, 1, invalid, {}, {}, sidecarOffset),
+                    std::invalid_argument);
+  for (std::size_t rank = 0; rank < grouped.size(); ++rank) {
+    auto local = model;
+    auto& localNode = *local.mutable_graph()->mutable_node(0);
+    sliceNativeOnnxConvOutput(local, localNode, rank, grouped[rank], {}, {}, sidecarOffset);
+    const auto& localWeight = local.graph().initializer(0);
+    const auto& localBias = local.graph().initializer(1);
+    const int outputOffset = rank == 0 ? 0 : 6;
+    const int outputWidth = rank == 0 ? 6 : 3;
+    BOOST_TEST(localNode.attribute(0).i() == (rank == 0 ? 2 : 1));
+    BOOST_TEST(localWeight.dims(0) == outputWidth);
+    BOOST_TEST(localWeight.dims(1) == 2);
+    BOOST_TEST(localBias.dims(0) == outputWidth);
+    std::string expectedWeight;
+    std::string expectedBias;
+    for (int channel = outputOffset; channel < outputOffset + outputWidth; ++channel) {
+      const float row[] = {static_cast<float>(2 * channel), static_cast<float>(2 * channel + 1)};
+      const auto value = static_cast<float>(100 + channel);
+      expectedWeight.append(reinterpret_cast<const char*>(row), sizeof(row));
+      expectedBias.append(reinterpret_cast<const char*>(&value), sizeof(value));
+    }
+    BOOST_CHECK(localWeight.raw_data() == expectedWeight);
+    BOOST_CHECK(localBias.raw_data() == expectedBias);
+  }
+  BOOST_TEST(sidecarOffset == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeAttentionHeadShardsPreserveContractionAndKeyAxis)
+{
+  onnx::ModelProto model;
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  const auto addValue = [&] (const char* name, const std::array<int, 4>& dims) {
+    auto& value = *graph.add_value_info();
+    value.set_name(name);
+    auto& tensor = *value.mutable_type()->mutable_tensor_type();
+    tensor.set_elem_type(onnx::TensorProto::FLOAT);
+    for (const int dim : dims) tensor.mutable_shape()->add_dim()->set_dim_value(dim);
+    return &tensor;
+  };
+  addValue("q", {1, 3, 7, 4});
+  auto* key = addValue("k", {1, 3, 4, 5});
+  addValue("scores", {1, 3, 7, 5});
+  addValue("probabilities", {1, 3, 7, 5});
+  auto& matmul = *graph.add_node();
+  matmul.set_op_type("MatMul");
+  matmul.add_input("q");
+  matmul.add_input("k");
+  matmul.add_output("scores");
+  const auto ranks = inspectNativeOnnxAttentionHeadShards(model, matmul);
+  BOOST_REQUIRE_EQUAL(ranks.size(), 2);
+  BOOST_TEST(ranks[0].first == 0);
+  BOOST_TEST(ranks[0].second == 2);
+  BOOST_TEST(ranks[1].first == 2);
+  BOOST_TEST(ranks[1].second == 3);
+  key->mutable_shape()->mutable_dim(2)->set_dim_value(5);
+  BOOST_CHECK_THROW(inspectNativeOnnxAttentionHeadShards(model, matmul), std::invalid_argument);
+
+  auto& softmax = *graph.add_node();
+  softmax.set_op_type("Softmax");
+  softmax.add_input("scores");
+  softmax.add_output("probabilities");
+  BOOST_CHECK(inspectNativeOnnxAttentionHeadShards(model, softmax) == ranks);
+  auto& axis = *softmax.add_attribute();
+  axis.set_name("axis");
+  axis.set_type(onnx::AttributeProto::INT);
+  axis.set_i(3);
+  BOOST_CHECK(inspectNativeOnnxAttentionHeadShards(model, softmax) == ranks);
+  axis.set_i(1);
+  BOOST_CHECK_THROW(inspectNativeOnnxAttentionHeadShards(model, softmax), std::invalid_argument);
+  axis.set_i(-1);
+  model.mutable_opset_import(0)->set_version(12);
+  BOOST_CHECK_THROW(inspectNativeOnnxAttentionHeadShards(model, softmax), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeReshapeLayoutRequiresWholeSourceSlabs)
+{
+  onnx::ModelProto model;
+  auto& graph = *model.mutable_graph();
+  const auto addValue = [&] (const char* name, std::initializer_list<int> dims) {
+    auto& value = *graph.add_value_info();
+    value.set_name(name);
+    auto& tensor = *value.mutable_type()->mutable_tensor_type();
+    tensor.set_elem_type(onnx::TensorProto::FLOAT);
+    for (const int dim : dims) tensor.mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  addValue("conv", {2, 256, 20, 20});
+  addValue("heads", {2, 2, 128, 400});
+  addValue("interleaved", {1, 4, 128, 400});
+  addValue("bad_size", {2, 2, 128, 399});
+  auto& node = *graph.add_node();
+  node.set_op_type("Reshape");
+  node.add_input("conv");
+  node.add_input("shape");
+  node.add_output("heads");
+  const auto headLayout = inspectNativeOnnxReshapeLayout(model, node, {1, 128});
+  BOOST_REQUIRE(headLayout.has_value());
+  BOOST_TEST(headLayout->axis == 1U);
+  BOOST_TEST(headLayout->split == 1U);
+  BOOST_CHECK(!inspectNativeOnnxReshapeLayout(model, node, {1, 127}));
+  BOOST_CHECK_THROW(inspectNativeOnnxReshapeLayout(model, node, {1, 256}), std::invalid_argument);
+  node.set_output(0, "interleaved");
+  BOOST_CHECK(!inspectNativeOnnxReshapeLayout(model, node, {1, 128}));
+  node.set_output(0, "bad_size");
+  BOOST_CHECK_THROW(inspectNativeOnnxReshapeLayout(model, node, {1, 128}), std::invalid_argument);
+  node.set_input(0, "heads");
+  node.set_output(0, "conv");
+  const auto channelLayout = inspectNativeOnnxReshapeLayout(model, node, {1, 1});
+  BOOST_REQUIRE(channelLayout.has_value());
+  BOOST_TEST(channelLayout->axis == 1U);
+  BOOST_TEST(channelLayout->split == 128U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeTwoRankLayoutMapsConcatToOriginalOperandIntervals)
+{
+  onnx::ModelProto model;
+  auto& graph = *model.mutable_graph();
+  const auto addValue = [] (auto& value, const char* name, int channels) {
+    value.set_name(name);
+    auto& tensor = *value.mutable_type()->mutable_tensor_type();
+    tensor.set_elem_type(onnx::TensorProto::FLOAT);
+    for (const int dim : {1, channels, 1, 1})
+      tensor.mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  addValue(*graph.add_input(), "images", 3);
+  const auto addConv = [&] (const char* weightName, const char* output, int channels) {
+    auto& weight = *graph.add_initializer();
+    weight.set_name(weightName);
+    weight.set_data_type(onnx::TensorProto::FLOAT);
+    for (const int dim : {channels, 3, 1, 1}) weight.add_dims(dim);
+    auto& node = *graph.add_node();
+    node.set_op_type("Conv");
+    node.add_input("images");
+    node.add_input(weightName);
+    node.add_output(output);
+    addValue(*graph.add_value_info(), output, channels);
+  };
+  addConv("w1", "a", 4);
+  addConv("w2", "b", 6);
+  auto& concat = *graph.add_node();
+  concat.set_op_type("Concat");
+  concat.add_input("a");
+  concat.add_input("b");
+  concat.add_output("combined");
+  auto& axis = *concat.add_attribute();
+  axis.set_name("axis");
+  axis.set_type(onnx::AttributeProto::INT);
+  axis.set_i(1);
+  addValue(*graph.add_value_info(), "combined", 10);
+  auto& activation = *graph.add_node();
+  activation.set_op_type("Sigmoid");
+  activation.add_input("combined");
+  activation.add_output("output");
+  addValue(*graph.add_output(), "output", 10);
+
+  const auto layouts = deriveNativeOnnxTwoRankLayouts(model);
+  BOOST_REQUIRE_EQUAL(layouts.size(), 4U);
+  const auto& pieces = layouts[2].concatPieces;
+  BOOST_REQUIRE_EQUAL(pieces.size(), 5U);
+  BOOST_TEST(pieces[1].producer == 1U);
+  BOOST_TEST(pieces[1].consumer == 0U);
+  BOOST_TEST(pieces[1].begin == 2U);
+  BOOST_TEST(pieces[1].outputBegin == 2U);
+  BOOST_TEST(pieces[3].input == 1U);
+  BOOST_TEST(pieces[3].producer == 0U);
+  BOOST_TEST(pieces[3].consumer == 1U);
+  BOOST_TEST(pieces[3].begin == 1U);
+  BOOST_TEST(pieces[3].end == 3U);
+  BOOST_TEST(pieces[3].outputBegin == 5U);
+  BOOST_TEST(layouts[3].outputs.at("output").split == 5U);
+  activation.set_op_type("Unsupported");
+  BOOST_CHECK_THROW(deriveNativeOnnxTwoRankLayouts(model), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(ResultOracleChecksShapeAndRelativeTolerance)
 {
   const std::vector<float> actual{0.0005F, 100.0625F};
@@ -3100,6 +3325,65 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceEntryProgramBindsOrderedCallsAndRank)
   wrong.entries[1].transform.downWeight = "foreign-weight";
   candidate.sourceTransformByRole["r1"] = wrong.canonicalJson();
   BOOST_CHECK_THROW(nativeDistinctProviderPairs(candidate), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeOnnxTensorEntryProgramBindsTypedPortsAndGappedRankOrdinals)
+{
+  NativeExecutionPlan plan;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.stageLayout = {{"source", nativePlanningDigest("fixture-source"), {"r0", "r1"}}};
+  NativeOnnxSourceEntryProgramV1 program;
+  program.tensorLayouts.resize(6);
+  for (const auto ordinal : {2U, 5U}) {
+    auto& call = plan.steps.emplace_back();
+    call.stepId = "r1/call/" + std::to_string(ordinal);
+    call.unitId = "r1";
+    call.operation = "CALL_SUBGRAPH";
+    call.artifactEntry = call.stepId;
+    call.sourceLayers = {ordinal, ordinal + 1};
+    NativeStepSlotSpec input;
+    input.slotId = "images";
+    input.dtype = "float32";
+    input.shape = {std::int64_t{4}};
+    NativeOnnxEntryPort inputBinding{"images", {}};
+    input.layoutDigest = inputBinding.layoutDigest(plan.stageLayout.front().sourceRegionDigest);
+    call.inputSlots.push_back(input);
+    auto output = input;
+    output.slotId = "shape-" + std::to_string(ordinal);
+    program.tensorLayouts[ordinal].outputs.emplace(output.slotId, NativeOnnxTwoRankLayout{0, 1});
+    output.dtype = "int64";
+    output.shape.clear();
+    NativeOnnxEntryPort outputBinding{output.slotId, {}};
+    output.layoutDigest = outputBinding.layoutDigest(plan.stageLayout.front().sourceRegionDigest);
+    call.outputSlots.push_back(output);
+    program.tensorPorts.emplace(input.slotId, std::move(inputBinding));
+    program.tensorPorts.emplace(output.slotId, std::move(outputBinding));
+    program.entries.push_back(NativeOnnxSourceEntryRecipeV1::fromTensorStep(call));
+  }
+  const auto parsed = NativeOnnxSourceEntryProgramV1::parse(program.canonicalJson());
+  BOOST_CHECK_NO_THROW(parsed.validateRank(plan, "r1", 1));
+  const std::vector<std::vector<std::uint64_t>> expected{{2}, {5}};
+  BOOST_CHECK(parsed.bindSourceOrdinals({2, 5}) == expected);
+  BOOST_CHECK_THROW(parsed.bindSourceOrdinals({2, 4}), std::invalid_argument);
+  plan.steps.back().outputSlots.front().dtype = "float32";
+  BOOST_CHECK_THROW(parsed.validateRank(plan, "r1", 1), std::invalid_argument);
+  plan.steps.back().outputSlots.front().dtype = "int64";
+  plan.steps.back().outputSlots.front().shape = {std::int64_t{1}};
+  BOOST_CHECK_THROW(parsed.validateRank(plan, "r1", 1), std::invalid_argument);
+  auto incorrect = parsed;
+  incorrect.tensorPorts.at("images").sourceName = "foreign";
+  BOOST_CHECK_THROW(incorrect.validate(), std::invalid_argument);
+  incorrect = parsed;
+  incorrect.tensorPorts.erase("images");
+  BOOST_CHECK_THROW(incorrect.validate(), std::invalid_argument);
+  NativeOnnxEntryPort slice{"images", NativeOnnxTransferRange{0, 2, 4}};
+  NativeTensorContract original{"images", "float32", {std::int64_t{4}}, 16};
+  auto slot = plan.steps.front().inputSlots.front();
+  slot.slotId = slice.slotId();
+  slot.shape[0] = std::int64_t{2};
+  BOOST_CHECK_NO_THROW(slice.validateSourceTensor(slot, original));
+  original.shape[0] = std::int64_t{3};
+  BOOST_CHECK_THROW(slice.validateSourceTensor(slot, original), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(NativeOnnxAttentionEntryProgramBindsSourceAndRankPorts)

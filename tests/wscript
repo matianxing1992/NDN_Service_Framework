@@ -2362,7 +2362,8 @@ def build(bld):
     # Fixture preparation helper: print the canonical identity a planner will
     # compute for one ONNX file, so a tracked driver never re-implements it.
     bld.program(target='../native-source-inspect', name='native-source-inspect',
-                source=[bld.path.find_node('standalone/native-source-inspect.cpp')] +
+                source=[bld.path.find_node('standalone/native-source-inspect.cpp'),
+                        bld.path.find_node('standalone/native-yolo-tp-checkpoints.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ' + di_integration_use + ' ONNXRUNTIME',

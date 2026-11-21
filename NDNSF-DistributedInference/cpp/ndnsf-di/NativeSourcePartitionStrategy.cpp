@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-rank-transfers.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 
@@ -37,6 +38,10 @@ NativeSourcePartitionStrategy::NativeSourcePartitionStrategy(
   if (m_profile.mode == NativeSourcePartitionMode::COMPONENT &&
       (m_profile.roles.size() != 2 || m_profile.boundaryNode.empty()))
     throw std::invalid_argument("component source partition requires two roles and a boundary");
+  if (m_profile.mode == NativeSourcePartitionMode::TENSOR_PARALLEL &&
+      (m_profile.roles.size() != 2 || !m_profile.boundaryNode.empty() ||
+       !m_profile.tensorPlan || m_profile.resultEgressRole != m_profile.roles.front()))
+    throw std::invalid_argument("tensor source partition requires two ranks and a Rank0 result");
   if (m_profile.mode == NativeSourcePartitionMode::HYBRID &&
       (m_profile.roles.size() != 4 || m_profile.boundaryNode.empty() ||
        m_profile.inputChannels < 2 || m_profile.convInputAxis.empty() ||
@@ -257,6 +262,60 @@ NativeSourcePartitionStrategy::enumerateImpl(
   budget.validate();
   model.validate();
   graph.validate(model);
+  if (m_profile.mode == NativeSourcePartitionMode::TENSOR_PARALLEL) {
+    const auto& tensor = *m_profile.tensorPlan;
+    NativeSplitCandidate candidate;
+    candidate.source = "PRE_SPLIT";
+    candidate.splitter = identity();
+    candidate.model = model;
+    candidate.graphDigest = graph.graphDigest;
+    candidate.inputIngressRole = m_profile.inputIngressRole;
+    candidate.resultEgressRole = m_profile.resultEgressRole;
+    candidate.postprocessingJson = m_profile.postprocessingJson;
+    candidate.executionPlan = tensor.plan;
+    auto& plan = candidate.executionPlan;
+    plan.modelFamily = "onnx-source";
+    plan.executionPolicy = "DATA_DRIVEN_V2";
+    const auto& stage = plan.stageLayout.at(0);
+    const auto& layouts = tensor.programs[0].tensorLayouts;
+    const auto conv = std::find_if(layouts.begin(), layouts.end(),
+      [] (const auto& layout) { return layout.convolution.has_value(); });
+    if (conv == layouts.end())
+      throw std::invalid_argument("tensor source partition has no sharded Conv");
+    const auto& geometry = *conv->convolution;
+    auto ranked = NativeJson::array();
+    for (std::size_t rank = 0; rank < geometry.size(); ++rank) {
+      const auto& shard = geometry[rank];
+      ranked.push_back({{"role", plan.roles.at(rank)}, {"axes", NativeJson::array({
+        {{"axis", "conv-output-channel"}, {"begin", shard.outputBegin},
+         {"end", shard.outputEnd}, {"extent", geometry.back().outputEnd}}})}});
+    }
+    const auto stageDigest = nativeTensorStageLayoutDigest(model.adapter.descriptorDigest(),
+      graph.graphDigest, stage.stageId, stage.sourceRegionDigest, ranked);
+    for (const auto& node : graph.nodes)
+      candidate.nodeRoles.emplace(node.id, plan.roles.front());
+    for (std::size_t rank = 0; rank < plan.roles.size(); ++rank) {
+      if (control) control->requireActive();
+      const auto& role = plan.roles[rank];
+      const auto wire = tensor.programs[rank].canonicalJson();
+      candidate.sourceTransformByRole.emplace(role, wire);
+      candidate.roleNodeIdsByRole.emplace(role, tensor.programs[rank].sourceNodeCover());
+      const auto fragment = nativePlanningDigest(wire);
+      candidate.fragmentsByRole.emplace(role, fragment);
+      candidate.artifactsByRole.emplace(role, std::vector<std::string>{fragment});
+      candidate.tensorIdentityByRole[role] = {2, rank, nativeCanonicalJson(NativeJson{
+        {"stage_layout_digest", stageDigest}, {"axes", ranked.at(rank).at("axes")}})};
+      candidate.requirementsByRole[role] = {
+        {"onnxruntime-cpu"}, std::max<std::uint64_t>(1, m_profile.denseWeightBytesByRole.at(role)),
+        256ULL * 1024 * 1024, 0, 256ULL * 1024 * 1024, 64ULL * 1024 * 1024, 1.1};
+    }
+    const auto cost = nativeStepCommunicationCost(plan);
+    candidate.estimatedCosts = {{"role_count", std::uint64_t{2}},
+                                {"known_transfer_bytes", cost.knownTransferBytes}};
+    candidate.candidateDigest = candidate.computedDigest();
+    candidate.validate(graph);
+    return {std::move(candidate)};
+  }
   const auto& windows = m_profile.ffnWindows;
   const bool blockProgram = !m_profile.blockEntries.empty();
   const auto* pair = blockProgram || windows.empty() ? nullptr : &windows.front().transform;

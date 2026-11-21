@@ -15,8 +15,10 @@ enum class NativeSourcePartitionMode
   FULL,
   COMPONENT,
   HYBRID,
+  TENSOR_PARALLEL,
 };
 
+struct NativeOnnxTensorStepPlan;
 /** Verified facts for one contiguous pair of FFN projections. */
 struct NativeSourceFfnWindow
 {
@@ -67,6 +69,7 @@ struct NativeSourcePartitionProfile
   std::string suffixNode;
   std::vector<NativeSourceBlockEntry> blockEntries;
   std::vector<NativeSourceBlockEntry> outerEntries;
+  std::shared_ptr<const NativeOnnxTensorStepPlan> tensorPlan;
 };
 
 /**

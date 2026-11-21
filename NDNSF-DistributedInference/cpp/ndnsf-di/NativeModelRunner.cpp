@@ -410,9 +410,9 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
         entry.relativeGraphPath =
           nativeSourceEntryGraphPath(root, index).lexically_relative(root).string();
         entry.graphDigest = file.graphDigest;
-        entry.inputNames = recipe.transform.isAttention()
+        entry.inputNames = recipe.transform.hasExplicitEntryPorts()
           ? recipe.inputPorts : std::vector<std::string>{recipe.transform.input};
-        entry.outputNames = recipe.transform.isAttention()
+        entry.outputNames = recipe.transform.hasExplicitEntryPorts()
           ? recipe.outputPorts : std::vector<std::string>{recipe.transform.output};
         for (const auto& name : entry.inputNames) entry.inputSlotByGraphName.emplace(name, name);
         for (const auto& name : entry.outputNames) entry.outputSlotByGraphName.emplace(name, name);
@@ -432,6 +432,11 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
       auto child = spec;
       child.entryContract.reset();
       child.role = entry.entryId;
+      child.deferDependencyInputWarmup = sourceProgram &&
+        std::find(spec.sourceProgramDependencyEntries.begin(),
+                  spec.sourceProgramDependencyEntries.end(), entry.entryId) !=
+        spec.sourceProgramDependencyEntries.end();
+      child.sourceProgramDependencyEntries.clear();
       if (sourceProgram) {
         child.path = (root / entry.relativeGraphPath).string();
         for (auto metadata = child.metadata.begin(); metadata != child.metadata.end();) {

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-rank-transfers.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-split.hpp"
@@ -542,6 +543,24 @@ std::string nativePlacementObservationCanonicalJson(const NativeJson& snapshot,
 NativeRequestCatalog NativeRequestCatalog::load(const std::string& configurationJson,
   NativeCanonicalSource source, const NativeAssemblyControl& control)
 {
+  return loadImpl(configurationJson, std::move(source), control, nullptr);
+}
+
+NativeRequestCatalog
+NativeRequestCatalog::loadWithTensorLayouts(const std::string& configurationJson,
+  NativeCanonicalSource source, const NativeAssemblyControl& control,
+  std::vector<NativeOnnxNodeLayout>& layouts)
+{
+  std::vector<NativeOnnxNodeLayout> checkedLayouts;
+  auto result = loadImpl(configurationJson, std::move(source), control, &checkedLayouts);
+  layouts = std::move(checkedLayouts);
+  return result;
+}
+
+NativeRequestCatalog
+NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanonicalSource source,
+  const NativeAssemblyControl& control, std::vector<NativeOnnxNodeLayout>* layouts)
+{
   control.requireActive();
   if (configurationJson.size() > 4 * 1024 * 1024)
     throw std::invalid_argument("request catalog configuration exceeds limit");
@@ -553,6 +572,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   model.descriptor = NativeModelDescriptor::fromCanonicalJson(nativeCanonicalJson(root.at("model")));
   const auto& split = root.at("splitter");
   const auto route = parseCatalogRoute(split.at("kind").get<std::string>());
+  if (layouts != nullptr && route != CatalogRoute::ONNX_SOURCE)
+    throw std::invalid_argument("tensor layout preflight requires ONNX_SOURCE");
   const bool sourceDefined = route == CatalogRoute::QWEN || route == CatalogRoute::LLAMA;
   using RankArtifacts = std::map<std::string, std::vector<std::string>>;
   const auto rankArtifacts = sourceDefined
@@ -738,8 +759,6 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   else if (route == CatalogRoute::ONNX_SOURCE) {
     if (referenceOnly)
       throw std::invalid_argument("DI_NATIVE_PREPARATION_REFERENCE_RESTORE_UNSUPPORTED");
-    auto inspection = inspectNativeOnnxPlanningGraph(source, model.descriptor, control);
-    model.graph = std::move(inspection.graph);
     // The historical design names this field selection_mode; keep accepting the
     // shorter alias for existing configurations but refuse an ambiguous pair.
     const auto modeValue = split.find("selection_mode");
@@ -757,7 +776,16 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     if (modeText == "full") mode = NativeSourcePartitionMode::FULL;
     else if (modeText == "component") mode = NativeSourcePartitionMode::COMPONENT;
     else if (modeText == "hybrid") mode = NativeSourcePartitionMode::HYBRID;
+    else if (modeText == "tensor_parallel") mode = NativeSourcePartitionMode::TENSOR_PARALLEL;
     else throw std::invalid_argument("unsupported ONNX_SOURCE mode");
+    std::vector<NativeOnnxNodeLayout> tensorLayouts;
+    auto* inspectedLayouts = mode == NativeSourcePartitionMode::TENSOR_PARALLEL
+      ? &tensorLayouts : layouts;
+    auto inspection = inspectedLayouts == nullptr
+      ? inspectNativeOnnxPlanningGraph(source, model.descriptor, control)
+      : inspectNativeOnnxTensorParallelGraph(source, model.descriptor, control, *inspectedLayouts);
+    model.graph = inspection.graph;
+    if (layouts != nullptr && inspectedLayouts == &tensorLayouts) *layouts = tensorLayouts;
     NativeSourcePartitionProfile profile;
     profile.mode = mode;
     profile.roles = split.at("roles").get<std::vector<std::string>>();
@@ -817,7 +845,28 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
         throw std::invalid_argument("ONNX_SOURCE initializer memory is unknown");
       return size.get<std::uint64_t>();
     };
-    if (mode == NativeSourcePartitionMode::HYBRID) {
+    if (mode == NativeSourcePartitionMode::TENSOR_PARALLEL) {
+      if (profile.roles.size() != 2 || !profile.boundaryNode.empty() || !ffnAnchors.empty())
+        throw std::invalid_argument("tensor_parallel needs two source-derived roles without a cut");
+      profile.tensorPlan = std::make_shared<NativeOnnxTensorStepPlan>(
+        buildNativeOnnxTensorStepPlan(inspection, tensorLayouts,
+          {profile.roles[0], profile.roles[1]}, model.descriptor.modelName));
+      for (const auto& step : profile.tensorPlan->plan.steps) {
+        auto& total = profile.denseWeightBytesByRole[step.unitId];
+        for (const auto& [name, users] : inspection.initializerConsumers) {
+          control.requireActive();
+          if (std::none_of(users.begin(), users.end(), [&] (auto ordinal) {
+                return ordinal >= step.sourceLayers.first && ordinal < step.sourceLayers.second;
+              }))
+            continue;
+          const auto bytes = initializerBytes(name);
+          if (bytes > std::numeric_limits<std::uint64_t>::max() - total)
+            throw std::overflow_error("tensor source role initializer bound overflows");
+          total += bytes;
+        }
+      }
+    }
+    else if (mode == NativeSourcePartitionMode::HYBRID) {
       const auto& order = model.graph.topologicalOrder;
       const auto boundary = std::find(order.begin(), order.end(), profile.boundaryNode);
       if (boundary == order.end())

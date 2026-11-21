@@ -288,9 +288,7 @@ NativeEntryRunner::executionEvidenceSnapshot() const
     const auto evidence = child->second->executionEvidenceSnapshot();
     if (!evidence || !evidence->loadCompleted || !evidence->realCompute ||
         evidence->cpuFallbackUsed ||
-        (!evidence->warmupCompleted &&
-         !(evidence->runnerKind == RunnerKind::OnnxRuntimeCpu &&
-           evidence->warmupSkippedUnrankedInput)) ||
+        !evidence->warmupReady() ||
         std::find(evidence->roles.begin(), evidence->roles.end(), entry.entryId) ==
           evidence->roles.end())
       return std::nullopt;
@@ -308,6 +306,8 @@ NativeEntryRunner::executionEvidenceSnapshot() const
     unit->warmupCompleted = unit->warmupCompleted && evidence->warmupCompleted;
     unit->warmupSkippedUnrankedInput =
       unit->warmupSkippedUnrankedInput || evidence->warmupSkippedUnrankedInput;
+    unit->warmupDeferredDependencyInput =
+      unit->warmupDeferredDependencyInput || evidence->warmupDeferredDependencyInput;
   }
   if (!unit) return std::nullopt;
   // The Provider assigned a unit role, not an entry id, so the aggregate answers under the
