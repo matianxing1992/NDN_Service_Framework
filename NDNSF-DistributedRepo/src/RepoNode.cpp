@@ -3602,17 +3602,40 @@ RepoNode::handleUserStorageList(const std::vector<uint8_t>& request,
     throw std::runtime_error("repo-user-storage-unavailable");
   }
   const auto wire = toString(request);
-  if (const auto objectName = detail::decodeExactOwnerClaimQuery(wire)) {
+  if (const auto query = detail::decodeExactOwnerClaimQuery(wire)) {
+    std::unique_lock<std::mutex> guard(m_storeWriteMutex, std::defer_lock);
+    if (query->withManifest) {
+      guard.lock();
+    }
     RepoUserStorageListReply reply{1, m_repoNode, authenticatedOwner, {}, {}};
     if (auto claim = m_artifactMetadataStore->lookupCurrentUserStorageClaim(
-          authenticatedOwner, m_repoNode, *objectName)) {
+          authenticatedOwner, m_repoNode, query->objectName)) {
       reply.objects.push_back(std::move(*claim));
     }
-    auto response = toBytes(reply.toJson());
+    auto responseText = reply.toJson();
+    if (query->withManifest && !reply.objects.empty() &&
+        reply.objects.front().state == RepoUserStorageClaimState::COMMITTED) {
+      auto manifest = m_core.getManifest(query->objectName);
+      const auto physical = measurePersistentUserStorageObject(manifest, false);
+      const auto& object = reply.objects.front().object;
+      if (manifest.objectType != "original-packet-set" || manifest.lifecycleState != "COMMITTED" ||
+          physical.objectName != object.objectName || physical.generation != object.generation ||
+          physical.wireSha256 != object.wireSha256 ||
+          physical.payloadWireBytes != object.payloadWireBytes ||
+          physical.manifestBytes != object.manifestBytes) {
+        throw std::runtime_error("repo-user-storage-manifest-claim-mismatch");
+      }
+      const auto fullWire = manifest.toJson();
+      manifest.packetNames.clear();
+      manifest.packetOffsets.clear();
+      responseText += '\n' + sha256Hex(toBytes(fullWire)) + '\n' + manifest.toJson();
+    }
+    auto response = toBytes(responseText);
     try {
       if (ndn_service_framework::controlTimingEnvEnabled()) {
         ndn_service_framework::logControlTiming("repo-node", "exact-owner-claim",
-          ndn::Name(*objectName), {{"response_bytes", std::to_string(response.size())}});
+          ndn::Name(query->objectName), {{"response_bytes", std::to_string(response.size())},
+            {"with_manifest", query->withManifest ? "1" : "0"}});
       }
     }
     catch (...) {

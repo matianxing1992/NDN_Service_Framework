@@ -1133,19 +1133,20 @@ AuthenticatedManifestPackets
 FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   const ndn_service_framework::SegmentManifestScope& scope,
   std::chrono::steady_clock::time_point deadline,
-  const ManifestRootValidator& validateRoot, std::function<void()> requireCurrent) const
+  const ManifestRootValidator& validateRoot, std::function<void()> requireCurrent,
+  std::size_t maxPacketCount) const
 {
   using ndn_service_framework::SegmentManifestLimits;
   using ndn_service_framework::SegmentManifestVerifier;
-  if (!validateRoot || !reference.packetSetMetadata ||
+  if (!validateRoot || maxPacketCount == 0 || reference.expectedSize == 0 ||
       ndn::Name(reference.objectName) != scope.rootName() ||
       ndn::Name(reference.dataPrefix) != scope.objectPrefix ||
-      reference.expectedSize > MAX_NAMED_PACKET_WIRE_BYTES ||
-      reference.packetSetMetadata->packetNames.size() > MAX_NAMED_PACKET_COUNT) {
+      reference.expectedSize > MAX_NAMED_PACKET_WIRE_BYTES) {
     throw std::invalid_argument("repo-manifest-fetch-contract-invalid");
   }
   reference.validateExactPacketSet();
-  const auto& names = reference.packetSetMetadata->packetNames;
+  const auto* names = reference.packetSetMetadata
+    ? &reference.packetSetMetadata->packetNames : nullptr;
   auto spools = std::make_shared<OrderedPacketSpools>();
   const ndn::Name hint(reference.forwardingHint);
   const auto rootSpool = fetchNamed({scope.rootName()},
@@ -1158,7 +1159,9 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   auto proof = std::make_shared<SegmentManifestVerifier>(std::move(*root), scope,
     SegmentManifestLimits{SegmentManifestVerifier::MAX_SOURCE_PACKETS,
       reference.expectedSize, std::nullopt});
-  if (names.size() != 1 + proof->pageCount() + proof->sourceCount()) {
+  const auto count = 1U + proof->pageCount() + proof->sourceCount();
+  if (count > std::min(maxPacketCount, MAX_NAMED_PACKET_COUNT) ||
+      (names && names->size() != count)) {
     throw std::invalid_argument("repo-manifest-packet-count-mismatch");
   }
   const auto current = [requireCurrent, proof] {
@@ -1172,7 +1175,7 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   if (proof->pageCount() != 0) {
     std::vector<ndn::Name> pages;
     for (uint32_t i = 0; i < proof->pageCount(); ++i) {
-      if (ndn::Name(names[1 + i]) != scope.pageName(i)) {
+      if (names && ndn::Name((*names)[1 + i]) != scope.pageName(i)) {
         throw std::invalid_argument("repo-manifest-index-name-mismatch");
       }
       pages.push_back(proof->pageFullName(i));
@@ -1184,7 +1187,7 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   }
   std::vector<ndn::Name> sources;
   for (uint32_t i = 0; i < proof->sourceCount(); ++i) {
-    if (ndn::Name(names[1 + proof->pageCount() + i]) != scope.sourceName(i)) {
+    if (names && ndn::Name((*names)[1 + proof->pageCount() + i]) != scope.sourceName(i)) {
       throw std::invalid_argument("repo-manifest-source-name-mismatch");
     }
     sources.push_back(proof->sourceFullName(i));

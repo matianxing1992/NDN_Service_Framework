@@ -3497,6 +3497,22 @@ BOOST_AUTO_TEST_CASE(ExactOwnerClaimUsesCurrentAuthenticatedObject)
   BOOST_CHECK(lookup(ndn::Name("/owner/b"), query).objects.empty());
   BOOST_CHECK(lookup(ndn::Name("/owner/a"), detail::encodeExactOwnerClaimQuery(name + "/child"))
                 .objects.empty());
+  const auto compact = detail::encodeExactOwnerClaimQuery(name, true);
+  const auto compactResponse = dispatch(*fixture.provider, ndn::Name("/owner/a"), service,
+                                        toBytes(compact), "compact");
+  BOOST_REQUIRE_MESSAGE(compactResponse.getStatus(), compactResponse.getErrorInfo());
+  const auto compactWire = responseString(compactResponse);
+  const auto separator = compactWire.find('\n');
+  BOOST_REQUIRE_NE(separator, std::string::npos);
+  BOOST_REQUIRE_GT(compactWire.size() - separator, 66U);
+  BOOST_CHECK_EQUAL(compactWire.substr(0, separator), result.toJson());
+  const auto stored = fixture.node->core().getManifest(name);
+  BOOST_CHECK_EQUAL(compactWire.substr(separator + 1, 64), sha256(toBytes(stored.toJson())));
+  const auto header = parseManifestJson(compactWire.substr(separator + 66));
+  BOOST_CHECK(header.packetNames.empty());
+  BOOST_CHECK(header.packetOffsets.empty());
+  BOOST_CHECK_EQUAL(header.segmentCount, stored.segmentCount);
+  BOOST_CHECK(lookup(ndn::Name("/owner/b"), compact).objects.empty());
   BOOST_CHECK_EXCEPTION(RepoUserStorageListRequest::fromJson(query), std::invalid_argument,
     [](const auto& error) {
       return std::string_view(error.what()) == "artifact-json-invalid: object keys do not match schema";
@@ -3507,6 +3523,7 @@ BOOST_AUTO_TEST_CASE(ExactOwnerClaimUsesCurrentAuthenticatedObject)
   BOOST_REQUIRE_EQUAL(fixture.erase("/owner/a", "exact-cleanup",
     fixture.request.storageBinding.ownerEpoch).state, "DELETED");
   BOOST_CHECK(lookup(ndn::Name("/owner/a"), query).objects.empty());
+  BOOST_CHECK(lookup(ndn::Name("/owner/a"), compact).objects.empty());
 }
 
 BOOST_AUTO_TEST_CASE(CompactOwnedManifestQueryHasBoundedCanonicalFraming)

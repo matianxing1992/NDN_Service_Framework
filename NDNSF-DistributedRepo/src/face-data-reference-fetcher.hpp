@@ -129,7 +129,8 @@ public:
                 const ndn_service_framework::SegmentManifestScope& scope,
                 std::chrono::steady_clock::time_point deadline,
                 const ManifestRootValidator& validateRoot,
-                std::function<void()> requireCurrent = {}) const;
+                std::function<void()> requireCurrent = {},
+                std::size_t maxPacketCount = MAX_NAMED_PACKET_COUNT) const;
 
   using PacketAdmission = std::function<void(std::size_t, const ndn::Data&)>;
 

@@ -1893,24 +1893,26 @@ RepoUserStorageListRequest::fromJson(const std::string& wire)
 }
 
 std::string
-detail::encodeExactOwnerClaimQuery(const std::string& objectName)
+detail::encodeExactOwnerClaimQuery(const std::string& objectName, bool withManifest)
 {
   validateStorageName(objectName);
-  return "{\"schemaVersion\":2,\"objectName\":" + detail::quoteJson(objectName) + "}";
+  return std::string(withManifest ? "{\"schemaVersion\":3" : "{\"schemaVersion\":2") +
+    ",\"objectName\":" + detail::quoteJson(objectName) + "}";
 }
 
-std::optional<std::string>
+std::optional<detail::ExactOwnerClaimQuery>
 detail::decodeExactOwnerClaimQuery(const std::string& wire)
 {
   const auto parsed = detail::parseJson(wire, 64 * 1024);
   const auto& object = detail::requireObject(parsed);
-  if (jsonUnsigned(object, "schemaVersion") != 2) {
+  const auto version = jsonUnsigned(object, "schemaVersion");
+  if (version != 2 && version != 3) {
     return std::nullopt;
   }
   detail::requireExactKeys(object, {"schemaVersion", "objectName"});
   const auto objectName = jsonString(object, "objectName");
   (void)detail::encodeExactOwnerClaimQuery(objectName);
-  return objectName;
+  return ExactOwnerClaimQuery{objectName, version == 3};
 }
 
 std::string

@@ -6,11 +6,17 @@
 
 namespace ndnsf_distributed_repo::detail {
 
+struct ExactOwnerClaimQuery
+{
+  std::string objectName;
+  bool withManifest = false;
+};
+
 std::string
-encodeExactOwnerClaimQuery(const std::string& objectName);
+encodeExactOwnerClaimQuery(const std::string& objectName, bool withManifest = false);
 
 /** Decode the exact USER_STORAGE_LIST selector. Version 1 uses the pagination codec. */
-std::optional<std::string>
+std::optional<ExactOwnerClaimQuery>
 decodeExactOwnerClaimQuery(const std::string& wire);
 
 } // namespace ndnsf_distributed_repo::detail

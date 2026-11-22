@@ -153,15 +153,21 @@ requireCommittedOwnerClaim(const RepoUserStorageClaim& claim,
   }
 }
 
+struct OwnerClaimManifest
+{
+  std::string digest;
+  std::string header;
+};
+
 std::optional<RepoUserStorageClaim>
 findExactCurrentUserStorageClaim(ndn_service_framework::ServiceUser& owner,
   const RepoArtifactTarget& target, const std::string& objectName,
   const RepoUserStoragePacketSetFetchLimits& limits, int timeoutMs,
   std::chrono::steady_clock::time_point deadline, uint64_t& listingWireBytes,
-  const std::function<void()>& requireCurrent)
+  const std::function<void()>& requireCurrent, OwnerClaimManifest* manifest = nullptr)
 {
   const auto service = makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST");
-  const auto query = toBytes(detail::encodeExactOwnerClaimQuery(objectName));
+  const auto query = toBytes(detail::encodeExactOwnerClaimQuery(objectName, manifest != nullptr));
   std::vector<uint8_t> response;
   try {
     response = RepoClientCompat::requestSelectedService(owner, ndn::Name(target.providerIdentity),
@@ -174,14 +180,16 @@ findExactCurrentUserStorageClaim(ndn_service_framework::ServiceUser& owner,
     }
     throw;
   }
-  if (response.size() > limits.maxListingWireBytes - listingWireBytes) {
+  const auto wire = toString(response);
+  const auto boundary = manifest ? wire.find('\n') : std::string::npos;
+  const auto claimWire = wire.substr(0, boundary);
+  if (claimWire.size() > limits.maxListingWireBytes - listingWireBytes) {
     throw std::runtime_error("repo-user-storage-list-byte-budget-exceeded");
   }
-  listingWireBytes += response.size();
-  const auto wire = toString(response);
-  auto reply = RepoUserStorageListReply::fromJson(wire);
+  listingWireBytes += claimWire.size();
+  auto reply = RepoUserStorageListReply::fromJson(claimWire);
   const auto ownerName = owner.getName().toUri(ndn::name::UriFormat::ALTERNATE);
-  if (reply.toJson() != wire || reply.repoNode != target.repoNode ||
+  if (reply.toJson() != claimWire || reply.repoNode != target.repoNode ||
       reply.ownerIdentity != ownerName || !reply.nextAfterObjectName.empty() ||
       reply.objects.size() > 1) {
     throw std::runtime_error("repo-user-storage-list-page-invalid");
@@ -195,6 +203,14 @@ findExactCurrentUserStorageClaim(ndn_service_framework::ServiceUser& owner,
   }
   validateRepoUserStorageObject(claim.object);
   requireCommittedOwnerClaim(claim, deadline);
+  if (manifest) {
+    if (boundary == std::string::npos || wire.size() - boundary <= 66 ||
+        wire[boundary + 65] != '\n' || wire.size() - boundary - 66 > limits.maxManifestWireBytes) {
+      throw std::runtime_error("repo-user-storage-manifest-header-framing");
+    }
+    manifest->digest = wire.substr(boundary + 1, 64);
+    manifest->header = wire.substr(boundary + 66);
+  }
   return std::move(claim);
 }
 
@@ -656,20 +672,22 @@ RepoClientCompat::fetchOriginalDataPacketSet(
   if (user.isOnIoThread())
     throw std::logic_error("repo-original-packet-set-on-io-thread");
   reference.validateExactPacketSet();
-  if ((!segmentManifest && !verifyProducerSignature) || timeoutMs <= 0 || !reference.packetSetMetadata ||
+  const auto* metadata = reference.packetSetMetadata ? &*reference.packetSetMetadata : nullptr;
+  if ((!segmentManifest && (!verifyProducerSignature || !metadata)) || timeoutMs <= 0 ||
       limits.maxPacketCount == 0 || limits.maxPacketCount > 65536 ||
       limits.maxPacketWireBytes == 0 || limits.maxPacketWireBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
       reference.expectedSize > limits.maxPacketWireBytes ||
-      reference.packetSetMetadata->packetNames.size() > limits.maxPacketCount)
+      (metadata && metadata->packetNames.size() > limits.maxPacketCount))
     throw std::invalid_argument("repo-original-packet-set-budget-invalid");
-  const auto& metadata = *reference.packetSetMetadata;
-  if (metadata.packetOffsets.size() != metadata.packetNames.size() + 1 ||
-      metadata.packetOffsets.front() != 0 || metadata.packetOffsets.back() != reference.expectedSize)
-    throw std::invalid_argument("repo-original-packet-set-offsets-invalid");
-  for (size_t i = 0; i < metadata.packetNames.size(); ++i) {
-    if (metadata.packetOffsets[i + 1] <= metadata.packetOffsets[i] ||
-        metadata.packetOffsets[i + 1] - metadata.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE)
+  if (metadata) {
+    if (metadata->packetOffsets.size() != metadata->packetNames.size() + 1 ||
+        metadata->packetOffsets.front() != 0 || metadata->packetOffsets.back() != reference.expectedSize)
       throw std::invalid_argument("repo-original-packet-set-offsets-invalid");
+    for (size_t i = 0; i < metadata->packetNames.size(); ++i) {
+      if (metadata->packetOffsets[i + 1] <= metadata->packetOffsets[i] ||
+          metadata->packetOffsets[i + 1] - metadata->packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE)
+        throw std::invalid_argument("repo-original-packet-set-offsets-invalid");
+    }
   }
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   const auto current = [requireCurrent, deadline] {
@@ -692,7 +710,7 @@ RepoClientCompat::fetchOriginalDataPacketSet(
     auto admitted = fetcher.fetchManifest(reference, *segmentManifest, deadline,
       [&user](const auto& wire, const auto& scope, auto expires) {
         return user.validateManifestRootUntil(wire, scope, expires);
-      }, current);
+      }, current, limits.maxPacketCount);
     spool = std::move(admitted.packets);
     manifestProof = std::move(admitted.proof);
   }
@@ -700,16 +718,16 @@ RepoClientCompat::fetchOriginalDataPacketSet(
     spool = fetcher(reference);
   }
   current();
-  if (spool->packetCount() != metadata.packetNames.size() ||
+  if ((metadata && spool->packetCount() != metadata->packetNames.size()) ||
       spool->totalWireBytes() != reference.expectedSize)
     throw std::runtime_error("repo-original-packet-set-size-mismatch");
   std::vector<std::vector<uint8_t>> wires;
-  wires.reserve(metadata.packetNames.size());
+  wires.reserve(spool->packetCount());
   ndn::util::Sha256 digest;
-  for (size_t i = 0; i < metadata.packetNames.size(); ++i) {
+  for (size_t i = 0; i < spool->packetCount(); ++i) {
     current();
     auto wire = spool->readPacket(i);
-    if (wire.size() != metadata.packetOffsets[i + 1] - metadata.packetOffsets[i])
+    if (metadata && wire.size() != metadata->packetOffsets[i + 1] - metadata->packetOffsets[i])
       throw std::runtime_error("repo-original-packet-set-packet-size-mismatch");
     digest.update(ndn::span<const uint8_t>(wire.data(), wire.size()));
     wires.push_back(std::move(wire));
@@ -864,15 +882,31 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
                                       listingWireBytes);
   };
 
-  const auto initialClaim = listClaim();
-  const auto manifestResponse = RepoClientCompat::requestSelectedService(owner, provider, manifestService,
-    toBytes(objectName), limits.ackCollectionTimeMs, remainingTimeoutMs());
-  if (manifestResponse.empty() || manifestResponse.size() > limits.maxManifestWireBytes ||
-      manifestResponse.size() != initialClaim.object.manifestBytes) {
-    throw std::runtime_error("repo-user-storage-manifest-size-mismatch");
+  OwnerClaimManifest compact;
+  std::optional<RepoUserStorageClaim> compactClaim;
+  if (tryExactClaim) {
+    compactClaim = findExactCurrentUserStorageClaim(owner, target, objectName, limits,
+      remainingTimeoutMs(), deadline, listingWireBytes, current, &compact);
   }
-  const auto manifestText = toString(manifestResponse);
-  const auto manifest = parseManifestJson(manifestText);
+  const auto initialClaim = compactClaim ? *compactClaim : listClaim();
+  const bool rebuildIndex = compactClaim.has_value();
+  std::string manifestText;
+  if (rebuildIndex) {
+    manifestText = std::move(compact.header);
+    if (initialClaim.object.manifestBytes > limits.maxManifestWireBytes) {
+      throw std::runtime_error("repo-user-storage-manifest-size-mismatch");
+    }
+  }
+  else {
+    const auto manifestResponse = RepoClientCompat::requestSelectedService(owner, provider,
+      manifestService, toBytes(objectName), limits.ackCollectionTimeMs, remainingTimeoutMs());
+    if (manifestResponse.empty() || manifestResponse.size() > limits.maxManifestWireBytes ||
+        manifestResponse.size() != initialClaim.object.manifestBytes) {
+      throw std::runtime_error("repo-user-storage-manifest-size-mismatch");
+    }
+    manifestText = toString(manifestResponse);
+  }
+  auto manifest = parseManifestJson(manifestText);
   const auto throwManifestClaimMismatch = [] (const char* field) {
     throw std::runtime_error(
       std::string("repo-user-storage-manifest-claim-mismatch:") + field);
@@ -897,33 +931,42 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
     throwManifestClaimMismatch("payload-size");
   if (manifest.size > limits.maxPacketWireBytes)
     throwManifestClaimMismatch("packet-wire-limit");
-  if (manifest.packetNames.empty())
-    throwManifestClaimMismatch("empty-packet-names");
-  if (manifest.packetNames.size() > limits.maxPacketCount)
-    throwManifestClaimMismatch("packet-count-limit");
-  if (manifest.packetOffsets.size() != manifest.packetNames.size() + 1)
-    throwManifestClaimMismatch("packet-offset-count");
-  if (manifest.packetOffsets.front() != 0)
-    throwManifestClaimMismatch("first-packet-offset");
-  if (manifest.packetOffsets.back() != manifest.size)
-    throwManifestClaimMismatch("final-packet-offset");
-  if (ndn::Name(manifest.packetNames.front()) != expectedObjectName)
-    throwManifestClaimMismatch("root-packet-name");
-
-  std::set<ndn::Name> uniquePacketNames;
-  for (const auto& packetNameText : manifest.packetNames) {
-    const ndn::Name packetName(packetNameText);
-    if (packetName.empty() ||
-        (packetName.toUri(ndn::name::UriFormat::CANONICAL) != packetNameText &&
-         packetName.toUri(ndn::name::UriFormat::ALTERNATE) != packetNameText) ||
-        !uniquePacketNames.insert(packetName).second) {
-      throw std::runtime_error("repo-user-storage-manifest-packet-name-invalid");
+  if (rebuildIndex) {
+    if (!manifest.packetNames.empty() || !manifest.packetOffsets.empty() ||
+        manifest.segmentCount == 0 || manifest.segmentCount > limits.maxPacketCount ||
+        ndn::Name(manifest.dataPrefix) != segmentManifest->objectPrefix) {
+      throwManifestClaimMismatch("compact-index-header");
     }
   }
-  for (std::size_t i = 0; i + 1 < manifest.packetOffsets.size(); ++i) {
-    if (manifest.packetOffsets[i + 1] <= manifest.packetOffsets[i] ||
-        manifest.packetOffsets[i + 1] - manifest.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE) {
-      throw std::runtime_error("repo-user-storage-manifest-packet-offset-invalid");
+  else {
+    if (manifest.packetNames.empty())
+      throwManifestClaimMismatch("empty-packet-names");
+    if (manifest.packetNames.size() > limits.maxPacketCount)
+      throwManifestClaimMismatch("packet-count-limit");
+    if (manifest.packetOffsets.size() != manifest.packetNames.size() + 1)
+      throwManifestClaimMismatch("packet-offset-count");
+    if (manifest.packetOffsets.front() != 0)
+      throwManifestClaimMismatch("first-packet-offset");
+    if (manifest.packetOffsets.back() != manifest.size)
+      throwManifestClaimMismatch("final-packet-offset");
+    if (ndn::Name(manifest.packetNames.front()) != expectedObjectName)
+      throwManifestClaimMismatch("root-packet-name");
+
+    std::set<ndn::Name> uniquePacketNames;
+    for (const auto& packetNameText : manifest.packetNames) {
+      const ndn::Name packetName(packetNameText);
+      if (packetName.empty() ||
+          (packetName.toUri(ndn::name::UriFormat::CANONICAL) != packetNameText &&
+           packetName.toUri(ndn::name::UriFormat::ALTERNATE) != packetNameText) ||
+          !uniquePacketNames.insert(packetName).second) {
+        throw std::runtime_error("repo-user-storage-manifest-packet-name-invalid");
+      }
+    }
+    for (std::size_t i = 0; i + 1 < manifest.packetOffsets.size(); ++i) {
+      if (manifest.packetOffsets[i + 1] <= manifest.packetOffsets[i] ||
+          manifest.packetOffsets[i + 1] - manifest.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE) {
+        throw std::runtime_error("repo-user-storage-manifest-packet-offset-invalid");
+      }
     }
   }
 
@@ -933,10 +976,32 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
   original.expectedSize = manifest.size;
   original.expectedSha256 = manifest.sha256;
   original.forwardingHint = provider.toUri();
-  original.packetSetMetadata = manifest;
+  if (!rebuildIndex) {
+    original.packetSetMetadata = manifest;
+  }
   std::shared_ptr<const ndn_service_framework::SegmentManifestVerifier> manifestProof;
   auto packetWires = RepoClientCompat::fetchOriginalDataPacketSet(owner, original,
     verifyProducerSignature, remainingTimeoutMs(), limits, current, segmentManifest, &manifestProof);
+
+  if (rebuildIndex) {
+    if (packetWires.size() != manifest.segmentCount) {
+      throwManifestClaimMismatch("compact-index-count");
+    }
+    manifest.packetNames.reserve(packetWires.size());
+    manifest.packetOffsets.reserve(packetWires.size() + 1);
+    manifest.packetOffsets.push_back(0);
+    for (const auto& wire : packetWires) {
+      current();
+      const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+      manifest.packetNames.push_back(data.getName().toUri(ndn::name::UriFormat::CANONICAL));
+      manifest.packetOffsets.push_back(manifest.packetOffsets.back() + wire.size());
+    }
+    const auto reconstructed = manifest.toJson();
+    if (reconstructed.size() != initialClaim.object.manifestBytes ||
+        sha256Hex(toBytes(reconstructed)) != compact.digest) {
+      throwManifestClaimMismatch("compact-index-digest");
+    }
+  }
 
   const auto currentClaim = listClaim();
   current();

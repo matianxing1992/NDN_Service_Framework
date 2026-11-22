@@ -3396,6 +3396,8 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   const auto reopened = readManifest(manifestScope);
   BOOST_REQUIRE(reopened.ownerPacketSet);
   BOOST_CHECK(reopened.ownerPacketSet->packetWires() == manifestWires);
+  BOOST_CHECK_EQUAL(reopened.ownerPacketSet->manifest().toJson(),
+                    node->core().getManifest(manifestObject).toJson());
   const repo::RepoUserStorageDeleteRequest manifestCleanup{1, "client-manifest-cleanup",
     manifestObject, manifestGrantReply.grant.ownerEpoch};
   // Advance the Owner's deletion fence after the original packets have passed
