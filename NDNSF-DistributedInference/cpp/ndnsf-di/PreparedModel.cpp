@@ -932,17 +932,6 @@ NativeRequestOptions PreparedModel::projectOptions(const RequestOptions& options
   return native;
 }
 
-RequestHandle PreparedModel::request(const Input& input, const RequestOptions& options) const
-{
-  return requestInternal(input, options);
-}
-
-Result PreparedModel::run(const Input& input, const RequestOptions& options) const
-{
-  auto handle = requestInternal(input, options);
-  return handle.result();
-}
-
 RequestHandle PreparedModel::requestInternal(Input input, const RequestOptions& options) const
 {
   return requestInternal(std::move(input), options, std::nullopt);

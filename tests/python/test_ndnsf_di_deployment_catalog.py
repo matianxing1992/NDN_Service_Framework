@@ -19,7 +19,7 @@ from ndnsf_distributed_inference.app_sdk.coordinator import (
     encode_coordinator_request, encode_coordinator_response,
 )
 from ndnsf_distributed_inference.client import InferenceResult
-from ndnsf_distributed_inference.app_sdk.contracts import DeploymentRevision
+from ndnsf_distributed_inference.app_sdk.contracts import DeploymentPlan
 from ndnsf_distributed_inference.app_sdk.deployment import (
     DeploymentCatalog, NetworkDeploymentCatalogTransport,
 )
@@ -229,7 +229,7 @@ class DeploymentCatalogTest(unittest.TestCase):
             creator.authorize_application(
                 signer.application_identity, signer.key_id, signer.public_key)
             ref = creator.publish_definition(value)
-            revision = DeploymentRevision.resolve(value).revision
+            revision = DeploymentPlan.resolve(value).plan_digest
             owner_user = _SignedDataBusUser(value.deployment_owner, records)
             owner_transport = NetworkDeploymentCatalogTransport(owner_user)
             owner = DeploymentCatalog(
@@ -337,7 +337,7 @@ class DeploymentCatalogTest(unittest.TestCase):
             creator.authorize_application(
                 signer.application_identity, signer.key_id, signer.public_key)
             first_ref = creator.publish_definition(first)
-            first_revision = DeploymentRevision.resolve(first).revision
+            first_revision = DeploymentPlan.resolve(first).plan_digest
 
             second = signer.define(
                 deployment_id=first.deployment_id,
@@ -352,7 +352,7 @@ class DeploymentCatalogTest(unittest.TestCase):
                 metadata={"generation": 2},
                 previous_revision=first_revision)
             second_ref = creator.publish_definition(second)
-            second_revision = DeploymentRevision.resolve(second).revision
+            second_revision = DeploymentPlan.resolve(second).plan_digest
 
             owner_transport = NetworkDeploymentCatalogTransport(
                 _SignedDataBusUser(first.deployment_owner, records))

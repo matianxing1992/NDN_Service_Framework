@@ -2868,7 +2868,7 @@ def run_spec193_local_registry_insert_segmented(ndn, output: Path,
     source.write_bytes(bytes((index * 59 + 19) % 256 for index in range(521)))
     report_path = work / "l03-l04-report.json"
     local_root = work / "l03-l04-local-repo"
-    object_name = "/spec193/local-insert-segmented/" + output.name
+    object_name = USER + "/local-insert-segmented/" + output.name
     before = {item["repo_node"]: repo_database_state(item["repo_dir"]) for item in servers}
     requests_before = repo_request_events(processes, {REPO_A_ID, REPO_B_ID})
     argv = list(servers[0]["argv"])
@@ -2906,17 +2906,17 @@ def run_spec193_local_registry_insert_segmented(ndn, output: Path,
             report["insertStatus"]["completedSegments"] != 1 or
             report["failedStatus"]["state"] != "FAILED" or
             report["failedStatus"]["completedSegments"] != 0 or
-            report["catalog"]["objectCount"] != 2 or
-            report["lookup"]["manifest"]["objectName"] != object_name + "/insert" or
+            report["catalog"]["objectCount"] != 1 or
+            Name.to_str(Name.from_str(report["lookup"]["manifest"]["objectName"])) != object_name + "/packet" or
             report["lookup"]["sourceRepo"] != object_name + "/repo" or
             report["cacheAfter"]["hits"] < report["cacheBefore"]["hits"] + 2 or
             not all(report[k] for k in ("missingLookupRejected", "missingSegmentRejected",
                                        "corruptSegmentRejected", "restored"))):
         raise RuntimeError("L03/L04 native report contradicts expected API outcomes")
-    expected_insert = {object_name + "/packet", object_name + "/insert"}
+    expected_insert = {object_name + "/packet"}
     for label in ("snapshot", "delta"):
         rows = report[label]["entries"]
-        if ({row["manifest"]["objectName"] for row in rows} != expected_insert or
+        if ({Name.to_str(Name.from_str(row["manifest"]["objectName"])) for row in rows} != expected_insert or
                 any(row["manifest"]["sha256"] != wire_digest or row["state"] != "AVAILABLE" or
                     row["sourceRepo"] != object_name + "/repo" or
                     row["manifest"]["replicaNodes"] != [object_name + "/repo"]
@@ -2930,7 +2930,7 @@ def run_spec193_local_registry_insert_segmented(ndn, output: Path,
         expected[object_name + "/segmented/seg/" + str(index)] = hashlib.sha256(
             payload[offset:offset + 128]).hexdigest()
     local_state = repo_database_state(local_root)
-    actual = {row["objectName"]: row["sha256"]
+    actual = {Name.to_str(Name.from_str(row["objectName"])): row["sha256"]
               for row in local_state["repo_manifests"]["entries"]}
     physical = {row["sha256"] for row in local_state["payload_files"]
                 if "/payloads/sha256/" in "/" + row["path"]}

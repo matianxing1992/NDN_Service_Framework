@@ -1172,11 +1172,6 @@ void Conversation::close() noexcept
   }
 }
 
-Conversation PreparedModel::openConversation(const ConversationOptions& options) const
-{
-  return openConversationInternal(options);
-}
-
 Conversation PreparedModel::openConversationInternal(const ConversationOptions& options) const
 {
   if (!m_package || !m_clientFactory)

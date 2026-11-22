@@ -2285,10 +2285,6 @@ class APPClient:
             return plan
         return self.executor.deploy_plan(plan, *args, **kwargs)
 
-    def deploy_plan(self, plan, *args, **kwargs):
-        """Bounded compatibility alias for :meth:`prepare_session`."""
-        return self.prepare_session(plan, *args, **kwargs)
-
     def collaboration_status(self, request_id: str, *, timeout_ms: int = 500):
         if self._network_client is None:
             return ()

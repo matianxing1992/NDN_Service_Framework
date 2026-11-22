@@ -182,7 +182,7 @@ const auto localBytes = RepoClient::localGet(
 
 以下方法与上面对象操作对应，但目标是调用方提供的 registry + service prefix，适用于同进程组合，不发送网络 Interest：
 
-`localPut`、`localGet`、`localPutRange`、`localCommitRanges`、`localAbortRanges`、`localGetRange`、`localGetManifest`、`localList`、`localRemove`、`localInsert`、`localStatus`、`localPutSegmented`、`localGetSegmented`、`localGetObject`、`localCacheStatus`、`localCatalogStatus`、`localCatalogSnapshot`、`localCatalogDelta`、`localCatalogLookup`。
+`localPut`、`localGet`、`localPutRange`、`localCommitRanges`、`localAbortRanges`、`localGetRange`、`localGetManifest`、`localList`、`localRemove`、`localInsert`、`localStatus`、`localPutSegmented`、`localGetSegmented`、`localCacheStatus`、`localCatalogStatus`、`localCatalogSnapshot`、`localCatalogDelta`、`localCatalogLookup`。
 
 range/object 用法与远端同名方法相同，仅首两个实参改为 `LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix`。不要把 local 调用结果当成网络路径或远端 Provider 权限的证明。
 

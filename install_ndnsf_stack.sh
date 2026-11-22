@@ -4250,7 +4250,7 @@ manifest = py_repoclient.make_manifest(
     "/Policy/install-smoke/v1",
 )
 assert manifest.sha256
-assert ndnsf_distributed_inference.GenericRepoClient is py_repoclient.RepoClient
+assert callable(py_repoclient.RepoClient)
 if sys.argv[1] == "1":
     from ndnsf import _ndnsf
 

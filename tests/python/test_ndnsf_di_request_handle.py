@@ -63,7 +63,6 @@ class RequestHandleTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             client=APPClient(RuntimeJournal(root,"alice"))
             marker=object(); self.assertIs(client.prepare_session(marker),marker)
-            self.assertIs(client.deploy_plan(marker),marker)
 
     def test_canonical_submit_binds_durable_and_wire_request_identity(self):
         with tempfile.TemporaryDirectory() as root:

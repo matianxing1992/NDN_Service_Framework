@@ -19,11 +19,8 @@ class LegacyExportsTest(unittest.TestCase):
             for entry in payload["entries"]
             if entry["surfaceKind"] == "python-export"
         )
-        # The Phase-1 AST inventory counted the initial ``__all__ = [...]``
-        # assignment but missed the historical ``__all__ += [...]`` block.
-        # The immutable pre-separation module actually exposed 174 names.
-        self.assertEqual(len(names), 174)
         self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(sorted(legacy.__all__), names)
         for name in names:
             with self.subTest(name=name):
                 self.assertIn(name, legacy.__all__)

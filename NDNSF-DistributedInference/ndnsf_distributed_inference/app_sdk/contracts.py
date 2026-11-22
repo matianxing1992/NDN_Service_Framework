@@ -8,7 +8,6 @@ from enum import Enum
 import hashlib
 import json
 from types import MappingProxyType
-import warnings
 from typing import Any, Mapping, Optional, Tuple, Union
 
 
@@ -568,23 +567,6 @@ class DeploymentPlan:
         plan_digest = _digest({"definition": digest, "epoch": epoch})
         return cls(definition.deployment_id, plan_digest, digest, epoch, definition)
 
-    @property
-    def revision(self) -> str:
-        """Deprecated read-only spelling for old external serialized callers."""
-        warnings.warn("DeploymentPlan.revision is deprecated; use plan_digest",
-                      DeprecationWarning, stacklevel=2)
-        return self.plan_digest
-
-
-class DeploymentRevision:
-    """Deprecated read/import shim; maintained runtime code must use DeploymentPlan."""
-
-    @classmethod
-    def resolve(cls, definition: DeploymentDefinition, epoch: int = 1):
-        warnings.warn("DeploymentRevision is deprecated; use DeploymentPlan",
-                      DeprecationWarning, stacklevel=2)
-        return DeploymentPlan.resolve(definition, epoch)
-
 
 @dataclass(frozen=True)
 class DeploymentOperationHandle:
@@ -990,7 +972,7 @@ __all__ = [
     "DeploymentConstraints", "DeploymentDefinition", "DeploymentDefinitionRef",
     "DeploymentHandleRef", "DeploymentOperation", "DeploymentOperationHandle",
     "DeploymentProgress", "DeploymentProgressPhase", "DeploymentRef",
-    "DeploymentPlan", "DeploymentRevision", "DeploymentStatus", "DeploymentSummary",
+    "DeploymentPlan", "DeploymentStatus", "DeploymentSummary",
     "InferenceOptions", "InferenceRequestHandle", "InfrastructureAllocationHandle", "ModelIntent",
     "OptimizationObjective", "ProviderDeploymentOffer", "ProviderDeploymentOffers",
     "RequestContract", "RequestEnvelopeReference", "RequestHandle", "RequestRef",

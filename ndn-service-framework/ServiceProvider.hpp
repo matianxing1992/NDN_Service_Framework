@@ -1494,10 +1494,6 @@ namespace ndn_service_framework{
                                                  AckStrategyHandler ackHandler,
                                                  RequestHandler requestHandler,
                                                  ServiceInvocationMode invocationMode);
-            ServiceRegistration addScopedService(const ndn::Name& serviceName,
-                                                 AckStrategyHandler ackHandler,
-                                                 RequestHandler requestHandler,
-                                                 ServiceMode mode);
             /** Register an async TargetedOnly handler with the same scoped
              * generation and close semantics as addScopedService. */
             ServiceRegistration addScopedTargetedService(
@@ -1676,8 +1672,6 @@ namespace ndn_service_framework{
 
             void setLocalPublicationHandler(LocalPublicationHandler handler);
 
-            void setLegacyAckStrategyHandler(const ndn::Name& serviceName,
-                                             LegacyAckStrategyHandler ackHandler);
 
             void setSelectionStatusQueryable(const ndn::Name& serviceName,
                                               bool enabled = true);

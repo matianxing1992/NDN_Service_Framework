@@ -741,13 +741,6 @@ class InferenceProvider:
         self._registrations[service] = registration
         return registration
 
-    def serve_service(self, *args, **kwargs):
-        import warnings
-        warnings.warn(
-            "serve_service() is deprecated; use serve()",
-            DeprecationWarning, stacklevel=2)
-        return self.serve(*args, **kwargs)
-
     def run(self):
         return self._network_provider.run()
 

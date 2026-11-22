@@ -988,7 +988,7 @@ def main() -> int:
                 runtime=runtime_spec(),
                 artifact_references=args.artifact_references_file or None,
             )
-            plan_session = client.deploy_plan(plan, freshness_ms=120000)
+            plan_session = client.prepare_session(plan, freshness_ms=120000)
 
         def invoke_once():
             if plan_session is not None:

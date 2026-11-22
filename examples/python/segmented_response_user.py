@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from common import add_process_arguments, optional_local_nfd, session_kwargs
+from common import add_native_actor_arguments, optional_local_nfd
 from ndnsf import ServiceUser
 from spec112_segmented_common import (
     MAX_SEQUENCE_REQUESTS,
@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pause-after-index", type=nonnegative_int)
     parser.add_argument("--resume-file", type=Path)
     parser.add_argument("--pause-timeout-s", type=positive_float, default=30.0)
-    add_process_arguments(parser)
+    add_native_actor_arguments(parser)
     return parser
 
 
@@ -115,7 +115,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             group="/example/hello/group",
             controller="/example/hello/controller",
             user="/example/hello/user",
-            **session_kwargs(args),
         )
         for index, size in enumerate(args.sizes):
             request = encode_request(args.run_id, index, size)

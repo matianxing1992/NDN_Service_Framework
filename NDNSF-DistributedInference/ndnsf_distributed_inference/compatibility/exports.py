@@ -22,7 +22,7 @@ def _targets() -> dict[str, str]:
             continue
         name = str(entry["surfaceId"]).split(":", 1)[1]
         owner = str(entry["currentOwner"])
-        result[name] = "py_repoclient" if name == "GenericRepoClient" else owner
+        result[name] = owner
     return result
 
 
@@ -45,7 +45,7 @@ def resolve_legacy_export(name: str) -> Any:
     _LOG.info("NDNSF_DI_COMPAT_EXPORT name=%s owner=%s", name, owner)
     try:
         module = import_module(owner)
-        return getattr(module, "RepoClient" if name == "GenericRepoClient" else name)
+        return getattr(module, name)
     except ImportError as error:
         if owner.endswith(".onnx_executor"):
             if name == "OnnxExecutionResult":
@@ -57,6 +57,4 @@ def resolve_legacy_export(name: str) -> Any:
                     f"{name} requires optional ONNX runtime dependencies") from error
             missing.__name__ = name
             return missing
-        if name == "GenericRepoClient":
-            return None
         raise

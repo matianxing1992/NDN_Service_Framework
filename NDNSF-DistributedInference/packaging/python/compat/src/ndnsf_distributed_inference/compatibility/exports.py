@@ -11,7 +11,7 @@ def _targets():
     for entry in payload.get("entries", []):
         if entry.get("surfaceKind") == "python-export":
             name = str(entry["surfaceId"]).split(":", 1)[1]
-            result[name] = "py_repoclient" if name == "GenericRepoClient" else str(entry["currentOwner"])
+            result[name] = str(entry["currentOwner"])
     return result
 
 _TARGETS = _targets()
@@ -23,4 +23,4 @@ def resolve_legacy_export(name):
     if owner is None: raise AttributeError(name)
     warnings.warn(f"root export {name} is a compatibility adapter", DeprecationWarning, stacklevel=2)
     module = import_module(owner)
-    return getattr(module, "RepoClient" if name == "GenericRepoClient" else name)
+    return getattr(module, name)

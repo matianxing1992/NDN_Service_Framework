@@ -202,15 +202,19 @@ class Spec185PreparedModelWrapperTests(unittest.TestCase):
         try:
             from ndnsf import _ndnsf
         except ModuleNotFoundError as exc:
+            if os.environ.get("NDNSF_TEST_RUNTIME_PREFIX"):
+                raise
             self.skipTest(f"native extension unavailable: {exc}")
         if not hasattr(_ndnsf, "Runtime"):
+            if os.environ.get("NDNSF_TEST_RUNTIME_PREFIX"):
+                self.fail("installed extension lacks the native Runtime")
             self.skipTest("current extension predates Spec185 direct bindings")
         for name in ("Runtime", "User", "PreparedModel", "PreparationHandle", "RequestHandle",
                      "Conversation", "EventReader", "Subscription"):
             self.assertTrue(hasattr(_ndnsf, name), name)
-        self.assertTrue(hasattr(_ndnsf.User, "request"))
-        self.assertTrue(hasattr(_ndnsf.User, "run"))
-        self.assertTrue(hasattr(_ndnsf.User, "open_conversation"))
+        for name in ("request", "run", "open_conversation"):
+            self.assertTrue(hasattr(_ndnsf.User, name), name)
+            self.assertFalse(hasattr(_ndnsf.PreparedModel, name), name)
 
     def test_native_error_translator_survives_module_teardown(self):
         try:

@@ -18,12 +18,11 @@ EXAMPLES = REPO / "examples/python"
 def load_script(name: str, filename: str):
     common = types.ModuleType("common")
 
-    def add_process_arguments(parser):
+    def add_native_actor_arguments(parser):
         parser.add_argument("--start-local-nfd", action="store_true")
 
-    common.add_process_arguments = add_process_arguments
+    common.add_native_actor_arguments = add_native_actor_arguments
     common.optional_local_nfd = lambda enabled: contextlib.nullcontext()
-    common.session_kwargs = lambda args: {}
     ndnsf = types.ModuleType("ndnsf")
     ndnsf.ServiceProvider = object
     ndnsf.ServiceUser = object

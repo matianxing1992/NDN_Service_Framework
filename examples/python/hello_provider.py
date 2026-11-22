@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from common import add_process_arguments, optional_local_nfd, print_commands, session_kwargs  # noqa: E402
+from common import add_native_actor_arguments, optional_local_nfd, print_commands  # noqa: E402
 
 from ndnsf import ServiceProvider  # noqa: E402
 
@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--service", default="/HELLO")
     parser.add_argument("--selection-gated", action="store_true")
     parser.add_argument("--prepare-failure", action="store_true")
-    add_process_arguments(parser)
+    add_native_actor_arguments(parser)
     return parser
 
 
@@ -37,7 +37,6 @@ def main() -> int:
         controller="/example/hello/controller",
         provider_prefix="/example/hello/provider",
         provider_id=args.provider_id,
-        **session_kwargs(args),
     )
 
     if args.selection_gated:

@@ -434,14 +434,14 @@ def _start_deployment_workflow(client, args):
         _runtime_journal(args, "deployment-operator"),
         readiness_verifier=verifier)
     revision = deployment.resolve(definition)
-    if revision.revision != args.deployment_revision:
+    if revision.plan_digest != args.deployment_revision:
         raise RuntimeError("deployment workflow revision differs from harness identity")
     artifacts = tuple(item.digest for item in definition.artifacts)
     readiness = tuple(readiness_from_response(_deployment_control_request(
-        client, service, "PREPARE", revision.revision, artifacts, args))
+        client, service, "PREPARE", revision.plan_digest, artifacts, args))
         for service in services)
     activations = tuple(action_from_response(_deployment_control_request(
-        client, service, "ACTIVATE", revision.revision, artifacts, args))
+        client, service, "ACTIVATE", revision.plan_digest, artifacts, args))
         for service in services)
     operation = deployment.apply(
         revision, readiness=readiness, activation_receipts=activations)
@@ -454,7 +454,7 @@ def _start_deployment_workflow(client, args):
         raise RuntimeError("deployment restart did not recover ACTIVE")
     print(
         "LLM_PIPELINE_DEPLOYMENT_ACTIVE "
-        f"revision={revision.revision} roles={len(readiness)}",
+        f"revision={revision.plan_digest} roles={len(readiness)}",
         flush=True,
     )
     return {
@@ -474,7 +474,7 @@ def _finish_deployment_workflow(client, workflow, args) -> None:
     services = workflow["services"]
     artifacts = workflow["artifacts"]
     drains = tuple(action_from_response(_deployment_control_request(
-        client, service, "DRAIN", revision.revision, artifacts, args))
+        client, service, "DRAIN", revision.plan_digest, artifacts, args))
         for service in services)
     if deployment.drain(
             definition.deployment_id,
@@ -484,24 +484,24 @@ def _finish_deployment_workflow(client, workflow, args) -> None:
     preview = type(revision).resolve(
         definition, epoch=revision.lifecycle_epoch + 1)
     rollback_readiness = tuple(readiness_from_response(_deployment_control_request(
-        client, service, "PREPARE", preview.revision, artifacts, args))
+        client, service, "PREPARE", preview.plan_digest, artifacts, args))
         for service in services)
     rollback_activations = tuple(action_from_response(_deployment_control_request(
-        client, service, "ACTIVATE", preview.revision, artifacts, args))
+        client, service, "ACTIVATE", preview.plan_digest, artifacts, args))
         for service in services)
     rollback = deployment.rollback(
         definition, readiness=rollback_readiness,
         activation_receipts=rollback_activations)
-    if rollback.revision != preview.revision or rollback.lifecycle_epoch != 2:
+    if rollback.revision != preview.plan_digest or rollback.lifecycle_epoch != 2:
         raise RuntimeError("rollback did not create the fenced epoch-2 revision")
 
     final_drains = tuple(action_from_response(_deployment_control_request(
-        client, service, "DRAIN", preview.revision, artifacts, args))
+        client, service, "DRAIN", preview.plan_digest, artifacts, args))
         for service in services)
     deployment.drain(
         definition.deployment_id, action_receipts=final_drains)
     deletes = tuple(action_from_response(_deployment_control_request(
-        client, service, "DELETE", preview.revision, artifacts, args))
+        client, service, "DELETE", preview.plan_digest, artifacts, args))
         for service in services)
     deployment.delete(
         definition.deployment_id, action_receipts=deletes)
@@ -517,7 +517,7 @@ def _finish_deployment_workflow(client, workflow, args) -> None:
     summary = {
         "schema": "ndnsf-di-spec111-minindn-deployment-workflow-v1",
         "status": "PASS",
-        "initialRevision": revision.revision,
+        "initialRevision": revision.plan_digest,
         "rollbackRevision": rollback.revision,
         "rollbackEpoch": rollback.lifecycle_epoch,
         "terminalState": RevisionState.DELETED.value,

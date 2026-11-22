@@ -67,7 +67,7 @@ from spec107_preflight import (  # noqa: E402
     write_invalid_preflight_record,
 )
 from ndnsf_distributed_inference.app_sdk import (  # noqa: E402
-    ArtifactReference, DeploymentDefinition, DeploymentRevision,
+    ArtifactReference, DeploymentDefinition, DeploymentPlan,
 )
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
@@ -523,7 +523,7 @@ def configure_spec111_deployment_workflow(config_path: Path, out: Path,
         tuple(roles),
         {"precision": "fake", "workflow": "spec111-minindn"},
     )
-    revision = DeploymentRevision.resolve(definition)
+    revision = DeploymentPlan.resolve(definition)
     definition_path = out / "deployment-definition.json"
     definition_path.write_text(json.dumps({
         "deploymentId": definition.deployment_id,
@@ -552,7 +552,7 @@ def configure_spec111_deployment_workflow(config_path: Path, out: Path,
         "controlServices": controls,
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return {
-        "revision": revision.revision,
+        "revision": revision.plan_digest,
         "definition": str(definition_path),
         "trust": str(trust_path),
         "controls": controls,

@@ -1827,14 +1827,6 @@ RepoClientCompat::localGetSegmented(ndn_service_framework::LocalServiceRegistry&
   return payload;
 }
 
-std::vector<uint8_t>
-RepoClientCompat::localGetObject(ndn_service_framework::LocalServiceRegistry& registry,
-                           const ndn::Name& repoServicePrefix,
-                           const RepoObjectManifest& manifest)
-{
-  return RepoClientCompat::localGetSegmented(registry, repoServicePrefix, manifest);
-}
-
 RepoObjectManifest
 RepoClientCompat::makeManifest(std::string objectName,
                          std::string objectType,

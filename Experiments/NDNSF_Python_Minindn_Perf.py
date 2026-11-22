@@ -166,8 +166,6 @@ def main() -> int:
         controller_cmd = python_cmd(
             "hello_controller.py",
             "--policy-file", "examples/hello.policies",
-            "--binary-dir", "build/examples",
-            "--library-dir", "/usr/local/lib",
         )
         start(ndn.net[args.controller_node], "python-controller", controller_cmd, env,
               output_dir, processes)
@@ -175,8 +173,6 @@ def main() -> int:
 
         provider_cmd = python_cmd(
             "hello_provider.py",
-            "--binary-dir", "build/examples",
-            "--library-dir", "/usr/local/lib",
         )
         provider_proc, provider_log = start(ndn.net[args.provider_node], "python-provider",
                                             provider_cmd, env, output_dir, processes)
@@ -194,8 +190,6 @@ def main() -> int:
             "--timeout-ms", str(args.timeout_ms),
             "--strategy", "first-responding",
             "--csv", str(csv_path),
-            "--binary-dir", "build/examples",
-            "--library-dir", "/usr/local/lib",
         )
         user_proc, user_log = start(ndn.net[args.user_node], "python-rate-user",
                                     user_cmd, env, output_dir, processes)

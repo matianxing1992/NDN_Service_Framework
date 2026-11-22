@@ -60,14 +60,6 @@ def run_hello(
             else lib_path + os.pathsep + env["LD_LIBRARY_PATH"]
         )
 
-    common_args = []
-    if session_options.get("binary_dir"):
-        common_args.extend(["--binary-dir", str(session_options["binary_dir"])])
-    for library_dir in session_options.get("library_dirs", []):
-        common_args.extend(["--library-dir", str(library_dir)])
-    if session_options.get("cwd"):
-        common_args.extend(["--working-dir", str(session_options["cwd"])])
-
     with NDNSFSession(log_dir=log_dir, **session_options) as ndnsf:
         if configure_local_nfd:
             ndnsf.configure_svs_group("/example/hello/group")
@@ -81,7 +73,7 @@ def run_hello(
 
         provider_log = (log_dir / "python-provider.out").open("w", encoding="utf-8")
         provider = subprocess.Popen(
-            [sys.executable, "examples/python/hello_provider.py", *common_args],
+            [sys.executable, "examples/python/hello_provider.py"],
             cwd=str(Path(__file__).resolve().parents[2]),
             env=env,
             stdout=provider_log,
@@ -96,7 +88,6 @@ def run_hello(
                     "examples/python/hello_user.py",
                     "--ack-timeout-ms", str(ack_timeout_ms),
                     "--timeout-ms", str(timeout_ms),
-                    *common_args,
                 ],
                 cwd=str(Path(__file__).resolve().parents[2]),
                 env=env,

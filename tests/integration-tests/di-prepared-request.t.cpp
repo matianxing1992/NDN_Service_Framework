@@ -23,6 +23,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
@@ -74,17 +75,24 @@ namespace {
 using namespace ndnsf::di;
 using ndn_service_framework::test::ScopedEnvironmentValue;
 
-#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
 std::vector<std::uint8_t>
-spec194Float32Input(float first, float second, float third)
+float32Triplet(float first, float second, float third)
 {
-  static_assert(sizeof(float) == 4, "Spec194 oracle requires 32-bit float");
+  static_assert(sizeof(float) == 4, "fixture requires 32-bit float");
   const std::array<float, 3> values{first, second, third};
   std::vector<std::uint8_t> payload(sizeof(values));
   std::memcpy(payload.data(), values.data(), payload.size());
   return payload;
 }
 
+TensorBundle
+fixtureTensor(std::string name, float first, float second, float third)
+{
+  return makeEncodedTensorBundle(name, {
+    {name, TensorElementType::Float32, {1, 3}, float32Triplet(first, second, third)}});
+}
+
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
 struct Spec194PlacementCapture
 {
   std::mutex mutex;
@@ -218,7 +226,7 @@ struct ConversationResultObservation
   }
 };
 
-// Exercise the public blocking PreparedModel::run() entry point while the
+// Exercise the public blocking User::run() entry point while the
 // integration fixture pumps the same borrowed Face used by the native
 // requester.  The worker owns only the immutable model/input/options and the
 // result state; the observation owner joins it before the fixture can be
@@ -255,15 +263,15 @@ struct PreparedRunObservation
 };
 
 std::shared_ptr<PreparedRunObservation>
-startPreparedRunObservation(PreparedModel model, Input input, RequestOptions options)
+startPreparedRunObservation(User user, PreparedModel model, Input input, RequestOptions options)
 {
   auto observation = std::make_shared<PreparedRunObservation>();
   observation->state = std::make_shared<ConversationResultState>();
   const auto state = observation->state;
-  observation->worker = std::thread([state, model = std::move(model), input = std::move(input),
-                                     options] () mutable {
+  observation->worker = std::thread([state, user = std::move(user), model = std::move(model),
+                                     input = std::move(input), options] () mutable {
     try {
-      auto result = model.run(input, options);
+      auto result = user.run(model, input, options);
       {
         std::lock_guard<std::mutex> lock(state->mutex);
         state->value = std::move(result);
@@ -896,14 +904,10 @@ public:
       catalog["publication"] = {{"artifact_root", "/fixture/artifacts"}};
       catalog["input_format"] = "OPAQUE";
       catalog["max_payload_bytes"] = maxPayloadBytes;
-      const NativeJson component = {
-        {"candidate_id", "semantic-v1"}, {"priority", 1},
-        {"roles", {"Front", "Branch", "Merge"}},
-        {"node_names_by_role", NativeJson::object()},
-        {"input_ingress_role", "Front"}, {"result_egress_role", "Merge"},
-        {"merge_kind", ""}, {"candidate_digest", oracle.at("registered_digest")},
-        {"semantic_partition", oracle.at("partition")} };
-      catalog["splitter"] = { {"kind", "YOLO"}, {"components", {component}} };
+      catalog["splitter"] = {
+        {"kind", "ONNX_SOURCE"}, {"selection_mode", "component"},
+        {"roles", {"Front", "Merge"}}, {"boundary_node", "onnx-node-1"},
+        {"input_ingress_role", "Front"}, {"result_egress_role", "Merge"}};
     }
 
     std::ofstream model(root / "model.onnx", std::ios::binary);
@@ -1226,14 +1230,12 @@ preparedProviderConfig(const std::string& serviceName,
 ExecutionEvidence
 makeResidentServedProviderEvidence(const NativeModelRunnerSpec& spec)
 {
-  const bool nativeMerge = spec.backend == "native-yolo-postprocess";
   ExecutionEvidence evidence;
   evidence.providerName = spec.metadata.at("provider");
   evidence.providerBootId = spec.metadata.at("boot");
   evidence.evidenceEpoch = 1;
-  evidence.runnerKind = nativeMerge ? RunnerKind::NativeYoloPostprocess
-                                    : RunnerKind::OnnxRuntimeCpu;
-  evidence.realCompute = !nativeMerge;
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCpu;
+  evidence.realCompute = true;
   evidence.deviceKind = "cpu";
   evidence.deviceId = "0";
   evidence.deviceIds = {"0"};
@@ -1242,8 +1244,8 @@ makeResidentServedProviderEvidence(const NativeModelRunnerSpec& spec)
   evidence.planDigest = spec.metadata.at("plan");
   evidence.artifactDigests[spec.role] = spec.metadata.at("artifact");
   evidence.roles = {spec.role};
-  evidence.loadCompleted = !nativeMerge;
-  evidence.warmupCompleted = !nativeMerge;
+  evidence.loadCompleted = true;
+  evidence.warmupCompleted = true;
   evidence.createdAtMs = 1;
   evidence.validate();
   return evidence;
@@ -1255,33 +1257,25 @@ public:
   ResidentServedProviderRunner(
     OnnxRuntimeSessionCache::Lease lease,
     ExecutionEvidence evidence,
-    std::shared_ptr<std::atomic<unsigned>> runs,
-    std::vector<std::string> publishedTensorNames)
+    std::shared_ptr<std::atomic<unsigned>> runs)
     : m_lease(std::move(lease))
     , m_evidence(std::move(evidence))
     , m_runs(std::move(runs))
-    , m_publishedTensorNames(std::move(publishedTensorNames))
   {
     if (!m_lease)
       throw std::invalid_argument("resident served-provider test lease is empty");
   }
 
   std::map<std::string, TensorBundle>
-  run(const RoleExecutionContext&) final
+  run(const RoleExecutionContext& context) final
   {
     m_runs->fetch_add(1, std::memory_order_relaxed);
-    if (!m_publishedTensorNames.empty()) {
-      std::vector<NamedTensor> tensors;
-      for (const auto& name : m_publishedTensorNames)
-        tensors.push_back({name, TensorElementType::UInt8, {1}, {1}});
-      return {{"fixture-activations",
-               makeEncodedTensorBundle("fixture-activations", std::move(tensors))}};
-    }
-    const std::string response = "di-provider-response";
-    const std::vector<std::uint8_t> responseBytes(response.begin(), response.end());
-    return {{"final-response", TensorBundle{
-      "final-response",
-      responseBytes, 1, responseBytes.size()}}};
+    if (!context.activeStep)
+      throw std::runtime_error("resident fixture requires a prepared component step");
+    std::map<std::string, TensorBundle> outputs;
+    for (const auto& slot : context.activeStep->outputSlots)
+      outputs.emplace(slot.slotId, fixtureTensor(slot.slotId, 1, 2, 3));
+    return outputs;
   }
 
   const std::optional<ExecutionEvidence>&
@@ -1300,7 +1294,6 @@ private:
   OnnxRuntimeSessionCache::Lease m_lease;
   std::optional<ExecutionEvidence> m_evidence;
   std::shared_ptr<std::atomic<unsigned>> m_runs;
-  std::vector<std::string> m_publishedTensorNames;
 };
 #endif
 
@@ -1381,18 +1374,24 @@ makeResidentServedProviderRunnerFactory(
   public:
     Factory(std::shared_ptr<OnnxRuntimeSessionCache> cache,
             std::shared_ptr<std::atomic<unsigned>> runs)
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+      : m_runs(std::move(runs))
+    {
+      registerOnnxRuntimeBackend(m_factory, std::move(cache));
+    }
+#else
       : m_cache(std::move(cache))
       , m_runs(std::move(runs))
     {
     }
+#endif
 
     std::shared_ptr<NativeModelRunner>
     create(const NativeModelRunnerSpec& spec) const final
     {
 #if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
-      auto runner = std::make_shared<OnnxRuntimeModelRunner>(spec, m_cache);
       return std::make_shared<CountingServedProviderOnnxRunner>(
-        std::move(runner), m_runs, spec.role);
+        m_factory.create(spec), m_runs, spec.role);
 #else
       // Compatibility cases inject a compact preparation spec with short
       // aliases instead of Provider's production evidence bindings.
@@ -1415,14 +1414,16 @@ makeResidentServedProviderRunnerFactory(
         return std::make_shared<std::uint8_t>(0);
       });
       return std::make_shared<ResidentServedProviderRunner>(
-        std::move(lease), makeResidentServedProviderEvidence(servedSpec), m_runs,
-        nativeParseJson(servedSpec.metadata.at("fixture.publishedTensors"))
-          .get<std::vector<std::string>>());
+        std::move(lease), makeResidentServedProviderEvidence(servedSpec), m_runs);
 #endif
     }
 
   private:
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+    RegistryNativeModelRunnerFactory m_factory;
+#else
     std::shared_ptr<OnnxRuntimeSessionCache> m_cache;
+#endif
     std::shared_ptr<std::atomic<unsigned>> m_runs;
   };
 
@@ -1447,52 +1448,26 @@ makePreparedServedProviderPreparation()
     spec.metadata["artifact"] = assembly.artifactDigest;
     spec.metadata["fragmentDigest"] = assembly.artifactDigest;
     spec.metadata["recipeDigest"] = assembly.recipeDigest;
-    std::set<std::string> published;
-    for (const auto& endpoint : projection.dataflow.mayPublish) {
-      if (endpoint.bundleTensorNames.empty())
-        published.insert(endpoint.tensorId);
-      else
-        published.insert(endpoint.bundleTensorNames.begin(), endpoint.bundleTensorNames.end());
-    }
-    spec.metadata["fixture.publishedTensors"] = nativeCanonicalJson(published);
-    if (assembly.mergeKind == "NATIVE_POSTPROCESS") {
-      spec.kind = "native-yolo-postprocess";
-      spec.backend = "native-yolo-postprocess";
-      std::string shape;
-      if (!assembly.expectedOutputs.empty()) {
-        for (const auto& dimension : assembly.expectedOutputs.front().shape) {
-          if (!shape.empty()) shape += ',';
-          shape += std::holds_alternative<std::int64_t>(dimension)
-            ? std::to_string(std::get<std::int64_t>(dimension))
-            : std::get<std::string>(dimension);
-        }
-      }
-      spec.metadata["mergeKind"] = assembly.mergeKind;
-      spec.metadata["postprocessIdentity"] = assembly.postprocessIdentity;
-      spec.metadata["postprocessOutputName"] = assembly.postprocessOutputName;
-      spec.metadata["postprocessSort"] = assembly.postprocessSort;
-      spec.metadata["expectedOutputShape"] = shape;
-      spec.metadata["postprocessConfidenceThreshold"] =
-        std::to_string(assembly.postprocessConfidenceThreshold);
-    }
-    else {
-      spec.kind = "onnx-model";
-      spec.backend = assembly.backend;
-      spec.path = (std::filesystem::temp_directory_path() / "model.onnx").string();
-      spec.metadata["modelManifestDigest"] = assembly.modelManifestDigest;
-      spec.metadata["artifactProfileDigest"] = assembly.artifactProfileDigest;
-      spec.metadata["graphDigest"] = assembly.graphDigest;
-      spec.metadata["canonicalInitializerDigest"] = assembly.canonicalInitializerDigest;
-      spec.metadata["adapterDescriptorDigest"] = assembly.adapterDescriptorDigest;
-      spec.metadata["assemblerDescriptorDigest"] = assembly.assemblerDescriptorDigest;
-      spec.metadata["backendAbi"] = assembly.backendAbi;
-      spec.metadata["precision"] = assembly.precision;
-      spec.metadata["quantization"] = assembly.quantization;
-      spec.metadata["layout"] = assembly.layout;
-      spec.metadata["padding"] = assembly.padding;
-      spec.metadata["maxSourceBytes"] = std::to_string(assembly.maxSourceBytes);
-      spec.metadata["maxAssembledBytes"] = std::to_string(assembly.maxAssembledBytes);
-      spec.metadata["maxNodes"] = std::to_string(assembly.maxNodes);
+    spec.kind = "onnx-model";
+    spec.backend = assembly.backend;
+    spec.path = (std::filesystem::temp_directory_path() / "model.onnx").string();
+    spec.metadata["modelManifestDigest"] = assembly.modelManifestDigest;
+    spec.metadata["artifactProfileDigest"] = assembly.artifactProfileDigest;
+    spec.metadata["graphDigest"] = assembly.graphDigest;
+    spec.metadata["canonicalInitializerDigest"] = assembly.canonicalInitializerDigest;
+    spec.metadata["adapterDescriptorDigest"] = assembly.adapterDescriptorDigest;
+    spec.metadata["assemblerDescriptorDigest"] = assembly.assemblerDescriptorDigest;
+    spec.metadata["backendAbi"] = assembly.backendAbi;
+    spec.metadata["precision"] = assembly.precision;
+    spec.metadata["quantization"] = assembly.quantization;
+    spec.metadata["layout"] = assembly.layout;
+    spec.metadata["padding"] = assembly.padding;
+    spec.metadata["maxSourceBytes"] = std::to_string(assembly.maxSourceBytes);
+    spec.metadata["maxAssembledBytes"] = std::to_string(assembly.maxAssembledBytes);
+    spec.metadata["maxNodes"] = std::to_string(assembly.maxNodes);
+    spec.metadata["assembledModelDigest"] = assembly.artifactDigest;
+    if (!detail::bindNativeWholeRegionEntry(projection, spec)) {
+      throw std::runtime_error("resident served-provider fixture requires a component entry");
     }
     return spec;
   };
@@ -1515,6 +1490,12 @@ struct DiPreparedModelTestAccess
   {
     return model.m_package->catalog.preparation->sourceLifetimeForTest(
       model.m_package->catalog.model.descriptor);
+  }
+
+  static RequestHandle
+  request(const PreparedModel& model, Input input, const RequestOptions& options = {})
+  {
+    return model.requestInternal(std::move(input), options);
   }
 
   static PreparedModel
@@ -1867,7 +1848,7 @@ BOOST_AUTO_TEST_CASE(NativeRequesterThroughMiniNdn)
   options.timeout = std::chrono::milliseconds(60000);
   options.ackTimeout = std::chrono::milliseconds(1500);
   options.placement = runtime->placementStrategy("native-observation-aware-v4");
-  const auto handle = prepared.request(Input::inlineBytes(spec187ReadInput(inputPath)), options);
+  const auto handle = runtime->user().request(prepared, Input::inlineBytes(spec187ReadInput(inputPath)), options);
   const auto result = handle.result(options.timeout);
 #if defined(SPEC188_YOLO_SELECTOR)
   // Reuse the same prepared handle for a second real request.  This is the
@@ -1875,7 +1856,7 @@ BOOST_AUTO_TEST_CASE(NativeRequesterThroughMiniNdn)
   // state must be new, while the canonical source must not be looked up or
   // published again.
   const auto secondHandle =
-    prepared.request(Input::inlineBytes(spec187ReadInput(inputPath)), options);
+    runtime->user().request(prepared, Input::inlineBytes(spec187ReadInput(inputPath)), options);
   const auto secondResult = secondHandle.result(options.timeout);
 #endif
 #if defined(SPEC188_YOLO_SELECTOR)
@@ -2033,7 +2014,7 @@ BOOST_AUTO_TEST_CASE(StreamingRequestReaderPreservesTerminalEventAcrossCancel)
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
   options.stream = StreamOptions{true};
-  auto handle = prepared.request(Input::inlineBytes({0x01, 0x02, 0x03}), options);
+  auto handle = runtime->user().request(prepared, Input::inlineBytes({0x01, 0x02, 0x03}), options);
   auto reader = handle.events();
   BOOST_CHECK_EXCEPTION(reader.next(std::chrono::milliseconds(0)), DiError,
                         [] (const DiError& error) {
@@ -2102,7 +2083,7 @@ BOOST_AUTO_TEST_CASE(VerifiedStreamingDefaultsMaterializeWithoutExplicitOptions)
   options.ackTimeout = std::chrono::milliseconds(50);
   // The verified task contract supplies stream and generation defaults; an
   // ordinary caller need not duplicate those operator-owned fields.
-  auto handle = prepared.request(Input::inlineBytes({0x01, 0x02, 0x03}), options);
+  auto handle = runtime->user().request(prepared, Input::inlineBytes({0x01, 0x02, 0x03}), options);
   BOOST_REQUIRE(!handle.id().empty());
   handle.cancel();
   BOOST_CHECK(handle.status() == RequestStatus::Cancelled ||
@@ -2217,6 +2198,8 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   offerConfig.signerKeyId = offerKeyId;
   offerConfig.acceptedRoles = roles;
   offerConfig.backends = {"onnxruntime-cpu"};
+  // The Core-only handler below simulates the result of this V2 component plan.
+  offerConfig.capabilities = {NATIVE_STEP_PLAN_CAPABILITY_V2};
   offerConfig.hasModel = true;
   offerConfig.signDigest = [offerKey] (const std::string& value) {
     return signDigest(offerKey, value);
@@ -2361,8 +2344,8 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   // retaining a bounded request deadline for the negative paths below.
   options.timeout = std::chrono::seconds(10);
   options.ackTimeout = std::chrono::seconds(5);
-  auto first = providerPrepared.request(Input::inlineBytes({0x01, 0x02, 0x03}), options);
-  auto second = providerPrepared.request(Input::inlineBytes({0x04, 0x05, 0x06}), options);
+  auto first = runtime->user().request(providerPrepared, Input::inlineBytes({0x01, 0x02, 0x03}), options);
+  auto second = runtime->user().request(providerPrepared, Input::inlineBytes({0x04, 0x05, 0x06}), options);
   BOOST_REQUIRE_NE(first.id(), second.id());
   const auto firstId = first.id();
   BOOST_REQUIRE(first.status() == RequestStatus::Pending);
@@ -2495,7 +2478,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   // this fixture pumps the real Face; a local fake client would miss the
   // scheduling and transport boundaries that this regression protects.
   auto runObservation = startPreparedRunObservation(
-    providerPrepared, Input::inlineBytes({0x0a, 0x0b, 0x0c}), options);
+    runtime->user(), providerPrepared, Input::inlineBytes({0x0a, 0x0b, 0x0c}), options);
   pumpUntilPreparedRunReady(*environment, runObservation, std::chrono::seconds(10));
   const auto runResult = runObservation->get();
   BOOST_CHECK_EQUAL(std::string(runResult.payload.begin(), runResult.payload.end()),
@@ -2524,7 +2507,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
     {"dataName", "/group/data/di-t005"}, {"encrypted", true},
     {"manifestDigest", "sha256:" + std::string(64, 'c')},
     {"plaintextSize", 3}, {"protectionEpoch", "fixture-epoch"} };
-  auto wrongDigestRequest = providerPrepared.request(
+  auto wrongDigestRequest = runtime->user().request(providerPrepared,
     Input::repository(DataRef::fromPublishedMetadata(nativeCanonicalJson(wrongReference))), options);
   auto wrongDigestObservation = startConversationResultObservation(
     wrongDigestRequest, std::chrono::seconds(5));
@@ -2560,7 +2543,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   revokedStatus.addRevocation(revokedUser);
   BOOST_REQUIRE(environment->user().installControllerStatus(revokedStatus));
 
-  auto revokedRequest = providerPrepared.request(Input::inlineBytes({0x06, 0x07, 0x08}), options);
+  auto revokedRequest = runtime->user().request(providerPrepared, Input::inlineBytes({0x06, 0x07, 0x08}), options);
   auto revokedObservation = startConversationResultObservation(
     revokedRequest, std::chrono::seconds(5));
   pumpUntilConversationResultReady(*environment, revokedObservation,
@@ -2691,14 +2674,9 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   // not depend on an ignored, locally supplied Qwen model file. The selected
   // request still traverses Provider::serve and its native assembly/runner
   // pipeline; Spec194 also binds the signed V4 offer to the placement proposal.
-#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   // The terminal float32 TensorBundle includes codec metadata beyond its
-  // twelve-byte tensor payload; keep this larger cap local to the Spec194
-  // production-runner selector.
+  // twelve-byte tensor payload.
   RuntimeFixture fixture(false, false, 4096);
-#else
-  RuntimeFixture fixture;
-#endif
   ndn_service_framework::test::BootstrapProfile profile;
   profile.groupPrefix = ndn::Name("/group");
   profile.syncPrefix = ndn::Name("/ndnsf/spec185/served-provider/sync");
@@ -2708,14 +2686,14 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = ndn::Name("/aa");
   profile.serviceName = ndn::Name("/Inference");
-  profile.providerRoles = {"/Front", "/Branch", "/Merge"};
+  profile.providerRoles = {"/Front", "/Merge"};
   profile.deferBridgeDelivery = true;
   profile.providerFacesHaveDedicatedIoWorkers = true;
   auto environment = std::make_shared<
     ndn_service_framework::test::NdnsfIntegrationEnvironment>(profile);
   environment->bootstrap();
 
-  // This selector places all three dependent roles on one Provider. Give each
+  // This selector places both dependent roles on one Provider. Give each
   // role a ServiceProvider handler thread and a NativeProviderHandler worker,
   // so a consumer readiness wait cannot queue its local producer behind itself.
   const auto providerRoleWorkerCount = profile.providerRoles.size();
@@ -2821,6 +2799,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   offerConfig.signerKeyId = offerKeyId;
   offerConfig.acceptedRoles = roles;
   offerConfig.backends = {"onnxruntime-cpu"};
+  offerConfig.capabilities = {NATIVE_STEP_PLAN_CAPABILITY_V2};
   offerConfig.hasModel = true;
   offerConfig.signDigest = [offerKey] (const std::string& value) {
     return signDigest(offerKey, value);
@@ -3159,12 +3138,8 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   options.placement = runtime->placementStrategy(
     "spec194-recording-observation-aware-v4");
 #endif
-#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
-  auto handle = prepared.request(
-    Input::inlineBytes(spec194Float32Input(1.0F, 2.0F, 3.0F)), options);
-#else
-  auto handle = prepared.request(Input::inlineBytes({0x01, 0x02, 0x03}), options);
-#endif
+  auto handle = runtime->user().request(prepared,
+    Input::inlineBytes(fixtureTensor("images", 1, 2, 3).payload), options);
   auto observation = startConversationResultObservation(handle, requestResultTimeout);
 #if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   const auto result = [&] {
@@ -3200,11 +3175,13 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   const auto result = observation->get();
 #endif
 #if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
-  BOOST_CHECK(!result.payload.empty());
+  // The fixture computes 2 * (images + bias) for these positive inputs.
+  const auto expected = fixtureTensor("predictions", 4, 8, 12);
 #else
-  BOOST_CHECK_EQUAL(std::string(result.payload.begin(), result.payload.end()),
-                    "di-provider-response");
+  const auto expected = fixtureTensor("predictions", 1, 2, 3);
 #endif
+  BOOST_CHECK_EQUAL_COLLECTIONS(result.payload.begin(), result.payload.end(),
+                                expected.payload.begin(), expected.payload.end());
   BOOST_CHECK_EQUAL(result.modelDigest, model.intentDigest());
   BOOST_CHECK(!result.planDigest.empty());
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), roles.size());
@@ -3225,22 +3202,19 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   }
 #endif
   const auto firstRequestRunnerCalls = runs->load(std::memory_order_relaxed);
-#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
-  auto secondHandle = prepared.request(
-    Input::inlineBytes(spec194Float32Input(4.0F, 5.0F, 6.0F)), options);
-#else
-  auto secondHandle = prepared.request(Input::inlineBytes({0x04, 0x05, 0x06}), options);
-#endif
+  auto secondHandle = runtime->user().request(prepared,
+    Input::inlineBytes(fixtureTensor("images", 4, 5, 6).payload), options);
   auto secondObservation = startConversationResultObservation(
     secondHandle, requestResultTimeout);
   pumpUntilConversationResultReady(*environment, secondObservation, requestResultTimeout);
   const auto secondResult = secondObservation->get();
 #if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
-  BOOST_CHECK(!secondResult.payload.empty());
+  const auto secondExpected = fixtureTensor("predictions", 10, 14, 18);
 #else
-  BOOST_CHECK_EQUAL(std::string(secondResult.payload.begin(), secondResult.payload.end()),
-                    "di-provider-response");
+  const auto& secondExpected = expected;
 #endif
+  BOOST_CHECK_EQUAL_COLLECTIONS(secondResult.payload.begin(), secondResult.payload.end(),
+                                secondExpected.payload.begin(), secondExpected.payload.end());
   BOOST_CHECK_EQUAL(secondResult.modelDigest, model.intentDigest());
   BOOST_CHECK(!secondResult.planDigest.empty());
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed),
@@ -3289,12 +3263,8 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   revokedStatus.addRevocation(revokedUser);
   BOOST_REQUIRE(environment->user().installControllerStatus(revokedStatus));
 
-#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
-  auto revokedHandle = prepared.request(
-    Input::inlineBytes(spec194Float32Input(7.0F, 8.0F, 9.0F)), options);
-#else
-  auto revokedHandle = prepared.request(Input::inlineBytes({0x07, 0x08, 0x09}), options);
-#endif
+  auto revokedHandle = runtime->user().request(prepared,
+    Input::inlineBytes(fixtureTensor("images", 7, 8, 9).payload), options);
   auto revokedObservation = startConversationResultObservation(
     revokedHandle, std::chrono::seconds(5));
   pumpUntilConversationResultReady(*environment, revokedObservation,
@@ -3727,23 +3697,23 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
                                                "600000", 3600001})) {
     const auto corrupted = ndnsf::di::DiPreparedModelTestAccess::withConversationTurn(
       prepared, NativeJson{{"retention_duration_ms", invalid}});
-    BOOST_CHECK_EXCEPTION(corrupted.openConversation(), DiError,
+    BOOST_CHECK_EXCEPTION(runtime->user().openConversation(corrupted), DiError,
       [] (const DiError& error) { return error.code() == "INVALID_RUNTIME_CONFIGURATION"; });
   }
   const auto conflicting = ndnsf::di::DiPreparedModelTestAccess::withConversationTurn(
     prepared, NativeJson{{"retention_duration_ms", 600000}, {"retention_deadline_ms", 1}});
-  BOOST_CHECK_EXCEPTION(conflicting.openConversation(), DiError,
+  BOOST_CHECK_EXCEPTION(runtime->user().openConversation(conflicting), DiError,
     [] (const DiError& error) { return error.code() == "INVALID_RUNTIME_CONFIGURATION"; });
   const auto expired = ndnsf::di::DiPreparedModelTestAccess::withConversationTurn(
     prepared, NativeJson{{"retention_deadline_ms", 1}});
-  BOOST_CHECK_EXCEPTION(expired.openConversation(), DiError,
+  BOOST_CHECK_EXCEPTION(runtime->user().openConversation(expired), DiError,
     [] (const DiError& error) { return error.code() == "CONVERSATION_RETENTION_EXPIRED"; });
   const auto clockMs = [] {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
   };
   const auto beforeOpen = clockMs();
-  auto conversation = prepared.openConversation();
+  auto conversation = runtime->user().openConversation(prepared);
   const auto afterOpen = clockMs();
   RequestOptions options;
   // The three-turn recovery path includes a fresh authenticated preparation
@@ -3779,7 +3749,7 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   blockerOptions.generation.reset();
   const std::vector<std::uint8_t> blockerApplicationOptions(
     blockerDefaults.begin(), blockerDefaults.end());
-  auto blocker = prepared.request(
+  auto blocker = runtime->user().request(prepared,
     Input::inlineBytes({0x0a, 0x0b, 0x0c}, blockerApplicationOptions), blockerOptions);
   auto blockerCompletion = blocker.onCompletion(failureCompletion.callback());
   blocker.cancel();
@@ -3887,7 +3857,7 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   BOOST_CHECK(recoveredCheckpoint.bytes() == secondCheckpointBytes);
   restoredOptions.conversationId = nativeParseJson(recoveryWire).at("conversationId").get<std::string>();
   restoredOptions.checkpoint = recoveredCheckpoint;
-  auto restored = prepared.openConversation(restoredOptions);
+  auto restored = runtime->user().openConversation(prepared, restoredOptions);
   auto third = restored.request(Input::inlineBytes({0x07, 0x08, 0x09}), options);
   auto thirdObservation = startConversationResultObservation(third, conversationResultWait);
   pumpUntilConversationResultReady(environment, thirdObservation, conversationTimeout);
@@ -3930,7 +3900,7 @@ BOOST_AUTO_TEST_CASE(PlacementHandlesAreRuntimeBound)
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
   options.placement = placement;
-  BOOST_CHECK_EXCEPTION(instrumented.request(Input::inlineBytes({0x01}), options), DiError,
+  BOOST_CHECK_EXCEPTION(firstRuntime->user().request(instrumented, Input::inlineBytes({0x01}), options), DiError,
                         [] (const DiError& error) {
                           return error.code() == "STRATEGY_NOT_FOUND" &&
                                  error.boundary() == "request";
@@ -3959,7 +3929,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestFactoryErrorsMapAtPublicBoundary)
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
-  BOOST_CHECK_EXCEPTION(throwing.request(Input::inlineBytes({0x01}), options), DiError,
+  BOOST_CHECK_EXCEPTION(ndnsf::di::DiPreparedModelTestAccess::request(throwing, Input::inlineBytes({0x01}), options), DiError,
                         [] (const DiError& error) {
                           return error.code() == "REQUEST_FAILED" &&
                                  error.domain() == "runtime" &&
@@ -3977,7 +3947,7 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncIncludesNativeClientWork)
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
-  auto handle = prepared.request(Input::inlineBytes({0x01}), options);
+  auto handle = runtime->user().request(prepared, Input::inlineBytes({0x01}), options);
   runtime->close();
   const auto drainTimeout = testDrainTimeout();
   Subscription subscription;
@@ -4023,7 +3993,7 @@ BOOST_AUTO_TEST_CASE(RuntimeClientDoesNotKeepEvictedPackageAlive)
     RequestOptions options;
     options.timeout = std::chrono::milliseconds(500);
     options.ackTimeout = std::chrono::milliseconds(50);
-    auto handle = first->request(Input::inlineBytes({0x01}), options);
+    auto handle = runtime->user().request(*first, Input::inlineBytes({0x01}), options);
     handle.cancel();
     binding.environment->pumpUntil([] { return false; });
   }
@@ -4049,8 +4019,8 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncTracksMultiplePreparedClients)
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
-  auto primaryHandle = primary.request(Input::inlineBytes({0x01}), options);
-  auto secondaryHandle = secondary.request(Input::inlineBytes({0x02}), options);
+  auto primaryHandle = runtime->user().request(primary, Input::inlineBytes({0x01}), options);
+  auto secondaryHandle = runtime->user().request(secondary, Input::inlineBytes({0x02}), options);
   BOOST_REQUIRE(!primaryHandle.id().empty());
   BOOST_REQUIRE(!secondaryHandle.id().empty());
 
@@ -4098,7 +4068,7 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncWakesAfterLastClientTimerRetires)
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(300);
   options.ackTimeout = std::chrono::milliseconds(50);
-  auto handle = prepared.request(Input::inlineBytes({0x01}), options);
+  auto handle = runtime->user().request(prepared, Input::inlineBytes({0x01}), options);
 
   // Keep Runtime open: this exercises the non-closing drainAsync path and
   // requires the client-owned request deadline timer to release its final
@@ -4123,7 +4093,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestRejectsUnsupportedTextBeforeNativeSubmission
       std::shared_ptr<NativeInferenceClient> {
       throw std::logic_error("unsupported text reached the native factory");
     });
-  BOOST_CHECK_EXCEPTION(prepared.request(Input::text("hello")), DiError,
+  BOOST_CHECK_EXCEPTION(ndnsf::di::DiPreparedModelTestAccess::request(prepared, Input::text("hello")), DiError,
                         [] (const DiError& error) {
                           return error.code() == "UNSUPPORTED_CAPABILITY" &&
                                  error.boundary() == "input";
@@ -4140,7 +4110,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestRejectsUnsupportedGenerationContract)
   RequestOptions options;
   options.stream = StreamOptions{};
   options.generation = GenerationOptions{4};
-  BOOST_CHECK_EXCEPTION(prepared.request(Input::inlineBytes({0x01}), options), DiError,
+  BOOST_CHECK_EXCEPTION(ndnsf::di::DiPreparedModelTestAccess::request(prepared, Input::inlineBytes({0x01}), options), DiError,
                         [] (const DiError& error) {
                           return error.code() == "UNSUPPORTED_CAPABILITY" &&
                                  error.boundary() == "request";
@@ -4172,7 +4142,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestValidatesProtectedReferenceMetadata)
   auto oversized = reference;
   oversized["plaintextSize"] = 33; // fixture adapter max_payload_bytes is 32
   const auto oversizedRef = DataRef::fromPublishedMetadata(nativeCanonicalJson(oversized));
-  BOOST_CHECK_EXCEPTION(prepared.request(Input::repository(oversizedRef)), DiError,
+  BOOST_CHECK_EXCEPTION(runtime->user().request(prepared, Input::repository(oversizedRef)), DiError,
                         [] (const DiError& error) {
                           return error.code() == "INVALID_DATA_REFERENCE" &&
                                  error.boundary() == "input";
@@ -4192,7 +4162,8 @@ BOOST_AUTO_TEST_CASE(Spec189PreparedHandleAllocatesReferenceOnlyRequests)
   config.repositoryArtifactPublisher = repoOwner.concreteProvider;
   auto runtime = Runtime::open(std::move(config));
   binding = bindInProcessRuntime(fixture, runtime);
-  auto prepared = runtime->user().prepare();
+  auto user = runtime->user();
+  auto prepared = user.prepare();
   const auto repoProvider = repoOwner.concreteProvider;
   const auto prepareStats = repoProvider->stats();
   BOOST_REQUIRE_EQUAL(prepareStats.lookups, 1U);
@@ -4205,9 +4176,9 @@ BOOST_AUTO_TEST_CASE(Spec189PreparedHandleAllocatesReferenceOnlyRequests)
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
   std::cerr << "SPEC189_HANDLE_BEFORE_FIRST\n";
-  const auto first = prepared.request(Input::inlineBytes({0x01, 0x02}), options);
+  const auto first = user.request(prepared, Input::inlineBytes({0x01, 0x02}), options);
   std::cerr << "SPEC189_HANDLE_AFTER_FIRST\n";
-  const auto second = prepared.request(Input::inlineBytes({0x03, 0x04}), options);
+  const auto second = user.request(prepared, Input::inlineBytes({0x03, 0x04}), options);
   std::cerr << "SPEC189_HANDLE_AFTER_SECOND\n";
   BOOST_REQUIRE(!first.id().empty());
   BOOST_REQUIRE(!second.id().empty());
@@ -4237,7 +4208,13 @@ BOOST_AUTO_TEST_CASE(Spec189PreparedHandleAllocatesReferenceOnlyRequests)
     BOOST_CHECK(cancellationBoundary);
   }
   std::cerr << "SPEC189_HANDLE_BEFORE_STATUS\n";
-  BOOST_CHECK_EXCEPTION(prepared.request(Input::inlineBytes({0x05, 0x06}), options), DiError,
+  BOOST_CHECK_EXCEPTION(
+    user.request(prepared, Input::inlineBytes({0x05, 0x06}), options), DiError,
+    [] (const DiError& error) {
+      return error.code() == "RUNTIME_CLOSED" && error.boundary() == "request";
+    });
+  BOOST_CHECK_EXCEPTION(
+    DiPreparedModelTestAccess::request(prepared, Input::inlineBytes({0x05, 0x06}), options), DiError,
                         [] (const DiError& error) {
                           std::cerr << "SPEC189_CLOSED_REQUEST_ERROR code=" << error.code()
                                     << " domain=" << error.domain()

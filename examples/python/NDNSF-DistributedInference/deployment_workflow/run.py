@@ -37,16 +37,16 @@ revision = deployment.resolve(definition)
 print(deployment.plan(revision))
 artifacts = tuple(item.digest for item in definition.artifacts)
 readiness = tuple(provider.stage(
-    revision.revision,
+    revision.plan_digest,
     ExecutionTargetProposal(role, "/example/provider", "example", "cpu"),
     artifacts) for role in definition.roles)
 activations = tuple(provider.activate(item) for item in readiness)
 deployment.apply(
     revision, readiness=readiness, activation_receipts=activations)
 client = APPClient(journal, executor=lambda payload: payload)
-handle = client.submit(definition.deployment_id, revision.revision, b"model-input")
+handle = client.submit(definition.deployment_id, revision.plan_digest, b"model-input")
 print(client.wait(handle), client.result(handle))
 deployment.drain(
     definition.deployment_id, action_receipts=provider.drain())
 deployment.delete(
-    definition.deployment_id, action_receipts=provider.delete(revision.revision))
+    definition.deployment_id, action_receipts=provider.delete(revision.plan_digest))

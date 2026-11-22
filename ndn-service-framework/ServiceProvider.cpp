@@ -6203,20 +6203,6 @@ namespace ndn_service_framework
     }
 
     ServiceProvider::ServiceRegistration
-    ServiceProvider::addScopedService(const ndn::Name& serviceName,
-                                      AckStrategyHandler ackHandler,
-                                      RequestHandler requestHandler,
-                                      ServiceMode mode)
-    {
-        // A scoped registration is guaranteed fresh, so the legacy
-        // ServiceMode field merge collapses onto the two invocation modes.
-        return addScopedService(
-            serviceName, std::move(ackHandler), std::move(requestHandler),
-            mode == ServiceMode::Targeted ? ServiceInvocationMode::TargetedOnly
-                                          : ServiceInvocationMode::NormalOnly);
-    }
-
-    ServiceProvider::ServiceRegistration
     ServiceProvider::addScopedTargetedService(
         const ndn::Name& serviceName,
         AsyncTargetedRequestHandler requestHandler)
@@ -7865,14 +7851,6 @@ namespace ndn_service_framework
     void ServiceProvider::setLocalPublicationHandler(LocalPublicationHandler handler)
     {
         m_localPublicationHandler = std::move(handler);
-    }
-
-    void ServiceProvider::setLegacyAckStrategyHandler(
-        const ndn::Name& serviceName,
-        LegacyAckStrategyHandler ackHandler)
-    {
-        setAckStrategyHandler(serviceName,
-                              wrapLegacyAckStrategyHandler(std::move(ackHandler)));
     }
 
     bool ServiceProvider::hasService(const ndn::Name& serviceName) const

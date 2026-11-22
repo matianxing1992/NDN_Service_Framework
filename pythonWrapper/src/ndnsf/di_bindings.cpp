@@ -1020,18 +1020,7 @@ bindDistributedInference(py::module_& module)
                            py::return_value_policy::reference_internal)
     .def_property_readonly("receipt", &di::PreparedModel::receipt,
                            py::return_value_policy::reference_internal)
-    .def_property_readonly("capabilities", &di::PreparedModel::capabilities)
-    .def("request", &di::PreparedModel::request,
-         py::arg("input"), py::kw_only(),
-         py::arg("options") = di::RequestOptions{})
-    .def("run", [] (const di::PreparedModel& model, const di::Input& input,
-                     const di::RequestOptions& options) {
-      py::gil_scoped_release release;
-      return model.run(input, options);
-    }, py::arg("input"), py::kw_only(),
-       py::arg("options") = di::RequestOptions{})
-    .def("open_conversation", &di::PreparedModel::openConversation,
-         py::kw_only(), py::arg("options") = di::ConversationOptions{});
+    .def_property_readonly("capabilities", &di::PreparedModel::capabilities);
 
   py::class_<di::PreparationHandle>(module, "PreparationHandle")
     .def_property_readonly("status", &di::PreparationHandle::status)

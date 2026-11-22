@@ -146,7 +146,7 @@ main(int argc, char* argv[])
         const auto& certWire = certificate.wireEncode();
         save("l03-certificate.wire", {certWire.begin(), certWire.end()});
         repo_api::RepoDataReference reference;
-        reference.objectName = localObject + "/insert";
+        reference.objectName = packetName;
         reference.dataPrefix = packetName;
         reference.objectType = "ndn-local-packet-set";
         reference.expectedSize = wire.size();
@@ -160,31 +160,27 @@ main(int argc, char* argv[])
         const auto completed = repo_api::RepoClientCompat::localStatus(registry, prefix, inserted.operationId);
         if (inserted.state != "DONE" || completed.toJson() != inserted.toJson() ||
             inserted.completedSegments != 1 || inserted.totalSegments != 1) {
-          throw std::runtime_error("L03 local INSERT/STATUS did not complete exact packet");
+          throw std::runtime_error("L03 local INSERT/STATUS did not complete exact packet: " +
+                                   inserted.message);
         }
         const auto parent = repo_api::RepoClientCompat::localGetManifest(registry, prefix, reference.objectName);
-        const auto packet = repo_api::RepoClientCompat::localGetManifest(registry, prefix, packetName);
         const auto catalog = repo_api::RepoClientCompat::localCatalogStatus(registry, prefix);
         const auto snapshot = repo_api::RepoClientCompat::localCatalogSnapshot(registry, prefix);
         const auto delta = repo_api::RepoClientCompat::localCatalogDelta(registry, prefix, initial.catalogEpoch);
         const auto lookup = repo_api::RepoClientCompat::localCatalogLookup(registry, prefix, reference.objectName);
         auto catalogParent = parent;
         if (catalogParent.replicaNodes.empty()) catalogParent.replicaNodes.push_back(config.repoNode);
-        if (catalog.objectCount != 2 || snapshot.entries.size() != 2 || delta.entries.size() != 2 ||
+        if (catalog.objectCount != 1 || snapshot.entries.size() != 1 || delta.entries.size() != 1 ||
             lookup.manifest.toJson() != catalogParent.toJson() || lookup.state != "AVAILABLE" ||
             lookup.sourceRepo != config.repoNode ||
-            parent.packetNames != std::vector<std::string>{packetName} ||
-            parent.sha256 != reference.expectedSha256 || packet.sha256 != parent.sha256) {
+            parent.packetNames.size() != 1 ||
+            ndn::Name(parent.packetNames.front()) != ndn::Name(packetName) ||
+            parent.sha256 != reference.expectedSha256) {
           throw std::runtime_error("L03 local catalog disagrees with original packet");
         }
-        const auto cacheBefore = repo_api::RepoClientCompat::localCacheStatus(registry, prefix);
         if (repo_api::RepoClientCompat::localGet(registry, prefix, packetName) != wire ||
             repo_api::RepoClientCompat::localGet(registry, prefix, packetName) != wire) {
-          throw std::runtime_error("L03 cached reads changed original Data wire");
-        }
-        const auto cacheAfter = repo_api::RepoClientCompat::localCacheStatus(registry, prefix);
-        if (cacheAfter.hits < cacheBefore.hits + 2) {
-          throw std::runtime_error("L03 cache status did not observe repeated reads");
+          throw std::runtime_error("L03 repeated reads changed original Data wire");
         }
         bool missingLookup = false;
         try { (void)repo_api::RepoClientCompat::localCatalogLookup(registry, prefix, localObject + "/missing"); }
@@ -199,7 +195,7 @@ main(int argc, char* argv[])
         if (!missingLookup || failed.state != "FAILED" || failed.completedSegments != 0 ||
             failed.message.find("local-fetch-denied") == std::string::npos ||
             failedQuery.toJson() != failed.toJson() ||
-            repo_api::RepoClientCompat::localCatalogStatus(registry, prefix).objectCount != 2) {
+            repo_api::RepoClientCompat::localCatalogStatus(registry, prefix).objectCount != 1) {
           throw std::runtime_error("L03 failed INSERT or missing lookup changed durable catalog");
         }
         const auto segmented = repo_api::RepoClientCompat::localPutSegmented(
@@ -208,27 +204,30 @@ main(int argc, char* argv[])
         const auto plain = repo_api::RepoClientCompat::localPutSegmented(
           registry, prefix, localObject + "/plain", small, {}, segmentBytes);
         if (segmented.segmentCount < 4 || plain.segmentCount != 1 ||
-            repo_api::RepoClientCompat::localGetSegmented(registry, prefix, segmented) != payload ||
-            repo_api::RepoClientCompat::localGetObject(registry, prefix, segmented) != payload ||
-            repo_api::RepoClientCompat::localGetSegmented(registry, prefix, plain) != small ||
-            repo_api::RepoClientCompat::localGetObject(registry, prefix, plain) != small) {
-          throw std::runtime_error("L04 local segmented/plain reads disagree with source");
+            repo_api::RepoClientCompat::localGetSegmented(registry, prefix, segmented) != payload) {
+          throw std::runtime_error("L04 local segmented read disagrees with source");
+        }
+        const auto cacheBefore = repo_api::RepoClientCompat::localCacheStatus(registry, prefix);
+        if (repo_api::RepoClientCompat::localGetSegmented(registry, prefix, plain) != small ||
+            repo_api::RepoClientCompat::localGetSegmented(registry, prefix, plain) != small) {
+          throw std::runtime_error("L04 repeated plain reads disagree with source");
+        }
+        const auto cacheAfter = repo_api::RepoClientCompat::localCacheStatus(registry, prefix);
+        if (cacheAfter.hits < cacheBefore.hits + 2) {
+          throw std::runtime_error("L04 cache status did not observe repeated plain reads");
         }
         const auto segmentName = segmented.objectName + "/seg/1";
         const std::vector<uint8_t> segment(payload.begin() + segmentBytes,
                                           payload.begin() + segmentBytes * 2);
         const auto rejectReads = [&] (const std::string& reason) {
-          for (const bool object : {false, true}) {
-            bool rejected = false;
-            try {
-              if (object) (void)repo_api::RepoClientCompat::localGetObject(registry, prefix, segmented);
-              else (void)repo_api::RepoClientCompat::localGetSegmented(registry, prefix, segmented);
-            }
-            catch (const std::exception& error) {
-              rejected = std::string(error.what()).find(reason) != std::string::npos;
-            }
-            if (!rejected) throw std::runtime_error("L04 incomplete/corrupt object was returned");
+          bool rejected = false;
+          try {
+            (void)repo_api::RepoClientCompat::localGetSegmented(registry, prefix, segmented);
           }
+          catch (const std::exception& error) {
+            rejected = std::string(error.what()).find(reason) != std::string::npos;
+          }
+          if (!rejected) throw std::runtime_error("L04 incomplete/corrupt object was returned");
         };
         if (!repo_api::RepoClientCompat::localRemove(registry, prefix, segmentName)) {
           throw std::runtime_error("L04 could not remove middle segment");
@@ -242,13 +241,13 @@ main(int argc, char* argv[])
         repo_api::RepoClientCompat::localPut(registry, prefix, segmentName, corrupt, segmentOptions);
         rejectReads("sha256");
         repo_api::RepoClientCompat::localPut(registry, prefix, segmentName, segment, segmentOptions);
-        const auto rebuilt = repo_api::RepoClientCompat::localGetObject(registry, prefix, segmented);
+        const auto rebuilt = repo_api::RepoClientCompat::localGetSegmented(registry, prefix, segmented);
         if (rebuilt != payload) throw std::runtime_error("L04 restoration did not recover original bytes");
         save("l04-rebuilt.bin", rebuilt);
         std::ofstream report(localManifest, std::ios::binary | std::ios::trunc);
         report << "{\"insertStatus\":" << inserted.toJson()
                << ",\"failedStatus\":" << failed.toJson()
-               << ",\"parent\":" << parent.toJson() << ",\"packet\":" << packet.toJson()
+               << ",\"parent\":" << parent.toJson()
                << ",\"catalog\":" << catalog.toJson() << ",\"snapshot\":" << snapshot.toJson()
                << ",\"delta\":" << delta.toJson() << ",\"lookup\":" << lookup.toJson()
                << ",\"cacheBefore\":" << cacheBefore.toJson() << ",\"cacheAfter\":" << cacheAfter.toJson()

@@ -2106,16 +2106,7 @@ class ServiceProvider:
         ack_threads: int = 2,
         serve_certificates: bool = True,
         bootstrap_token: str = "",
-        binary: str = "",
-        binary_dir=None,
-        library_dirs=None,
-        cwd=None,
-        env=None,
     ) -> None:
-        # The last five parameters are accepted for source compatibility with
-        # the previous subprocess bridge. pybind11 uses the loaded extension
-        # module, not a separate host binary.
-        del binary, binary_dir, library_dirs, cwd, env
         self._native = _ndnsf.NativeServiceProvider(
             provider_id=provider_id,
             group=group,
@@ -2547,13 +2538,7 @@ class ServiceController:
         bootstrap_identities: Optional[list[str]] = None,
         serve_certificates: bool = True,
         bootstrap_token_file: str = "",
-        binary: str = "",
-        binary_dir=None,
-        library_dirs=None,
-        cwd=None,
-        env=None,
     ) -> None:
-        del binary, binary_dir, library_dirs, cwd, env
         self._native = _ndnsf.NativeServiceController(
             controller_prefix=controller_prefix,
             policy_file=policy_file,
@@ -2615,13 +2600,7 @@ class ServiceUser:
         adaptive_admission: bool = False,
         serve_certificates: bool = True,
         bootstrap_token: str = "",
-        binary: str = "",
-        binary_dir=None,
-        library_dirs=None,
-        cwd=None,
-        env=None,
     ) -> None:
-        del binary, binary_dir, library_dirs, cwd, env
         self.group = group
         self.controller = controller
         self.user = user

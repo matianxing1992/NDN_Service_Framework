@@ -237,10 +237,6 @@ public:
     ndn_service_framework::LocalServiceRegistry& registry,
     const ndn::Name& repoServicePrefix,
     const RepoObjectManifest& manifest);
-  static std::vector<uint8_t> localGetObject(
-    ndn_service_framework::LocalServiceRegistry& registry,
-    const ndn::Name& repoServicePrefix,
-    const RepoObjectManifest& manifest);
   static RepoObjectManifest makeManifest(std::string objectName,
                                          std::string objectType,
                                          const std::vector<uint8_t>& payload,
