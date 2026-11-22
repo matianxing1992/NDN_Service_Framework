@@ -5,6 +5,22 @@ description: Prepare NDNSF SIF delivery and installed deployment, diagnose Tiger
 
 # iTiger NDNSF Operations
 
+## SSH account for this environment
+
+Use `tma1@itiger` for this user's TigerCluster unless the user specifies another
+account. Pass the account explicitly; plain `ssh itiger` inherits the local
+username `ndn` here and can fail even when the correct account works.
+For a bounded read-only check, use:
+
+```bash
+ssh -o BatchMode=yes -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+  tma1@itiger 'id -un; hostname'
+```
+
+Before diagnosing missing keys or cluster access failure, verify the effective
+SSH user. Rejection of `ndn@itiger` does not establish failure of `tma1@itiger`.
+Keep credentials out of this skill and evidence.
+
 ## Locate the task and its owner
 
 Run `git rev-parse --show-toplevel` in the target checkout. Resolve every repository
