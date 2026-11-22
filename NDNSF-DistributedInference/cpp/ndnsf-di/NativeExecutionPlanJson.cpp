@@ -2951,6 +2951,7 @@ NativeFixedExecutionTemplateV1 normalizeExecutionTemplate(NativeFixedExecutionTe
       endpoint.noProgressDeadlineMs = endpoint.hardDeadlineMs = 1;
       endpoint.prefetchBundleBytes = endpoint.prefetchSegmentBytes = 0;
       endpoint.inlineFirstSegment = false;
+      endpoint.segmentManifest.reset();
       if (endpoint.sourceKind == "APPLICATION_INPUT")
         endpoint.tensorDigest = endpoint.layoutDigest = endpoint.targetLayoutDigest = fixedTemplateDigestPlaceholder();
       endpoint.manifestDigest = fixedTemplateDigestPlaceholder();

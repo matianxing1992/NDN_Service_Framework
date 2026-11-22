@@ -1362,8 +1362,12 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
           const auto projection = NativePlanSealer::project(prefetchSealed, original.at(role),
             manifestGroups.at(role));
           const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+          const auto fixedSource = nativeFixedRoleAssignmentV1ToJson(*fixed);
+          BOOST_CHECK(fixedSource.find("segment_manifest_v1") == std::string::npos);
+          std::istringstream fixedInput(fixedSource);
+          const auto restored = nativeFixedRoleAssignmentV1FromJson(fixedInput);
           std::istringstream invocation(nativeSelectionInvocationV2ToJson(projection, *fixed));
-          const auto decoded = nativeSelectionInvocationV1FromJson(invocation, role, *fixed);
+          const auto decoded = nativeSelectionInvocationV1FromJson(invocation, role, *restored);
           const auto& endpoint = role == execution.roles.front()
             ? decoded.dataflow.mayPublish.front() : decoded.dataflow.mustFetch.front();
           BOOST_REQUIRE(endpoint.segmentManifest);
