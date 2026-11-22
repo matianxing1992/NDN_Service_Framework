@@ -141,6 +141,13 @@ PersistentRepoServerConfig::fromArguments(int argc, char* argv[])
     config.reserveManifestHandler = it->second == "reserved";
     options.erase(it);
   }
+  if (const auto it = options.find("--manifest-fetch-face"); it != options.end()) {
+    if (it->second != "shared" && it->second != "dedicated") {
+      throw std::invalid_argument("manifest-fetch-face must be shared or dedicated");
+    }
+    config.dedicatedManifestFetchFace = it->second == "dedicated";
+    options.erase(it);
+  }
   if (const auto it = options.find("--availability-freshness-ms"); it != options.end()) {
     config.availabilityFreshnessMs = parseUnsigned(it->second, it->first);
     options.erase(it);

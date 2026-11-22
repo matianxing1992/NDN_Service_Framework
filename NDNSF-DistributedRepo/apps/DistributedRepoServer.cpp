@@ -14,16 +14,21 @@
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/util/scope.hpp>
 
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/signal_set.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -39,8 +44,62 @@ printUsage(std::ostream& output)
             "[--failure-domain NAME] [--ack-collection-ms N] "
             "[--request-timeout-ms N] [--availability-freshness-ms N] "
             "[--manifest-fetch-window N] [--manifest-source-window N] "
-            "[--manifest-handler shared|reserved]\n";
+            "[--manifest-handler shared|reserved] [--manifest-fetch-face shared|dedicated]\n";
 }
+
+class ManifestFetchFace
+{
+public:
+  explicit
+  ManifestFetchFace(boost::asio::io_context& serviceIo)
+    : m_work(boost::asio::make_work_guard(m_face.getIoContext()))
+    , m_worker([this, &serviceIo] {
+        try {
+          m_face.getIoContext().run();
+        }
+        catch (...) {
+          m_error = std::current_exception();
+          m_failed.store(true, std::memory_order_release);
+          // Stop on the service loop itself, including when it is about to
+          // restart for readiness or shutdown.
+          try {
+            boost::asio::post(serviceIo, [&serviceIo] { serviceIo.stop(); });
+          }
+          catch (...) {
+            serviceIo.stop();
+          }
+        }
+      })
+  {
+  }
+
+  ~ManifestFetchFace()
+  {
+    m_face.getIoContext().stop();
+    m_worker.join();
+  }
+
+  ndn::Face&
+  get() noexcept
+  {
+    return m_face;
+  }
+
+  void
+  rethrowIfFailed() const
+  {
+    if (m_failed.load(std::memory_order_acquire)) {
+      std::rethrow_exception(m_error);
+    }
+  }
+
+private:
+  ndn::Face m_face;
+  boost::asio::executor_work_guard<boost::asio::io_context::executor_type> m_work;
+  std::exception_ptr m_error;
+  std::atomic<bool> m_failed{false};
+  std::thread m_worker;
+};
 
 ndn::security::Certificate
 getDefaultCertificate(ndn::security::KeyChain& keyChain,
@@ -69,6 +128,12 @@ main(int argc, char* argv[])
       ndnsf_distributed_repo::PersistentRepoServerConfig::fromArguments(argc, argv);
 
     ndn::Face face;
+    // Outlive the Provider's handler pool and any source callbacks it cancels.
+    std::unique_ptr<ManifestFetchFace> manifestFace;
+    if (config.dedicatedManifestFetchFace) {
+      manifestFace = std::make_unique<ManifestFetchFace>(face.getIoContext());
+    }
+    auto& fetchFace = manifestFace ? manifestFace->get() : face;
     ndn::security::KeyChain keyChain;
     auto providerIdentity = keyChain.getPib().getIdentity(config.providerIdentity);
     keyChain.setDefaultIdentity(providerIdentity);
@@ -140,12 +205,12 @@ main(int argc, char* argv[])
       sourceWindow = std::make_shared<ManifestSourceWindow>(config.manifestSourceWindow);
     }
     repo->setManifestPacketFetcher(
-      [&face, &provider, timeout = std::chrono::milliseconds(config.requestTimeoutMs),
+      [&fetchFace, &provider, timeout = std::chrono::milliseconds(config.requestTimeoutMs),
        window = config.manifestFetchWindow, sourceWindow = std::move(sourceWindow)](
         const ndnsf_distributed_repo::RepoDataReference& reference,
         const ndn_service_framework::SegmentManifestScope& scope,
         std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
-        ndnsf_distributed_repo::detail::FaceDataReferenceFetcher fetcher(face, timeout, timeout,
+        ndnsf_distributed_repo::detail::FaceDataReferenceFetcher fetcher(fetchFace, timeout, timeout,
                                                                        window);
         return fetcher.fetchManifest(reference, scope, deadline,
           [&provider](const auto& wire, const auto& expected, auto expires) {
@@ -179,9 +244,11 @@ main(int argc, char* argv[])
     {
       ndn::Face& face;
       ndn_service_framework::ServiceProvider& provider;
+      OwnedInsertShutdownFence& shutdownFence;
 
       ~OwnerDrainGuard() noexcept
       {
+        shutdownFence.close();
         // Refuse new work first so the drain can actually finish; otherwise a
         // still-running executor keeps admitting owner tokens past the bound.
         provider.stopOwnerAdmission();
@@ -197,7 +264,7 @@ main(int argc, char* argv[])
           std::_Exit(3);
         }
       }
-    } ownerDrain{face, provider};
+    } ownerDrain{face, provider, shutdownFence};
     bool stopping = false;
     const auto signalActive = std::make_shared<bool>(true);
     boost::asio::signal_set signals(face.getIoContext(), SIGINT, SIGTERM);
@@ -228,6 +295,7 @@ main(int argc, char* argv[])
               << " as " << config.repoNode << " using "
               << repoStoreRoot << " handlers=" << provider.getHandlerThreads()
               << " manifestHandler=" << (config.reserveManifestHandler ? "reserved" : "shared")
+              << " manifestFetchFace=" << (manifestFace ? "dedicated" : "shared")
               << std::endl;
     if (std::getenv("NDNSF_DEPLOYMENT_BOOT_ID") != nullptr) {
       // The manager's fresh owned log binds this marker to its PID/launch.
@@ -242,8 +310,10 @@ main(int argc, char* argv[])
             ndnsf_distributed_repo::makeRepoServiceName(config.servicePrefix, "STATUS"));
       };
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-      while (!stopping && !ready() && std::chrono::steady_clock::now() < deadline)
+      while (!stopping && !ready() && std::chrono::steady_clock::now() < deadline) {
+        if (manifestFace) manifestFace->rethrowIfFailed();
         face.processEvents(ndn::time::milliseconds(20));
+      }
       if (stopping)
         return 0;
       if (!ready())
@@ -253,6 +323,7 @@ main(int argc, char* argv[])
     }
     if (!stopping)
       face.processEvents();
+    if (manifestFace) manifestFace->rethrowIfFailed();
     // Queued completions still hold owner tokens after the context stops; the
     // OwnerDrainGuard above drains them on every exit path before the Provider
     // and Face are destroyed.

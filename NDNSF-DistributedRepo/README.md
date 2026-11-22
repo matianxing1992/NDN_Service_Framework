@@ -37,6 +37,9 @@ threads; `NDNSF_HANDLER_THREADS` remains authoritative. Shutdown drains the same
 owned Provider pool.
 The standalone Repo also supports `--manifest-handler reserved` for a separate MANIFEST worker
 with at most 32 queued requests. The default `shared` uses the regular Provider handler pool.
+`--manifest-fetch-face dedicated` runs authenticated INSERT packet fetches on a second connection
+to the local NFD with one Repo-owned event loop. The Provider continues to validate the signed root
+and authorize the operation. The default `shared` uses the service Face for these fetches.
 Validated original-packet INSERT commits use one Node-owned storage worker. Queued and active
 writes share a 64 MiB wire-byte budget (minimum 1 KiB charge per job), with bounded-caller
 backpressure and cancellation checks. The synchronous result waits for durable storage; stopping

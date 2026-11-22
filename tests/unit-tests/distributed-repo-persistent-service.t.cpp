@@ -565,6 +565,16 @@ BOOST_AUTO_TEST_CASE(PersistentOperationWorkerTimeoutsAreParsedAndBounded)
   BOOST_CHECK_EQUAL(parsed.requestTimeoutMs, 7000);
   BOOST_CHECK_EQUAL(parsed.manifestFetchWindow, 0U);
   BOOST_CHECK(!parsed.reserveManifestHandler);
+  BOOST_CHECK(!parsed.dedicatedManifestFetchFace);
+  auto fetchFaceArguments = arguments;
+  fetchFaceArguments.insert(fetchFaceArguments.end(), {"--manifest-fetch-face", "dedicated"});
+  auto fetchFaceArgv = mutableArgv(fetchFaceArguments);
+  BOOST_CHECK(PersistentRepoServerConfig::fromArguments(
+    static_cast<int>(fetchFaceArgv.size()), fetchFaceArgv.data()).dedicatedManifestFetchFace);
+  fetchFaceArguments.back() = "invalid";
+  fetchFaceArgv = mutableArgv(fetchFaceArguments);
+  BOOST_CHECK_THROW(PersistentRepoServerConfig::fromArguments(
+    static_cast<int>(fetchFaceArgv.size()), fetchFaceArgv.data()), std::invalid_argument);
   auto executorArguments = arguments;
   executorArguments.insert(executorArguments.end(), {"--manifest-handler", "reserved"});
   auto executorArgv = mutableArgv(executorArguments);
