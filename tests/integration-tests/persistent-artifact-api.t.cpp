@@ -3246,18 +3246,55 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     {manifestSources, 1024U * 1024U, manifestSources}, contents, ndn::Buffer{1, 2},
     ndn::time::milliseconds(10000));
   const auto manifestObject = manifestScope.rootName().toUri(ndn::name::UriFormat::ALTERNATE);
-  const repo::RepoUserStorageGrantRequest manifestGrant{1, "client-segment-manifest",
+  const auto clientConfig = [&] {
+    repo::PersistentRepoClientConfig config;
+    config.servicePrefix = servicePrefix;
+    config.providerScope = {ndn::Name(target.providerIdentity)};
+    config.dataOnly = true;
+    return config;
+  };
+  auto ownerHandle = std::shared_ptr<ServiceUser>(&environment.user(), [](ServiceUser*) {});
+  auto manifestReader = repo::RepoClient::makePersistent(ownerHandle, clientConfig());
+  const repo::RepoTarget manifestTarget{target.repoNode, target.providerIdentity,
+                                        target.servicePrefix};
+  const repo::RepoWriteAuthorization manifestGrant{manifestTarget,
     sourceIdentity.toUri(ndn::name::UriFormat::ALTERNATE), manifestObject,
-    static_cast<uint64_t>(now) + 120000};
-  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClientCompat::requestUserStorageGrant(environment.user(), target,
-      manifestGrant, 15000, std::move(timeout), std::move(complete));
-  });
-  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
-  const auto manifestGrantReply = repo::RepoUserStorageGrantReply::fromJson(responseString(response));
+    "client-segment-manifest", static_cast<uint64_t>(now) + 120000};
+  const auto manifestGrantReply = [&] {
+    std::atomic<unsigned> grantStarts{0};
+    std::atomic<unsigned> offFaceStarts{0};
+    environment.user().setRequestLifecycleCallback(
+      [&](const ServiceUser::RequestLifecycleStatus& status) {
+        if (status.serviceName != repoService(servicePrefix, "USER_STORAGE_GRANT") ||
+            status.state != ServiceUser::RequestLifecycleState::QUEUED_LOCAL) {
+          return;
+        }
+        ++grantStarts;
+        if (!environment.user().isOnIoThread())
+          ++offFaceStarts;
+      });
+    const auto clearCallback = ndn::make_scope_exit([&] {
+      environment.user().setRequestLifecycleCallback({});
+    });
+    const auto grant = runWithFacePump(environment, [&] {
+      return manifestReader.authorizeWrite(manifestGrant,
+        {std::chrono::steady_clock::now() + 15s, {}, {}});
+    });
+    BOOST_CHECK_EXCEPTION(runWithFacePump(environment, [&] {
+      return manifestReader.authorizeWrite(manifestGrant,
+        {std::chrono::steady_clock::now() + 15s,
+         [] { throw std::runtime_error("test-grant-cancelled"); }, {}});
+    }), std::runtime_error, [](const auto& error) {
+      return std::string_view(error.what()) == "test-grant-cancelled";
+    });
+    BOOST_CHECK_EQUAL(grantStarts.load(), 1U);
+    BOOST_CHECK_EQUAL(offFaceStarts.load(), 0U);
+    BOOST_CHECK_EQUAL(grant.ownerIdentity, owner);
+    return grant;
+  }();
   auto manifestInsert = repo::makeManifestInsertRequest(manifestPublication, sourceIdentity,
     "client-manifest-original", 1, {1, owner, manifestGrant.grantId,
-      manifestGrantReply.grant.ownerEpoch});
+      manifestGrantReply.ownerEpoch});
   manifestInsert.schemaVersion = 4;
   std::vector<std::vector<uint8_t>> manifestWires;
   std::size_t ordinaryNameBytes = 0;
@@ -3272,15 +3309,6 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   }
   BOOST_REQUIRE_LE(ordinaryNameBytes, 512U << 10);
   BOOST_REQUIRE_GT(sourceFullNameBytes, 512U << 10);
-  const repo::RepoTarget manifestTarget{target.repoNode, target.providerIdentity,
-                                        target.servicePrefix};
-  const auto clientConfig = [&] {
-    repo::PersistentRepoClientConfig config;
-    config.servicePrefix = servicePrefix;
-    config.providerScope = {ndn::Name(target.providerIdentity)};
-    config.dataOnly = true;
-    return config;
-  };
   auto manifestWriter = repo::RepoClient::makePersistent(sourceWriter, clientConfig());
   const auto publishManifest = [&](const repo::RepoUserStorageInsertRequest& request) {
     const auto& indexManifest = *request.reference.packetSetMetadata;
@@ -3413,17 +3441,14 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   writeFile(storedPayload, originalPayload);
   auto renewedManifestGrant = manifestGrant;
   renewedManifestGrant.grantId += "-renewed";
-  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClientCompat::requestUserStorageGrant(environment.user(), target,
-      renewedManifestGrant, 15000, std::move(timeout), std::move(complete));
+  const auto renewedManifestGrantReply = runWithFacePump(environment, [&] {
+    return manifestReader.authorizeWrite(renewedManifestGrant,
+      {std::chrono::steady_clock::now() + 15s, {}, {}});
   });
-  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
-  const auto renewedManifestGrantReply =
-    repo::RepoUserStorageGrantReply::fromJson(responseString(response));
   auto reusedManifest = manifestInsert;
   reusedManifest.operationId += "-reuse";
-  reusedManifest.storageBinding.grantId = renewedManifestGrantReply.grant.grantId;
-  reusedManifest.storageBinding.ownerEpoch = renewedManifestGrantReply.grant.ownerEpoch;
+  reusedManifest.storageBinding.grantId = renewedManifestGrantReply.grantId;
+  reusedManifest.storageBinding.ownerEpoch = renewedManifestGrantReply.ownerEpoch;
   const auto reuse = commitManifest(reusedManifest);
   BOOST_REQUIRE(reuse.packetSet);
   BOOST_CHECK_EQUAL(reuse.packetSet->operationId, admittedManifest.packetSet->operationId);
@@ -3444,8 +3469,6 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     return node->isOriginalDataServingReady();
   });
   BOOST_REQUIRE(node->isOriginalDataServingReady());
-  auto ownerHandle = std::shared_ptr<ServiceUser>(&environment.user(), [](ServiceUser*) {});
-  auto manifestReader = repo::RepoClient::makePersistent(ownerHandle, clientConfig());
   const auto readManifest = [&](const SegmentManifestScope& scope, uint32_t window = 8) {
     repo::RepoDataFetch input;
     input.ownerClaim.emplace();
@@ -3480,7 +3503,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   });
   BOOST_CHECK(targetedRead.packetWires() == manifestWires);
   const repo::RepoUserStorageDeleteRequest manifestCleanup{1, "client-manifest-cleanup",
-    manifestObject, manifestGrantReply.grant.ownerEpoch};
+    manifestObject, manifestGrantReply.ownerEpoch};
   // Advance the Owner's deletion fence after the original packets have passed
   // manifest validation, while the fresh operation still has to commit.
   std::promise<void> fetched;

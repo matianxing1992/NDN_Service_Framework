@@ -48,6 +48,18 @@ namespace ndnsf_distributed_repo {
 
 namespace {
 
+class TargetedReplyFailure : public std::runtime_error
+{
+public:
+  TargetedReplyFailure(const std::string& message, bool deadlineExpired)
+    : std::runtime_error(message)
+    , deadlineExpired(deadlineExpired)
+  {
+  }
+
+  const bool deadlineExpired;
+};
+
 /** Send one request to a known Provider and wait for its response.
  *
  * The packet-set publication and owner operations both use this path. */
@@ -3871,59 +3883,19 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
   request.expiresAtMs = input.expiresAtMs;
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.target);
-  // Targeted request to the named Provider: the same shape the grant helper uses and the
-  // only one that reaches a Repo which does not publish collaboration ACKs.
-  // The callbacks may run after this call returns (cancellation, late reply), so their
-  // state lives on the heap and outlives the stack frame.
-  struct GrantState {
-    std::mutex mutex;
-    std::condition_variable arrived;
-    bool done = false;
-    std::vector<uint8_t> payload;
-    std::string failure;
-  };
-  auto grantState = std::make_shared<GrantState>();
-  m_impl->user->RequestService(
-    std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
-    makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
-    RepoClientCompat::makeRequest(std::vector<uint8_t>(encoded.begin(), encoded.end())),
-    std::max(1, remainingMs(options.deadline)),
-    [grantState] (const ndn::Name&) {
-      std::lock_guard<std::mutex> guard(grantState->mutex);
-      grantState->failure = "repo-request-timeout: grant response was not delivered";
-      grantState->done = true;
-      grantState->arrived.notify_all();
-    },
-    [grantState] (const ndn_service_framework::ResponseMessage& response) {
-      std::lock_guard<std::mutex> guard(grantState->mutex);
-      if (response.getStatus()) {
-        const auto& payload = response.getPayload();
-        grantState->payload.assign(payload.begin(), payload.end());
-      }
-      else {
-        grantState->failure = response.getErrorInfo();
-      }
-      grantState->done = true;
-      grantState->arrived.notify_all();
-    },
-    ndn_service_framework::tlv::FirstResponding);
-  {
-    std::unique_lock<std::mutex> lock(grantState->mutex);
-    while (!grantState->done) {
-      if (options.requireCurrent)
-        options.requireCurrent();
-      if (grantState->arrived.wait_for(lock, std::chrono::milliseconds(20),
-                                       [&] { return grantState->done; })) {
-        break;
-      }
-      if (std::chrono::steady_clock::now() >= options.deadline)
-        throw RepoClientError("DEADLINE_EXPIRED", "write authorization deadline passed",
-                              "authorizeWrite");
-    }
+  std::vector<uint8_t> wire;
+  try {
+    wire = requestTargetedReply(*m_impl->user, ndn::Name(target.providerIdentity),
+      makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
+      toBytes(encoded), std::max(1, remainingMs(options.deadline)), options.requireCurrent,
+      "repo-request-timeout: grant response was not delivered");
   }
-  if (!grantState->failure.empty())
-    throw RepoClientError("GRANT_FAILED", grantState->failure, "authorizeWrite");
-  const std::vector<uint8_t>& wire = grantState->payload;
+  catch (const TargetedReplyFailure& error) {
+    if (error.deadlineExpired)
+      throw RepoClientError("DEADLINE_EXPIRED", "write authorization deadline passed",
+                            "authorizeWrite");
+    throw RepoClientError("GRANT_FAILED", error.what(), "authorizeWrite");
+  }
   const auto reply = RepoUserStorageGrantReply::fromJson(
     std::string(wire.begin(), wire.end()));
   reply.validateExpected(target,
@@ -4180,12 +4152,12 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
       break;
     }
     if (std::chrono::steady_clock::now() >= deadline)
-      throw std::runtime_error(timeoutError);
+      throw TargetedReplyFailure(timeoutError, true);
   }
   if (state->startFailure)
     std::rethrow_exception(state->startFailure);
   if (!state->failure.empty())
-    throw std::runtime_error(state->failure);
+    throw TargetedReplyFailure(state->failure, false);
   return state->payload;
 }
 
