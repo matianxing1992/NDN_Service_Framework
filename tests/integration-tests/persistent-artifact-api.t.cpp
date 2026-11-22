@@ -2737,7 +2737,8 @@ struct OwnerClientRestartExpectation
 };
 
 OwnerClientRestartExpectation
-runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
+runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary,
+                                     std::size_t additionalCommits = 0)
 {
   constexpr int ACK_COLLECTION_MS = 3000;
   std::vector<std::pair<const char*, std::optional<std::string>>> previousEnvironment;
@@ -3008,6 +3009,20 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
       nextPacket, verify, ACK_COLLECTION_MS, 15000);
   });
   BOOST_REQUIRE_EQUAL(inserted.lifecycleState, "COMMITTED");
+  for (std::size_t attempt = 0; attempt < additionalCommits; ++attempt) {
+    position = 0;
+    const auto repeated = runWithFacePump(environment, [&] {
+      return repo::RepoClientCompat::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
+        nextPacket, verify, ACK_COLLECTION_MS, 15000);
+    });
+    BOOST_REQUIRE_EQUAL(repeated.lifecycleState, "COMMITTED");
+    BOOST_CHECK_EQUAL(repeated.operationId, inserted.operationId);
+    BOOST_CHECK_EQUAL(repeated.generation, inserted.generation);
+    BOOST_CHECK_EQUAL(repeated.sha256, inserted.sha256);
+    BOOST_CHECK(repeated.packetNames == inserted.packetNames);
+    BOOST_CHECK(repeated.packetOffsets == inserted.packetOffsets);
+    BOOST_CHECK_EQUAL(position, expectedWires.size());
+  }
   // commitUserStorageOriginalPackets has stopped its Source filter.
   // Remove the original files before the independent Owner retrieval.
   BOOST_REQUIRE(fs::remove(plain));
@@ -3738,6 +3753,17 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   TempRoot temporary;
   const auto expected = runOwnerClientOriginalPacketRoundTrip(temporary);
   // All writer/Provider instances and the filesystem owner are gone before reopen.
+  auto store = std::make_shared<repo::FilesystemRepoStoreBackend>(
+    (temporary.path() / "objects").string(), 4 * 1024 * 1024, 1024, "owner-client",
+    repo::FilesystemRecoveryPolicy::KEEP_UNCONFIRMED);
+  repo::RepoCore restarted(expected.capability, std::move(store));
+  BOOST_CHECK(restarted.getDataPacket(expected.name) == expected.wire);
+}
+
+BOOST_AUTO_TEST_CASE(RepeatedOriginalPacketCommitsKeepLargeManifestRepliesAlive)
+{
+  TempRoot temporary;
+  const auto expected = runOwnerClientOriginalPacketRoundTrip(temporary, 7);
   auto store = std::make_shared<repo::FilesystemRepoStoreBackend>(
     (temporary.path() / "objects").string(), 4 * 1024 * 1024, 1024, "owner-client",
     repo::FilesystemRecoveryPolicy::KEEP_UNCONFIRMED);
