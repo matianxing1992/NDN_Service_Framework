@@ -359,6 +359,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     : face(faceArg)
     , strand(boost::asio::make_strand(faceArg.getIoContext()))
     , reference(referenceArg)
+    , forwardingHint(referenceArg.forwardingHint)
     , packetCount(packetCountArg)
     , windowCapacity(windowSizeArg == 0 ? packetCountArg : std::min(packetCountArg, windowSizeArg))
     , congestion(windowCapacity, ndn::time::milliseconds(
@@ -550,7 +551,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       ndn::Interest interest(packetName(0));
       interest.setMustBeFresh(false);
       if (!reference.forwardingHint.empty())
-        interest.setForwardingHint({ndn::Name(reference.forwardingHint)});
+        interest.setForwardingHint({forwardingHint});
       auto cancel = transfer->start(interest, options);
       std::lock_guard<std::mutex> lock(mutex);
       standardCancel = std::move(cancel);
@@ -644,7 +645,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     interest.setCanBePrefix(false);
     interest.setMustBeFresh(false);
     if (!reference.forwardingHint.empty()) {
-      interest.setForwardingHint({ndn::Name(reference.forwardingHint)});
+      interest.setForwardingHint({forwardingHint});
     }
 
     const auto self = shared_from_this();
@@ -715,8 +716,12 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     }
     std::vector<uint8_t> wire;
     try {
-      const bool matched = admit ? ndn::Interest(name).matchesData(data) : data.getName() == name;
-      if (!matched) {
+      // The expressed Interest is exact. Its implicit digest only participates
+      // when the Interest adds one component to the ordinary Data name.
+      const auto& dataName = data.getName();
+      const bool matchFullName = admit && name.size() == dataName.size() + 1 &&
+                                 name[-1].isImplicitSha256Digest();
+      if (name != (matchFullName ? data.getFullName() : dataName)) {
         onFailure(index, attempt, "repo-original-packet-name-mismatch");
         return;
       }
@@ -926,6 +931,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   ndn::Face& face;
   boost::asio::strand<boost::asio::io_context::executor_type> strand;
   const RepoDataReference reference;
+  const ndn::Name forwardingHint;
   const std::size_t packetCount;
   const std::size_t windowCapacity;
   ndn_service_framework::detail::ExactDataCongestionWindow congestion;
@@ -1330,9 +1336,15 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   }
   // A verified index determines unique source names. Only the active Interest
   // window needs full names, so there is no caller-supplied name list to charge.
-  const auto sourceNameAt = [proof](std::size_t i) {
+  // Canonical /DATA, 64-bit Segment and 32-byte digest components fit within
+  // 134 URI bytes even with every binary byte percent-escaped.
+  constexpr std::size_t MAX_SOURCE_NAME_SUFFIX_URI_BYTES = 134;
+  constexpr std::size_t MAX_NAME_URI_BYTES = 4096;
+  const bool checkNameLength = scope.objectPrefix.toUri(ndn::name::UriFormat::CANONICAL).size() >
+                               MAX_NAME_URI_BYTES - MAX_SOURCE_NAME_SUFFIX_URI_BYTES;
+  const auto sourceNameAt = [proof, checkNameLength](std::size_t i) {
     auto name = proof->sourceFullName(static_cast<uint32_t>(i));
-    if (name.toUri(ndn::name::UriFormat::CANONICAL).size() > 4096) {
+    if (checkNameLength && name.toUri(ndn::name::UriFormat::CANONICAL).size() > MAX_NAME_URI_BYTES) {
       throw std::invalid_argument("repo-original-named-packet-name-invalid");
     }
     return name;
