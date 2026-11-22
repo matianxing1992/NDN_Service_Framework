@@ -8,6 +8,7 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "face-data-reference-fetcher.hpp"
 #include "owned-manifest-query.hpp"
+#include "owner-claim-query.hpp"
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
@@ -138,6 +139,65 @@ sameUserStorageClaim(const RepoUserStorageClaim& a, const RepoUserStorageClaim& 
     a.deletedAtMs == b.deletedAtMs;
 }
 
+void
+requireCommittedOwnerClaim(const RepoUserStorageClaim& claim,
+                          std::chrono::steady_clock::time_point deadline)
+{
+  if (claim.state != RepoUserStorageClaimState::COMMITTED ||
+      claim.grantId.empty() || claim.ownerEpoch == 0 ||
+      claim.object.manifestBytes == 0 || claim.object.payloadWireBytes == 0) {
+    throw std::runtime_error("repo-user-storage-claim-not-currently-committed");
+  }
+  if (std::chrono::steady_clock::now() >= deadline) {
+    throw std::runtime_error("repo-user-storage-claim-deadline");
+  }
+}
+
+std::optional<RepoUserStorageClaim>
+findExactCurrentUserStorageClaim(ndn_service_framework::ServiceUser& owner,
+  const RepoArtifactTarget& target, const std::string& objectName,
+  const RepoUserStoragePacketSetFetchLimits& limits, int timeoutMs,
+  std::chrono::steady_clock::time_point deadline, uint64_t& listingWireBytes,
+  const std::function<void()>& requireCurrent)
+{
+  const auto service = makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST");
+  const auto query = toBytes(detail::encodeExactOwnerClaimQuery(objectName));
+  std::vector<uint8_t> response;
+  try {
+    response = RepoClientCompat::requestSelectedService(owner, ndn::Name(target.providerIdentity),
+      service, query, limits.ackCollectionTimeMs, timeoutMs, {}, requireCurrent);
+  }
+  catch (const std::runtime_error& error) {
+    // Older Providers reject the two-field selector before executing a list.
+    if (std::string_view(error.what()) == "artifact-json-invalid: object keys do not match schema") {
+      return std::nullopt;
+    }
+    throw;
+  }
+  if (response.size() > limits.maxListingWireBytes - listingWireBytes) {
+    throw std::runtime_error("repo-user-storage-list-byte-budget-exceeded");
+  }
+  listingWireBytes += response.size();
+  const auto wire = toString(response);
+  auto reply = RepoUserStorageListReply::fromJson(wire);
+  const auto ownerName = owner.getName().toUri(ndn::name::UriFormat::ALTERNATE);
+  if (reply.toJson() != wire || reply.repoNode != target.repoNode ||
+      reply.ownerIdentity != ownerName || !reply.nextAfterObjectName.empty() ||
+      reply.objects.size() > 1) {
+    throw std::runtime_error("repo-user-storage-list-page-invalid");
+  }
+  if (reply.objects.empty()) {
+    throw std::runtime_error("repo-user-storage-current-claim-not-found-within-bounds");
+  }
+  auto& claim = reply.objects.front();
+  if (claim.object.objectName != objectName) {
+    throw std::runtime_error("repo-user-storage-list-order-or-scope-invalid");
+  }
+  validateRepoUserStorageObject(claim.object);
+  requireCommittedOwnerClaim(claim, deadline);
+  return std::move(claim);
+}
+
 RepoUserStorageClaim
 findCurrentUserStorageClaim(ndn_service_framework::ServiceUser& owner,
   const RepoArtifactTarget& target, const std::string& objectName,
@@ -189,13 +249,7 @@ findCurrentUserStorageClaim(ndn_service_framework::ServiceUser& owner,
       else if (claim.object.objectName > objectName) passedTarget = true;
     }
     if (match) {
-      if (match->state != RepoUserStorageClaimState::COMMITTED ||
-          match->grantId.empty() || match->ownerEpoch == 0 ||
-          match->object.manifestBytes == 0 || match->object.payloadWireBytes == 0) {
-        throw std::runtime_error("repo-user-storage-claim-not-currently-committed");
-      }
-      if (std::chrono::steady_clock::now() >= deadline)
-        throw std::runtime_error("repo-user-storage-claim-deadline");
+      requireCommittedOwnerClaim(*match, deadline);
       return *match;
     }
     if (passedTarget) break;
@@ -794,9 +848,18 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
   const auto servicePrefix = ndn::Name(target.servicePrefix);
   const auto manifestService = makeRepoServiceName(servicePrefix, "MANIFEST");
   uint64_t listingWireBytes = 0;
+  bool tryExactClaim = segmentManifest.has_value();
 
   const auto listClaim = [&] {
     current();
+    if (tryExactClaim) {
+      if (auto claim = findExactCurrentUserStorageClaim(owner, target, objectName, limits,
+            remainingTimeoutMs(), deadline, listingWireBytes, current)) {
+        return std::move(*claim);
+      }
+      tryExactClaim = false;
+      current();
+    }
     return findCurrentUserStorageClaim(owner, target, objectName, limits, deadline,
                                       listingWireBytes);
   };

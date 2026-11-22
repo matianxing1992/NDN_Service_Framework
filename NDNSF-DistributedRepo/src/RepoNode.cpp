@@ -8,6 +8,7 @@
 #include "ndnsf-distributed-repo/detail/StrictJson.hpp"
 #include "face-data-reference-fetcher.hpp"
 #include "owned-manifest-query.hpp"
+#include "owner-claim-query.hpp"
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
@@ -3600,7 +3601,26 @@ RepoNode::handleUserStorageList(const std::vector<uint8_t>& request,
   if (!m_artifactMetadataStore) {
     throw std::runtime_error("repo-user-storage-unavailable");
   }
-  const auto parsed = RepoUserStorageListRequest::fromJson(toString(request));
+  const auto wire = toString(request);
+  if (const auto objectName = detail::decodeExactOwnerClaimQuery(wire)) {
+    RepoUserStorageListReply reply{1, m_repoNode, authenticatedOwner, {}, {}};
+    if (auto claim = m_artifactMetadataStore->lookupCurrentUserStorageClaim(
+          authenticatedOwner, m_repoNode, *objectName)) {
+      reply.objects.push_back(std::move(*claim));
+    }
+    auto response = toBytes(reply.toJson());
+    try {
+      if (ndn_service_framework::controlTimingEnvEnabled()) {
+        ndn_service_framework::logControlTiming("repo-node", "exact-owner-claim",
+          ndn::Name(*objectName), {{"response_bytes", std::to_string(response.size())}});
+      }
+    }
+    catch (...) {
+      // Observation must not affect claim lookup.
+    }
+    return response;
+  }
+  const auto parsed = RepoUserStorageListRequest::fromJson(wire);
   RepoUserStorageListReply reply{1, m_repoNode, authenticatedOwner,
     m_artifactMetadataStore->listUserStorage(authenticatedOwner, m_repoNode,
       parsed.afterObjectName, parsed.limit), {}};

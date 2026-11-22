@@ -1,5 +1,6 @@
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 #include "owned-manifest-query.hpp"
+#include "owner-claim-query.hpp"
 #include "packet-store-lookup.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
@@ -1889,6 +1890,27 @@ RepoUserStorageListRequest::fromJson(const std::string& wire)
   RepoUserStorageListRequest result{1, jsonString(object, "afterObjectName"), static_cast<uint32_t>(limit)};
   (void)result.toJson();
   return result;
+}
+
+std::string
+detail::encodeExactOwnerClaimQuery(const std::string& objectName)
+{
+  validateStorageName(objectName);
+  return "{\"schemaVersion\":2,\"objectName\":" + detail::quoteJson(objectName) + "}";
+}
+
+std::optional<std::string>
+detail::decodeExactOwnerClaimQuery(const std::string& wire)
+{
+  const auto parsed = detail::parseJson(wire, 64 * 1024);
+  const auto& object = detail::requireObject(parsed);
+  if (jsonUnsigned(object, "schemaVersion") != 2) {
+    return std::nullopt;
+  }
+  detail::requireExactKeys(object, {"schemaVersion", "objectName"});
+  const auto objectName = jsonString(object, "objectName");
+  (void)detail::encodeExactOwnerClaimQuery(objectName);
+  return objectName;
 }
 
 std::string

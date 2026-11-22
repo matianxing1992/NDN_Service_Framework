@@ -310,6 +310,10 @@ public:
     const std::string& authenticatedOwnerIdentity, const std::string& repoNode,
     const std::string& objectName, uint64_t ownerEpoch) const;
 
+  std::optional<RepoUserStorageClaim> lookupCurrentUserStorageClaim(
+    const std::string& ownerIdentity, const std::string& repoNode,
+    const std::string& objectName) const;
+
   /** Fence an authenticated owner's exact epoch before physical cleanup.
    * Charge remains until trusted orchestration confirms removal below.
    * An uncommitted reservation transfers its charge into CleanupPrepared;

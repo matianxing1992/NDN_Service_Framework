@@ -15,6 +15,7 @@
 #include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedRepo/src/face-data-reference-fetcher.hpp"
 #include "NDNSF-DistributedRepo/src/owned-manifest-query.hpp"
+#include "NDNSF-DistributedRepo/src/owner-claim-query.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -3474,6 +3475,38 @@ BOOST_AUTO_TEST_CASE(OwnedManifestReadbackBindsAuthenticatedWriterGrantAndPhysic
   BOOST_CHECK_EQUAL(fixture.erase("/owner/a", "manifest-cleanup",
     fixture.request.storageBinding.ownerEpoch).state, "DELETED");
   BOOST_CHECK_THROW(fixture.node->handleManifest(query, "/provider/a"), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(ExactOwnerClaimUsesCurrentAuthenticatedObject)
+{
+  OwnedPacketFixture fixture;
+  BOOST_REQUIRE_EQUAL(fixture.insert().state, "DONE");
+  const auto name = fixture.request.reference.objectName;
+  const auto query = detail::encodeExactOwnerClaimQuery(name);
+  const auto service = makeRepoServiceName(fixture.node->servicePrefix(), "USER_STORAGE_LIST");
+  const auto lookup = [&](const ndn::Name& owner, const std::string& request) {
+    const auto response = dispatch(*fixture.provider, owner, service, toBytes(request), "exact");
+    BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+    return RepoUserStorageListReply::fromJson(responseString(response));
+  };
+  const auto result = lookup(ndn::Name("/owner/a"), query);
+  BOOST_REQUIRE_EQUAL(result.objects.size(), 1U);
+  BOOST_CHECK(result.nextAfterObjectName.empty());
+  BOOST_CHECK_EQUAL(result.objects.front().object.objectName, name);
+  BOOST_CHECK_EQUAL(result.objects.front().object.wireSha256, fixture.request.reference.expectedSha256);
+  BOOST_CHECK(lookup(ndn::Name("/owner/b"), query).objects.empty());
+  BOOST_CHECK(lookup(ndn::Name("/owner/a"), detail::encodeExactOwnerClaimQuery(name + "/child"))
+                .objects.empty());
+  BOOST_CHECK_EXCEPTION(RepoUserStorageListRequest::fromJson(query), std::invalid_argument,
+    [](const auto& error) {
+      return std::string_view(error.what()) == "artifact-json-invalid: object keys do not match schema";
+    });
+  BOOST_CHECK_THROW(detail::decodeExactOwnerClaimQuery(
+    "{\"schemaVersion\":2,\"objectName\":\"/provider/a/kv/manifest\",\"limit\":1}"),
+    std::invalid_argument);
+  BOOST_REQUIRE_EQUAL(fixture.erase("/owner/a", "exact-cleanup",
+    fixture.request.storageBinding.ownerEpoch).state, "DELETED");
+  BOOST_CHECK(lookup(ndn::Name("/owner/a"), query).objects.empty());
 }
 
 BOOST_AUTO_TEST_CASE(CompactOwnedManifestQueryHasBoundedCanonicalFraming)

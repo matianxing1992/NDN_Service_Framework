@@ -3914,14 +3914,28 @@ std::optional<RepoUserStorageClaim>
 SqliteArtifactMetadataStore::lookupCommittedUserStorageClaim(const std::string& owner,
   const std::string& node, const std::string& objectName, uint64_t ownerEpoch) const
 {
-  validateUserStorageName(owner); validateUserStorageName(node); validateUserStorageName(objectName);
   checkedUserStorageInteger(ownerEpoch, true);
-  std::lock_guard<std::mutex> guard(m_impl->mutex);
-  requireUserStorageProfile(m_impl->userStorageCatalogAvailable, false, m_impl->migration.writesEnabled);
-  auto claim = loadUserStorageClaim(m_impl->database, node, owner, objectName);
+  auto claim = lookupCurrentUserStorageClaim(owner, node, objectName);
   if (!claim || claim->state != RepoUserStorageClaimState::COMMITTED ||
       claim->ownerEpoch != ownerEpoch)
     return std::nullopt;
+  return claim;
+}
+
+std::optional<RepoUserStorageClaim>
+SqliteArtifactMetadataStore::lookupCurrentUserStorageClaim(const std::string& owner,
+  const std::string& node, const std::string& objectName) const
+{
+  validateUserStorageName(owner);
+  validateUserStorageName(node);
+  validateUserStorageName(objectName);
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  requireUserStorageProfile(m_impl->userStorageCatalogAvailable, false,
+                            m_impl->migration.writesEnabled);
+  auto claim = loadUserStorageClaim(m_impl->database, node, owner, objectName);
+  if (claim && claim->state == RepoUserStorageClaimState::DELETED) {
+    return std::nullopt;
+  }
   return claim;
 }
 
