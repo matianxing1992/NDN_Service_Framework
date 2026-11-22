@@ -5,9 +5,15 @@
 
 #include <ndn-cxx/name.hpp>
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
+
+namespace ndn_service_framework {
+class ManifestPublication;
+}
 
 namespace ndnsf_distributed_repo {
 
@@ -17,12 +23,14 @@ struct RepoUserStorageInsertRequest
   /** Wire versions 1 and 2 bind original packets to the authenticated writer's
    * exact hash manifest and storage grant. Repo treats their signatures as opaque;
    * consumers independently validate original signatures, trust and context.
+   * Version 3 adds a Producer-authenticated segment manifest and execution binding.
    */
   uint32_t schemaVersion = 1;
   std::string operationId;
   uint64_t generation = 0;
   RepoDataReference reference;
   RepoUserStorageBinding storageBinding;
+  std::optional<std::array<uint8_t, 32>> segmentManifestBinding;
 };
 
 ndn::Name
@@ -59,6 +67,12 @@ encodeDataReferenceRequest(const RepoDataReference& reference);
 
 std::vector<uint8_t>
 encodeStatusRequest(const std::string& operationId);
+
+/** Build an owned INSERT reference to the complete original manifest packet set. */
+RepoUserStorageInsertRequest
+makeManifestInsertRequest(const ndn_service_framework::ManifestPublication& original,
+  const ndn::Name& forwardingHint, std::string operationId, uint64_t generation,
+  RepoUserStorageBinding binding);
 
 std::vector<uint8_t>
 encodeUserStorageInsertRequest(const RepoUserStorageInsertRequest& request);

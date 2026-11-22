@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -496,8 +497,22 @@ BOOST_AUTO_TEST_CASE(ManifestProofBindsOriginalPacketsAndCurrentTrust)
   const std::vector<ndn::ConstBufferPtr> sources(2, std::make_shared<const ndn::Buffer>(ndn::Buffer{0}));
   const auto publication = ManifestPublication::prepare(
     fixture.keys, signer, baseScope, limits, sources, app, ndn::time::milliseconds(4000));
-  const auto refreshed = validateRoot(publication.packets().front(), baseScope);
+  const auto& wireBlock = publication.packets().front().wireEncode();
+  const std::vector<uint8_t> wire(wireBlock.begin(), wireBlock.end());
+  auto waiting = std::async(std::launch::async, [&] {
+    return validator->validateManifestRootUntil(wire, baseScope,
+      std::chrono::steady_clock::now() + std::chrono::seconds(1));
+  });
+  for (int attempt = 0; attempt < 250 &&
+       waiting.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready; ++attempt) {
+    fixture.face.processEvents(ndn::time::milliseconds(2));
+  }
+  auto refreshed = waiting.get();
   BOOST_REQUIRE(refreshed);
+  auto trailing = wire;
+  trailing.push_back(0);
+  BOOST_CHECK(!validator->validateManifestRootUntil(trailing, baseScope,
+    std::chrono::steady_clock::now() + std::chrono::seconds(1)));
   SegmentManifestVerifier proof(*refreshed, baseScope, limits);
   BOOST_CHECK(proof.matchesSource(0, publication.packets()[1]));
   testClock.clock->setNow(ndn::time::duration_cast<ndn::time::nanoseconds>(

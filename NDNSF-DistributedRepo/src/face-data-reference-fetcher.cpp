@@ -593,7 +593,9 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     }
     std::vector<uint8_t> wire;
     try {
-      if (data.getName() != packetName(index)) {
+      const auto name = packetName(index);
+      const bool matched = admit ? ndn::Interest(name).matchesData(data) : data.getName() == name;
+      if (!matched) {
         onFailure(index, attempt, "repo-original-packet-name-mismatch");
         return;
       }
@@ -601,6 +603,15 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       if (block.size() == 0 || block.size() > ndn::MAX_NDN_PACKET_SIZE) {
         onFailure(index, attempt, "repo-original-packet-wire-size-invalid");
         return;
+      }
+      if (admit) {
+        try {
+          admit(index, data);
+        }
+        catch (const std::exception&) {
+          fail("repo-original-packet-proof-rejected");
+          return;
+        }
       }
       wire.assign(block.begin(), block.end());
     }
@@ -783,6 +794,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   bool exactSize = true;
   std::vector<ndn::Name> names;
   std::function<void()> requireCurrent;
+  FaceDataReferenceFetcher::PacketAdmission admit;
   ndn::Face& face;
   boost::asio::strand<boost::asio::io_context::executor_type> strand;
   const RepoDataReference reference;
@@ -1038,10 +1050,155 @@ FaceDataReferenceFetcher::operator()(const RepoDataReference& reference,
                std::move(requireCurrent));
 }
 
+namespace {
+
+class OrderedPacketSpools final : public DataReferencePacketSource
+{
+public:
+  void add(std::shared_ptr<FaceDataReferencePacketSpool> spool)
+  {
+    m_spools.push_back(std::move(spool));
+  }
+
+  std::size_t packetCount() const noexcept override
+  {
+    std::size_t count = 0;
+    for (const auto& spool : m_spools) {
+      count += spool->packetCount();
+    }
+    return count;
+  }
+
+  uint64_t totalWireBytes() const override
+  {
+    uint64_t size = 0;
+    for (const auto& spool : m_spools) {
+      size += spool->totalWireBytes();
+    }
+    return size;
+  }
+
+  std::vector<uint8_t> readPacket(std::size_t index) const override
+  {
+    for (const auto& spool : m_spools) {
+      if (index < spool->packetCount()) {
+        return spool->readPacket(index);
+      }
+      index -= spool->packetCount();
+    }
+    throw std::out_of_range("repo-manifest-packet-index");
+  }
+
+  std::vector<uint8_t> readRange(uint64_t offset, std::size_t length) const override
+  {
+    const auto total = totalWireBytes();
+    if (offset > total || length > total - offset) {
+      throw std::out_of_range("repo-manifest-packet-range");
+    }
+    std::vector<uint8_t> result;
+    for (const auto& spool : m_spools) {
+      if (length == 0) break;
+      const auto size = spool->totalWireBytes();
+      if (offset >= size) {
+        offset -= size;
+        continue;
+      }
+      const auto count = std::min<uint64_t>(length, size - offset);
+      auto part = spool->readRange(offset, count);
+      if (result.empty() && part.size() == length) {
+        return part;
+      }
+      result.insert(result.end(), part.begin(), part.end());
+      length -= part.size();
+      offset = 0;
+    }
+    return result;
+  }
+
+private:
+  std::vector<std::shared_ptr<FaceDataReferencePacketSpool>> m_spools;
+};
+
+} // namespace
+
+AuthenticatedManifestPackets
+FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
+  const ndn_service_framework::SegmentManifestScope& scope,
+  std::chrono::steady_clock::time_point deadline,
+  const ManifestRootValidator& validateRoot, std::function<void()> requireCurrent) const
+{
+  using ndn_service_framework::SegmentManifestLimits;
+  using ndn_service_framework::SegmentManifestVerifier;
+  if (!validateRoot || !reference.packetSetMetadata ||
+      ndn::Name(reference.objectName) != scope.rootName() ||
+      ndn::Name(reference.dataPrefix) != scope.objectPrefix ||
+      reference.expectedSize > MAX_NAMED_PACKET_WIRE_BYTES ||
+      reference.packetSetMetadata->packetNames.size() > MAX_NAMED_PACKET_COUNT) {
+    throw std::invalid_argument("repo-manifest-fetch-contract-invalid");
+  }
+  reference.validateExactPacketSet();
+  const auto& names = reference.packetSetMetadata->packetNames;
+  auto spools = std::make_shared<OrderedPacketSpools>();
+  const ndn::Name hint(reference.forwardingHint);
+  const auto rootSpool = fetchNamed({scope.rootName()},
+    std::min<uint64_t>(reference.expectedSize, ndn::MAX_NDN_PACKET_SIZE),
+    hint, requireCurrent, deadline, [](std::size_t, const ndn::Data&) {});
+  auto root = validateRoot(rootSpool->readPacket(0), scope, deadline);
+  if (!root) {
+    throw std::runtime_error("repo-manifest-root-validation-rejected");
+  }
+  auto proof = std::make_shared<SegmentManifestVerifier>(std::move(*root), scope,
+    SegmentManifestLimits{SegmentManifestVerifier::MAX_SOURCE_PACKETS,
+      reference.expectedSize, std::nullopt});
+  if (names.size() != 1 + proof->pageCount() + proof->sourceCount()) {
+    throw std::invalid_argument("repo-manifest-packet-count-mismatch");
+  }
+  const auto current = [requireCurrent, proof] {
+    if (requireCurrent) requireCurrent();
+    if (!proof->isCurrent()) {
+      throw std::runtime_error("repo-manifest-root-trust-expired");
+    }
+  };
+  current();
+  spools->add(rootSpool);
+  if (proof->pageCount() != 0) {
+    std::vector<ndn::Name> pages;
+    for (uint32_t i = 0; i < proof->pageCount(); ++i) {
+      if (ndn::Name(names[1 + i]) != scope.pageName(i)) {
+        throw std::invalid_argument("repo-manifest-index-name-mismatch");
+      }
+      pages.push_back(proof->pageFullName(i));
+    }
+    spools->add(fetchNamed(pages, reference.expectedSize - spools->totalWireBytes(),
+      hint, current, deadline, [proof](std::size_t i, const ndn::Data& data) {
+        proof->acceptPage(static_cast<uint32_t>(i), data);
+      }));
+  }
+  std::vector<ndn::Name> sources;
+  for (uint32_t i = 0; i < proof->sourceCount(); ++i) {
+    if (ndn::Name(names[1 + proof->pageCount() + i]) != scope.sourceName(i)) {
+      throw std::invalid_argument("repo-manifest-source-name-mismatch");
+    }
+    sources.push_back(proof->sourceFullName(i));
+  }
+  spools->add(fetchNamed(sources, reference.expectedSize - spools->totalWireBytes(),
+    hint, current, deadline, [proof](std::size_t i, const ndn::Data& data) {
+      if (!proof->matchesSource(static_cast<uint32_t>(i), data)) {
+        throw std::runtime_error("repo-manifest-source-proof-rejected");
+      }
+    }));
+  current();
+  if (spools->totalWireBytes() != reference.expectedSize) {
+    throw std::runtime_error("repo-manifest-wire-size-mismatch");
+  }
+  return {std::move(spools), std::move(proof)};
+}
+
 std::shared_ptr<FaceDataReferencePacketSpool>
 FaceDataReferenceFetcher::fetchNamed(const std::vector<ndn::Name>& names,
   uint64_t maxWireBytes, const ndn::Name& forwardingHint,
-  std::function<void()> requireCurrent) const
+  std::function<void()> requireCurrent, std::chrono::steady_clock::time_point deadline,
+  PacketAdmission admit) const
 {
   if (names.empty() || names.size() > MAX_NAMED_PACKET_COUNT || maxWireBytes < names.size() ||
       maxWireBytes > MAX_NAMED_PACKET_WIRE_BYTES || forwardingHint.empty() ||
@@ -1060,26 +1217,35 @@ FaceDataReferenceFetcher::fetchNamed(const std::vector<ndn::Name>& names,
   routing.dataPrefix = names.front().toUri();
   routing.forwardingHint = forwardingHint.toUri();
   routing.expectedSize = maxWireBytes;
-  return fetch(routing, names.size(), names, false, std::move(requireCurrent));
+  return fetch(routing, names.size(), names, false, std::move(requireCurrent),
+               deadline, std::move(admit));
 }
 
 std::shared_ptr<FaceDataReferencePacketSpool>
 FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t packetCount,
-  std::vector<ndn::Name> names, bool exactSize, std::function<void()> requireCurrent) const
+  std::vector<ndn::Name> names, bool exactSize, std::function<void()> requireCurrent,
+  std::chrono::steady_clock::time_point deadline, PacketAdmission admit) const
 {
   if (m_face.getIoContext().get_executor().running_in_this_thread())
     throw std::logic_error("repo-original-packet-fetch-on-face-thread");
   if (requireCurrent)
     requireCurrent();
 
-  const auto deadline = std::chrono::steady_clock::now() + m_totalTimeout;
+  const auto now = std::chrono::steady_clock::now();
+  deadline = std::min(deadline, now + m_totalTimeout);
+  if (deadline <= now) {
+    throw std::runtime_error("repo-original-packet-fetch-deadline");
+  }
   auto admission = std::make_shared<FetchAdmission>(m_fetchActive, m_lifetime);
   auto state = std::make_shared<FetchState>(m_face, reference,
     static_cast<std::size_t>(packetCount), m_windowSize, m_interestLifetime, deadline, admission);
   state->exactSize = exactSize;
   state->names = std::move(names);
   state->requireCurrent = std::move(requireCurrent);
-  state->prepareSegmentedCandidate();
+  state->admit = std::move(admit);
+  if (!state->admit) {
+    state->prepareSegmentedCandidate();
+  }
   boost::asio::post(state->strand, [state] { state->launchWindow(); });
 
   std::unique_lock<std::mutex> lock(state->mutex);
@@ -1131,7 +1297,7 @@ FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t 
     throw std::runtime_error("repo-original-packet-fetch-deadline");
   }
   // Named reads can retain an Actor owner in the lease. Keep it until any queued callbacks drain.
-  if (state->exactSize)
+  if (state->exactSize || state->admit)
     state->admission.reset();
   return spool;
 }

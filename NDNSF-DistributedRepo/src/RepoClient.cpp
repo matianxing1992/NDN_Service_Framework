@@ -595,12 +595,14 @@ std::vector<std::vector<uint8_t>>
 RepoClientCompat::fetchOriginalDataPacketSet(
   ndn_service_framework::ServiceUser& user, const RepoDataReference& reference,
   const std::function<bool(const ndn::Data&)>& verifyProducerSignature, int timeoutMs,
-  RepoUserStoragePacketSetFetchLimits limits, const std::function<void()>& requireCurrent)
+  RepoUserStoragePacketSetFetchLimits limits, const std::function<void()>& requireCurrent,
+  const std::optional<ndn_service_framework::SegmentManifestScope>& segmentManifest,
+  std::shared_ptr<const ndn_service_framework::SegmentManifestVerifier>* admittedProof)
 {
   if (user.isOnIoThread())
     throw std::logic_error("repo-original-packet-set-on-io-thread");
   reference.validateExactPacketSet();
-  if (!verifyProducerSignature || timeoutMs <= 0 || !reference.packetSetMetadata ||
+  if ((!segmentManifest && !verifyProducerSignature) || timeoutMs <= 0 || !reference.packetSetMetadata ||
       limits.maxPacketCount == 0 || limits.maxPacketCount > 65536 ||
       limits.maxPacketWireBytes == 0 || limits.maxPacketWireBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
       reference.expectedSize > limits.maxPacketWireBytes ||
@@ -616,7 +618,7 @@ RepoClientCompat::fetchOriginalDataPacketSet(
       throw std::invalid_argument("repo-original-packet-set-offsets-invalid");
   }
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-  const auto current = [&] {
+  const auto current = [requireCurrent, deadline] {
     if (requireCurrent) requireCurrent();
     if (std::chrono::steady_clock::now() >= deadline)
       throw std::runtime_error("repo-original-packet-set-deadline");
@@ -630,7 +632,19 @@ RepoClientCompat::fetchOriginalDataPacketSet(
     throw std::runtime_error("repo-original-packet-set-deadline");
   detail::FaceDataReferenceFetcher fetcher(*binding.face, remaining, remaining, 0,
                                            std::move(binding.lease));
-  const auto spool = fetcher(reference);
+  std::shared_ptr<detail::DataReferencePacketSource> spool;
+  std::shared_ptr<const ndn_service_framework::SegmentManifestVerifier> manifestProof;
+  if (segmentManifest) {
+    auto admitted = fetcher.fetchManifest(reference, *segmentManifest, deadline,
+      [&user](const auto& wire, const auto& scope, auto expires) {
+        return user.validateManifestRootUntil(wire, scope, expires);
+      }, current);
+    spool = std::move(admitted.packets);
+    manifestProof = std::move(admitted.proof);
+  }
+  else {
+    spool = fetcher(reference);
+  }
   current();
   if (spool->packetCount() != metadata.packetNames.size() ||
       spool->totalWireBytes() != reference.expectedSize)
@@ -648,19 +662,26 @@ RepoClientCompat::fetchOriginalDataPacketSet(
   }
   if (toLowerHex(digest.toString()) != reference.expectedSha256)
     throw std::runtime_error("repo-original-packet-set-ordered-digest-mismatch");
-  // Certificate packets may appear last in the immutable wire order.
-  for (const bool certificates : {true, false}) {
-    for (const auto& wire : wires) {
-      current();
-      ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
-      block.parse();
-      const ndn::Data data(block);
-      if (ndn::security::Certificate::isValidName(data.getName()) == certificates &&
-          !verifyProducerSignature(data))
-        throw std::runtime_error("repo-original-packet-set-producer-signature-invalid");
+  if (manifestProof && !manifestProof->isCurrent())
+    throw std::runtime_error("repo-manifest-root-trust-expired");
+  if (!segmentManifest) {
+    // Certificate packets may appear last in the immutable wire order.
+    for (const bool certificates : {true, false}) {
+      for (const auto& wire : wires) {
+        current();
+        ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+        block.parse();
+        const ndn::Data data(block);
+        if (ndn::security::Certificate::isValidName(data.getName()) == certificates &&
+            !verifyProducerSignature(data))
+          throw std::runtime_error("repo-original-packet-set-producer-signature-invalid");
+      }
     }
   }
   current();
+  if (admittedProof) {
+    *admittedProof = std::move(manifestProof);
+  }
   return wires;
 }
 
@@ -728,11 +749,12 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
   const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
   int timeoutMs,
   RepoUserStoragePacketSetFetchLimits limits,
-  const std::function<void()>& requireCurrent)
+  const std::function<void()>& requireCurrent,
+  const std::optional<ndn_service_framework::SegmentManifestScope>& segmentManifest)
 {
   validateUserStorageClientTarget(target, timeoutMs);
   if (owner.getName().empty() || objectName.empty() || objectName.size() > 4096 ||
-      !verifyProducerSignature || limits.listingPageSize == 0 ||
+      (!segmentManifest && !verifyProducerSignature) || limits.listingPageSize == 0 ||
       limits.listingPageSize > 100 || limits.maxListingPagesPerScan == 0 ||
       limits.maxListingPagesPerScan > 4096 || limits.maxListedObjectsPerScan == 0 ||
       limits.maxListedObjectsPerScan > 1000000 || limits.maxListingWireBytes == 0 ||
@@ -755,7 +777,13 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
 
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeoutMs);
+  const auto current = [deadline, requireCurrent] {
+    if (requireCurrent) requireCurrent();
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("repo-user-storage-packet-set-deadline");
+  };
   const auto remainingTimeoutMs = [&] {
+    current();
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
       deadline - std::chrono::steady_clock::now()).count();
     if (remaining <= limits.ackCollectionTimeMs)
@@ -768,6 +796,7 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
   uint64_t listingWireBytes = 0;
 
   const auto listClaim = [&] {
+    current();
     return findCurrentUserStorageClaim(owner, target, objectName, limits, deadline,
                                       listingWireBytes);
   };
@@ -842,12 +871,16 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
   original.expectedSha256 = manifest.sha256;
   original.forwardingHint = provider.toUri();
   original.packetSetMetadata = manifest;
-  auto packetWires = RepoClientCompat::fetchOriginalDataPacketSet(
-    owner, original, verifyProducerSignature, remainingTimeoutMs(), limits);
+  std::shared_ptr<const ndn_service_framework::SegmentManifestVerifier> manifestProof;
+  auto packetWires = RepoClientCompat::fetchOriginalDataPacketSet(owner, original,
+    verifyProducerSignature, remainingTimeoutMs(), limits, current, segmentManifest, &manifestProof);
 
   const auto currentClaim = listClaim();
+  current();
   if (!sameUserStorageClaim(initialClaim, currentClaim))
     throw std::runtime_error("repo-user-storage-owner-claim-changed-during-fetch");
+  if (manifestProof && !manifestProof->isCurrent())
+    throw std::runtime_error("repo-manifest-root-trust-expired");
 
   return VerifiedRepoUserStoragePacketSetV1(target, initialClaim, manifest,
                                              std::move(packetWires));
@@ -908,7 +941,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   validateUserStorageClientTarget(target, timeoutMs);
   if (writer.isOnIoThread())
     throw std::logic_error("repo-original-publication-on-face-thread");
-  if (!nextOriginalPacket || !verifyProducerSignature || ackCollectionTimeMs <= 0 ||
+  if (!nextOriginalPacket || (!request.segmentManifestBinding && !verifyProducerSignature) || ackCollectionTimeMs <= 0 ||
       timeoutMs <= ackCollectionTimeMs || !request.reference.packetSetMetadata ||
       request.reference.expectedSize == 0 ||
       request.reference.expectedSize > REPO_USER_STORAGE_OBJECT_MAX_BYTES)
@@ -962,6 +995,9 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   if (producer.empty() || !producer.isPrefixOf(prefix))
     throw std::invalid_argument("repo-original-publication-producer-mismatch");
 
+  const ndn_service_framework::SegmentManifestScope manifestScope{
+    producer, prefix, request.segmentManifestBinding.value_or(std::array<uint8_t, 32>{})};
+
   struct Publication
   {
     ~Publication()
@@ -985,6 +1021,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     ndn::Name prefix;
     std::map<ndn::Name, std::pair<size_t, size_t>> index;
     std::shared_ptr<detail::FaceDataReferencePacketSpool> spool;
+    std::optional<ndn_service_framework::SegmentManifestVerifier> proof;
     ndn::ScopedInterestFilterHandle filter;
     std::shared_ptr<void> faceLease;
     ndn::Face* face = nullptr;
@@ -1036,10 +1073,35 @@ RepoClientCompat::commitUserStorageOriginalPackets(
       throw std::invalid_argument("repo-original-publication-missing-or-oversized-packet");
     const ndn::Data data{ndn::Block(ndn::span<const uint8_t>(wire->data(), wire->size()))};
     if (data.wireEncode().size() != wire->size() || data.getName() != ndn::Name(names[i]) ||
-        !prefix.isPrefixOf(data.getName()) || !verifyProducerSignature(data) ||
+        !prefix.isPrefixOf(data.getName()) ||
+        (!request.segmentManifestBinding && !verifyProducerSignature(data)) ||
         !publication->index.emplace(data.getName(), std::make_pair(i, wire->size())).second)
       throw std::invalid_argument("repo-original-publication-packet-invalid");
     current();
+    if (request.segmentManifestBinding) {
+      if (i == 0) {
+        auto root = writer.validateManifestRootUntil(*wire, manifestScope, deadline);
+        if (!root) {
+          throw std::invalid_argument("repo-original-publication-root-proof-invalid");
+        }
+        publication->proof.emplace(std::move(*root), manifestScope,
+          ndn_service_framework::SegmentManifestLimits{
+            ndn_service_framework::SegmentManifestVerifier::MAX_SOURCE_PACKETS,
+            request.reference.expectedSize, std::nullopt});
+        if (1 + publication->proof->pageCount() + publication->proof->sourceCount() != names.size()) {
+          throw std::invalid_argument("repo-original-publication-root-count-mismatch");
+        }
+      }
+      else {
+        auto& proof = *publication->proof;
+        if (i <= proof.pageCount()) {
+          proof.acceptPage(static_cast<uint32_t>(i - 1), data);
+        }
+        else if (!proof.matchesSource(static_cast<uint32_t>(i - 1 - proof.pageCount()), data)) {
+          throw std::invalid_argument("repo-original-publication-source-proof-invalid");
+        }
+      }
+    }
     publication->spool->append(i, *wire);
     digest.update(ndn::span<const uint8_t>(wire->data(), wire->size()));
     offsets.push_back(offsets.back() + wire->size());
@@ -1057,7 +1119,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   writer.postToIo(
     [publication, installed, prefix, deadline] {
       try {
-        if (publication->stopped.load() || std::chrono::steady_clock::now() >= deadline)
+        if (publication->stopped.load() || std::chrono::steady_clock::now() >= deadline ||
+            (publication->proof && !publication->proof->isCurrent()))
           throw std::runtime_error("repo-original-publication-install-deadline");
         auto& face = *publication->face;
         const std::weak_ptr<Publication> weak = publication;
@@ -1066,9 +1129,14 @@ RepoClientCompat::commitUserStorageOriginalPackets(
           [weak, &face, deadline](const ndn::InterestFilter&, const ndn::Interest& interest) {
             const auto state = weak.lock();
             if (!state || state->stopped.load() ||
-                std::chrono::steady_clock::now() >= deadline) return;
+                std::chrono::steady_clock::now() >= deadline ||
+                (state->proof && !state->proof->isCurrent())) return;
             // SDK bootstrap may set CanBePrefix; only an exact indexed Name is served.
-            const auto found = state->index.find(interest.getName());
+            auto name = interest.getName();
+            if (!name.empty() && name.at(-1).isImplicitSha256Digest()) {
+              name = name.getPrefix(-1);
+            }
+            const auto found = state->index.find(name);
             if (found == state->index.end()) return;
             const auto [packetIndex, packetBytes] = found->second;
             auto bytes = state->pendingBytes.load();
@@ -1090,7 +1158,10 @@ RepoClientCompat::commitUserStorageOriginalPackets(
               reply->bytes = packetBytes;
               const auto wire = state->spool->readPacket(packetIndex);
               if (state->stopped.load() || std::chrono::steady_clock::now() >= deadline) return;
-              face.put(ndn::Data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))));
+              const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+              if (interest.matchesData(data)) {
+                face.put(data);
+              }
               // Retain the admission/spool through the queued put callback.
               boost::asio::post(face.getIoContext(), [reply] {});
             }
@@ -3103,7 +3174,8 @@ RepoClient::publishData(const RepoDataPublication& input,
     throw RepoClientError("UNSUPPORTED",
                           "original-Data publication requires a persistent client",
                           "publishData");
-  requireWireVerifier(input.verifyWire, "publishData");
+  if (!input.segmentManifest)
+    requireWireVerifier(input.verifyWire, "publishData");
   if (input.producerIdentity.empty())
     throw std::invalid_argument("publishData requires the Producer namespace");
   if (input.object)
@@ -3156,6 +3228,20 @@ RepoClient::publishData(const RepoDataPublication& input,
   // the final packet lives under the Producer key name, not under the payload's
   // parent, and a multi-object stream shares the Producer prefix, not a parent.
   request.reference.dataPrefix = input.producerIdentity;
+  if (input.segmentManifest) {
+    const auto& scope = *input.segmentManifest;
+    if (scope.producer != m_impl->user->getName() ||
+        scope.producer != ndn::Name(input.producerIdentity) ||
+        scope.rootName() != ndn::Name(request.reference.objectName) ||
+        !scope.producer.isPrefixOf(scope.objectPrefix) ||
+        scope.producer == scope.objectPrefix) {
+      throw std::invalid_argument("publishData received a mismatched segment manifest scope");
+    }
+    request.schemaVersion = 3;
+    request.segmentManifestBinding = scope.bindingDigest;
+    request.reference.dataPrefix = scope.objectPrefix.toUri(ndn::name::UriFormat::CANONICAL);
+    request.reference.forwardingHint = scope.producer.toUri(ndn::name::UriFormat::CANONICAL);
+  }
   request.reference.expectedSize = source.expectedWireBytes;
   request.reference.expectedSha256 = canonicalSha256Digest(digest).substr(digestPrefix.size());
   request.reference.objectType = "original-packet-set";
@@ -3202,7 +3288,7 @@ RepoClient::publishData(const RepoDataPublication& input,
   const auto verifier = input.verifyWire;
   const auto verifySignature = [verifier](const ndn::Data& packet) {
     const auto& wire = packet.wireEncode();
-    return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
+    return verifier && (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
   const auto target = m_impl->target(input.target);
   // Original-packet publication carries a large request payload and its ACK
@@ -3377,7 +3463,8 @@ RepoClient::fetchData(const RepoDataFetch& input,
                           "fetchData");
   if (input.operationLifetime && (input.ownerClaim || input.manifestBound))
     throw RepoClientError("UNSUPPORTED", "owner lease requires a named packet read", "fetchData");
-  requireWireVerifier(input.verifyWire, "fetchData");
+  if (!input.ownerClaim || !input.ownerClaim->segmentManifest)
+    requireWireVerifier(input.verifyWire, "fetchData");
   requireLiveDeadline(options.deadline, "fetchData");
   if (input.ownerClaim) {
     // Owner-claim mode: RepoClient mints the proof only after matching the
@@ -3391,12 +3478,13 @@ RepoClient::fetchData(const RepoDataFetch& input,
     const auto verifier = input.verifyWire;
     const auto verifyPacket = [verifier](const ndn::Data& packet) {
       const auto& wire = packet.wireEncode();
-      return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
+      return verifier && (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
     };
+    const auto scope = claim.segmentManifest ? std::optional(*claim.segmentManifest) : std::nullopt;
     auto verified = RepoClient::fetchOriginalDataPacketSetFromUserStorage(
       *m_impl->user, m_impl->target(claim.target), claim.objectName,
       verifyPacket, std::max(1, remainingMs(options.deadline)), limits,
-      options.requireCurrent);
+      options.requireCurrent, scope);
     RepoDataFetchResult result;
     result.wireBytes = 0;
     for (const auto& wire : verified.packetWires())

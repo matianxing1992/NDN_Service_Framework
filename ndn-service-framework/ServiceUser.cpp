@@ -11535,6 +11535,16 @@ namespace ndn_service_framework
       validator->validateProducerPacketWireUntil(wire, producer, deadline);
   }
 
+  std::optional<ValidatedManifestRoot>
+  ServiceUser::validateManifestRootUntil(const std::vector<uint8_t>& wire,
+    const SegmentManifestScope& scope, std::chrono::steady_clock::time_point deadline)
+  {
+    if (!validator || isOnIoThread()) {
+      return std::nullopt;
+    }
+    return validator->validateManifestRootUntil(wire, scope, deadline);
+  }
+
   void
   ServiceUser::stopProducerPacketValidation() noexcept
   {

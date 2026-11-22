@@ -339,6 +339,9 @@ namespace ndn_service_framework{
              * This authenticates objects only, never service or execution authority. */
             bool validateProducerPacketWireUntil(const std::vector<uint8_t>& wire,
                 const ndn::Name& producer, std::chrono::steady_clock::time_point deadline);
+            std::optional<ValidatedManifestRoot>
+            validateManifestRootUntil(const std::vector<uint8_t>& wire,
+                const SegmentManifestScope& scope, std::chrono::steady_clock::time_point deadline);
             void stopProducerPacketValidation() noexcept;
 
             using AcksHandler =

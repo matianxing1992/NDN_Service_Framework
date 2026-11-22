@@ -58,11 +58,12 @@ namespace {
 constexpr uint64_t REPO_PENDING_SELECTION_TTL_MS = 60'000;
 
 bool
-isOwnedInsertRequest(const std::vector<uint8_t>& request)
+isOwnedInsertRequest(const std::vector<uint8_t>& request, bool allowManifest = false)
 {
   static constexpr uint8_t PREFIX[] = {'R', 'P', 'O', 'I'};
   return request.size() >= 6 && std::equal(std::begin(PREFIX), std::end(PREFIX), request.begin()) &&
-    (request[4] == '1' || request[4] == '2') && request[5] == '\n';
+    (request[4] == '1' || request[4] == '2' || (allowManifest && request[4] == '3')) &&
+    request[5] == '\n';
 }
 
 std::vector<uint8_t>
@@ -1938,6 +1939,12 @@ RepoNode::setDataReferenceFetcher(DataReferenceFetcher fetcher)
 }
 
 void
+RepoNode::setManifestPacketFetcher(ManifestPacketFetcher fetcher)
+{
+  m_manifestPacketFetcher = std::move(fetcher);
+}
+
+void
 RepoNode::setDataReferenceSpoolFetcher(DataReferenceSpoolFetcher fetcher)
 {
   m_dataReferenceSpoolFetcher = std::move(fetcher);
@@ -2064,6 +2071,9 @@ RepoNode::insertWirePackets(const RepoUserStorageInsertRequest& request,
                             const std::vector<std::vector<uint8_t>>& wirePackets,
                             const std::string& authenticatedWriter)
 {
+  if (request.schemaVersion == 3 || request.segmentManifestBinding) {
+    throw std::invalid_argument("repo-manifest-insert-requires-network-proof");
+  }
   return insertWirePacketsImpl(request.reference, wirePackets.size(),
                                [&wirePackets] (std::size_t index) {
                                  return wirePackets.at(index);
@@ -2884,7 +2894,7 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
                        const std::string& requesterIdentity,
                        bool networkRequest)
 {
-  if (!isOwnedInsertRequest(request)) {
+  if (!isOwnedInsertRequest(request, true)) {
     if (networkRequest && m_artifactMetadataStore) {
       throw std::runtime_error("repo-persistent-operation-required: INSERT requires Owner binding");
     }
@@ -2943,7 +2953,8 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
         throw std::runtime_error("repo-user-storage-operation-conflict");
       }
     }
-    if (!m_dataReferenceFetcher && !m_dataReferenceSpoolFetcher) {
+    if (!owned.segmentManifestBinding &&
+        !m_dataReferenceFetcher && !m_dataReferenceSpoolFetcher) {
       throw std::runtime_error("repo-original-packet-fetcher-unavailable");
     }
     const auto validationDeadline = std::chrono::steady_clock::now() +
@@ -2954,6 +2965,39 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
         throw std::runtime_error("repo-original-packet-validation-deadline-or-shutdown");
       }
     };
+    if (owned.segmentManifestBinding) {
+      if (!m_manifestPacketFetcher || dataPrefix == writerPrefix) {
+        throw std::runtime_error("repo-manifest-insert-proof-unavailable");
+      }
+      const ndn_service_framework::SegmentManifestScope scope{
+        writerPrefix, dataPrefix, *owned.segmentManifestBinding};
+      const auto fetchCurrent = [weak = weak_from_this(), validationDeadline] {
+        const auto node = weak.lock();
+        if (!node || node->isStoppingOriginalPacketOperations() ||
+            std::chrono::steady_clock::now() >= validationDeadline) {
+          throw std::runtime_error("repo-manifest-insert-closed");
+        }
+      };
+      const auto fetched = m_manifestPacketFetcher(owned.reference, scope, validationDeadline,
+                                                    fetchCurrent);
+      if (!fetched.packets || !fetched.proof) {
+        throw std::runtime_error("repo-manifest-insert-proof-unavailable");
+      }
+      const auto requireProof = [&] {
+        requireActive();
+        if (!fetched.proof->isCurrent()) {
+          throw std::runtime_error("repo-manifest-root-trust-expired");
+        }
+      };
+      requireProof();
+      const auto& packets = fetched.packets;
+      return toBytes(insertWirePacketsImpl(
+        owned.reference, packets->packetCount(),
+        [&](std::size_t index) { return packets->readPacket(index); },
+        [&](uint64_t offset, std::size_t length) { return packets->readRange(offset, length); },
+        owned.operationId, owned.generation, requesterIdentity,
+        owned.storageBinding, requireProof).toJson());
+    }
     if (m_dataReferenceSpoolFetcher) {
       const auto packetSpool = m_dataReferenceSpoolFetcher(owned.reference);
       if (!packetSpool) {

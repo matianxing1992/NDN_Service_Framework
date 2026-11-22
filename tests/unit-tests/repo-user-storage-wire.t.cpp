@@ -2,6 +2,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <functional>
 #include <limits>
 #include <string>
@@ -87,6 +88,51 @@ BOOST_AUTO_TEST_CASE(StoredModelUploadGeometryFitsBinaryInsertAndRecoveryManifes
     const auto manifest = metadata.toJson();
     BOOST_CHECK_LE(manifest.size(), 1U << 20);
     BOOST_CHECK(parseManifestJson(manifest).packetNames == metadata.packetNames);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ManifestInsertBindsBinaryScopeAndCanonicalPacketOrder)
+{
+  for (const uint32_t count : {2U, 129U}) {
+    auto request = sampleInsert();
+    request.schemaVersion = 3;
+    auto& digest = request.segmentManifestBinding.emplace();
+    digest[1] = 0xff;
+    digest[5] = '\n';
+    auto& reference = request.reference;
+    reference.dataPrefix = "/producer/kv";
+    reference.objectName = reference.dataPrefix + "/MANIFEST";
+    auto& metadata = *reference.packetSetMetadata;
+    metadata.objectName = reference.objectName;
+    metadata.dataPrefix.clear();
+    metadata.envelopeBytes = 0;
+    metadata.packetNames = {reference.objectName};
+    if (count == 129) {
+      metadata.packetNames.push_back(reference.objectName + "/PAGE/0");
+      metadata.packetNames.push_back(reference.objectName + "/PAGE/1");
+    }
+    const ndn::Name dataPrefix(reference.dataPrefix + "/DATA");
+    for (uint32_t i = 0; i < count; ++i) {
+      metadata.packetNames.push_back(ndn::Name(dataPrefix).appendSegment(i).toUri());
+    }
+    const auto wire = encodeUserStorageInsertRequest(request);
+    BOOST_CHECK_EQUAL(wire.at(4), '3');
+    const auto restored = decodeUserStorageInsertRequest(wire);
+    BOOST_CHECK(restored.segmentManifestBinding == request.segmentManifestBinding);
+    BOOST_CHECK(encodeUserStorageInsertRequest(restored) == wire);
+
+    auto wrongOrder = request;
+    auto& names = wrongOrder.reference.packetSetMetadata->packetNames;
+    std::iter_swap(names.end() - 2, names.end() - 1);
+    BOOST_CHECK_THROW(encodeUserStorageInsertRequest(wrongOrder), std::invalid_argument);
+    auto truncated = wire;
+    truncated.pop_back();
+    BOOST_CHECK_THROW(decodeUserStorageInsertRequest(truncated), std::invalid_argument);
+    auto wrongVersion = wire;
+    wrongVersion[4] = '2';
+    BOOST_CHECK_THROW(decodeUserStorageInsertRequest(wrongVersion), std::invalid_argument);
+    request.segmentManifestBinding.reset();
+    BOOST_CHECK_THROW(encodeUserStorageInsertRequest(request), std::invalid_argument);
   }
 }
 

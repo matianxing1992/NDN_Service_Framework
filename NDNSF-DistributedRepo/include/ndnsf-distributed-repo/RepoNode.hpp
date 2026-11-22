@@ -6,6 +6,8 @@
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 
+#include "ndn-service-framework/segment-manifest.hpp"
+
 #include <ndn-cxx/face.hpp>
 
 #include <atomic>
@@ -45,6 +47,16 @@ public:
   virtual std::vector<uint8_t> readRange(uint64_t offset, std::size_t length) const = 0;
 };
 
+using ManifestRootValidator = std::function<std::optional<ndn_service_framework::ValidatedManifestRoot>(
+  const std::vector<uint8_t>&, const ndn_service_framework::SegmentManifestScope&,
+  std::chrono::steady_clock::time_point)>;
+
+struct AuthenticatedManifestPackets
+{
+  std::shared_ptr<DataReferencePacketSource> packets;
+  std::shared_ptr<const ndn_service_framework::SegmentManifestVerifier> proof;
+};
+
 } // namespace detail
 
 class RepoNode : public std::enable_shared_from_this<RepoNode>
@@ -54,6 +66,10 @@ public:
     std::function<std::vector<std::vector<uint8_t>>(const RepoDataReference&)>;
   using DataReferenceSpoolFetcher =
     std::function<std::shared_ptr<detail::DataReferencePacketSource>(const RepoDataReference&)>;
+
+  using ManifestPacketFetcher = std::function<detail::AuthenticatedManifestPackets(
+    const RepoDataReference&, const ndn_service_framework::SegmentManifestScope&,
+    std::chrono::steady_clock::time_point, std::function<void()>)>;
 
   RepoNode(ndn::Name servicePrefix,
            StorageCapability capability,
@@ -138,6 +154,7 @@ public:
   /** Configure while quiescent; fetch callbacks must support concurrent requests. */
   void setDataReferenceFetcher(DataReferenceFetcher fetcher);
   void setDataReferenceSpoolFetcher(DataReferenceSpoolFetcher fetcher);
+  void setManifestPacketFetcher(ManifestPacketFetcher fetcher);
   void stopOriginalPacketOperations() noexcept;
   bool isStoppingOriginalPacketOperations() const noexcept;
 
@@ -313,6 +330,7 @@ private:
   std::thread m_storageWriteWorker;
   DataReferenceFetcher m_dataReferenceFetcher;
   DataReferenceSpoolFetcher m_dataReferenceSpoolFetcher;
+  ManifestPacketFetcher m_manifestPacketFetcher;
   std::atomic<bool> m_ownedInsertStopping{false};
   bool m_originalDataServingRegistered = false;
   std::atomic<bool> m_originalDataRouteReady{false};

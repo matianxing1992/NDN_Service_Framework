@@ -116,15 +116,33 @@ public:
    * Uses the same window, retries, spool, cancellation and single-operation admission as operator().
    * requireCurrent may run concurrently on the waiting thread and Face strand; it must be
    * thread-safe and must not block on work that requires the Face strand.
+   * With an admission callback, full digest names use Interest matching and
+   * support only the exact path. Admission runs on the Face strand before append.
+   * A supplied absolute deadline caps this fetch, including retries.
    */
+  AuthenticatedManifestPackets
+  fetchManifest(const RepoDataReference& reference,
+                const ndn_service_framework::SegmentManifestScope& scope,
+                std::chrono::steady_clock::time_point deadline,
+                const ManifestRootValidator& validateRoot,
+                std::function<void()> requireCurrent = {}) const;
+
+  using PacketAdmission = std::function<void(std::size_t, const ndn::Data&)>;
+
   std::shared_ptr<FaceDataReferencePacketSpool>
   fetchNamed(const std::vector<ndn::Name>& names, uint64_t maxWireBytes,
-             const ndn::Name& forwardingHint, std::function<void()> requireCurrent = {}) const;
+             const ndn::Name& forwardingHint, std::function<void()> requireCurrent = {},
+             std::chrono::steady_clock::time_point deadline =
+               std::chrono::steady_clock::time_point::max(),
+             PacketAdmission admit = {}) const;
 
 private:
   std::shared_ptr<FaceDataReferencePacketSpool>
   fetch(const RepoDataReference& routing, std::size_t packetCount,
-        std::vector<ndn::Name> names, bool exactSize, std::function<void()> requireCurrent) const;
+        std::vector<ndn::Name> names, bool exactSize, std::function<void()> requireCurrent,
+        std::chrono::steady_clock::time_point deadline =
+          std::chrono::steady_clock::time_point::max(),
+        PacketAdmission admit = {}) const;
 
   ndn::Face& m_face;
   std::chrono::milliseconds m_interestLifetime;

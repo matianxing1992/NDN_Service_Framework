@@ -2834,6 +2834,18 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
         ++*originalInsertFetches;
         return fetch(value);
       });
+    node->setManifestPacketFetcher(
+      [&environment](const repo::RepoDataReference& reference,
+        const ndn_service_framework::SegmentManifestScope& scope,
+        std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
+        auto& actor = environment.provider(1);
+        const repo::detail::FaceDataReferenceFetcher fetch(
+          environment.providerFace(1), 1s, 10s);
+        return fetch.fetchManifest(reference, scope, deadline,
+          [&actor](const auto& wire, const auto& expected, auto expires) {
+            return actor.validateManifestRootUntil(wire, expected, expires);
+          }, std::move(requireCurrent));
+      });
     return node;
   };
   auto node = openRepo();
@@ -3198,6 +3210,144 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_CHECK_EQUAL(repo::RepoUserStorageDeleteReply::fromJson(responseString(response)).state,
     "DELETED");
   BOOST_CHECK(node->core().list().empty());
+  // Qualify the v3 writer filter, Repo proof path, persistent originals and
+  // the real Owner read after re-opening the store.
+  SegmentManifestScope manifestScope{sourceIdentity, ndn::Name(sourceIdentity)
+    .append("NDNSF").append("REPO_TEST").appendVersion(1)};
+  manifestScope.bindingDigest[0] = 0x81;
+  constexpr uint32_t manifestSources = 129;
+  std::vector<ndn::ConstBufferPtr> contents;
+  for (uint32_t i = 0; i < manifestSources; ++i) {
+    contents.push_back(std::make_shared<const ndn::Buffer>(
+      ndn::Buffer{static_cast<uint8_t>(i), 0x71}));
+  }
+  const auto manifestPublication = ManifestPublication::prepare(environment.keyChain(),
+    ndn::security::signingByCertificate(producer), manifestScope,
+    {manifestSources, 1024U * 1024U, manifestSources}, contents, ndn::Buffer{1, 2},
+    ndn::time::milliseconds(10000));
+  const auto manifestObject = manifestScope.rootName().toUri(ndn::name::UriFormat::ALTERNATE);
+  const repo::RepoUserStorageGrantRequest manifestGrant{1, "client-segment-manifest",
+    sourceIdentity.toUri(ndn::name::UriFormat::ALTERNATE), manifestObject,
+    static_cast<uint64_t>(now) + 120000};
+  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
+    return repo::RepoClientCompat::requestUserStorageGrant(environment.user(), target,
+      manifestGrant, 15000, std::move(timeout), std::move(complete));
+  });
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  const auto manifestGrantReply = repo::RepoUserStorageGrantReply::fromJson(responseString(response));
+  const auto manifestInsert = repo::makeManifestInsertRequest(manifestPublication, sourceIdentity,
+    "client-manifest-original", 1, {1, owner, manifestGrant.grantId,
+      manifestGrantReply.grant.ownerEpoch});
+  std::vector<std::vector<uint8_t>> manifestWires;
+  for (const auto& packet : manifestPublication.packets()) {
+    const auto& wire = packet.wireEncode();
+    manifestWires.emplace_back(wire.begin(), wire.end());
+  }
+  const repo::RepoTarget manifestTarget{target.repoNode, target.providerIdentity,
+                                        target.servicePrefix};
+  const auto clientConfig = [&] {
+    repo::PersistentRepoClientConfig config;
+    config.servicePrefix = servicePrefix;
+    config.providerScope = {ndn::Name(target.providerIdentity)};
+    config.dataOnly = true;
+    return config;
+  };
+  auto manifestWriter = repo::RepoClient::makePersistent(sourceWriter, clientConfig());
+  const auto commitManifest = [&](const repo::RepoUserStorageInsertRequest& request) {
+    const auto& indexManifest = *request.reference.packetSetMetadata;
+    std::size_t index = 0;
+    repo::RepoDataPublication input;
+    input.packets.emplace();
+    input.packets->packetNames = indexManifest.packetNames;
+    input.packets->packetOffsets = indexManifest.packetOffsets;
+    input.packets->expectedWireBytes = request.reference.expectedSize;
+    input.packets->expectedDigest = "sha256:" + request.reference.expectedSha256;
+    input.packets->next = [&](auto& wire) {
+      if (index == manifestWires.size()) return false;
+      wire = manifestWires[index++];
+      return true;
+    };
+    input.target = manifestTarget;
+    input.producerIdentity = sourceIdentity.toUri();
+    input.ownerIdentity = request.storageBinding.ownerIdentity;
+    input.grantId = request.storageBinding.grantId;
+    input.ownerEpoch = request.storageBinding.ownerEpoch;
+    input.generation = request.generation;
+    input.idempotencyKey = request.operationId;
+    auto scope = manifestScope;
+    scope.bindingDigest = *request.segmentManifestBinding;
+    input.segmentManifest = std::make_shared<const SegmentManifestScope>(std::move(scope));
+    return runWithFacePump(environment, [&] {
+      repo::RepoOperationOptions options;
+      options.deadline = std::chrono::steady_clock::now() + 15s;
+      return manifestWriter.publishData(input, options);
+    });
+  };
+  auto wrongManifest = manifestInsert;
+  wrongManifest.segmentManifestBinding->front() ^= 1;
+  const auto wrongBinding = [](const auto& error) {
+    return std::string(error.what()) == "segment-manifest-binding";
+  };
+  BOOST_CHECK_EXCEPTION(commitManifest(wrongManifest), std::invalid_argument, wrongBinding);
+  auto wrongGrant = manifestInsert;
+  wrongGrant.storageBinding.grantId += "-unknown";
+  BOOST_CHECK_THROW(commitManifest(wrongGrant), std::runtime_error);
+  BOOST_CHECK(node->core().list().empty());
+  const auto admittedManifest = commitManifest(manifestInsert);
+  BOOST_REQUIRE(admittedManifest.packetSet);
+  BOOST_REQUIRE_EQUAL(admittedManifest.packetSet->lifecycleState, "COMMITTED");
+  BOOST_CHECK_EQUAL(admittedManifest.packetSet->packetNames.size(), manifestWires.size());
+  const auto retry = commitManifest(manifestInsert);
+  BOOST_REQUIRE(retry.packetSet);
+  BOOST_CHECK_EQUAL(retry.packetSet->wireDigest, admittedManifest.packetSet->wireDigest);
+  auto conflictingRetry = manifestInsert;
+  ++conflictingRetry.generation;
+  BOOST_CHECK_EXCEPTION(commitManifest(conflictingRetry), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()).find("repo-user-storage-operation-conflict") !=
+           std::string::npos;
+  });
+  const std::weak_ptr<repo::RepoNode> previousManifestRepo = node;
+  node->stopOriginalPacketOperations();
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
+  runWithFacePump(environment, [&] { node.reset(); return true; });
+  BOOST_REQUIRE(previousManifestRepo.expired());
+  node = openRepo();
+  environment.pumpUntilWithAttributeAuthority([&] {
+    return node->isOriginalDataServingReady();
+  });
+  BOOST_REQUIRE(node->isOriginalDataServingReady());
+  auto ownerHandle = std::shared_ptr<ServiceUser>(&environment.user(), [](ServiceUser*) {});
+  auto manifestReader = repo::RepoClient::makePersistent(ownerHandle, clientConfig());
+  const auto readManifest = [&](const SegmentManifestScope& scope) {
+    repo::RepoDataFetch input;
+    input.ownerClaim.emplace();
+    input.ownerClaim->objectName = manifestObject;
+    input.ownerClaim->target = manifestTarget;
+    input.ownerClaim->segmentManifest = std::make_shared<const SegmentManifestScope>(scope);
+    return runWithFacePump(environment, [&] {
+      repo::RepoOperationOptions options;
+      options.deadline = std::chrono::steady_clock::now() + 15s;
+      return manifestReader.fetchData(input, options);
+    });
+  };
+  auto wrongScope = manifestScope;
+  wrongScope.bindingDigest.front() ^= 1;
+  BOOST_CHECK_EXCEPTION(readManifest(wrongScope), std::invalid_argument, wrongBinding);
+  const auto reopened = readManifest(manifestScope);
+  BOOST_REQUIRE(reopened.ownerPacketSet);
+  BOOST_CHECK(reopened.ownerPacketSet->packetWires() == manifestWires);
+  const repo::RepoUserStorageDeleteRequest manifestCleanup{1, "client-manifest-cleanup",
+    manifestObject, manifestGrantReply.grant.ownerEpoch};
+  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
+    return repo::RepoClientCompat::requestUserStorageDelete(environment.user(), target,
+      manifestCleanup, 15000, std::move(timeout), std::move(complete));
+  });
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  BOOST_CHECK_EQUAL(repo::RepoUserStorageDeleteReply::fromJson(responseString(response)).state,
+    "DELETED");
+  BOOST_CHECK_THROW(readManifest(manifestScope), std::runtime_error);
+  BOOST_CHECK(node->core().list().empty());
+
   // The DI helper consumes the existing protected owner receipt and the same
   // authenticated RepoClient path; it does not prepare or re-sign model Data.
   repo::StorageCapability sourceCapability;

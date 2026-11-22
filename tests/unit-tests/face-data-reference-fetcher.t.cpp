@@ -576,6 +576,48 @@ BOOST_AUTO_TEST_CASE(NamedReadUsesUpperBoundWithoutInventingExactManifest)
   BOOST_CHECK(routeMatches.load());
 }
 
+BOOST_AUTO_TEST_CASE(ProofFetchAdmitsFullDigestBeforeAppendingWithinAbsoluteDeadline)
+{
+  FacePump pump;
+  const auto packet = makeData(ndn::Name("/publisher/model/DATA").appendSegment(0), 7);
+  const auto expectedWire = wireOf(packet);
+  const std::vector<ndn::Name> names{packet.getFullName()};
+  std::atomic<size_t> interests{0};
+  auto connection = pump.face.onSendInterest.connect([&] (const ndn::Interest& interest) {
+    ++interests;
+    if (interest.getName() == names.front()) {
+      pump.face.receive(packet);
+    }
+  });
+  FacePumpStop stop{pump};
+  const detail::FaceDataReferenceFetcher fetcher(pump.face, 100ms, 2s, 2);
+  const ndn::Name hint("/repo/actor");
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  const auto result = fetcher.fetchNamed(names, 4096, hint, {}, deadline,
+    [&](size_t index, const ndn::Data& candidate) {
+      if (index != 0 || candidate.wireEncode() != packet.wireEncode()) {
+        throw std::invalid_argument("unexpected original");
+      }
+    });
+  BOOST_REQUIRE_EQUAL(result->packetCount(), 1U);
+  BOOST_CHECK(result->readPacket(0) == expectedWire);
+
+  const detail::FaceDataReferenceFetcher denied(pump.face, 100ms, 2s, 2);
+  BOOST_CHECK_EXCEPTION(denied.fetchNamed(names, 4096, hint, {}, deadline,
+    [](size_t, const ndn::Data&) { throw std::invalid_argument("root binding rejected"); }),
+    std::runtime_error, [](const std::runtime_error& error) {
+      return std::string(error.what()) == "repo-original-packet-proof-rejected";
+    });
+  BOOST_CHECK_EQUAL(interests.load(), 2U);
+  const auto expired = std::chrono::steady_clock::now() - 1ms;
+  BOOST_CHECK_EXCEPTION(fetcher.fetchNamed(names, 4096, hint, {}, expired,
+    [](size_t, const ndn::Data&) {}), std::runtime_error,
+    [](const std::runtime_error& error) {
+      return std::string(error.what()) == "repo-original-packet-fetch-deadline";
+    });
+  BOOST_CHECK_EQUAL(interests.load(), 2U);
+}
+
 BOOST_AUTO_TEST_CASE(NamedReadRejectsDuplicateBudgetAndCancelledOwnerBeforeInterests)
 {
   FacePump pump;

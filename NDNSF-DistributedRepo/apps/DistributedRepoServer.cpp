@@ -132,6 +132,18 @@ main(int argc, char* argv[])
       authorityCert,
       config.trustSchemaPath.string());
 
+    repo->setManifestPacketFetcher(
+      [&face, &provider, timeout = std::chrono::milliseconds(config.requestTimeoutMs)](
+        const ndnsf_distributed_repo::RepoDataReference& reference,
+        const ndn_service_framework::SegmentManifestScope& scope,
+        std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
+        ndnsf_distributed_repo::detail::FaceDataReferenceFetcher fetcher(face, timeout, timeout);
+        return fetcher.fetchManifest(reference, scope, deadline,
+          [&provider](const auto& wire, const auto& expected, auto expires) {
+            return provider.validateManifestRootUntil(wire, expected, expires);
+          }, std::move(requireCurrent));
+      });
+
     // Fence owned INSERT and validation before Provider teardown on every exit path.
     struct OwnedInsertShutdownFence
     {

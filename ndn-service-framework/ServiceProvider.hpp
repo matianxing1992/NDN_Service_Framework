@@ -1486,6 +1486,10 @@ namespace ndn_service_framework{
             bool validateProducerPacketWireUntil(
               const std::vector<uint8_t>& wire, const ndn::Name& producer,
               std::chrono::steady_clock::time_point deadline);
+            /** Return a configured-trust root proof to the calling handler worker. */
+            std::optional<ValidatedManifestRoot>
+            validateManifestRootUntil(const std::vector<uint8_t>& wire,
+              const SegmentManifestScope& scope, std::chrono::steady_clock::time_point deadline);
             void stopProducerPacketValidation() noexcept;
             void setAckThreads(size_t n);
             size_t getAckThreads() const;

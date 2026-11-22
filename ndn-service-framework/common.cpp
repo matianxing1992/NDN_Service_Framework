@@ -22,19 +22,19 @@
 
 namespace ndn_service_framework {
 
-bool
-MessageValidator::validateProducerPacketWireUntil(
-  const std::vector<uint8_t>& wire, const ndn::Name& producer,
-  std::chrono::steady_clock::time_point deadline)
+template<typename Result, typename Start>
+Result
+MessageValidator::validateOriginalWireUntil(const std::vector<uint8_t>& wire,
+  std::chrono::steady_clock::time_point deadline, Start&& start)
 {
-  const auto validationOwner = weak_from_this().lock();
-  if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE || producer.empty() ||
-      !validationOwner || deadline <= std::chrono::steady_clock::now() ||
+  const auto owner = weak_from_this().lock();
+  if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE || !owner ||
+      deadline <= std::chrono::steady_clock::now() ||
       (m_callbackIo && m_callbackIo->get_executor().running_in_this_thread())) {
-    return false;
+    return {};
   }
   const auto control = m_producerPacketValidationControl;
-  auto waiter = std::make_shared<ProducerPacketValidationWaiter>();
+  auto result = std::make_shared<std::optional<Result>>();
   struct PendingSlot
   {
     std::shared_ptr<ProducerPacketValidationControl> control;
@@ -58,7 +58,7 @@ MessageValidator::validateProducerPacketWireUntil(
     std::lock_guard<std::mutex> lock(control->mutex);
     constexpr size_t MAX_PENDING_VALIDATIONS = 16;
     if (control->stopping || control->outstanding >= MAX_PENDING_VALIDATIONS) {
-      return false;
+      return {};
     }
     ++control->outstanding;
     slot->counted = true;
@@ -68,66 +68,94 @@ MessageValidator::validateProducerPacketWireUntil(
     block.parse();
     const ndn::Data data(block);
     if (data.wireEncode().size() != wire.size()) {
-      return false;
+      return {};
     }
-    if (ndn::security::Certificate::isValidName(data.getName())) {
-      const ndn::security::Certificate certificate(data);
-      if (certificate.getIdentity() != producer || !certificate.getValidityPeriod().isValid()) {
-        return false;
+    start(owner, data, [control, result, slot](Result validated) {
+      {
+        std::lock_guard<std::mutex> lock(control->mutex);
+        if (!control->stopping) {
+          result->emplace(std::move(validated));
+        }
       }
-      ndn::security::transform::PublicKey publicKey;
-      publicKey.loadPkcs8(certificate.getPublicKey());
-    }
-    validationOwner->validateWithConfiguredTrustSchema(data,
-      [control, waiter, slot, validationOwner, producer](const ndn::Data& validated) {
-        bool accepted = false;
-        try {
-          if (ndn::security::Certificate::isValidName(validated.getName())) {
-            ndn::security::Certificate certificate(validated);
-            // Certificates retain their standard subject Name; the configured
-            // schema, not application Producer delegation, authorizes the issuer.
-            accepted = certificate.getIdentity() == producer &&
-                       certificate.getValidityPeriod().isValid();
-            if (accepted) {
-              validationOwner->getConfiguredValidatorForSegmentFetcher()
-                .cacheUnverifiedCert(std::move(certificate));
-            }
-          }
-          else {
-            accepted = validationOwner->isProducerSignerAuthorized(validated, producer);
-          }
-        }
-        catch (const std::exception&) {
-          accepted = false;
-        }
-        {
-          std::lock_guard<std::mutex> lock(control->mutex);
-          waiter->accepted = !control->stopping && accepted;
-          waiter->complete = true;
-        }
-        control->wake.notify_all();
-      },
-      [control, waiter, slot](const ndn::Data&,
-                              const ndn::security::ValidationError&) {
-        {
-          std::lock_guard<std::mutex> lock(control->mutex);
-          waiter->accepted = false;
-          waiter->complete = true;
-        }
-        control->wake.notify_all();
-      });
+      control->wake.notify_all();
+    });
   }
   catch (const std::exception&) {
-    return false;
+    return {};
   }
   std::unique_lock<std::mutex> lock(control->mutex);
   if (!control->wake.wait_until(lock, deadline, [&] {
-        return control->stopping || waiter->complete;
-      })) {
+        return control->stopping || result->has_value();
+      }) || control->stopping || std::chrono::steady_clock::now() > deadline) {
+    return {};
+  }
+  return std::move(result->value());
+}
+
+bool
+MessageValidator::validateProducerPacketWireUntil(
+  const std::vector<uint8_t>& wire, const ndn::Name& producer,
+  std::chrono::steady_clock::time_point deadline)
+{
+  if (producer.empty()) {
     return false;
   }
-  return !control->stopping && waiter->accepted &&
-         std::chrono::steady_clock::now() <= deadline;
+  return validateOriginalWireUntil<bool>(wire, deadline,
+    [&producer](const std::shared_ptr<MessageValidator>& owner, const ndn::Data& data,
+                auto complete) {
+      if (ndn::security::Certificate::isValidName(data.getName())) {
+        const ndn::security::Certificate certificate(data);
+        if (certificate.getIdentity() != producer || !certificate.getValidityPeriod().isValid()) {
+          complete(false);
+          return;
+        }
+        ndn::security::transform::PublicKey publicKey;
+        publicKey.loadPkcs8(certificate.getPublicKey());
+      }
+      owner->validateWithConfiguredTrustSchema(data,
+        [owner, producer, complete](const ndn::Data& validated) {
+          bool accepted = false;
+          try {
+            if (ndn::security::Certificate::isValidName(validated.getName())) {
+              ndn::security::Certificate certificate(validated);
+              // The configured schema authorizes the issuer; the original Name
+              // still binds the certificate subject to the expected Producer.
+              accepted = certificate.getIdentity() == producer &&
+                         certificate.getValidityPeriod().isValid();
+              if (accepted) {
+                owner->getConfiguredValidatorForSegmentFetcher()
+                  .cacheUnverifiedCert(std::move(certificate));
+              }
+            }
+            else {
+              accepted = owner->isProducerSignerAuthorized(validated, producer);
+            }
+          }
+          catch (const std::exception&) {
+            accepted = false;
+          }
+          complete(accepted);
+        },
+        [complete](const ndn::Data&, const ndn::security::ValidationError&) {
+          complete(false);
+        });
+    });
+}
+
+std::optional<ValidatedManifestRoot>
+MessageValidator::validateManifestRootUntil(const std::vector<uint8_t>& wire,
+  const SegmentManifestScope& scope, std::chrono::steady_clock::time_point deadline)
+{
+  using Result = std::optional<ValidatedManifestRoot>;
+  auto root = validateOriginalWireUntil<Result>(wire, deadline,
+    [&scope](const std::shared_ptr<MessageValidator>& owner, const ndn::Data& data,
+             auto complete) {
+      owner->validateManifestRoot(data, scope, std::move(complete));
+    });
+  if (!root || !root->isCurrent()) {
+    return std::nullopt;
+  }
+  return root;
 }
 
 void

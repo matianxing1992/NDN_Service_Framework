@@ -569,6 +569,11 @@ namespace ndn_service_framework{
         validateManifestRoot(const ndn::Data& data, const SegmentManifestScope& scope,
           std::function<void(std::optional<ValidatedManifestRoot>)> completed);
 
+        /** Await root validation on a handler worker with the shared Producer admission budget. */
+        std::optional<ValidatedManifestRoot>
+        validateManifestRootUntil(const std::vector<uint8_t>& wire,
+          const SegmentManifestScope& scope, std::chrono::steady_clock::time_point deadline);
+
         void
         stopProducerPacketValidation() noexcept;
 
@@ -896,11 +901,10 @@ namespace ndn_service_framework{
           bool stopping = false;
           size_t outstanding = 0;
         };
-        struct ProducerPacketValidationWaiter
-        {
-          bool complete = false;
-          bool accepted = false;
-        };
+        template<typename Result, typename Start>
+        Result
+        validateOriginalWireUntil(const std::vector<uint8_t>& wire,
+          std::chrono::steady_clock::time_point deadline, Start&& start);
         std::shared_ptr<ProducerPacketValidationControl> m_producerPacketValidationControl =
           std::make_shared<ProducerPacketValidationControl>();
         ndn::Face m_face;

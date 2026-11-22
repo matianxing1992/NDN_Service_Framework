@@ -12,6 +12,10 @@
 #include <variant>
 #include <vector>
 
+namespace ndn_service_framework {
+struct SegmentManifestScope;
+}
+
 namespace ndnsf_distributed_repo {
 
 struct RepoObjectManifest;
@@ -339,6 +343,8 @@ struct RepoDataPublication
   std::string idempotencyKey;
   /** Shared so copying a publication never deep-copies the verifier. */
   std::shared_ptr<const std::function<bool(const std::vector<uint8_t>&)>> verifyWire;
+  /** Selects the authenticated manifest path with the writer's configured trust. */
+  std::shared_ptr<const ndn_service_framework::SegmentManifestScope> segmentManifest;
 };
 
 
@@ -371,6 +377,8 @@ struct RepoOwnerClaimFetch
   uint64_t maxPacketCount = 65536;
   uint64_t maxPacketWireBytes = 256ULL * 1024 * 1024;
   uint64_t maxManifestWireBytes = 4ULL * 1024 * 1024;
+  /** Expected Producer, object prefix and binding for the owner's root validator. */
+  std::shared_ptr<const ndn_service_framework::SegmentManifestScope> segmentManifest;
 };
 
 /** Requested original-Data retrieval. */

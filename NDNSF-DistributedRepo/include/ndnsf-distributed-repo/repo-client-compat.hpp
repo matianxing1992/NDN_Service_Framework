@@ -42,7 +42,9 @@ public:
     ndn_service_framework::ServiceUser& user, const RepoDataReference& reference,
     const std::function<bool(const ndn::Data&)>& verifyProducerSignature, int timeoutMs,
     RepoUserStoragePacketSetFetchLimits limits = {},
-    const std::function<void()>& requireCurrent = {});
+    const std::function<void()>& requireCurrent = {},
+    const std::optional<ndn_service_framework::SegmentManifestScope>& segmentManifest = {},
+    std::shared_ptr<const ndn_service_framework::SegmentManifestVerifier>* admittedProof = nullptr);
   static std::vector<uint8_t> fetchOriginalDataPacket(
     ndn_service_framework::ServiceUser& user,
     const ndn::Name& dataName,

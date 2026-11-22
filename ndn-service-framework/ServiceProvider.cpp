@@ -8116,6 +8116,17 @@ namespace ndn_service_framework
       return validator->validateProducerPacketWireUntil(wire, producer, deadline);
     }
 
+    std::optional<ValidatedManifestRoot>
+    ServiceProvider::validateManifestRootUntil(const std::vector<uint8_t>& wire,
+      const SegmentManifestScope& scope, std::chrono::steady_clock::time_point deadline)
+    {
+      if (!validator || (!m_isLocalMock && (getHandlerThreads() == 0 ||
+          m_face.getIoContext().get_executor().running_in_this_thread()))) {
+        return std::nullopt;
+      }
+      return validator->validateManifestRootUntil(wire, scope, deadline);
+    }
+
     void
     ServiceProvider::stopProducerPacketValidation() noexcept
     {

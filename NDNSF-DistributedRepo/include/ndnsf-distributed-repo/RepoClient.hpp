@@ -214,7 +214,8 @@ public:
     const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
     int timeoutMs,
     RepoUserStoragePacketSetFetchLimits limits = {},
-    const std::function<void()>& requireCurrent = {});
+    const std::function<void()>& requireCurrent = {},
+    const std::optional<ndn_service_framework::SegmentManifestScope>& segmentManifest = {});
 
   /** Re-read one exact Owner claim after caller-side semantic validation.
    * Returns only when the complete committed claim tuple is unchanged. This is
