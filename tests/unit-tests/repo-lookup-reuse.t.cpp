@@ -70,6 +70,7 @@ struct Fixture
 {
   std::filesystem::path root = std::filesystem::temp_directory_path() /
     ("spec190-repo-lookup-" + std::to_string(::getpid()));
+  const std::uint64_t capacityBytes;
   std::shared_ptr<RepoCore> repo;
   std::shared_ptr<FilesystemRepoStoreBackend> backend;
 
@@ -77,7 +78,7 @@ struct Fixture
   {
     StorageCapability capability;
     capability.repoNode = "/spec190/local-repo";
-    capability.freeBytes = 16U * 1024U * 1024U;
+    capability.freeBytes = capacityBytes;
     capability.repoMode = "persistent";
     backend = std::make_shared<FilesystemRepoStoreBackend>(
       root.string(), 4U * 1024U * 1024U, 1U * 1024U * 1024U, "spec190-test");
@@ -85,7 +86,8 @@ struct Fixture
       std::move(capability), backend);
   }
 
-  Fixture()
+  explicit Fixture(std::uint64_t bytes = 16U << 20)
+    : capacityBytes(bytes)
   {
     std::error_code error;
     std::filesystem::remove_all(root, error);
@@ -174,14 +176,14 @@ BOOST_AUTO_TEST_SUITE(Spec190RepoLookupReuse)
 
 BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
 {
-  Fixture fixture;
+  Fixture fixture(256U << 20);
   NativeInspectedModel model;
   model.descriptor = modelDescriptor();
   NativeCanonicalSource source;
   source.modelBytes = {0x01, 0x02, 0x03};
   source.preparedMetadataJson = nativeCanonicalJson(NativeJson{
     {"schema", "ndnsf-di-prepared-metadata-v1"},
-    {"fixture", std::string(2U << 20, 'x')}});
+    {"fixture", std::string((64U << 20) + 1, 'x')}});
   model.canonicalSourceDigest = nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size());
   model.canonicalSourceBytes = source.modelBytes.size();
   model.canonicalGraphDigest = digest("graph");
@@ -196,7 +198,7 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   options.artifactProfileDigest = profile;
   options.publicationIdentityDigest = nativePlanningDigest(nativeCanonicalJson(catalog));
   NativeRequestControl control{
-    "/spec190/lookup", 1, std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
+    "/spec190/lookup", 1, std::chrono::steady_clock::now() + std::chrono::seconds(60), {}};
   auto provider = std::make_unique<RepoSourceProvider>(fixture.repo);
   const auto committed = provider->publish("qwen", "/service", model, source, options, control);
   BOOST_CHECK_EQUAL(committed.rootDataName,
@@ -213,20 +215,28 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
 
   const auto hit = provider->lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
-    std::chrono::steady_clock::now() + std::chrono::seconds(10)});
+    std::chrono::steady_clock::now() + std::chrono::seconds(60)});
   BOOST_REQUIRE(hit);
   BOOST_CHECK_EQUAL(hit->rootDataName, committed.rootDataName);
   BOOST_CHECK_EQUAL(hit->sourceDataName, committed.sourceDataName);
   BOOST_CHECK_EQUAL(hit->preparedMetadataJson, source.preparedMetadataJson);
   BOOST_CHECK_EQUAL(hit->preparedMetadataDataName, committed.preparedMetadataDataName);
   BOOST_CHECK(fixture.repo->has(committed.preparedMetadataDataName));
-  BOOST_CHECK_GT(hit->preparedMetadataBytes, 1U << 20);
+  BOOST_CHECK_GT(hit->preparedMetadataBytes, NativeCanonicalMaterialPublicationMaxBytes);
   BOOST_CHECK_EQUAL(provider->stats().publicationCalls, 1U);
   {
     auto oversized = source;
-    oversized.preparedMetadataJson.assign(NativeCanonicalMaterialPublicationMaxBytes + 1, 'x');
-    BOOST_CHECK_THROW(provider->publish("qwen", "/service", model, oversized, options, control),
-                      RepositorySourceError);
+    oversized.preparedMetadataJson.assign(NATIVE_PREPARED_METADATA_MAX_BYTES + 1, 'x');
+    auto oversizeControl = control;
+    oversizeControl.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    const auto objectsBeforeOversize = fixture.repo->list().size();
+    BOOST_CHECK_EXCEPTION(provider->publish(
+      "qwen", "/service", model, oversized, options, oversizeControl), RepositorySourceError,
+      [](const auto& error) {
+        return std::string(error.what()) == "repository prepared metadata exceeds publication bound";
+      });
+    BOOST_CHECK_EQUAL(fixture.repo->list().size(), objectsBeforeOversize);
+    BOOST_CHECK_EQUAL(provider->stats().publicationCalls, 1U);
     BOOST_CHECK(fixture.repo->has(committed.rootDataName));
   }
 
@@ -243,7 +253,7 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
                  options.publicationIdentityDigest);
   const auto hintHit = provider->lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(hinted), 1U << 20,
-    std::chrono::steady_clock::now() + std::chrono::seconds(10)});
+    std::chrono::steady_clock::now() + std::chrono::seconds(60)});
   BOOST_REQUIRE(hintHit);
   BOOST_CHECK_EQUAL(hintHit->rootDataName, committed.rootDataName);
   BOOST_CHECK_EQUAL(hintHit->sourceDataName, committed.sourceDataName);
@@ -253,19 +263,19 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   changed["recipe"]["artifact_profile_digest"] = digest("different-profile");
   BOOST_CHECK(!provider->lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(changed), 1U << 20,
-    std::chrono::steady_clock::now() + std::chrono::seconds(10)}));
+    std::chrono::steady_clock::now() + std::chrono::seconds(60)}));
 
   auto changedInitializer = catalog;
   changedInitializer["source"]["initializer_digest"] = digest("different-initializer");
   BOOST_CHECK(!provider->lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(changedInitializer), 1U << 20,
-    std::chrono::steady_clock::now() + std::chrono::seconds(10)}));
+    std::chrono::steady_clock::now() + std::chrono::seconds(60)}));
 
   auto changedLayer = catalog;
   changedLayer["publication"]["layer_manifest_digests"] = {digest("different-layer")};
   BOOST_CHECK(!provider->lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(changedLayer), 1U << 20,
-    std::chrono::steady_clock::now() + std::chrono::seconds(10)}));
+    std::chrono::steady_clock::now() + std::chrono::seconds(60)}));
 
   // Reopen the same fixed root through a real child process. The child owns a
   // new RepoCore/provider and must not publish or inherit a live receipt.
@@ -280,9 +290,10 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
       RepoSourceProvider childProvider(childRepo);
       const auto childHit = childProvider.lookupPrepared({
         "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
-        std::chrono::steady_clock::now() + std::chrono::seconds(10)});
+        std::chrono::steady_clock::now() + std::chrono::seconds(60)});
       if (!childHit || childHit->rootDataName != committed.rootDataName ||
-          childProvider.stats().publicationCalls != 0U)
+          childProvider.stats().publicationCalls != 0U ||
+          childHit->preparedMetadataJson != source.preparedMetadataJson)
         _exit(1);
       _exit(0);
     }
@@ -301,9 +312,10 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   RepoSourceProvider restarted(fixture.repo);
   const auto reopened = restarted.lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
-    std::chrono::steady_clock::now() + std::chrono::seconds(10)});
+    std::chrono::steady_clock::now() + std::chrono::seconds(60)});
   BOOST_REQUIRE(reopened);
   BOOST_CHECK_EQUAL(reopened->rootDataName, committed.rootDataName);
+  BOOST_CHECK_EQUAL(reopened->preparedMetadataJson, source.preparedMetadataJson);
   BOOST_CHECK_EQUAL(restarted.stats().publicationCalls, 0U);
 
   // A receipt recovered by a later run is a durable reference, not an owned
@@ -321,12 +333,12 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
                       options,
                       NativeRequestControl{
                         "/spec190/cancelled", 1,
-                        std::chrono::steady_clock::now() + std::chrono::seconds(10),
+                        std::chrono::steady_clock::now() + std::chrono::seconds(60),
                         [&cancelled] { return cancelled.load(std::memory_order_acquire); }}),
                     std::exception);
   BOOST_CHECK(restarted.lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
-    std::chrono::steady_clock::now() + std::chrono::seconds(10)}));
+    std::chrono::steady_clock::now() + std::chrono::seconds(60)}));
 
   // The sidecar remains unchanged while the committed payload is corrupted.
   // A complete reference-only hit must verify payload bytes and fail closed,
@@ -350,7 +362,7 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   BOOST_CHECK_EQUAL(unchangedSidecar.sha256, sourceManifest.sha256);
   BOOST_CHECK_THROW(restarted.lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
-    std::chrono::steady_clock::now() + std::chrono::seconds(10)}), RepositorySourceError);
+    std::chrono::steady_clock::now() + std::chrono::seconds(60)}), RepositorySourceError);
   {
     std::fstream payload(sourcePayload, std::ios::in | std::ios::out | std::ios::binary);
     BOOST_REQUIRE(payload);
@@ -360,7 +372,7 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   }
   BOOST_REQUIRE(restarted.lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
-    std::chrono::steady_clock::now() + std::chrono::seconds(10)}));
+    std::chrono::steady_clock::now() + std::chrono::seconds(60)}));
 }
 
 BOOST_AUTO_TEST_CASE(MissingDependencyFallsBackToRootLastRepair)

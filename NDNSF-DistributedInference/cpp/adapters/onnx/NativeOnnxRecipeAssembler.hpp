@@ -109,6 +109,10 @@ inline constexpr std::uint64_t NativeCanonicalMaterialBundleMaxBytes = 1U << 20;
 // while initializer access and reconstruction remain bounded to small windows.
 inline constexpr std::uint64_t NativeCanonicalMaterialPublicationMaxBytes = 64U << 20;
 
+// Long unrolled graphs need more planning facts than one material bundle.
+// Keep their publication and restore budget separate from tensor packing.
+inline constexpr std::uint64_t NATIVE_PREPARED_METADATA_MAX_BYTES = 128U << 20;
+
 // The material-object index is carried by an authenticated receipt rather
 // than the inline authority root.  Prepare reserves this conservative bound
 // before publishing any object; the generated receipt must fit it as well.

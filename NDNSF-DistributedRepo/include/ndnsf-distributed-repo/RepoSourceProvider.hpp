@@ -281,7 +281,7 @@ public:
         preparedMetadataDigest = metadata.value("preparedMetadataDigest", std::string{});
         preparedMetadataBytes = metadata.value("preparedMetadataBytes", std::uint64_t{0});
         if (preparedMetadataDataName.empty() || preparedMetadataDigest.empty() || preparedMetadataBytes == 0 ||
-            preparedMetadataBytes > ndnsf::di::NativeCanonicalMaterialPublicationMaxBytes)
+            preparedMetadataBytes > ndnsf::di::NATIVE_PREPARED_METADATA_MAX_BYTES)
           reject("prepared metadata reference is incomplete");
         if (checkObject(preparedMetadataDataName, preparedMetadataDigest, preparedMetadataBytes)) {
           std::vector<std::uint8_t> metadataBytes;
@@ -685,7 +685,7 @@ public:
     const auto preparedMetadataDigest = source.preparedMetadataJson.empty()
       ? std::string{} : ndnsf::di::nativePlanningDigest(source.preparedMetadataJson);
     const auto preparedMetadataBytes = static_cast<std::uint64_t>(source.preparedMetadataJson.size());
-    if (preparedMetadataBytes > ndnsf::di::NativeCanonicalMaterialPublicationMaxBytes)
+    if (preparedMetadataBytes > ndnsf::di::NATIVE_PREPARED_METADATA_MAX_BYTES)
       throw ndnsf::di::RepositorySourceError(
         ndnsf::di::RepositorySourceError::Kind::Unavailable,
         "repository prepared metadata exceeds publication bound");

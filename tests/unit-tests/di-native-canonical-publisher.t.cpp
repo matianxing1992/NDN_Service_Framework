@@ -40,6 +40,7 @@
 #include <unistd.h>
 #include <limits>
 #include <random>
+#include <string_view>
 #include <utility>
 
 namespace {
@@ -520,7 +521,7 @@ BOOST_AUTO_TEST_CASE(PreparedReceiptRetainsSourceCatalogMetadata)
   referenceOnly.preparedMetadataJson.clear();
   referenceOnly.preparedMetadataDataName = "/producer/prepared-metadata";
   referenceOnly.preparedMetadataDigest = nativePlanningDigest(input.source->preparedMetadataJson);
-  referenceOnly.preparedMetadataBytes = NativeCanonicalMaterialPublicationMaxBytes + 1;
+  referenceOnly.preparedMetadataBytes = NATIVE_PREPARED_METADATA_MAX_BYTES + 1;
   BOOST_CHECK_THROW(referenceOnly.validate(), std::invalid_argument);
 }
 
@@ -535,7 +536,11 @@ BOOST_AUTO_TEST_CASE(OwnerRecoverableReceiptRetainsExactCoreReferencesWithoutOpe
     {"recipe", {{"artifact_profile_digest", input.options.artifactProfileDigest}}}};
   input.options.publicationIdentityDigest = nativeCanonicalPublicationIdentity(catalog);
   input.source->preparedMetadataJson = nativeCanonicalJson(NativeJson{
-    {"schema", "ndnsf-di-prepared-metadata-v1"}, {"fixtureGraphFacts", "retained"}});
+    {"schema", "ndnsf-di-prepared-metadata-v1"}, {"fixtureGraphFacts", "retained"},
+    {"fixturePadding", std::string((64U << 20) + 1, 'x')}});
+  input.control.deadline = Clock::now() + std::chrono::minutes(5);
+  BOOST_REQUIRE_GT(input.source->preparedMetadataJson.size(),
+                   NativeCanonicalMaterialPublicationMaxBytes);
   auto invalid = io.transport();
   invalid.ownerRecoverable = true;
   BOOST_CHECK_THROW(NativeCanonicalPublisherTestAccess::create(
@@ -637,7 +642,7 @@ BOOST_AUTO_TEST_CASE(OwnerRecoverableReceiptRetainsExactCoreReferencesWithoutOpe
   RepositoryPreparedLookupRequest lookup;
   lookup.serviceName = "/service";
   lookup.catalogConfigurationJson = nativeCanonicalJson(catalog);
-  lookup.maxPublicationBytes = NativeCanonicalMaterialPublicationMaxBytes;
+  lookup.maxPublicationBytes = NATIVE_PREPARED_METADATA_MAX_BYTES;
   lookup.deadline = input.control.deadline;
   lookup.requireActive = [] {};
   std::size_t reads = 0;
@@ -715,8 +720,15 @@ BOOST_AUTO_TEST_CASE(OwnerRecoverableReceiptRetainsExactCoreReferencesWithoutOpe
   BOOST_CHECK_THROW(restarted.lookup(cancelled), RepositorySourceError);
   BOOST_CHECK_THROW(durable.lookupWithLegacy(cancelled, directory), RepositorySourceError);
   auto expired = lookup;
-  expired.deadline = Clock::now() - std::chrono::seconds(1);
-  BOOST_CHECK_THROW(restarted.lookup(expired), RepositorySourceError);
+  expired.deadline = Clock::now();
+  const auto readsBeforeExpiry = reads;
+  const auto restoresBeforeExpiry = restores;
+  BOOST_CHECK_EXCEPTION(restarted.lookup(expired), RepositorySourceError,
+    [](const auto& error) {
+      return std::string_view(error.what()) == "DI_PROTECTED_PREPARATION_EXPIRED";
+    });
+  BOOST_CHECK_EQUAL(reads, readsBeforeExpiry);
+  BOOST_CHECK_EQUAL(restores, restoresBeforeExpiry);
   auto altered = catalog;
   altered["source"]["digest"] = nativePlanningDigest("different source");
   auto different = lookup;
@@ -776,10 +788,13 @@ BOOST_AUTO_TEST_CASE(PreparedMetadataOversizeFailsBeforePublication)
 {
   Input input;
   TransportFixture io;
-  input.source->preparedMetadataJson.assign(NativeCanonicalMaterialPublicationMaxBytes + 1, 'x');
+  input.source->preparedMetadataJson.assign(NATIVE_PREPARED_METADATA_MAX_BYTES + 1, 'x');
   auto publisher = NativeCanonicalPublisherTestAccess::create(
     io.transport(), input.options, input.resolver());
-  BOOST_CHECK_THROW(publisher.prepare(input.model, input.control), std::invalid_argument);
+  BOOST_CHECK_EXCEPTION(publisher.prepare(input.model, input.control), std::invalid_argument,
+    [](const auto& error) {
+      return std::string_view(error.what()) == "native prepared metadata exceeds publication bound";
+    });
   BOOST_CHECK(io.payloads.empty());
   BOOST_CHECK_EQUAL(io.beginCalls, 0U);
 }

@@ -209,7 +209,7 @@ automaticVersion(const NativeJson& metadata, const NativeAssemblyControl& contro
   if (metadata.contains("protectedObjects") && !metadata.at("protectedObjects").is_array())
     rejectMetadata("PREPARED_METADATA_PROTECTED_OBJECTS");
   const auto limit = std::min(control.maxAssembledBytes,
-                              NativeCanonicalMaterialPublicationMaxBytes);
+                              NATIVE_PREPARED_METADATA_MAX_BYTES);
   if (limit == 0 || nativeCanonicalJson(metadata).size() > limit)
     rejectMetadata("PREPARED_METADATA_LIMIT");
   active(control);

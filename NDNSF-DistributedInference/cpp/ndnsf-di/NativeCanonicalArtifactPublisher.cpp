@@ -470,7 +470,7 @@ void NativePreparedCanonicalPublication::validate() const
       nativePlanningDigest(canonicalManifestJson) != manifestDigest)
     throw std::invalid_argument("native prepared canonical publication is incomplete");
   if (!preparedMetadataJson.empty()) {
-    if (preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
+    if (preparedMetadataJson.size() > NATIVE_PREPARED_METADATA_MAX_BYTES)
       throw std::invalid_argument("native prepared metadata exceeds publication bound");
     try {
       const auto metadata = nativeParseJson(preparedMetadataJson);
@@ -481,7 +481,7 @@ void NativePreparedCanonicalPublication::validate() const
       // validate under their live control before using these facts.
       const NativeAssemblyControl metadataControl{
         std::chrono::steady_clock::time_point::max(), [] {}, 0,
-        NativeCanonicalMaterialPublicationMaxBytes};
+        NATIVE_PREPARED_METADATA_MAX_BYTES};
       validateNativePreparedMetadataVersion(metadata, metadataControl);
     }
     catch (...) {
@@ -493,7 +493,7 @@ void NativePreparedCanonicalPublication::validate() const
   if (hasPreparedMetadataReference) {
     if (!validName(preparedMetadataDataName) || !digest(preparedMetadataDigest) ||
         preparedMetadataBytes == 0 ||
-        preparedMetadataBytes > NativeCanonicalMaterialPublicationMaxBytes ||
+        preparedMetadataBytes > NATIVE_PREPARED_METADATA_MAX_BYTES ||
         (!preparedMetadataJson.empty() &&
          (preparedMetadataBytes != preparedMetadataJson.size() ||
           preparedMetadataDigest != nativePlanningDigest(preparedMetadataJson))))
@@ -1271,7 +1271,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
   m_cache->sourceVerifications.fetch_add(1, std::memory_order_relaxed);
   control.requireActive();
   const bool materialBacked = source && static_cast<bool>(source->materialManifest);
-  if (source && source->preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
+  if (source && source->preparedMetadataJson.size() > NATIVE_PREPARED_METADATA_MAX_BYTES)
     throw std::invalid_argument("native prepared metadata exceeds publication bound");
   if (source && source->initializerRangeSource && !source->initializerBytes && !materialBacked)
     throw std::invalid_argument("range-only prepared source requires a material manifest");
@@ -1369,7 +1369,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
         if (bundleBytes != 0) ++objectCount;
       }
       constexpr std::uint64_t referenceBudget = 16U * 1024U;
-      const auto metadataLimit = NativeCanonicalMaterialPublicationMaxBytes;
+      const auto metadataLimit = NATIVE_PREPARED_METADATA_MAX_BYTES;
       const auto sourceMetadataBytes = source->preparedMetadataJson.size();
       if (sourceMetadataBytes > metadataLimit ||
           objectCount > (metadataLimit - sourceMetadataBytes) / referenceBudget)
@@ -1570,7 +1570,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
           objects.push_back(nativeProtectedObjectReference(published));
         preparedMetadata["protectedObjects"] = std::move(objects);
         result.preparedMetadataJson = nativeCanonicalJson(preparedMetadata);
-        if (result.preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
+        if (result.preparedMetadataJson.size() > NATIVE_PREPARED_METADATA_MAX_BYTES)
           throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
         const std::vector<std::uint8_t> bytes(result.preparedMetadataJson.begin(),
                                                result.preparedMetadataJson.end());

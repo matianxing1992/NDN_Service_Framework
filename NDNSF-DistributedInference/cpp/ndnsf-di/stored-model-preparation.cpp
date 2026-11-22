@@ -222,7 +222,7 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
     // This API exposes an ownership fence rather than a separate deadline.
     const NativeAssemblyControl metadataControl{
       std::chrono::steady_clock::time_point::max(), io.requireCurrent, 0,
-      NativeCanonicalMaterialPublicationMaxBytes};
+      NATIVE_PREPARED_METADATA_MAX_BYTES};
     validateNativePreparedMetadataVersion(nativeParseJson(source->preparedMetadataJson), metadataControl);
     options = catalog.preparation->publicationFor(catalog.model.descriptor);
     require(nativeCanonicalPublicationIdentity(nativeParseJson(configurationJson)) ==
@@ -240,7 +240,7 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
     require(!bundles.empty());
     materialJson = manifest.canonicalJson();
     require(materialJson.size() <= NativeCanonicalMaterialPublicationMaxBytes &&
-            source->preparedMetadataJson.size() <= NativeCanonicalMaterialPublicationMaxBytes);
+            source->preparedMetadataJson.size() <= NATIVE_PREPARED_METADATA_MAX_BYTES);
     NativeJson plannedRows = NativeJson::array();
     const auto placeholderDigest = nativePlanningDigest("stored-bundle-preflight");
     for (const auto& bundle : bundles) {
@@ -338,7 +338,8 @@ nativeOpenStoredPreparedModel(const NativeStoredModelHandle& handle,
   for (const auto& item : objects.objects()) {
     const auto& id = item.first;
     const auto limit = id == catalogId ? MAX_CATALOG_BYTES :
-      (id == "business-root" ? 4096 : NativeCanonicalMaterialPublicationMaxBytes);
+      (id == "business-root" ? 4096 : (id == "prepared-metadata" ?
+        NATIVE_PREPARED_METADATA_MAX_BYTES : NativeCanonicalMaterialPublicationMaxBytes));
     require(item.second.object.plaintextBytes <= limit &&
       (id == catalogId || id == "business-root" || id == "prepared-metadata" ||
        id == "material-manifest" || id == "material-receipt" ||

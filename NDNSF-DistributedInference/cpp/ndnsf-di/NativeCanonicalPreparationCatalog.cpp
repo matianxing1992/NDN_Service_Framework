@@ -81,8 +81,10 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
   for (auto& entry : entries) {
     std::string automaticSourceJson;
     if (!entry.source.preparedMetadataJson.empty()) {
-      if (entry.source.preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
-        throw std::invalid_argument("native catalog prepared metadata exceeds its bound");
+      if (entry.source.preparedMetadataJson.size() > NATIVE_PREPARED_METADATA_MAX_BYTES)
+        throw std::invalid_argument("native catalog prepared metadata exceeds its bound: " +
+          std::to_string(entry.source.preparedMetadataJson.size()) + " > " +
+          std::to_string(NATIVE_PREPARED_METADATA_MAX_BYTES));
       const auto metadata = nativeParseJson(entry.source.preparedMetadataJson, 64);
       if (metadata.value("schema", std::string{}) == "ndnsf-di-prepared-metadata-v2" ||
           metadata.contains("automatic_onnx")) {

@@ -591,7 +591,7 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
   model.modelManifestDigest = sourceConfig.at("model_manifest_digest").get<std::string>();
   model.canonicalGraphDigest = sourceConfig.at("canonical_graph_digest").get<std::string>();
   if (referenceOnly) {
-    if (source.preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
+    if (source.preparedMetadataJson.size() > NATIVE_PREPARED_METADATA_MAX_BYTES)
       throw std::invalid_argument("native prepared metadata exceeds publication bound");
     const auto metadata = nativeParseJson(source.preparedMetadataJson);
     auto decodedMetadata = decodeNativePreparedOnnxMetadata(metadata, control);
