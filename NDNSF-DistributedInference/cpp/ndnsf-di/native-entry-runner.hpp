@@ -58,6 +58,22 @@ struct NativeSubgraphEntryContract
   bool operator==(const NativeSubgraphEntryContract& other) const;
 };
 
+inline constexpr const char* NATIVE_ONNX_ENTRY_TABLE = "canonicalOnnxEntries";
+inline constexpr const char* NATIVE_ONNX_ENTRY_CAPABILITY_V1 = "onnx-call-entry-v1";
+
+std::vector<NativeSubgraphEntryContract>
+readNativeOnnxEntryTable(const NativeModelRunnerSpec& spec);
+
+/** Recheck an assembled entry table against the current selected step template. */
+void
+validateNativeOnnxEntryTable(const NativeSelectionProjectionV3& projection,
+                            const NativeModelRunnerSpec& spec);
+
+/** Rebind only invocation-owned entry IDs while retaining certified graphs and ports. */
+void
+bindNativeOnnxEntryTable(const NativeSelectionProjectionV3& projection,
+                        NativeModelRunnerSpec& spec);
+
 /** Execute one admitted CALL; ProviderRoleWorker owns readiness, SUM and publication.
  *
  * Children are prepared once and owned for this runner's lifetime. Factories are consumed

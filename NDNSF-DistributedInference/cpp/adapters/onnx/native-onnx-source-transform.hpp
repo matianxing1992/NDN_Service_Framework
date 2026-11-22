@@ -6,6 +6,7 @@
 #include <onnx/onnx_pb.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -110,6 +111,15 @@ lowerNativeOnnxAttentionProjections(onnx::ModelProto source, std::uint64_t begin
   std::uint64_t end, const NativeOnnxExternalReader& external = {},
   const NativeOnnxExternalAppender& append = {});
 
+using NativeOnnxInitializerSlicer = std::function<onnx::TensorProto(
+  const onnx::TensorProto&, std::size_t, std::uint64_t, std::uint64_t)>;
+
+/** Materialize one rank's FP32 initializer, reading external data only for that slice. */
+onnx::TensorProto
+sliceNativeOnnxFloatInitializer(const onnx::TensorProto& tensor, std::size_t axis,
+                                std::uint64_t begin, std::uint64_t end,
+                                const NativeOnnxExternalReader& external = {});
+
 /**
  * Apply a source_transform_v1 lowering to one materialized role graph.
  *
@@ -121,7 +131,8 @@ onnx::ModelProto
 applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
                                const NativeOnnxSourceTransformV1& transform,
                                const NativeOnnxExternalReader& external = {},
-                               const NativeOnnxExternalAppender& append = {});
+                               const NativeOnnxExternalAppender& append = {},
+                               const NativeOnnxInitializerSlicer& slicer = {});
 
 /** Lower a complete FFN entry after materialization in verified ordinal order. */
 onnx::ModelProto

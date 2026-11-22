@@ -94,7 +94,13 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
   // Artifact templates may be reused by another admitted step plan. Rebind the immutable
   // entry view to this invocation rather than retaining a cached entry ID or state map.
   const bool sourceProgram = detail::bindNativeSourceProgramEntries(projection, spec);
-  if (!sourceProgram && !projection.plan.steps.empty() && spec.backend != "native-qwen-tensor") {
+  const bool canonicalEntries = spec.metadata.count(NATIVE_ONNX_ENTRY_TABLE) != 0;
+  if (canonicalEntries) {
+    if (sourceProgram)
+      throw std::invalid_argument("runner has conflicting ONNX entry contracts");
+    bindNativeOnnxEntryTable(projection, spec);
+  }
+  else if (!sourceProgram && !projection.plan.steps.empty() && spec.backend != "native-qwen-tensor") {
     spec.entryContract.reset();
     if (!detail::bindNativeWholeRegionEntry(projection, spec))
       throw std::invalid_argument("step runner has no supported current entry contract");

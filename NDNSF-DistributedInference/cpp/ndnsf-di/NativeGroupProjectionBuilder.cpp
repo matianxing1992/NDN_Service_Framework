@@ -6,6 +6,7 @@
 #include <limits>
 #include <optional>
 #include <set>
+#include <tuple>
 
 namespace ndnsf::di {
 namespace {
@@ -199,18 +200,36 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
         core.executionPlan.streamingOperationStride != stride || generation.maxGeneratedTokens > (1U << 20))))
       throw std::invalid_argument("group generation operation stride or count is invalid");
     const std::uint64_t epochs = generation.enabled ? generation.maxGeneratedTokens + 1 : 1;
-    // Every encoded operation occupies more than 128 bytes. Reject expansions
-    // that cannot possibly fit the Selection's 1 MiB capability limit before allocation.
-    if (group.operations.size() > ((1U << 20) / 128) / epochs ||
-        (epochs > 1 && stride > (std::numeric_limits<std::uint64_t>::max() - group.operations.size()) / (epochs - 1)))
+    // Apply the early expansion bound to streaming epochs. Stateless plans
+    // already have one entry per operation and use the capability codec's
+    // logical size bound and the actual Selection wire size below.
+    if (generation.enabled &&
+        (group.operations.size() > ((1U << 20) / 128) / epochs ||
+         (epochs > 1 &&
+          stride > (std::numeric_limits<std::uint64_t>::max() - group.operations.size()) /
+                     (epochs - 1))))
       throw std::invalid_argument("group operation expansion exceeds wire bounds");
     std::uint64_t index = 0;
     std::set<std::uint64_t> reserved;
     for (const auto& item : group.operations)
       if (item.second.sealedIndex && !reserved.insert(*item.second.sealedIndex).second)
         throw std::invalid_argument("group feedback operation index collision");
-    for (auto& item : group.operations) {
-      auto& op = item.second;
+    std::vector<Operation*> orderedOperations;
+    orderedOperations.reserve(group.operations.size());
+    for (auto& item : group.operations)
+      orderedOperations.push_back(&item.second);
+    const auto permission = [](const Operation& op) {
+      return std::tie(op.kind, op.source, op.target, op.producers, op.consumers);
+    };
+    // Stateless transport indices are assigned here. Place equal permissions
+    // together so the existing capability runs can represent consecutive indices.
+    if (!generation.enabled) {
+      std::stable_sort(orderedOperations.begin(), orderedOperations.end(),
+        [&](const auto* left, const auto* right) { return permission(*left) < permission(*right); });
+    }
+    const Operation* previous = nullptr;
+    for (auto* item : orderedOperations) {
+      auto& op = *item;
       if (op.sealedIndex) op.index = *op.sealedIndex;
       else {
         while (reserved.count(index)) ++index;
@@ -218,10 +237,17 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
       }
       if (generation.enabled && op.index >= stride)
         throw std::invalid_argument("group operation exceeds generation stride");
-      operations.push_back({{op.index, op.kind,
+      if (!generation.enabled && previous && permission(*previous) == permission(op)) {
+        ++operations.back().count;
+        operations.back().stride = 1;
+      }
+      else {
+        operations.push_back({{op.index, op.kind,
           {op.producers.begin(), op.producers.end()}, {op.consumers.begin(), op.consumers.end()},
           hash(NativeJson{{"source", op.source}, {"target", op.target}}), maxBytes,
           context.maxSegments}, epochs, epochs > 1 ? stride : 0});
+      }
+      previous = item;
     }
     std::vector<GroupMemberV1> members;
     for (const auto& provider : group.providers)

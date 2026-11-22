@@ -25,6 +25,25 @@ def verify(path, row):
         raise ValueError('source digest mismatch: ' + str(path))
 
 
+def load_vae_model(root, recipe):
+    source = root / 'vae2_2-reference.py'
+    verify(source, recipe['vae_reference'])
+    checkpoint = root / 'Wan2.2_VAE.pth'
+    verify(checkpoint, next(row for row in recipe['sources'] if row['file'] == checkpoint.name))
+    if torch.__version__.split('+')[0] != '2.6.0' or np.__version__ != '1.26.4':
+        raise ValueError('use the pinned wan2.1-checkpoint-tools-py311 environment')
+    spec = importlib.util.spec_from_file_location('wan22_offline_reference', source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    model = module._video_vae(pretrained_path=str(checkpoint), z_dim=48, dim=160, dec_dim=256,
+                              dim_mult=[1, 2, 4, 4], temperal_downsample=[False, True, True])
+    model.eval().requires_grad_(False)
+    normalization = recipe['vae_normalization']
+    scale = [torch.tensor(normalization['latent_mean'], dtype=torch.float32),
+             1 / torch.tensor(normalization['latent_std'], dtype=torch.float32)]
+    return model, scale
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--asset-root', type=Path, required=True)
@@ -33,24 +52,10 @@ def main():
     args = parser.parse_args()
     recipe = json.loads(RECIPE.read_bytes())
     root = args.asset_root.resolve(strict=True)
-    source = root / 'vae2_2-reference.py'
-    verify(source, recipe['vae_reference'])
-    checkpoint = root / 'Wan2.2_VAE.pth'
-    verify(checkpoint, next(row for row in recipe['sources'] if row['file'] == checkpoint.name))
-    if torch.__version__.split('+')[0] != '2.6.0' or np.__version__ != '1.26.4':
-        raise ValueError('use the pinned wan2.1-checkpoint-tools-py311 environment')
     torch.set_num_threads(2)
     torch.use_deterministic_algorithms(True)
-    spec = importlib.util.spec_from_file_location('wan22_offline_reference', source)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    model = module._video_vae(pretrained_path=str(checkpoint), z_dim=48, dim=160, dec_dim=256,
-                              dim_mult=[1, 2, 4, 4], temperal_downsample=[False, True, True])
-    model.eval().requires_grad_(False)
+    model, scale = load_vae_model(root, recipe)
     latent = torch.linspace(-0.25, 0.25, 48 * 3 * 2 * 2, dtype=torch.float32).reshape(1, 48, 3, 2, 2)
-    normalization = recipe['vae_normalization']
-    scale = [torch.tensor(normalization['latent_mean'], dtype=torch.float32),
-             1 / torch.tensor(normalization['latent_std'], dtype=torch.float32)]
     with torch.inference_mode():
         result = model.decode(latent, scale).float().clamp(-1, 1)
     if list(result.shape) != [1, 3, 9, 32, 32] or not torch.isfinite(result).all():

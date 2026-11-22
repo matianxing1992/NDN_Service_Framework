@@ -4640,6 +4640,59 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformRejectsAnUnboundConv)
                     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformReadsOnlyExternalRankWeights)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec261/conv-single.onnx").string(),
+                     std::ios::binary);
+  BOOST_REQUIRE(file.good());
+  onnx::ModelProto source;
+  BOOST_REQUIRE(source.ParseFromIstream(&file));
+  auto* weights = source.mutable_graph()->mutable_initializer();
+  auto weight = std::find_if(weights->begin(), weights->end(), [] (const auto& tensor) {
+    return tensor.name() == "w_conv";
+  });
+  BOOST_REQUIRE(weight != weights->end());
+  BOOST_REQUIRE_EQUAL(weight->dims(1), 16);
+  const auto channels = static_cast<std::uint64_t>(weight->dims(0));
+  const std::uint64_t kernelBytes = weight->dims(2) * weight->dims(3) * sizeof(float);
+  const auto rowBytes = 16 * kernelBytes;
+  const auto inlineBytes = weight->raw_data();
+  BOOST_REQUIRE_EQUAL(inlineBytes.size(), channels * rowBytes);
+
+  NativeOnnxSourceTransformV1 rank;
+  rank.kind = "conv-input-channel-partial";
+  rank.node = "conv0"; rank.axis = "input-channel";
+  rank.input = "scaled"; rank.weight = "w_conv"; rank.output = "conv_out";
+  rank.bias = "b_conv";
+  rank.begin = 8; rank.end = 16; rank.extent = 16;
+  const auto expected = applyNativeOnnxSourceTransform(source, rank);
+
+  constexpr std::uint64_t baseOffset = 29;
+  weight->clear_raw_data();
+  weight->set_data_location(onnx::TensorProto::EXTERNAL);
+  const auto setExternal = [&] (const std::string& key, const std::string& value) {
+    auto* item = weight->add_external_data();
+    item->set_key(key);
+    item->set_value(value);
+  };
+  setExternal("location", "model.onnx.data");
+  setExternal("offset", std::to_string(baseOffset));
+  setExternal("length", std::to_string(inlineBytes.size()));
+  std::uint64_t reads = 0;
+  const auto actual = applyNativeOnnxSourceTransform(source, rank,
+    [&] (const std::string& location, std::uint64_t offset, std::uint64_t count) {
+      BOOST_CHECK_EQUAL(location, "model.onnx.data");
+      BOOST_REQUIRE_LT(reads, channels);
+      BOOST_REQUIRE_EQUAL(offset, baseOffset + reads * rowBytes + rowBytes / 2);
+      BOOST_REQUIRE_EQUAL(count, rowBytes / 2);
+      ++reads;
+      const auto begin = inlineBytes.begin() + static_cast<std::ptrdiff_t>(offset - baseOffset);
+      return std::vector<std::uint8_t>(begin, begin + static_cast<std::ptrdiff_t>(count));
+    });
+  BOOST_CHECK_EQUAL(reads, channels);
+  BOOST_CHECK(actual.SerializeAsString() == expected.SerializeAsString());
+}
+
 BOOST_AUTO_TEST_CASE(DetectionOracleRejectsChangedClassesAndPadding)
 {
   const std::vector<float> expected{

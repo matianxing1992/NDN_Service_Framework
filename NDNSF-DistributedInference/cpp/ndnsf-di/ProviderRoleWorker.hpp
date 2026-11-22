@@ -327,13 +327,20 @@ private:
     // Scopes whose output edge was already published by their producing step, so
     // the unit's final pass does not publish the same object twice.
     std::set<std::string> publishedScopes;
+    struct SealedStepIndex
+    {
+      std::map<std::string, std::size_t> lastUseOf;
+      std::set<std::string> edgeKeys;
+      std::map<std::string, std::vector<std::size_t>> outputsByStep;
+    };
+    // Built from the admitted role once, then moved with it across waits.
+    std::optional<SealedStepIndex> sealedStepIndex;
     // Step-by-step progress, kept here rather than in a local so a unit can leave the compute
     // thread while it waits for a peer and resume on whichever thread picks it up next. A step
     // that blocks in place holds the thread, and two units on one worker then hold each other:
     // the one that got the thread waits for a contribution only the other can publish.
     std::map<std::string, TensorBundle> producedSteps;
-    // Both are derived from the same sealed role, initial inputs and stable runner.
-    std::optional<std::map<std::string, std::size_t>> stepLastUse;
+    // Derived from the sealed role, initial inputs and stable runner.
     std::optional<std::string> exactForwardKey;
     // One record per sealed step's backend call, bounded by the template. Collected here because
     // the unit's runner snapshot only exposes the last call.

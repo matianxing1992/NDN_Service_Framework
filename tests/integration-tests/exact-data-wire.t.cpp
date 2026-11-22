@@ -1,14 +1,17 @@
 #include "tests/boost-test.hpp"
 #include "ndnsf-integration-fixture.hpp"
+#include "ndn-service-framework/detail/exact-packet-index.hpp"
 
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/signal/scoped-connection.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -57,10 +60,20 @@ struct ExactPublicationOracle
   static bool
   publish(ServiceProvider::CollaborationContext& context, const ndn::Name& name,
           const ndn::Buffer& payload, CollaborationTransferMetrics* metrics,
-          std::vector<std::shared_ptr<const ndn::Data>>& originals, int freshnessMs = 60000)
+          std::vector<std::shared_ptr<const ndn::Data>>& originals, int freshnessMs = 60000,
+          std::uint64_t diskLimit = 0)
   {
     return context.publishOwnedExactData(
-      "exact-authority", {{name, payload}}, freshnessMs, metrics, originals, 65536);
+      "exact-authority", {{name, payload}}, freshnessMs, metrics, originals, 65536, diskLimit);
+  }
+
+  static bool
+  publishBatch(ServiceProvider::CollaborationContext& context,
+               const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+               std::vector<std::shared_ptr<const ndn::Data>>& originals)
+  {
+    return context.publishOwnedExactData(
+      "exact-authority", objects, 60000, nullptr, originals, 65536, 65536);
   }
 
   static bool
@@ -69,6 +82,13 @@ struct ExactPublicationOracle
          CollaborationTransferMetrics* metrics)
   {
     return context.replayOwnedExactData("exact-authority", originals, metrics);
+  }
+
+  static std::shared_ptr<void>
+  holdReadLease(ServiceProvider::CollaborationContext& context)
+  {
+    std::lock_guard lock(*context.m_workAuthorityCommitMutex);
+    return context.m_retainedExactPacketSet.lock();
   }
 };
 
@@ -552,6 +572,220 @@ runSpec231ExactReadAuthorityCases(const std::vector<Spec231ReadFault>& faults)
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec181ExactDataWire)
+
+BOOST_AUTO_TEST_CASE(ExactIndexCoalescesOnlyConsecutiveTypedNamesAndOrdinals)
+{
+  constexpr std::uint64_t budget = 512;
+  constexpr std::uint64_t segments = 8400;
+  const ndn::Name prefix("/producer/object/DATA");
+  detail::ExactPacketIndex batch;
+  for (std::uint64_t segment = 1; segment <= segments; ++segment)
+    batch.add(ndn::Name(prefix).appendSegment(segment), segment - 1, budget);
+  BOOST_CHECK_LT(batch.bytes(), budget);
+  BOOST_TEST_MESSAGE("Exact index charged " << batch.bytes() << " B for " << segments << " names");
+  BOOST_CHECK_THROW(batch.add(ndn::Name(prefix).appendSegment(2), segments, budget),
+                    std::invalid_argument);
+  const std::array<std::uint8_t, 2> paddedSegment{0, 2};
+  const auto alias = ndn::Name(prefix).append(ndn::tlv::SegmentNameComponent, paddedSegment);
+  batch.add(alias, segments, budget);
+  BOOST_CHECK_THROW(batch.add(ndn::Name(prefix).append("too-much"), segments + 1, budget),
+                    std::length_error);
+  detail::ExactPacketIndex index;
+  index.commit(std::move(batch), 31);
+  BOOST_CHECK(index.find(ndn::Name(prefix).appendSegment(1)) == 31);
+  BOOST_CHECK(index.find(ndn::Name(prefix).appendSegment(256)) == 286);
+  BOOST_CHECK(index.find(ndn::Name(prefix).appendSegment(segments)) == segments + 30);
+  BOOST_CHECK(index.find(alias) == segments + 31);
+  BOOST_CHECK(!index.find(ndn::Name(prefix).appendSegment(0)));
+  BOOST_CHECK(!index.find(ndn::Name(prefix).appendSegment(segments + 1)));
+  BOOST_CHECK(!index.find(ndn::Name(prefix).append("foreign").appendSegment(2)));
+  detail::ExactPacketIndex next;
+  next.add(ndn::Name(prefix).appendSegment(segments + 5), 0, budget);
+  next.add(ndn::Name(prefix).appendSegment(segments + 4), 1, budget);
+  index.commit(std::move(next), segments + 32);
+  BOOST_CHECK(index.find(ndn::Name(prefix).appendSegment(segments + 5)) == segments + 32);
+  BOOST_CHECK(index.find(ndn::Name(prefix).appendSegment(segments + 4)) == segments + 33);
+  BOOST_CHECK(!index.find(ndn::Name(prefix).appendSegment(segments + 3)));
+}
+
+BOOST_AUTO_TEST_CASE(FileBackedExactDataSurvivesLocalCompletionAndHonorsRevocation)
+{
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+  auto& producer = environment.provider(0);
+  auto& consumer = environment.provider(1);
+  auto& producerFace = environment.providerFace(0);
+  auto& consumerFace = environment.providerFace(1);
+  ndn::signal::ScopedConnection interests = consumerFace.onSendInterest.connect(
+    [&](const ndn::Interest& interest) { producerFace.receive(interest); });
+  std::optional<ndn::Block> lastWire;
+  ndn::signal::ScopedConnection data = producerFace.onSendData.connect(
+    [&](const ndn::Data& packet) {
+      lastWire = packet.wireEncode();
+      consumerFace.receive(packet);
+    });
+  ServiceProvider::CollaborationAssignment live;
+  live.role = "exact-authority";
+  live.service = profile.serviceName;
+  live.workDeadline = std::chrono::steady_clock::now() + 30s;
+  live.workCurrent = [] { return true; };
+  const ndn::Name requestId("/fixture/exact-file");
+  ServiceProvider::CollaborationContext receiver(
+    consumer, profile.userIdentity, requestId, RequestMessage(), live);
+  const auto fetch = [&](const ndn::Name& name) {
+    auto pending = std::async(std::launch::async, [&, name] {
+      return receiver.fetchSignedExactData("exact-authority", name, producer.getName(), 200);
+    });
+    environment.pumpUntil([&] { return pending.wait_for(0ms) == std::future_status::ready; });
+    BOOST_REQUIRE(pending.wait_for(0ms) == std::future_status::ready);
+    return pending.get();
+  };
+  const auto name = ndn::Name(producer.getName()).append("exact-file").append("manifest");
+  const ndn::Buffer payload{'o', 'r', 'i', 'g', 'i', 'n', 'a', 'l'};
+  ndn::Block expected;
+  {
+    std::atomic<bool> working{true};
+    auto local = live;
+    local.workCurrent = [&] { return working.load(); };
+    ServiceProvider::CollaborationContext sender(
+      producer, profile.userIdentity, requestId, RequestMessage(), local);
+    std::vector<std::shared_ptr<const ndn::Data>> originals;
+    BOOST_CHECK_THROW(ExactPublicationOracle::publish(
+      sender, name, payload, nullptr, originals, 60000, 1), std::runtime_error);
+    BOOST_CHECK(originals.empty());
+    BOOST_REQUIRE(ExactPublicationOracle::publish(
+      sender, name, payload, nullptr, originals, 60000, 4096));
+    BOOST_REQUIRE_EQUAL(originals.size(), 1);
+    expected = originals.front()->wireEncode();
+    working = false;
+  }
+  BOOST_CHECK_EQUAL(producer.evictImsPrefixForTest(name), 0);
+  ServiceProvider::CollaborationContext conflicting(
+    producer, profile.userIdentity, requestId, RequestMessage(), live);
+  BOOST_CHECK_THROW(conflicting.publishSignedExactData(
+    "exact-authority", {{name, ndn::Buffer{'x'}}}, 60000), std::invalid_argument);
+  const auto restored = fetch(name);
+  BOOST_REQUIRE(restored);
+  BOOST_CHECK(*restored == payload);
+  BOOST_REQUIRE(lastWire);
+  BOOST_CHECK(*lastWire == expected);
+
+  const auto dataPrefix = ndn::Name(name.getPrefix(-1)).append("DATA");
+  const auto segmentedManifest = ndn::Name(name.getPrefix(-1)).append("segmented-manifest");
+  const std::vector<std::pair<ndn::Name, ndn::Buffer>> batch{
+    {segmentedManifest, {'m'}},
+    {ndn::Name(dataPrefix).appendSegment(1), {'a'}},
+    {ndn::Name(dataPrefix).appendSegment(2), {'b'}},
+    {ndn::Name(dataPrefix).appendSegment(3), {'c'}}};
+  auto xorAssignment = live;
+  xorAssignment.dependencyTransport.redundancy = DependencyRedundancy::Xor;
+  ServiceProvider::CollaborationContext segmented(
+    producer, profile.userIdentity, requestId, RequestMessage(), xorAssignment);
+  std::vector<std::shared_ptr<const ndn::Data>> segmentedOriginals;
+  BOOST_REQUIRE(ExactPublicationOracle::publishBatch(segmented, batch, segmentedOriginals));
+  BOOST_REQUIRE_GT(segmentedOriginals.size(), batch.size());
+  const auto repairPrefix = ndn::Name(segmentedManifest).append("FEC");
+  for (std::size_t i = 0; i < segmentedOriginals.size(); ++i) {
+    const auto& packet = *segmentedOriginals[i];
+    const auto& packetName = packet.getName();
+    const auto& content = packet.getContent();
+    if (i < batch.size()) {
+      BOOST_CHECK_EQUAL(packetName, batch[i].first);
+    }
+    else {
+      BOOST_CHECK(repairPrefix.isPrefixOf(packetName));
+    }
+    BOOST_CHECK_EQUAL(producer.evictImsPrefixForTest(packetName), 0U);
+    lastWire.reset();
+    const auto fetched = fetch(packetName);
+    BOOST_REQUIRE(fetched);
+    BOOST_CHECK_EQUAL_COLLECTIONS(fetched->begin(), fetched->end(),
+                                  content.value_begin(), content.value_end());
+    BOOST_REQUIRE(lastWire);
+    BOOST_CHECK(*lastWire == segmentedOriginals[i]->wireEncode());
+  }
+  BOOST_CHECK(!fetch(ndn::Name(dataPrefix).appendSegment(0)));
+  BOOST_CHECK(!fetch(ndn::Name(dataPrefix).appendSegment(4)));
+  BOOST_CHECK_THROW(conflicting.publishSignedExactData(
+    "exact-authority", {{batch[1].first, ndn::Buffer{'x'}}}, 60000), std::invalid_argument);
+  BOOST_REQUIRE(segmented.revokeCurrentWorkAuthority());
+  BOOST_CHECK(!fetch(batch[1].first));
+
+  const auto cancelled = ndn::Name(name).append("cancelled");
+  ServiceProvider::CollaborationContext sender(
+    producer, profile.userIdentity, requestId, RequestMessage(), live);
+  std::vector<std::shared_ptr<const ndn::Data>> originals;
+  BOOST_REQUIRE(ExactPublicationOracle::publish(
+    sender, cancelled, payload, nullptr, originals, 60000, 4096));
+  BOOST_REQUIRE(sender.revokeCurrentWorkAuthority());
+  BOOST_CHECK(!fetch(cancelled));
+  BOOST_CHECK_THROW(sender.tryReleaseExactPacketRetention(), std::runtime_error);
+
+  // Each logical reservation exceeds half the Provider budget. The fixture
+  // writes a single packet to each file and holds the same ownership as an
+  // outstanding reader while verifying the quota transitions.
+  constexpr std::uint64_t DISK_RESERVATION_BYTES = 65'537ULL << 20;
+  for (const bool revoke : {false, true}) {
+    const auto terminal = revoke ? "revoked" : "settled";
+    const auto firstName = ndn::Name(name).append(terminal).append("first");
+    const auto nextName = ndn::Name(name).append(terminal).append("next");
+    ServiceProvider::CollaborationContext first(producer, profile.userIdentity,
+      ndn::Name(requestId).append(terminal).append("first"), RequestMessage(), live);
+    ServiceProvider::CollaborationContext next(producer, profile.userIdentity,
+      ndn::Name(requestId).append(terminal).append("next"), RequestMessage(), live);
+    std::vector<std::shared_ptr<const ndn::Data>> firstOriginals, nextOriginals;
+    BOOST_REQUIRE(ExactPublicationOracle::publish(
+      first, firstName, payload, nullptr, firstOriginals, 60000, DISK_RESERVATION_BYTES));
+    BOOST_REQUIRE(fetch(firstName));
+    auto reader = ExactPublicationOracle::holdReadLease(first);
+    BOOST_REQUIRE(reader);
+    if (revoke) {
+      BOOST_REQUIRE(first.revokeCurrentWorkAuthority());
+      BOOST_CHECK(!first.hasCurrentWorkAuthority());
+      BOOST_CHECK_THROW(first.tryReleaseExactPacketRetention(), std::runtime_error);
+    }
+    else {
+      BOOST_CHECK(!first.tryReleaseExactPacketRetention());
+      BOOST_CHECK(first.hasCurrentWorkAuthority());
+      BOOST_CHECK(!ExactPublicationOracle::replay(first, firstOriginals, nullptr));
+      BOOST_CHECK(!first.publishSignedExactData("exact-authority", {{firstName, payload}}, 60000));
+      BOOST_CHECK(!ExactPublicationOracle::publish(
+        first, firstName, payload, nullptr, firstOriginals, 60000, DISK_RESERVATION_BYTES));
+    }
+    BOOST_CHECK(!fetch(firstName));
+    BOOST_CHECK_EXCEPTION(ExactPublicationOracle::publish(
+      next, nextName, payload, nullptr, nextOriginals, 60000, DISK_RESERVATION_BYTES),
+      std::length_error,
+      [](const auto& error) {
+        return std::string_view(error.what()) == "exact packet retention Provider capacity";
+      });
+    BOOST_CHECK(nextOriginals.empty());
+    reader.reset();
+    if (!revoke) {
+      BOOST_REQUIRE(first.tryReleaseExactPacketRetention());
+      BOOST_CHECK(first.tryReleaseExactPacketRetention());
+    }
+    BOOST_REQUIRE(ExactPublicationOracle::publish(
+      next, nextName, payload, nullptr, nextOriginals, 60000, DISK_RESERVATION_BYTES));
+    BOOST_REQUIRE(fetch(nextName));
+    BOOST_REQUIRE(next.tryReleaseExactPacketRetention());
+  }
+
+  const auto expired = ndn::Name(name).append("expired");
+  auto shortWork = live;
+  shortWork.workDeadline = std::chrono::steady_clock::now() + 500ms;
+  ServiceProvider::CollaborationContext expiring(
+    producer, profile.userIdentity, requestId, RequestMessage(), shortWork);
+  BOOST_REQUIRE(ExactPublicationOracle::publish(
+    expiring, expired, payload, nullptr, originals, 60000, 4096));
+  BOOST_REQUIRE(fetch(expired));
+  environment.pumpUntil([&] { return std::chrono::steady_clock::now() >= shortWork.workDeadline; });
+  BOOST_CHECK(!fetch(expired));
+}
 
 BOOST_AUTO_TEST_CASE(RetainedExactOriginalSurvivesItsCacheFreshnessWindow)
 {

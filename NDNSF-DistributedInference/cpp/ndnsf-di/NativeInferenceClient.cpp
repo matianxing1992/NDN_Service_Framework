@@ -489,6 +489,7 @@ struct NativeInferenceHandle::Operation
   bool cooperativeStrategies = false;
   std::shared_ptr<NativeRequestPreparation> preparation;
   std::optional<NativePreparedInput> preparedInput;
+  std::shared_ptr<void> inputServingLease;
   std::shared_ptr<const NativeRequestContract> requestContract;
   std::uint64_t wireDeadlineMs = 0;
   std::optional<NativeEncodedRequest> encodedRequest;
@@ -519,6 +520,7 @@ struct NativeInferenceHandle::Operation
   bool conversationCleanupDeferred = false;
   bool conversationCancelDeferred = false;
   bool coreActive = false;
+  std::uint64_t exactReleaseAuthorizedAttempt = 0;
   mutable std::mutex mutex;
   std::string requestId;
   std::string publicRequestId;
@@ -786,14 +788,16 @@ using NativeCancellationTargets =
 
 void
 awaitNativeCancellation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
-                        const NativeCancellationTargets& targets)
+                        const NativeCancellationTargets& targets, bool fenceBeforeRemote)
 {
   std::set<std::string> fenced;
   std::set<std::string> drained;
   const auto id = ndn::Name(targets.begin()->second.second.requestId);
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   // Initial publication is serialized after any in-flight Core commit on its Face.
-  operation->user->postToIo([user = operation->user, targets, id] {
+  operation->user->postToIo([user = operation->user, targets, id, fenceBeforeRemote] {
+    if (fenceBeforeRemote)
+      user->CancelCollaboration(id, detail::NATIVE_CANCELLATION_SCOPE);
     for (const auto& item : targets) {
       try {
         const auto wire = detail::nativeCancellationWire(item.second.second, "cancel");
@@ -840,7 +844,7 @@ bool
 markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
              NativeRequestStatus terminal,
              std::shared_ptr<NativeDiError> error = nullptr,
-             const NativeInferenceResult* result = nullptr,
+             NativeInferenceResult* result = nullptr,
              std::uint64_t expectedAttempt = 0,
              bool inlineCoreCleanup = false)
 {
@@ -850,6 +854,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   std::function<void()> cancelRecoveryRetry;
   RecoveryExpectations cancelledRecovery;
   NativeCancellationTargets cancellationTargets;
+  bool fenceBeforeRemote = false;
   std::vector<std::string> releaseScopes;
   std::shared_ptr<NativeConversationCoordinator> conversations;
   std::optional<NativeConversationTurn> conversationTurn;
@@ -857,6 +862,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   bool deferConversationCleanup = false;
   std::function<void()> conversationTerminal;
   std::uint64_t terminalAttempt = 0;
+  std::shared_ptr<void> retiredInputServingLease;
   bool won = false;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
@@ -879,6 +885,12 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
         (terminal == NativeRequestStatus::Succeeded && !result)) {
       ++operation->staleCallbacks;
       return false;
+    }
+    if (terminal == NativeRequestStatus::Succeeded && expectedAttempt &&
+        !operation->options.stream && std::chrono::steady_clock::now() >= operation->deadline) {
+      terminal = NativeRequestStatus::Failed;
+      error = std::make_shared<NativeDiError>("NATIVE_REQUEST_TIMEOUT", "local", "response",
+        "request expired before result commit", operation->requestId, expectedAttempt);
     }
     if (!error && terminal != NativeRequestStatus::Succeeded)
       error = std::make_shared<NativeDiError>(
@@ -921,6 +933,8 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
       if (terminal == NativeRequestStatus::Cancelled && !operation->conversationTurn &&
           std::find(releaseScopes.begin(), releaseScopes.end(), detail::NATIVE_CANCELLATION_SCOPE) !=
             releaseScopes.end()) {
+        fenceBeforeRemote = std::find(releaseScopes.begin(), releaseScopes.end(),
+                                      detail::NATIVE_EXACT_RETENTION_SCOPE) != releaseScopes.end();
         for (const auto& item : operation->planned->sealed.core.assignment.providerByRole) {
           cancellationTargets.emplace(item.first, std::make_pair(ndn::Name(item.second),
             detail::NativeCancellationBinding{operation->coreRequestId, operation->attempt,
@@ -934,6 +948,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
       operation->cancellationReceipt.cancellationUnconfirmed = true;
     }
     operation->phase = DiRequestPhase::Terminal;
+    retiredInputServingLease = std::move(operation->inputServingLease);
     cancelDeadline = std::move(operation->cancelDeadline);
     cancelBootstrapRetry = std::move(operation->cancelBootstrapRetry);
     cancelRecoveryRetry = std::move(operation->cancelRecoveryRetry);
@@ -1016,12 +1031,12 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   // the lock-free boundary is required for both modes.
   try {
     if (terminal == NativeRequestStatus::Succeeded)
-      won = operation->coreState->complete(*result);
+      won = operation->coreState->complete(std::move(*result));
     else
       won = operation->coreState->fail(std::make_exception_ptr(*error));
   }
   catch (...) {
-    // A throwing result copy still has one terminal Core outcome.  Preserve
+    // A throwing completion still has one terminal Core outcome. Preserve
     // the exception as the failure delivered to waiters.
     try { won = operation->coreState->fail(std::current_exception()); }
     catch (...) { won = false; }
@@ -1066,8 +1081,9 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
       try {
         auto ticket = operationRuntime->acquire();
         operationRuntime->post(ticket,
-          [operation, targets = std::move(cancellationTargets), cleanup, cleanupState] {
-            try { awaitNativeCancellation(operation, targets); }
+          [operation, targets = std::move(cancellationTargets), cleanup, cleanupState,
+           fenceBeforeRemote] {
+            try { awaitNativeCancellation(operation, targets, fenceBeforeRemote); }
             catch (...) {
               std::lock_guard<std::mutex> lock(operation->mutex);
               operation->cancellationReceipt.cancellationUnconfirmed = true;
@@ -1158,29 +1174,134 @@ cancelOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operati
 }
 
 void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
-                      std::function<void()> work, const std::string& boundary)
+                      std::function<void()> work, const std::string& boundary,
+                      std::uint64_t expectedAttempt = 0)
 {
   try {
     auto ticket = operation->operationRuntime->acquire();
-    operation->operationRuntime->post(ticket, [operation, work = std::move(work), boundary] {
+    operation->operationRuntime->post(ticket, [operation, work = std::move(work), boundary,
+                                                expectedAttempt] {
       if (operation->cancelled->load()) return;
       try { work(); }
-      catch (const NativeDiError& error) { failOperation(operation, error); }
+      catch (const NativeDiError& error) { failOperation(operation, error, expectedAttempt); }
       catch (const std::exception& error) {
         failOperation(operation, NativeDiError("NATIVE_REQUEST_STAGE_FAILED", "runtime", boundary,
           std::string("native request stage failed at ") + boundary + ": " + error.what(),
-          operation->requestId, operation->attempt));
+          operation->requestId, expectedAttempt ? expectedAttempt : operation->attempt),
+          expectedAttempt);
       }
       catch (...) {
         failOperation(operation, NativeDiError("NATIVE_REQUEST_STAGE_FAILED", "runtime", boundary,
-          "native request stage failed", operation->requestId, operation->attempt));
+          "native request stage failed", operation->requestId,
+          expectedAttempt ? expectedAttempt : operation->attempt), expectedAttempt);
       }
     });
   }
   catch (const std::exception&) {
     if (!operation->cancelled->load()) failOperation(operation, NativeDiError(
       "NATIVE_REQUEST_DISPATCH_FAILED", "local", boundary, "request worker is unavailable",
-      operation->requestId, operation->attempt));
+      operation->requestId, expectedAttempt ? expectedAttempt : operation->attempt),
+      expectedAttempt);
+  }
+}
+
+struct ExactRetentionSettlement
+{
+  NativeCancellationTargets targets;
+  std::string terminalRole;
+  std::set<std::string> observed;
+  std::size_t inspected = 0;
+  bool releasing = false;
+};
+
+void
+pollExactRetention(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+                   const std::shared_ptr<ExactRetentionSettlement>& settlement,
+                   std::uint64_t attempt)
+{
+  const auto* scope = detail::NATIVE_EXACT_RETENTION_SCOPE;
+  const auto requestId = ndn::Name(settlement->targets.begin()->second.second.requestId);
+  const ndn::Name topic(settlement->releasing ? detail::NATIVE_EXACT_RETENTION_RELEASED
+                                             : detail::NATIVE_EXACT_RETENTION_READY);
+  {
+    std::lock_guard lock(operation->mutex);
+    if (operation->cancelled->load() || operation->attempt != attempt ||
+        operation->phase != DiRequestPhase::Committed)
+      return;
+  }
+  if (std::chrono::steady_clock::now() >= operation->deadline)
+    throw std::runtime_error("DI_EXACT_RETENTION_PROOF_TIMEOUT");
+  const auto records = operation->user->waitForVerifiedCollaborationData(
+    requestId, scope, topic, 1, 20, true);
+  settlement->inspected += records.size();
+  if (settlement->inspected > 8 * settlement->targets.size())
+    throw std::runtime_error("DI_EXACT_RETENTION_PROOF_BACKLOG");
+  for (const auto& record : records) {
+    const auto target = settlement->targets.find(record.producerRole);
+    if (target == settlement->targets.end() || record.producer != target->second.first ||
+        record.requestId != requestId || record.keyScope != scope || record.topic != topic ||
+        (settlement->releasing && record.producerRole == settlement->terminalRole) ||
+        detail::nativeCancellationPhase(std::string(record.payload.begin(), record.payload.end()),
+          target->second.second, scope) != (settlement->releasing ? "released" : "ready"))
+      throw std::runtime_error("DI_EXACT_RETENTION_PROOF_BINDING");
+    settlement->observed.insert(record.producerRole);
+  }
+
+  auto scheduleNext = [&] {
+    auto ticket = operation->operationRuntime->acquire();
+    auto weak = std::weak_ptr<NativeInferenceHandle::Operation>(operation);
+    operation->operationRuntime->scheduleAt(ticket,
+      std::min(operation->deadline,
+               std::chrono::steady_clock::now() + std::chrono::milliseconds(75)),
+      [weak, settlement, attempt] {
+        if (const auto current = weak.lock()) {
+          if (current->cancelled->load()) return;
+          enqueueOperation(current, [current, settlement, attempt] {
+            pollExactRetention(current, settlement, attempt);
+          }, "exact-retention");
+        }
+      });
+  };
+  const auto needed = settlement->targets.size() - (settlement->releasing ? 1 : 0);
+  if (settlement->observed.size() != needed) {
+    scheduleNext();
+    return;
+  }
+
+  const bool authorizeTerminal = settlement->releasing;
+  operation->user->postToIo([operation, settlement, requestId, attempt, authorizeTerminal] {
+    try {
+      {
+        std::lock_guard lock(operation->mutex);
+        if (operation->cancelled->load() || operation->attempt != attempt ||
+            operation->phase != DiRequestPhase::Committed)
+          return;
+      }
+      if (std::chrono::steady_clock::now() >= operation->deadline)
+        throw std::runtime_error("DI_EXACT_RETENTION_PROOF_TIMEOUT");
+      const auto* scope = detail::NATIVE_EXACT_RETENTION_SCOPE;
+      for (const auto& [role, target] : settlement->targets) {
+        if ((role == settlement->terminalRole) != authorizeTerminal) continue;
+        const auto wire = detail::nativeCancellationWire(target.second, "release", scope);
+        if (!operation->user->publishCollaborationData(target.first, requestId, scope,
+              ndn::Name(detail::NATIVE_EXACT_RETENTION_CONTROL),
+              ndn::Buffer(wire.begin(), wire.end())))
+          throw std::runtime_error("DI_EXACT_RETENTION_CONTROL_PUBLICATION_FAILED");
+      }
+      if (authorizeTerminal) {
+        std::lock_guard lock(operation->mutex);
+        operation->exactReleaseAuthorizedAttempt = attempt;
+      }
+    }
+    catch (const std::exception& error) {
+      failOperation(operation, NativeDiError("DI_EXACT_RETENTION_CONTROL_FAILED", "runtime",
+        "exact-retention", error.what(), operation->requestId, attempt), attempt);
+    }
+  });
+  if (!authorizeTerminal) {
+    settlement->releasing = true;
+    settlement->observed.clear();
+    scheduleNext();
   }
 }
 
@@ -2826,16 +2947,36 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                 logRuntimeEvidence(record.str());
               }
               bool recover = false;
+              std::shared_ptr<ExactRetentionSettlement> exactRetention;
               {
                 std::lock_guard<std::mutex> lock(operation->mutex);
                 if (!operation->cancelled->load() && operation->attempt == sourceAttempt) {
                   operation->phase = DiRequestPhase::Committed;
                   recover = operation->recoveryPending;
+                  if (std::any_of(plan.keyScopes.begin(), plan.keyScopes.end(), [](const auto& key) {
+                        return key.name == detail::NATIVE_EXACT_RETENTION_SCOPE;
+                      })) {
+                    exactRetention = std::make_shared<ExactRetentionSettlement>();
+                    for (const auto& role : plan.roles) {
+                      if (role.terminalResponseOwner) exactRetention->terminalRole = role.role;
+                      const auto& producer =
+                        operation->planned->sealed.core.assignment.providerByRole.at(role.role);
+                      exactRetention->targets.emplace(role.role, std::make_pair(ndn::Name(producer),
+                        detail::NativeCancellationBinding{coreRequestId, sourceAttempt, role.role,
+                                                          sealedPlanDigest}));
+                    }
+                    if (exactRetention->targets.size() < 2 || exactRetention->terminalRole.empty())
+                      throw std::runtime_error("DI_EXACT_RETENTION_PARTICIPANTS_INVALID");
+                  }
                 }
               }
               if (recover) enqueueOperation(operation, [operation, sourceAttempt] {
                 pollConversationRecovery(operation, sourceAttempt);
               }, "recovery-ready");
+              if (exactRetention)
+                enqueueOperation(operation, [operation, exactRetention, sourceAttempt] {
+                  pollExactRetention(operation, exactRetention, sourceAttempt);
+                }, "exact-retention");
             }
             catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
             catch (const std::exception& error) {
@@ -2857,40 +2998,53 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         };
         (*resume)(nullptr);
       };
-      const auto response = [operation](const ndn_service_framework::ResponseMessage& message) {
+      const auto response = [operation, sourceAttempt](
+        const ndn_service_framework::ResponseMessage& message) {
         // Core's stream completion callback owns final acceptance; an ordinary
         // Response must never bypass the accepted token/text transcript gate.
         if (operation->options.stream) return;
-        enqueueOperation(operation, [operation, message] {
+        enqueueOperation(operation, [operation, sourceAttempt, message] {
+          std::string terminalProvider;
+          std::string planDigest;
+          std::string modelDigest;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            if (operation->cancelled->load()) return;
+            if (operation->cancelled->load() || operation->attempt != sourceAttempt) return;
             if (operation->phase != DiRequestPhase::Committed || !operation->planned)
               throw std::runtime_error("response preceded plan commit");
+            if (message.getStatus() &&
+                operation->exactReleaseAuthorizedAttempt != operation->attempt &&
+                std::any_of(operation->planned->corePlan.keyScopes.begin(),
+                            operation->planned->corePlan.keyScopes.end(), [](const auto& key) {
+                  return key.name == detail::NATIVE_EXACT_RETENTION_SCOPE;
+                }))
+              throw std::runtime_error("DI_EXACT_RETENTION_RESPONSE_BEFORE_RELEASE");
+            terminalProvider = operation->planned->terminalProvider;
+            planDigest = operation->planned->sealed.planDigest;
+            modelDigest = operation->encodedRequest->modelIntentDigest;
           }
+          if (std::chrono::steady_clock::now() >= operation->deadline)
+            throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "response",
+              "request expired before result decoding", operation->requestId, sourceAttempt);
           if (!message.getStatus()) {
             const auto& detail = message.getErrorInfo();
             throw NativeDiError("NATIVE_PROVIDER_FAILED", "provider", "response",
               detail.empty() ? "selected Provider returned a failure" :
                 "selected Provider returned a failure: " + detail,
-              operation->requestId, operation->attempt);
+              operation->requestId, sourceAttempt);
           }
           if (message.getDataName().empty() || message.getSignerCertificate().empty() ||
-              message.getWireDigest().empty() || !ndn::Name(operation->planned->terminalProvider).isPrefixOf(
+              message.getWireDigest().empty() || !ndn::Name(terminalProvider).isPrefixOf(
                 ndn::Name(message.getDataName())))
             throw NativeDiError("NATIVE_RESPONSE_BINDING_REJECTED", "provider", "response",
-              "response lacks the terminal Provider transport binding", operation->requestId, operation->attempt);
+              "response lacks the terminal Provider transport binding", operation->requestId, sourceAttempt);
           auto adapter = operation->adapters->find(operation->model.adapterId);
           NativeInferenceResult result;
-          const auto payload = message.getPayload();
-          result.payload = adapter->decodeResult(std::vector<std::uint8_t>(payload.begin(), payload.end()));
-          result.modelDigest = operation->encodedRequest->modelIntentDigest;
-          result.planDigest = operation->planned->sealed.planDigest;
-          if (std::chrono::steady_clock::now() >= operation->deadline)
-            throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "response",
-              "request expired during result decoding", operation->requestId, operation->attempt);
-          markTerminal(operation, NativeRequestStatus::Succeeded, nullptr, &result);
-        }, "response");
+          result.payload = adapter->decodeResult(message.getPayload());
+          result.modelDigest = std::move(modelDigest);
+          result.planDigest = std::move(planDigest);
+          markTerminal(operation, NativeRequestStatus::Succeeded, nullptr, &result, sourceAttempt);
+        }, "response", sourceAttempt);
       };
       const auto timeout = [operation, sourceAttempt](const ndn::Name&) {
         enqueueOperation(operation, [operation, sourceAttempt] {
@@ -2900,7 +3054,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           }
           throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "Core",
             "Core request deadline expired", operation->requestId, sourceAttempt);
-        }, "Core-timeout");
+        }, "Core-timeout", sourceAttempt);
       };
       ndn_service_framework::RequestCapabilities capabilities;
       capabilities.setField("NDNSF_DATA_V1", "required");
@@ -3074,6 +3228,44 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
 // this driver when a complete NativeRequestRuntime is configured.  The
 // constructor used by compatibility/component tests has no runtime and keeps
 // the structured not-ready failure instead of claiming a synthetic success.
+std::shared_ptr<void>
+publishRequestInput(const NativeInferenceHandle::Operation& operation, NativePreparedInput& input)
+{
+  const auto limit = operation.options.maxInlineInputBytes;
+  if (!limit) return {};
+  if (*limit == 0 || operation.options.stream || operation.options.generation ||
+      operation.options.conversation || !operation.runtime ||
+      operation.runtime->automaticShapeSeedFactory || !input.repositoryReference.empty())
+    throw std::invalid_argument("protected input offload requires an ordinary inline request");
+  if (input.payload.size() <= *limit) return {};
+  NativeRequestControl control{operation.coreRequestId, operation.attempt, operation.deadline,
+    [cancelled = operation.cancelled] { return cancelled->load(); },
+    operation.options.workStatistics};
+  control.requireActive();
+  ndn_service_framework::PreparedServiceRequest context;
+  context.serviceName = ndn::Name(operation.runtime->contract.serviceName);
+  context.requestId = ndn::Name(operation.coreRequestId);
+  const auto label = "di-input-" + nativePlanningDigest(operation.coreRequestId).substr(7);
+  auto published = operation.user->publishEncryptedLargeDataFromWorker(
+    context, input.payload, label, ndn::DEFAULT_FRESHNESS_PERIOD,
+    [&control] { control.requireActive(); });
+  control.requireActive();
+  if (!published.success || !published.servingLease || !published.encrypted ||
+      published.manifestName.empty() || published.plaintextSize != input.payload.size())
+    throw std::runtime_error("request input publication failed: " + published.errorMessage);
+  input.repositoryReference = nativeCanonicalJson(NativeJson{
+    {"dataName", published.manifestName.toUri(ndn::name::UriFormat::CANONICAL)},
+    {"encrypted", true}, {"plaintextSize", static_cast<std::uint64_t>(published.plaintextSize)},
+    {"authorizationScope", published.authorizationScope}, {"protectionEpoch", published.protectionEpoch},
+    {"manifestDigest", published.manifestDigest},
+    {"ciphertextDigest", published.ciphertextManifestDigest}, {"plaintextDigest", published.contentDigest}});
+  std::vector<std::uint8_t>().swap(input.payload);
+  input.validate();
+  if (control.workStatistics)
+    control.workStatistics->addCount("request.protectedInputPublishedBytes", published.plaintextSize);
+  return std::move(published.servingLease);
+}
+
 void
 dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
                   const std::function<std::chrono::steady_clock::time_point()>& now)
@@ -3099,6 +3291,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
   }
   if (operation->preparation) {
     NativePreparedInput prepared;
+    std::shared_ptr<void> inputServingLease;
     try {
       const auto& input = operation->input;
       const auto& options = operation->options;
@@ -3117,6 +3310,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
         operation->model, options.taskName.empty() ? input.taskName : options.taskName,
         input.inputSchemaDigest, input.optionsSchemaDigest, input.payload,
         input.repositoryReference, operation->deadline);
+      inputServingLease = publishRequestInput(*operation, prepared);
       if (operation->runtime && operation->runtime->automaticShapeSeedFactory) {
         if (!prepared.repositoryReference.empty())
           throw std::invalid_argument("automatic request has no shape binder or inline input");
@@ -3155,7 +3349,11 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
         return;
       }
       expired = now() >= operation->deadline;
-      if (!expired) operation->preparedInput = std::move(prepared);
+      if (!expired) {
+        if (inputServingLease) std::vector<std::uint8_t>().swap(operation->input.payload);
+        operation->inputServingLease = std::move(inputServingLease);
+        operation->preparedInput = std::move(prepared);
+      }
     }
     if (expired) {
       failOperation(operation, NativeDiError(
@@ -3169,6 +3367,9 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     auto input = operation->input;
     input.payload = operation->preparedInput->payload;
     input.taskName = operation->preparedInput->taskName;
+    input.repositoryReference = operation->preparedInput->repositoryReference;
+    if (!input.repositoryReference.empty())
+      input.transportMode = NativeInputTransportMode::RepositoryReference;
     NativeEncodedRequest encoded;
     try {
       encoded = detail::encodeNativeRequestEnvelopeForRuntime(operation->model, input,
@@ -3624,9 +3825,7 @@ NativeInferenceClient::NativeInferenceClient(
     const NativeRequestControl& control) {
     control.requireActive();
     NativeWorkScope encodingWork(control.workStatistics, "fixed-source-encode", NativeWorkKind::LOCAL);
-    const auto wire = nativeFixedRoleAssignmentV1ToJson(fixed);
-    if (wire.size() > (4U << 20))
-      throw std::invalid_argument("fixed role recovery source exceeds wire limit");
+    const auto wire = nativeFixedRoleAssignmentV1ToWire(fixed);
     ndn_service_framework::PreparedServiceRequest context;
     context.serviceName = ndn::Name(service);
     context.requestId = ndn::Name(projection.requestId);

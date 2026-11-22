@@ -11,6 +11,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-cancellation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
@@ -211,6 +213,8 @@ struct Options
   std::string artifactReferencesPath;
   std::string artifactCacheDir = "/tmp/ndnsf-di-native-artifacts";
   int artifactCacheMaxMiB = 8192;
+  int exactPacketDiskMiB = 0;
+  std::size_t tensorSegmentBytes = NativeProviderHandlerConfig{}.maxSegmentSize;
   // Each authenticated request keeps one resident per role, and a resident
   // holds its role template until the session ends. The default suits a few
   // requests; a longer session raises this explicitly.
@@ -846,6 +850,21 @@ parseArgs(int argc, char** argv)
     else if (arg == "--cache-compatibility-source-dir") {
       options.cacheCompatibilitySourceDir = readValue();
     }
+    else if (arg == "--exact-packet-disk-mib") {
+      options.exactPacketDiskMiB = parsePositiveInt(readValue(), arg);
+      if (options.exactPacketDiskMiB > (128 << 10))
+        throw std::invalid_argument(arg + " exceeds the Provider exact packet disk ceiling");
+    }
+    else if (arg == "--tensor-segment-bytes") {
+      const auto value = readValue();
+      if (value.empty() || !std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return c >= '0' && c <= '9';
+          }))
+        throw std::invalid_argument(arg + " must be a positive integer in bytes");
+      options.tensorSegmentBytes = parsePositiveInt(value, arg);
+      if (options.tensorSegmentBytes > ndn::MAX_NDN_PACKET_SIZE)
+        throw std::invalid_argument(arg + " exceeds the NDN packet ceiling");
+    }
     else if (arg == "--tokenizer-json") {
       options.tokenizerJson = readValue();
     }
@@ -1250,6 +1269,8 @@ printUsage(const char* program)
     << "[--artifact-references <json>] "
     << "[--artifact-cache-dir <dir>] [--repo-service <service>] "
     << "[--artifact-cache-max-mib <positive-MiB>] "
+    << "[--exact-packet-disk-mib <positive-MiB>] "
+    << "[--tensor-segment-bytes <positive-bytes>] "
     << "[--artifact-cache-entries <positive-count>] "
     << "[--cache-compatibility-source-dir <verified-cache-dir>] "
     << "[--tokenizer-json <path>] "
@@ -1389,6 +1410,11 @@ main(int argc, char** argv)
                              NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1,
                              NATIVE_SOURCE_ATTENTION_ENTRY_CAPABILITY_V1,
                              NATIVE_SOURCE_TENSOR_LAYOUT_CAPABILITY_V1};
+      if (options.offerBackend == "onnxruntime" || options.offerBackend == "onnxruntime-cpu" ||
+          options.offerBackend == "onnxruntime-cuda")
+        config.capabilities.emplace_back(NATIVE_ONNX_ENTRY_CAPABILITY_V1);
+      if (options.exactPacketDiskMiB != 0)
+        config.capabilities.emplace_back(ndnsf::di::detail::NATIVE_EXACT_RETENTION_SCOPE);
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
       {
@@ -1549,7 +1575,7 @@ main(int argc, char** argv)
       providerBootId = provider->getProviderBootEpoch();
       specs = withExecutionEvidenceContext(
         std::move(specs), options, providerBootId, providerStartedAtMs);
-      const auto tensorSegmentBytes = NativeProviderHandlerConfig{}.maxSegmentSize;
+      const auto tensorSegmentBytes = options.tensorSegmentBytes;
       if (nativeOfferConfig) {
         nativeOfferConfig->bootEpoch = providerBootId;
       }
@@ -2203,6 +2229,8 @@ main(int argc, char** argv)
             NativeProviderHandlerConfig config;
             config.maxSegmentSize = tensorSegmentBytes;
             config.segmentManifestEnabled = options.segmentManifestEnabled;
+            config.exactPacketDiskBudget =
+              static_cast<std::uint64_t>(options.exactPacketDiskMiB) << 20;
             config.allowSelectionGenerationOptions = options.allowSelectionGenerationOptions;
             config.plan = plan;
             config.assignment = defaultAssignment(plan, options.providerName, allowedRoles);

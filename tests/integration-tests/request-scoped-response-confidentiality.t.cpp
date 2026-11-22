@@ -14,6 +14,7 @@
 #include <ndn-cxx/util/dummy-client-face.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <iomanip>
@@ -21,6 +22,7 @@
 #include <sstream>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace ndn_service_framework::test {
@@ -31,13 +33,18 @@ struct LargeResponseFetchOracle
   {
     std::weak_ptr<void> owner;
     std::weak_ptr<ndn::SegmentFetcher> fetcher;
+    std::size_t authenticatedSegments = 0;
+    std::size_t plaintextBytes = 0;
+    std::size_t committedNonceKeys = 0;
   };
 
   static Observation observe(ServiceUser& user)
   {
     for (const auto& call : user.m_pendingCalls) {
       for (const auto& item : call.second.largeResponseFetches) {
-        return {item.second, item.second->fetcher};
+        return {item.second, item.second->fetcher,
+                item.second->nonces.size(), item.second->plaintext.size(),
+                user.m_requestScopedNonceRegistry.size()};
       }
     }
     return {};
@@ -116,6 +123,24 @@ makeTestHybridPublication(const ndn::Name& messageName,
 
 BOOST_AUTO_TEST_SUITE(RequestScopedResponseConfidentiality)
 
+BOOST_AUTO_TEST_CASE(OwnedResponsePayloadIsSharedUntilReplacement)
+{
+  ndn::Buffer bytes{0x23, 0x00, 0x71};
+  const auto* originalStorage = bytes.data();
+  ResponseMessage response;
+  response.setStatus(true);
+  response.setPayload(std::move(bytes));
+  BOOST_CHECK(response.getPayloadBlock().value() == originalStorage);
+  const auto copy = response;
+  BOOST_CHECK(copy.getPayloadBlock().value() == originalStorage);
+  response.Clear();
+  ResponseMessage decoded;
+  BOOST_REQUIRE(decoded.WireDecode(copy.WireEncode()));
+  const auto actual = decoded.getPayload();
+  const std::array<std::uint8_t, 3> expected{0x23, 0x00, 0x71};
+  BOOST_CHECK_EQUAL_COLLECTIONS(actual.begin(), actual.end(), expected.begin(), expected.end());
+}
+
 BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
 {
   test::IsolatedTestTrust trustOwner;
@@ -169,7 +194,7 @@ BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count());
   const auto keys = generateRequestKeyBundle(now, now + 60000);
-  const std::string plaintext(9000, 'r');
+  const std::string plaintext(270 * 1024, 'r');
   ResponseMessage response;
   response.setStatus(true);
   ndn::Buffer responsePayload(
@@ -190,45 +215,56 @@ BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
   BOOST_CHECK(published.responseMessage.getControllerVersion() ==
               binding.controllerVersion);
 
-  // Fetch every retained segment through the Provider's exact-name IMS path.
-  // This is the same Data path used by SegmentFetcher, but deterministic and
-  // bounded for the component test.
-  std::vector<ndn::Data> segments;
-  // Fetch the first segment through the exact-name IMS path. The existing
-  // request-scoped-selection integration test performs full SegmentFetcher
-  // reconstruction; this dedicated gate focuses on configured trust and the
-  // authenticated per-segment binding without duplicating that long flow.
-  for (uint64_t segment = 0; segment < 1; ++segment) {
-    auto segmentName = published.largeData.encryptedDataName;
-    segmentName.appendSegment(segment);
-    std::atomic<bool> completed{false};
-    std::atomic<bool> timedOut{false};
-    ndn::Interest interest(segmentName);
-    interest.setInterestLifetime(ndn::time::milliseconds(100));
-    consumerFace.expressInterest(
-        interest,
-        [&] (const ndn::Interest&, const ndn::Data& data) {
-          segments.push_back(data);
-          completed = true;
-        },
-        [&] (const ndn::Interest&, const ndn::lp::Nack&) {
-          completed = true;
-        },
-        [&] (const ndn::Interest&) {
-          timedOut = true;
-          completed = true;
-        });
-    for (size_t round = 0; round < 20 && !completed; ++round) {
-      consumerFace.processEvents(ndn::time::milliseconds(5));
-      providerFace.processEvents(ndn::time::milliseconds(5));
+  // A wide response must survive an IMS miss from the first discovery
+  // Interest. Both the root and segment name retrieve the same signed wire.
+  BOOST_CHECK_EQUAL(provider.evictImsPrefixForTest(reference->dataName), 0U);
+  const auto fetch = [&](ndn::Interest interest) {
+    std::optional<ndn::Data> received;
+    bool completed = false;
+    interest.setInterestLifetime(ndn::time::milliseconds(500));
+    const ndn::ScopedPendingInterestHandle pending = consumerFace.expressInterest(
+      interest,
+      [&](const ndn::Interest&, const ndn::Data& data) {
+        received = data;
+        completed = true;
+      },
+      [&](const ndn::Interest&, const ndn::lp::Nack&) { completed = true; },
+      [&](const ndn::Interest&) { completed = true; });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!completed && std::chrono::steady_clock::now() < deadline) {
       consumerFace.getIoContext().restart();
+      consumerFace.getIoContext().poll();
       providerFace.getIoContext().restart();
+      providerFace.getIoContext().poll();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    if (timedOut || segments.empty() || segments.back().getName() != segmentName) {
-      break;
-    }
-  }
-  BOOST_REQUIRE_EQUAL(segments.size(), 1U);
+    BOOST_REQUIRE(completed);
+    return received;
+  };
+  ndn::Interest discovery(reference->dataName);
+  discovery.setCanBePrefix(true).setMustBeFresh(true);
+  const auto first = fetch(discovery);
+  BOOST_REQUIRE(first);
+  const auto segmentName = ndn::Name(reference->dataName).appendSegment(0);
+  BOOST_CHECK_EQUAL(first->getName(), segmentName);
+  BOOST_REQUIRE(first->getFinalBlock());
+  BOOST_CHECK_EQUAL(first->getFinalBlock()->toSegment(), 269U);
+  const auto repeated = fetch(ndn::Interest(first->getFullName()));
+  BOOST_REQUIRE(repeated);
+  BOOST_CHECK(repeated->wireEncode() == first->wireEncode());
+  const auto outside = ndn::Name(reference->dataName).appendSegment(270);
+  BOOST_CHECK(!fetch(ndn::Interest(outside)));
+  const auto rejected = provider.makeRequestScopedResponseWithLargeDataOptimization(
+    requesterName, providerName, serviceName, ndn::Name(requestId).append("over-limit"),
+    response, keys, [&] {
+      auto tooFine = binding;
+      tooFine.requestId.append("over-limit");
+      return tooFine;
+    }(), 1);
+  BOOST_CHECK(!rejected.success);
+  BOOST_CHECK(!rejected.usedLargeDataReference);
+  BOOST_CHECK(rejected.errorMessage.find("response packet file capacity") != std::string::npos);
+  const std::vector<ndn::Data> segments{*first};
 
   // Validate against the fixture's fixed certificate anchors.
   auto validator = std::make_shared<MessageValidator>(
@@ -346,6 +382,8 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   std::atomic<size_t> requestExecutions{0};
   std::atomic<size_t> responseCallbacks{0};
   std::atomic<size_t> timeoutCallbacks{0};
+  std::optional<ndn::Data> heldSecondSegment;
+  std::string responseError;
   test::LargeResponseFetchOracle::Observation observed;
   const std::string inputText = "full-runtime-secret-input";
   const std::string responseText = useLargeResponse ?
@@ -357,9 +395,16 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   environment.bootstrap();
   test::FaultProfile faults;
   faults.dropDataPredicate = [&] (const ndn::Data& data) {
-    const bool hold = !releaseSegment.load() &&
-      data.getName().toUri().find("/NDNSF/LARGE-RESPONSE/") != std::string::npos;
-    if (hold) ++heldSegments;
+    const auto& name = data.getName();
+    const bool hold = !releaseSegment.load() && !name.empty() &&
+      name.at(-1).isSegment() && name.at(-1).toSegment() != 0 &&
+      name.toUri().find("/NDNSF/LARGE-RESPONSE/") != std::string::npos;
+    if (hold) {
+      ++heldSegments;
+      if ((terminalDuringFetch == "tamper" || terminalDuringFetch == "timeout") &&
+          name.at(-1).toSegment() == 1)
+        heldSecondSegment = data;
+    }
     return hold;
   };
   auto scope = environment.beginRequest("request-scoped-response-runtime", faults);
@@ -466,11 +511,12 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
         requestTimedOut = true;
       },
       [&] (const ResponseMessage& response) {
-        ++responseCallbacks;
+        responseError = response.getErrorInfo();
         const auto payload = response.getPayload();
         responseReceived = response.getStatus() &&
                            std::string(reinterpret_cast<const char*>(payload.data()),
                                        payload.size()) == responseText;
+        ++responseCallbacks;
       },
       tlv::FirstResponding);
   BOOST_REQUIRE(!requestId.empty());
@@ -478,11 +524,19 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   if (!terminalDuringFetch.empty()) {
     environment.pumpUntil([&] {
       observed = test::LargeResponseFetchOracle::observe(environment.user());
-      return heldSegments.load() != 0 && !observed.fetcher.expired();
+      return heldSegments.load() != 0 &&
+             ((terminalDuringFetch != "tamper" && terminalDuringFetch != "timeout") ||
+              heldSecondSegment.has_value()) &&
+             !observed.fetcher.expired() &&
+             observed.authenticatedSegments == 1;
     });
     BOOST_REQUIRE_GT(heldSegments.load(), 0);
     BOOST_REQUIRE(!observed.owner.expired());
     BOOST_REQUIRE(!observed.fetcher.expired());
+    BOOST_CHECK_EQUAL(observed.authenticatedSegments, 1);
+    BOOST_CHECK_GT(observed.plaintextBytes, 0);
+    BOOST_CHECK_LT(observed.plaintextBytes, responseText.size());
+    BOOST_CHECK_EQUAL(observed.committedNonceKeys, 0);
     if (terminalDuringFetch == "timeout") {
       environment.pumpUntil([&] { return requestTimedOut.load(); });
       BOOST_CHECK_EQUAL(timeoutCallbacks.load(), 1);
@@ -492,6 +546,27 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
       test::LargeResponseFetchOracle::cancelThroughSharedTerminalCleanup(
         environment.user(), requestId);
       BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
+    }
+    else if (terminalDuringFetch == "tamper") {
+      auto changed = *heldSecondSegment;
+      const auto [parsed, content] = ndn::Block::fromBuffer(changed.getContent().value_bytes());
+      AeadEnvelope envelope;
+      BOOST_REQUIRE(parsed && envelope.wireDecode(content));
+      BOOST_REQUIRE(!envelope.tag.empty());
+      envelope.tag.front() ^= 1;
+      changed.setContent(envelope.wireEncode());
+      const auto& name = changed.getName();
+      const auto producer = std::find_if(providers.begin(), providers.end(), [&](const auto& id) {
+        return id.isPrefixOf(name) && name.at(id.size()).toUri() == "NDNSF";
+      });
+      BOOST_REQUIRE(producer != providers.end());
+      environment.keyChain().sign(changed, ndn::security::signingByIdentity(*producer));
+      environment.userFace().receive(changed);
+      environment.pumpUntil([&] { return responseCallbacks.load() != 0 || requestTimedOut.load(); });
+      BOOST_CHECK(!responseReceived);
+      BOOST_CHECK_EQUAL(responseError,
+        "large response reference fetch failed: "
+        "request-scoped large response decryption failed: authentication_failed");
     }
     else {
       BOOST_REQUIRE_EQUAL(terminalDuringFetch, "destroy");
@@ -504,8 +579,58 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
     BOOST_CHECK(observed.owner.expired());
     BOOST_CHECK(observed.fetcher.expired());
     BOOST_CHECK_EQUAL(segmentInterests.load(), stoppedInterestCount);
-    BOOST_CHECK_EQUAL(responseCallbacks.load(), 0);
+    BOOST_CHECK_EQUAL(responseCallbacks.load(), terminalDuringFetch == "tamper" ? 1 : 0);
     BOOST_CHECK_EQUAL(timeoutCallbacks.load(), terminalDuringFetch == "timeout" ? 1 : 0);
+    if (terminalDuringFetch == "timeout") {
+      const auto stalePacket = *heldSecondSegment;
+      releaseSegment = false;
+      heldSecondSegment.reset();
+      bool nextTimedOut = false;
+      std::size_t nextCallbacks = 0;
+      std::string nextPayload;
+      ndn::Name nextResponseName;
+      const auto nextId = environment.user().RequestService(
+        providers, serviceName, request, 5000,
+        [&](const ndn::Name&) { nextTimedOut = true; },
+        [&](const ResponseMessage& response) {
+          ++nextCallbacks;
+          BOOST_CHECK(response.getStatus());
+          nextResponseName = ndn::Name(response.getDataName());
+          const auto payload = response.getPayload();
+          nextPayload.assign(payload.begin(), payload.end());
+        }, tlv::FirstResponding);
+      BOOST_REQUIRE(!nextId.empty());
+      BOOST_REQUIRE(nextId != requestId);
+      environment.pumpUntil([&] {
+        observed = test::LargeResponseFetchOracle::observe(environment.user());
+        return (heldSecondSegment && observed.authenticatedSegments == 1) || nextTimedOut;
+      });
+      BOOST_REQUIRE(!nextTimedOut);
+      BOOST_REQUIRE(heldSecondSegment);
+      BOOST_REQUIRE(heldSecondSegment->getName() != stalePacket.getName());
+      BOOST_CHECK_EQUAL(observed.authenticatedSegments, 1);
+      const auto firstChunkBytes = observed.plaintextBytes;
+      environment.userFace().receive(stalePacket);
+      const auto afterReplay = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+      environment.pumpUntil([&] { return std::chrono::steady_clock::now() >= afterReplay; });
+      auto after = test::LargeResponseFetchOracle::observe(environment.user());
+      BOOST_CHECK(after.owner.lock() == observed.owner.lock());
+      BOOST_CHECK_EQUAL(after.authenticatedSegments, 1);
+      BOOST_CHECK_EQUAL(after.plaintextBytes, firstChunkBytes);
+      BOOST_CHECK_EQUAL(after.committedNonceKeys, 0);
+      BOOST_CHECK_EQUAL(nextCallbacks, 0);
+      BOOST_CHECK_EQUAL(responseCallbacks.load(), 0);
+      releaseSegment = true;
+      environment.userFace().receive(*heldSecondSegment);
+      environment.pumpUntil([&] { return nextCallbacks != 0 || nextTimedOut; });
+      BOOST_CHECK(!nextTimedOut);
+      BOOST_CHECK_EQUAL(nextCallbacks, 1);
+      BOOST_CHECK_EQUAL(nextPayload, responseText);
+      BOOST_CHECK_EQUAL(responseCallbacks.load(), 0);
+      const auto responseName = parseResponseNameV2(stripTrailingResponseSegments(nextResponseName));
+      BOOST_REQUIRE(responseName);
+      BOOST_CHECK_EQUAL(responseName->requestId, nextId);
+    }
     environment.updateRequestResidue(scope, {});
     environment.resetRequest(scope);
     return;
@@ -586,6 +711,11 @@ BOOST_AUTO_TEST_CASE(LargeResponseCancellationCleanupStopsFetcherBeforeKeyErasur
 BOOST_AUTO_TEST_CASE(LargeResponseUserDestructionStopsFetcherWithExternalFaceStillAlive)
 {
   runFullRuntimeResponseCase(true, false, "destroy");
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedLaterSegmentWithInvalidAeadCannotDeliverPartialResult)
+{
+  runFullRuntimeResponseCase(true, false, "tamper");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

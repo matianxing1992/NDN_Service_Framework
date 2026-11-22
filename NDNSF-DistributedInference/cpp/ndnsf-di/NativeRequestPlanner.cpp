@@ -2425,9 +2425,27 @@ NativePlannedRequest planNativeRequestImpl(
     }
     for (const auto& scope : scopes)
       plan.keyScopes.push_back({scope.first, std::vector<std::string>(scope.second.begin(), scope.second.end())});
+    const auto exactRetentionSupported = [&](const auto& role) {
+      const auto& provider = core.assignment.providerByRole.at(role);
+      return std::any_of(offers.begin(), offers.end(), [&](const auto& offer) {
+        const auto& observed = offer.observation();
+        return observed.provider == provider &&
+          std::find(observed.capabilities.begin(), observed.capabilities.end(),
+                    detail::NATIVE_EXACT_RETENTION_SCOPE) != observed.capabilities.end();
+      });
+    };
+    if (scopes.count(detail::NATIVE_EXACT_RETENTION_SCOPE))
+      throw std::invalid_argument("execution dataflow uses reserved exact retention scope");
+    const bool settleExactRetention = !conversationTurn && stateless && !options.stream &&
+      execution.roles.size() >= 2 && execution.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 &&
+      std::any_of(execution.dependencies.begin(), execution.dependencies.end(),
+                  [](const auto& edge) { return edge.useNdnsfDataV1; }) &&
+      std::all_of(execution.roles.begin(), execution.roles.end(), exactRetentionSupported);
+    if (settleExactRetention)
+      plan.keyScopes.push_back({detail::NATIVE_EXACT_RETENTION_SCOPE, execution.roles});
     const bool generation = options.generation && options.generation->enabled;
-    if (!conversationTurn &&
-        (generation || execution.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2)) {
+    if (!conversationTurn && (settleExactRetention || !stateless || generation ||
+                              execution.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2)) {
       if (scopes.count(detail::NATIVE_CANCELLATION_SCOPE))
         throw std::invalid_argument("execution dataflow uses reserved cancellation scope");
       plan.keyScopes.push_back({detail::NATIVE_CANCELLATION_SCOPE, execution.roles});

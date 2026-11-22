@@ -3417,6 +3417,172 @@ BOOST_AUTO_TEST_CASE(WorkerRefusesAnInconsistentStepDeclarationBeforeAnyWork)
   BOOST_CHECK_EQUAL(preparation.calls.load(), 0U);
   BOOST_CHECK_EQUAL(io->publishCalls.load(), 0U);
 }
+BOOST_AUTO_TEST_CASE(SumReleasesLocalInputsBeforeTheNextCall)
+{
+  RoleSpec role;
+  role.role = "sum-role";
+  role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  const std::vector<std::variant<std::int64_t, std::string>> shape{std::int64_t{1}};
+  const auto layout = nativePlanningDigest("sum-test-layout");
+  const auto port = [&](const std::string& name, const std::string& step = "") {
+    return NativeStepSlotSpec{name, "float32", shape, layout, "LOCAL_STEP",
+                              step, step.empty() ? "" : name};
+  };
+  NativeExecutionStepSpec partial;
+  partial.stepId = partial.artifactEntry = "partial";
+  partial.unitId = role.role;
+  partial.operation = "CALL_SUBGRAPH";
+  partial.outputSlots = {port("x"), port("y")};
+  auto sum = partial;
+  sum.stepId = "sum";
+  sum.artifactEntry.clear();
+  sum.operation = "SUM";
+  sum.inputSlots = {port("x", "partial"), port("y", "partial")};
+  sum.outputSlots = {port("sum")};
+  auto final = partial;
+  final.stepId = final.artifactEntry = "final";
+  final.inputSlots = {port("sum", "sum")};
+  final.outputSlots = {port("result")};
+  role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+    std::vector<NativeExecutionStepSpec>{partial, sum, final});
+
+  std::weak_ptr<float> x, y;
+  const auto make = [] (const std::string& name, float value, std::weak_ptr<float>& check) {
+    auto owner = std::make_shared<float>(value);
+    check = owner;
+    auto local = std::make_shared<LocalTensorBundle>();
+    local->owner = owner;
+    local->tensors.push_back({name, TensorElementType::Float32, {1},
+      {reinterpret_cast<const std::uint8_t*>(owner.get()), sizeof(float)}});
+    TensorBundle bundle;
+    bundle.name = name;
+    bundle.expectedBytes = tensorBundleWireSize(*local);
+    bundle.localTensors = std::move(local);
+    return bundle;
+  };
+  const auto runner = [&](const RoleExecutionContext& ctx) -> std::map<std::string, TensorBundle> {
+    if (ctx.activeStep->stepId == "partial")
+      return {{"x", make("x", 2, x)}, {"y", make("y", 3, y)}};
+    if (!x.expired() || !y.expired())
+      throw std::runtime_error("SUM retained its last-use source allocation");
+    return {{"result", ctx.stepInputsBySlot.at("sum")}};
+  };
+  auto io = std::make_shared<CountingDependencyIo>();
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+  const auto result = worker.executeAsync("sum-local-release", std::move(role), io, runner).get();
+  const auto values = decodeTensorBundleViews(result.outputsByScope.at("result"));
+  BOOST_REQUIRE_EQUAL(values.size(), 1);
+  BOOST_REQUIRE_EQUAL(values.front().payload.size(), sizeof(float));
+  float actual = 0;
+  std::memcpy(&actual, values.front().payload.data(), sizeof(actual));
+  BOOST_CHECK_EQUAL(actual, 5);
+  BOOST_CHECK_EQUAL(io->publishCalls.load(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(ExactPublicationReleasesAdapterOutputsAtLastLocalUse)
+{
+  RoleSpec role;
+  role.role = "publisher";
+  role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  role.publishedStepResponseScope = "reply";
+  const auto layout = nativePlanningDigest("exact-lifetime");
+  const auto port = [&](const std::string& name, const std::string& source = "") {
+    return NativeStepSlotSpec{name, "float32", {std::int64_t{1}}, layout, "LOCAL_STEP",
+                              source, source.empty() ? "" : name};
+  };
+  NativeExecutionStepSpec produce;
+  produce.stepId = produce.artifactEntry = "produce";
+  produce.unitId = role.role;
+  produce.operation = "CALL_SUBGRAPH";
+  produce.outputSlots = {port("peer"), port("local"), port("response")};
+  auto consume = produce;
+  consume.stepId = consume.artifactEntry = "consume";
+  consume.inputSlots = {port("local", "produce")};
+  consume.outputSlots = {port("intermediate")};
+  auto finish = produce;
+  finish.stepId = finish.artifactEntry = "finish";
+  finish.inputSlots = {port("intermediate", "consume")};
+  finish.outputSlots = {port("terminal")};
+  role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+    std::vector<NativeExecutionStepSpec>{produce, consume, finish});
+  const auto edge = [&](std::string scope, const std::string& slot) {
+    DependencyEdge result;
+    result.scope = std::move(scope);
+    result.producerRole = role.role;
+    result.consumerRole = "receiver";
+    result.tensors = {slot};
+    result.producerStepId = produce.stepId;
+    result.producerSlotId = slot;
+    result.plannedDataName = "/fixture/publisher/activation/" + result.scope;
+    result.useNdnsfDataV1 = result.declaredByV3 = true;
+    result.operationKind = "ACTIVATION";
+    return result;
+  };
+  role.outputs = {edge("peer-1", "peer"), edge("peer-2", "peer"),
+                  edge("local-copy", "local"), edge("reply", "response")};
+
+  const auto execute = [&](bool release, bool fail) {
+    auto selected = role;
+    if (!release) selected.publishedStepResponseScope.reset();
+    std::weak_ptr<float> peer, local, response;
+    auto make = [](const std::string& name, float value, std::weak_ptr<float>* watch = nullptr) {
+      auto owner = std::make_shared<float>(value);
+      if (watch) *watch = owner;
+      auto views = std::make_shared<LocalTensorBundle>();
+      views->owner = owner;
+      views->tensors.push_back({name, TensorElementType::Float32, {1},
+        {reinterpret_cast<const std::uint8_t*>(owner.get()), sizeof(float)}});
+      TensorBundle bundle;
+      bundle.name = name;
+      bundle.localTensors = std::move(views);
+      bundle.expectedBytes = tensorBundleWireSize(*bundle.localTensors);
+      return bundle;
+    };
+    const auto check = [](bool condition) {
+      if (!condition) throw std::runtime_error("unexpected activation lifetime");
+    };
+    std::size_t laterCalls = 0;
+    auto io = std::make_shared<CountingDependencyIo>();
+    io->onPublish = [&](const std::string& scope) {
+      if (scope == "peer-1" || scope == "peer-2") check(!peer.expired());
+      if (fail && scope == "peer-2") throw std::runtime_error("exact publication failed");
+    };
+    auto runner = [&](const RoleExecutionContext& ctx) -> std::map<std::string, TensorBundle> {
+      if (ctx.activeStep->stepId == "produce") {
+        return {{"peer", make("peer", 1, &peer)}, {"local", make("local", 2, &local)},
+                {"response", make("response", 3, &response)}};
+      }
+      ++laterCalls;
+      check(peer.expired() == release && !response.expired());
+      if (ctx.activeStep->stepId == "consume") {
+        check(!local.expired() && ctx.stepInputsBySlot.count("local") == 1);
+        return {{"intermediate", make("intermediate", 4)}};
+      }
+      check(local.expired() == release);
+      return {{"terminal", make("terminal", 5)}};
+    };
+    ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+    auto future = worker.executeAsync("exact-lifetimes", std::move(selected), io, runner);
+    if (fail) {
+      BOOST_CHECK_EXCEPTION(future.get(), std::runtime_error,
+        [](const auto& error) { return std::string(error.what()) == "exact publication failed"; });
+      BOOST_CHECK_EQUAL(laterCalls, 0U);
+      BOOST_CHECK_EQUAL(io->publishCalls.load(), 1U);
+      return;
+    }
+    const auto result = future.get();
+    BOOST_CHECK_EQUAL(laterCalls, 2U);
+    BOOST_CHECK_EQUAL(io->publishCalls.load(), 4U);
+    BOOST_CHECK_EQUAL(result.outputTimings.size(), 4U);
+    BOOST_CHECK_EQUAL(result.outputsByScope.count("reply"), 1U);
+    BOOST_CHECK_EQUAL(result.outputsByScope.count("terminal"), 1U);
+    BOOST_CHECK_EQUAL(result.outputsByScope.size(), release ? 2U : 5U);
+  };
+  execute(true, false);
+  execute(false, false);
+  execute(true, true);
+}
+
 BOOST_AUTO_TEST_CASE(WorkerRejectsAnUnknownStepPlanVersionSynchronously)
 {
   // Version skew is a contract error, reported separately from the
@@ -8989,7 +9155,8 @@ BOOST_AUTO_TEST_CASE(ShardedEntryDeclaresTheWidthsItsWeightsActuallyHave)
 }
 
 
-BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
+static void
+checkUnitStartsBeforeItsPeerPublishesLaterPartials(bool stepScopedReads)
 {
   // The deadlock the wait-all gate caused, stated directly: rank 0's first
   // attention step needs no remote input, so it must run even though the peer has
@@ -9008,6 +9175,7 @@ BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
   NativeProviderAssignment assignment;
   assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
   auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+  role.stepScopedDependencyReads = stepScopedReads;
 
   std::size_t peerInputs = 0;
   for (auto& edge : role.inputs) {
@@ -9019,6 +9187,7 @@ BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
     }
   }
   BOOST_REQUIRE_EQUAL(peerInputs, 2U);
+  BOOST_CHECK_EQUAL(role.dependencyReadWidth(), stepScopedReads ? 1U : peerInputs);
   auto io = std::make_shared<NeverReadyDependencyIo>(true);
   std::atomic<std::size_t> subgraphCalls{0};
   std::atomic<std::size_t> readsAtFirstSubgraph{0};
@@ -9076,7 +9245,7 @@ BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
   }
   BOOST_CHECK_MESSAGE(subgraphCalls.load() >= 1,
     "the unit did not run its local steps while its peer was silent");
-  BOOST_CHECK_EQUAL(readsAtFirstSubgraph.load(), peerInputs);
+  BOOST_CHECK_EQUAL(readsAtFirstSubgraph.load(), stepScopedReads ? 0U : peerInputs);
 
   // It must still finish: the missing contribution ends the unit rather than
   // holding a compute worker, so the promise resolves with a failure.
@@ -9089,7 +9258,17 @@ BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
     BOOST_CHECK(message.find("DEADLINE_EXPIRED") != std::string::npos ||
                 message.find("CANCELLED") != std::string::npos);
   }
-  BOOST_CHECK_EQUAL(io->prefetchCalls.load(), peerInputs);
+  BOOST_CHECK_EQUAL(io->prefetchCalls.load(), stepScopedReads ? 1U : peerInputs);
+}
+
+BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
+{
+  checkUnitStartsBeforeItsPeerPublishesLaterPartials(false);
+}
+
+BOOST_AUTO_TEST_CASE(StepScopedReadsLeaveLaterPartialsUnstartedOnTimeout)
+{
+  checkUnitStartsBeforeItsPeerPublishesLaterPartials(true);
 }
 
 
@@ -9805,6 +9984,7 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeTwentyEightLayersOfPartials)
       // manifest binds both, and an empty one is refused as "missing or oversized".
       crossing.edge.planDigest = planDigest;
       crossing.edge.tensorDigest = tensorDigest;
+      crossing.edge.layoutDigest = endpoint.layoutDigest;
       crossing.edge.noProgressDeadlineMs = endpoint.noProgressDeadlineMs;
       crossing.edge.hardDeadlineMs = endpoint.hardDeadlineMs;
       // The capability authorises a specific operation kind per index, and the transport
@@ -20028,8 +20208,10 @@ BOOST_AUTO_TEST_CASE(OneComputeWorkerServesTwoWaitingUnitsWithoutDeadlock)
       {promptToken("position_ids", 0)})},
   };
   std::map<std::string, std::future<ProviderRoleResult>> futures;
+  const auto statistics = std::make_shared<NativeWorkStatistics>();
   for (const auto* unit : {"S0R0", "S0R1"}) {
     auto role = roleSpecFor(plan, unit, key, assignment, "/provider/0");
+    role.workStatistics = statistics;
     auto runner = makeRunner(unit);
     futures.emplace(unit, worker.executePreparedAsync(
       "/session/shared-worker/" + std::string(unit), std::move(role),
@@ -20052,6 +20234,13 @@ BOOST_AUTO_TEST_CASE(OneComputeWorkerServesTwoWaitingUnitsWithoutDeadlock)
   // And the bus really carried both directions, so neither could have completed on a seeded
   // value: two attention partials and two MLP partials.
   BOOST_CHECK_GE(bus->publishedCount(), 4U);
+  const auto phases = statistics->snapshot().phases;
+  const auto indexes = phases.find("role-step-template-prepare");
+  const auto waits = phases.find("role-step-dependency-wait");
+  BOOST_REQUIRE(indexes != phases.end());
+  BOOST_REQUIRE(waits != phases.end());
+  BOOST_CHECK_EQUAL(indexes->second.calls, 2U);
+  BOOST_CHECK_GE(waits->second.calls, 1U);
 }
 
 BOOST_AUTO_TEST_CASE(OnlyTheEgressUnitPublishesTokenEventsInAShardedPlan)

@@ -77,6 +77,45 @@ waitForRecoveryActivationUntil(std::uint64_t expiresAtMs,
 
 namespace {
 /** Joins before its borrowed Context; control receipt and execution drain are separate. */
+void
+settleExactPacketRetention(ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+                           const detail::NativeCancellationBinding& binding, bool terminal)
+{
+  const auto* scope = detail::NATIVE_EXACT_RETENTION_SCOPE;
+  const ndn::Name control(detail::NATIVE_EXACT_RETENTION_CONTROL);
+  const auto publish = [&](const char* topic, const char* phase) {
+    const auto wire = detail::nativeCancellationWire(binding, phase, scope);
+    ctx.publish(scope, ndn::Name(topic), ndn::Buffer(wire.begin(), wire.end()));
+  };
+  ctx.allowData(scope, control);
+  if (!ctx.hasCurrentWorkAuthority())
+    throw std::runtime_error("DI_EXACT_RETENTION_AUTHORITY_EXPIRED");
+  publish(detail::NATIVE_EXACT_RETENTION_READY, "ready");
+  std::size_t inspected = 0;
+  while (ctx.hasCurrentWorkAuthority()) {
+    const auto records = ctx.waitFor(scope, control, inspected + 1, 50);
+    if (records.size() > 64)
+      throw std::runtime_error("DI_EXACT_RETENTION_CONTROL_BACKLOG");
+    while (inspected < records.size()) {
+      const auto& record = records[inspected++];
+      if (record.producer == ctx.requesterName() && record.producerRole == "user-control-v1" &&
+          record.sessionId == ctx.sessionId() && record.keyScope == scope &&
+          record.topic == control && detail::nativeCancellationPhase(
+            std::string(record.payload.begin(), record.payload.end()), binding, scope) == "release") {
+        while (!ctx.tryReleaseExactPacketRetention()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (!terminal)
+          publish(detail::NATIVE_EXACT_RETENTION_RELEASED, "released");
+        logRuntimeEvidence("NDNSF_DI_EXACT_RETENTION_RELEASED requestId=" + ctx.sessionId() +
+                           " role=" + binding.role);
+        return;
+      }
+    }
+  }
+  throw std::runtime_error("DI_EXACT_RETENTION_CONTROL_TIMEOUT");
+}
+
 class NativeCancellationMonitor
 {
 public:
@@ -1365,13 +1404,18 @@ initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationCo
         const auto& root = *parsed;
         const auto transport = root.value("input_transport", std::string{});
         if (transport == "REPO_REF") {
-          const auto dataName = root.at("input_reference").value("dataName", std::string{});
-          const auto plaintextSize = root.at("input_reference").value("plaintextSize", std::uint64_t{0});
+          const auto& ref = root.at("input_reference");
+          const auto dataName = ref.value("dataName", std::string{});
+          const auto plaintextSize = ref.value("plaintextSize", std::uint64_t{0});
           if (dataName.empty() || dataName.front() != '/' || plaintextSize == 0) {
             throw std::invalid_argument(
               "native DI REPO_REF request has invalid input reference");
           }
-          auto fetched = ctx.fetchEncryptedLargeData(ndn::Name(dataName));
+          const auto digest = ref.find("plaintextDigest");
+          auto fetched = digest == ref.end()
+            ? ctx.fetchEncryptedLargeData(ndn::Name(dataName))
+            : ctx.fetchEncryptedLargeDataCurrent(ndn::Name(dataName), ctx.requesterName(),
+                                                 ctx.assignment().workDeadline);
           if (!fetched) {
             throw std::runtime_error(
               "failed to fetch native DI request input reference: " + dataName);
@@ -1380,7 +1424,10 @@ initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationCo
             throw std::runtime_error(
               "native DI request input plaintext size mismatch");
           }
-          payload = *fetched;
+          if (digest != ref.end() && (!digest->is_string() ||
+              nativePlanningDigest(fetched->data(), fetched->size()) != digest->get<std::string>()))
+            throw std::invalid_argument("native DI request input plaintext digest mismatch");
+          payload = std::move(*fetched);
         }
         else if (transport == "INLINE") {
           const auto encoded = root.value("input_payload_b64", std::string{});
@@ -2131,8 +2178,20 @@ validateNativePreparedRunnerSpec(
   catch (const std::exception&) {
     return "DI_PROVIDER_SOURCE_PROGRAM_ENTRY_MISMATCH";
   }
-  if (!sourceProgram &&
-      (spec.entryContract || (!projection.plan.steps.empty() && !tensorParallelBackend))) {
+  const bool canonicalEntries = std::any_of(projection.plan.steps.begin(), projection.plan.steps.end(),
+    [](const auto& step) { return !step.onnxNodeIndices.empty(); });
+  if (canonicalEntries || spec.metadata.count(NATIVE_ONNX_ENTRY_TABLE) != 0) {
+    try {
+      if (sourceProgram || !canonicalEntries || tensorParallelBackend)
+        return "DI_PROVIDER_ASSEMBLY_ENTRY_TABLE_MISMATCH";
+      validateNativeOnnxEntryTable(projection, spec);
+    }
+    catch (const std::exception&) {
+      return "DI_PROVIDER_ASSEMBLY_ENTRY_TABLE_MISMATCH";
+    }
+  }
+  else if (!sourceProgram &&
+           (spec.entryContract || (!projection.plan.steps.empty() && !tensorParallelBackend))) {
     try {
       auto expected = spec;
       expected.entryContract.reset();
@@ -3043,8 +3102,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             if (!data || data->size() != bytes ||
                 nativePlanningDigest(data->data(), data->size()) != digest)
               throw std::invalid_argument("fixed source fetch or plaintext commitment failed");
-            std::istringstream input(std::string(data->begin(), data->end()));
-            referencedFixed = nativeFixedRoleAssignmentV1FromJson(input);
+            referencedFixed = nativeFixedRoleAssignmentV1FromWire(
+              {reinterpret_cast<const char*>(data->data()), data->size()});
             if (referencedFixed->digest() != ref || referencedFixed->provider() != ctx.localProvider().toUri() ||
                 referencedFixed->roleOwner()->selectedRole != role)
               throw std::invalid_argument("fixed source role identity differs from invocation");
@@ -3330,7 +3389,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       const auto makeNetworkIo = [&] (std::size_t prefetchWorkerCount) {
         return std::make_shared<NdnsfCollaborationDependencyIo>(
           ctx, timeoutBudget.dependencyFetchMs, config.maxSegmentSize,
-          config.freshnessMs, groupCoordinator, protectedRuntime, prefetchWorkerCount, workStatistics);
+          config.freshnessMs, groupCoordinator, protectedRuntime, prefetchWorkerCount,
+          workStatistics, config.exactPacketDiskBudget);
       };
       std::shared_ptr<DependencyIo> io;
       const auto assignmentExecutionPolicy = nativeProviderFieldValue(
@@ -5167,35 +5227,28 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           [] (const RoleSpec& lhs, const RoleSpec& rhs) {
             return !lhs.inputs.empty() && rhs.inputs.empty();
           });
+        for (auto& spec : localRoleSpecs) {
+          if (selectionProjection && !authenticatedGeneration.enabled && !kvBinding &&
+              spec.steps && !spec.steps->empty() &&
+              spec.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
+            spec.stepScopedDependencyReads = true;
+            spec.publishedStepResponseScope = config.finalResponseScope;
+          }
+        }
         if (!io) {
-          std::size_t inputCount = 0;
+          std::size_t readWidth = 0;
           bool hasExactPartial = false;
+          bool hasStepScopedReads = false;
           for (const auto& spec : localRoleSpecs) {
-            if (spec.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
-              // Each local role can wait independently. Its unscoped inputs and the
-              // inputs of one active step bound its contribution to this pool.
-              std::map<std::string, std::size_t> inputsByStep;
-              std::size_t maxStepInputs = 0;
-              for (const auto& edge : spec.inputs) {
-                if (edge.consumerStepId.empty()) {
-                  ++inputCount;
-                }
-                else {
-                  maxStepInputs = std::max(maxStepInputs, ++inputsByStep[edge.consumerStepId]);
-                }
-              }
-              inputCount += maxStepInputs;
-            }
-            else {
-              inputCount += spec.inputs.size();
-            }
+            readWidth += spec.dependencyReadWidth();
+            hasStepScopedReads |= spec.stepScopedDependencyReads;
             hasExactPartial |= std::any_of(spec.inputs.begin(), spec.inputs.end(),
               [] (const auto& edge) {
                 return edge.operationKind == "TENSOR_PARTIAL" && edge.useNdnsfDataV1 &&
                        edge.declaredByV3 && !edge.manifestDataName.empty();
               });
           }
-          io = makeNetworkIo(hasExactPartial ? inputCount : 0);
+          io = makeNetworkIo(hasExactPartial || hasStepScopedReads ? readWidth : 0);
         }
         // The sampler's self-feedback loop stays in this process while its shard's remote
         // partials still travel over Named Data, so the two kinds of edge are served by one
@@ -5353,6 +5406,16 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         localAttempt->markComputed(role);
         if (sealedTerminalOwner.value_or(false)) localAttempt->awaitComputed(localWorkCurrent);
       }
+      if (ctx.assignment().scopeKeys.count(detail::NATIVE_EXACT_RETENTION_SCOPE)) {
+        if (!selectionProjection || !io || ctx.isStreamed() ||
+            (terminalRole && !finalPayload))
+          throw std::runtime_error("DI_EXACT_RETENTION_CONTEXT_MISMATCH");
+        if (auto* cancellable = dynamic_cast<PromptCancellableDependencyIo*>(io.get()))
+          cancellable->drainPendingPrefetches();
+        settleExactPacketRetention(ctx,
+          {ctx.sessionId(), selectionProjection->attempt, role, selectionProjection->planDigest},
+          terminalRole);
+      }
       if (executionAttempt && (!localAttempt || sealedTerminalOwner.value_or(false)) &&
           !state->attemptAuthority.complete(*executionAttempt)) {
         std::ostringstream record;
@@ -5447,7 +5510,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
         logRuntimePhase("di-provider", "finalResponsePublishBegin", stageRequestId,
           stageAttemptEpoch, completionTimingFields);
-        ctx.publishFinalResponse(ndn::Buffer(finalPayload->data(), finalPayload->size()));
+        ndn::Buffer responsePayload;
+        responsePayload.swap(*finalPayload);
+        ctx.publishFinalResponse(responsePayload);
         if (kvRestore) kvRestore->retain = true;
         logRuntimePhase("di-provider", "finalResponsePublishEnd", stageRequestId,
           stageAttemptEpoch, completionTimingFields);

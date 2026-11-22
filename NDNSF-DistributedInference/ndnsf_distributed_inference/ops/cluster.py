@@ -16,7 +16,8 @@ import time
 import uuid
 
 from .deployment_config import (_identifier, _object, _read_json, _string, _name,
-                                load_deployment, provider_cache_path, provider_recipient_map)
+                                load_deployment, provider_cache_path, provider_recipient_map,
+                                wan_component_files)
 from .processes import process_identity, owned_state, stop_owned, write_json
 
 
@@ -265,13 +266,20 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
         if (kind == 'requester' and config.get('operation') not in
                 ('prepare', 'repo-benchmark')):
             native.setdefault('statistics_file', str(directory / (actor['id'] + '-statistics.jsonl')))
-            for turn in native['turns']:
+            for turn in native.get('turns', []):
                 for key in ('output_file', 'checkpoint_output_file'):
                     if key in turn:
                         Path(turn[key]).parent.mkdir(parents=True, exist_ok=True)
             checkpoint = native.get('conversation', {}).get('checkpoint_output_file')
             if checkpoint:
                 Path(checkpoint).parent.mkdir(parents=True, exist_ok=True)
+            if 'wan_generation' in native:
+                _private_directory(Path(native['wan_generation']['output_directory']).parent)
+                for component_path, component, _ in wan_component_files(native):
+                    if component['model_input']['mode'] == 'source':
+                        for key in ('preparation_state_file', 'private_handle_file'):
+                            path = component_path.parent / component['model_input'][key]
+                            _private_directory(path.parent)
         path = directory / (actor['id'] + '.json')
         write_json(path, native)
         program = 'DI_NativeRequester' if kind == 'requester' else 'DI_NativeArtifactAuthority'

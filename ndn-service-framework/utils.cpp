@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <stdexcept>
+#include <string_view>
 #include <openssl/rand.h>
 
 namespace ndn_service_framework
@@ -1419,7 +1420,18 @@ std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
     bool
     isLargeDataReferencePayload(const ndn::Buffer& payload)
     {
-        return parseLargeDataReferencePayload(payload).has_value();
+        return isLargeDataReferencePayload(ndn::span<const std::uint8_t>(payload));
+    }
+
+    bool
+    isLargeDataReferencePayload(ndn::span<const std::uint8_t> payload)
+    {
+        const std::string_view magic(LARGE_DATA_REFERENCE_MAGIC);
+        if (payload.size() <= magic.size() || payload[magic.size()] != '\n' ||
+            !std::equal(magic.begin(), magic.end(), payload.begin())) {
+            return false;
+        }
+        return parseLargeDataReferencePayload(ndn::Buffer(payload.begin(), payload.end())).has_value();
     }
 
     std::shared_ptr<ndn::Buffer> CombineSegmentsIntoBuffer(ndn::nacabe::SPtrVector<ndn::Data> segments)

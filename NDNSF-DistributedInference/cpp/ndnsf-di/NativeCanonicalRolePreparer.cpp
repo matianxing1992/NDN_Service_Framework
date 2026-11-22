@@ -152,10 +152,10 @@ inspectNativeSourceBoundary(const NativeGraphSnapshot& graph, const NativeJson& 
                const std::function<void()>& requireActive)
 {
   NativeSourceRegionBoundary result;
-  const auto initializers = metadata.at("initializers").get<std::vector<std::string>>();
+  const auto initializers = metadata.at("initializers").get<std::set<std::string>>();
   for (const auto& item : metadata.at("tensorConsumers").items()) {
     requireActive();
-    if (std::find(initializers.begin(), initializers.end(), item.key()) != initializers.end())
+    if (initializers.count(item.key()) != 0)
       continue;
     const auto consumers = item.value().get<std::vector<std::uint64_t>>();
     const auto producer = metadata.at("tensorProducers").find(item.key());

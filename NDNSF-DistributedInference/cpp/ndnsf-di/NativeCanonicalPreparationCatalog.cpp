@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 
 #include <atomic>
@@ -112,16 +113,21 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
     const bool entryHasConversationTokenEncoder =
       static_cast<bool>(entry.conversationTokenEncoder);
     // Validate every model/source before making any publication port available.
+    const auto roleSourceWork = detail::nativePhaseStarted();
     NativeCanonicalRolePreparer roles = entry.sourceGraphInspection
       ? NativeCanonicalRolePreparer(entry.model, std::move(*entry.sourceGraphInspection),
                                    entry.recipe, control, std::move(entry.nodes))
       : NativeCanonicalRolePreparer(entry.model, entry.source, entry.recipe, control,
                                    std::move(entry.nodes));
+    const auto preparationId = roleSourceWork.enabled
+      ? "/NDNSF/DI/PREPARE/" + entry.model.canonicalSourceDigest.substr(7) : std::string{};
+    detail::logNativeWorkPhase(preparationId, "catalog-role-source-validation", roleSourceWork);
     // Material derivation is part of the authenticated prepare boundary.  It
     // records graph-template/node/shared-initializer objects before the
     // transient source owner can be released; no Provider placement is chosen
     // here.  A caller may supply a previously verified immutable package when
     // a source was restored from a durable catalog.
+    const auto manifestWork = detail::nativePhaseStarted();
     if (!entry.source.materialManifest)
       entry.source.materialManifest = deriveNativeCanonicalMaterialManifest(
         entry.source, control, automaticSourceJson);
@@ -131,14 +137,17 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
         if (std::chrono::steady_clock::now() >= control.deadline)
           throw std::runtime_error("native material preparation deadline expired");
       });
+    detail::logNativeWorkPhase(preparationId, "catalog-material-manifest", manifestWork);
     if (!entry.source.materialManifest)
       throw std::invalid_argument("native catalog material manifest is missing");
     if (entry.source.materialManifest->automaticSourceJson != automaticSourceJson)
       throw std::invalid_argument("native catalog material source metadata differs");
+    const auto materialValidationWork = detail::nativePhaseStarted();
     if (entry.source.materialManifest->payloadsComplete)
       validateNativeCanonicalMaterialManifest(entry.source, *entry.source.materialManifest, control);
     else if (!entry.source.modelBytes.empty())
       validateNativeCanonicalMaterialReferenceIndex(entry.source, *entry.source.materialManifest, control);
+    detail::logNativeWorkPhase(preparationId, "catalog-material-validation", materialValidationWork);
     // A complete prepared hit carries the authenticated reference index and
     // bounded graph metadata, but deliberately has no canonical ONNX bytes.
     // MaterialManifest::validate() above checks the index structure; the

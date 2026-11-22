@@ -1,8 +1,10 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "ndn-service-framework/EncryptedLargeDataRangeStore.hpp"
 #include "ndn-service-framework/detail/OriginalPacketFile.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
+#include <boost/scope_exit.hpp>
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -108,6 +110,100 @@ BOOST_AUTO_TEST_CASE(LocalPacketOwnerPreservesSignedWireAndRejectsIncompleteSets
     std::filesystem::temp_directory_path(), prefix, 13, 100000, next,
     [&] { if (++checks == 4) throw std::runtime_error("cancelled"); }), std::runtime_error);
 }
+
+BOOST_AUTO_TEST_CASE(ExactPacketOwnerAppendsAtomicBatchesAndReplaysOriginalWire)
+{
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  const ndn::Name producer("/fixture/provider");
+  const auto sign = [&](const ndn::Name& name) {
+    auto packet = std::make_shared<ndn::Data>(name);
+    packet->setContent(std::vector<std::uint8_t>(31, 0x42));
+    keys.sign(*packet, ndn::security::signingWithSha256());
+    return packet;
+  };
+  const auto manifest = sign(ndn::Name(producer).append("tensor").append("manifest"));
+  const auto segment = sign(ndn::Name(producer).append("tensor").append("DATA").appendSegment(0));
+  const auto repair = sign(ndn::Name(producer).append("tensor").append("REPAIR").appendSegment(0));
+  const auto cost = [](const auto& packet) {
+    return packet->wireEncode().size() + 2 * sizeof(std::uint64_t);
+  };
+  const auto budget = cost(manifest) + cost(segment) + cost(repair);
+  const auto file = detail::OriginalPacketFile::createExact(
+    std::filesystem::temp_directory_path(), producer, budget);
+  BOOST_CHECK_EQUAL(file->appendExact({manifest}), 0);
+  BOOST_CHECK_EQUAL(file->storageBytes(), cost(manifest));
+  unsigned checks = 0;
+  BOOST_CHECK_EXCEPTION(file->appendExact({segment, repair}, [&] {
+    if (++checks == 4) throw std::runtime_error("fixture-cancelled");
+  }), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()) == "fixture-cancelled";
+  });
+  BOOST_CHECK_EQUAL(file->storageBytes(), cost(manifest));
+  BOOST_CHECK_THROW(file->readExactPacket(1, segment->getName()), std::out_of_range);
+  const auto foreign = sign(ndn::Name("/foreign/provider/tensor"));
+  BOOST_CHECK_THROW(file->appendExact({segment, foreign}), std::invalid_argument);
+  BOOST_CHECK_EQUAL(file->storageBytes(), cost(manifest));
+  BOOST_CHECK_EQUAL(file->appendExact({segment, repair}), 1);
+  BOOST_CHECK_EQUAL(file->storageBytes(), budget);
+  const std::vector<std::shared_ptr<const ndn::Data>> packets{manifest, segment, repair};
+  for (std::uint64_t index = 0; index < packets.size(); ++index) {
+    const auto& original = *packets[index];
+    const auto bytes = file->readExactPacket(index, original.getName());
+    const auto& wire = original.wireEncode();
+    BOOST_CHECK_EQUAL_COLLECTIONS(bytes.begin(), bytes.end(), wire.begin(), wire.end());
+  }
+  BOOST_CHECK_THROW(file->appendExact({repair}), std::runtime_error);
+  BOOST_CHECK_THROW(file->readExactPacket(3, repair->getName()), std::out_of_range);
+  BOOST_CHECK_THROW(file->readExactPacket(1, manifest->getName()), std::runtime_error);
+  BOOST_CHECK_THROW(file->readExactPacket(0, foreign->getName()), std::invalid_argument);
+  BOOST_CHECK_THROW(file->read(0), std::invalid_argument);
+}
+
+#ifdef __linux__
+BOOST_AUTO_TEST_CASE(TruncatedRetainedRepairRejectsPartialWireAndPreservesOtherPackets)
+{
+  auto scratch = ndnsf::test::makeTestScratchTemplate("truncated-repair");
+  BOOST_REQUIRE(::mkdtemp(scratch.data()) != nullptr);
+  BOOST_SCOPE_EXIT_ALL(&scratch) {
+    std::error_code cleanup;
+    std::filesystem::remove_all(scratch.data(), cleanup);
+  };
+  const auto directory = std::filesystem::canonical(scratch.data());
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  const ndn::Name producer("/fixture/provider");
+  const auto sign = [&](const ndn::Name& name) {
+    auto packet = std::make_shared<ndn::Data>(name);
+    packet->setContent(std::vector<std::uint8_t>(31, 0x42));
+    keys.sign(*packet, ndn::security::signingWithSha256());
+    return packet;
+  };
+  const auto segment = sign(ndn::Name(producer).append("tensor").append("DATA").appendSegment(0));
+  const auto repair = sign(ndn::Name(producer).append("tensor").append("FEC").appendSegment(0));
+  const auto file = detail::OriginalPacketFile::createExact(directory, producer, 4096);
+  BOOST_REQUIRE_EQUAL(file->appendExact({segment, repair}), 0);
+
+  // The two unlinked files are visible only through their open descriptors.
+  // An exact two-row offset index is 16 bytes, so select the packet file.
+  std::vector<std::filesystem::path> packetFiles;
+  for (const auto& descriptor : std::filesystem::directory_iterator("/proc/self/fd")) {
+    std::error_code error;
+    const auto target = std::filesystem::read_symlink(descriptor.path(), error);
+    if (!error && target.parent_path() == directory &&
+        std::filesystem::file_size(descriptor.path()) > 2 * sizeof(std::uint64_t))
+      packetFiles.push_back(descriptor.path());
+  }
+  BOOST_REQUIRE_EQUAL(packetFiles.size(), 1);
+  const auto& packets = packetFiles.front();
+  std::filesystem::resize_file(packets, std::filesystem::file_size(packets) - 1);
+  BOOST_CHECK_EXCEPTION(file->readExactPacket(1, repair->getName()), std::runtime_error,
+    [](const auto& error) {
+      return std::string_view(error.what()) == "ORIGINAL_PACKET_READ_FAILED";
+    });
+  const auto intact = file->readExactPacket(0, segment->getName());
+  const auto& wire = segment->wireEncode();
+  BOOST_CHECK_EQUAL_COLLECTIONS(intact.begin(), intact.end(), wire.begin(), wire.end());
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(ProtectedManifestRoundTripBindsExactProducerAndPacketGeometry)
 {

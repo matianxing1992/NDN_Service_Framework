@@ -941,7 +941,7 @@ ResponseMessage::operator=(const ResponseMessage& other)
         errorInfo_ = other.errorInfo_;
         tokens_ = other.tokens_;
         userToken_ = other.userToken_;
-        payloadBlock_ = clonePayloadBlock(other.getPayloadBlock());
+        payloadBlock_ = other.payloadBlock_;
         payloadSize_ = other.payloadSize_;
         policyEpoch_ = other.policyEpoch_;
         controllerVersion_ = other.controllerVersion_;
@@ -1043,6 +1043,15 @@ void ResponseMessage::setUserToken(const std::string& userToken) {
 void ResponseMessage::setPayload(ndn::Buffer& payload, size_t size) {
     payloadBlock_ = std::make_shared<const ndn::Block>(makePayloadBlockFromBuffer(payload, size));
     payloadSize_ = payloadBlock_->value_size();
+}
+
+void
+ResponseMessage::setPayload(ndn::Buffer&& payload)
+{
+    auto value = std::make_shared<const ndn::Buffer>(std::move(payload));
+    payloadBlock_ = std::make_shared<const ndn::Block>(tlv::PayloadType, std::move(value));
+    payloadSize_ = payloadBlock_->value_size();
+    m_wire.reset();
 }
 
 void ResponseMessage::setPayloadBlock(const ndn::Block& payloadBlock) {

@@ -941,10 +941,16 @@ BOOST_AUTO_TEST_CASE(RequestFrameRejectsUntrustedOversizedLengths)
   // must fail before model/initializer storage reserves a caller-declared
   // multi-gigabyte amount; no payload bytes are supplied by this test.
   const auto tooMuchMetadata = craftRequestHeader(
-    kNativeOnnxWorkerMaxMetadataBytes + 1, 0, 0, 0, true);
+    kNativeOnnxWorkerMaxRequestMetadataBytes + 1, 0, 0, 0, true);
   NativeOnnxRequestDecoder metadataDecoder;
   BOOST_CHECK(metadataDecoder.feed(tooMuchMetadata.data(),
                                    tooMuchMetadata.size()) ==
+              NativeOnnxRequestDecoder::Result::ProtocolError);
+
+  const auto tooMuchFileMetadata = craftRequestHeader(
+    kNativeOnnxWorkerMaxFileRequestMetadataBytes + 1, 1, 0, 2, true);
+  NativeOnnxRequestDecoder fileMetadataDecoder;
+  BOOST_CHECK(fileMetadataDecoder.feed(tooMuchFileMetadata.data(), tooMuchFileMetadata.size()) ==
               NativeOnnxRequestDecoder::Result::ProtocolError);
 
   const auto tooMuchModel = craftRequestHeader(
@@ -1039,9 +1045,15 @@ BOOST_AUTO_TEST_CASE(ResponseFrameRejectsOversizeAndIncoherentHeaders)
   // A declared metadata length beyond the 65536-byte worker cap is rejected
   // at header completion (overflow bound).
   std::vector<std::uint8_t> bad =
-    craftResponseHeader(65537, 0, 1, true);
+    craftResponseHeader(kNativeOnnxWorkerMaxMetadataBytes + 1, 0, 1, true);
   NativeOnnxResponseDecoder oversize;
   BOOST_CHECK(oversize.feed(bad.data(), bad.size()) ==
+              NativeOnnxResponseDecoder::Result::ProtocolError);
+
+  bad = craftResponseHeader(kNativeOnnxWorkerMaxFileResultMetadataBytes + 1, 0,
+                            kNativeOnnxWorkerDigestOnlyStatus, true);
+  NativeOnnxResponseDecoder fileResultOversize;
+  BOOST_CHECK(fileResultOversize.feed(bad.data(), bad.size()) ==
               NativeOnnxResponseDecoder::Result::ProtocolError);
 
   bad = craftResponseHeader(0, 0, 1, false);  // wrong magic
@@ -1452,6 +1464,34 @@ BOOST_AUTO_TEST_CASE(MetadataAcceptsCanonicalEnvelopeRoundtrip)
                     recipe.expectedInputs[0].name);
 }
 
+BOOST_AUTO_TEST_CASE(RequestFrameCarriesWideRoleRecipe)
+{
+  auto recipe = recipeFromVector(workerAcceptRow());
+  const auto output = recipe.expectedOutputs.at(0);
+  recipe.expectedOutputs.clear();
+  for (std::size_t index = 0; index < 900; ++index) {
+    auto contract = output;
+    contract.name = "role.activation.output." + std::to_string(index);
+    recipe.expectedOutputs.push_back(std::move(contract));
+  }
+  const auto metadata = buildNativeOnnxWorkerRequestMetadata(recipe);
+  BOOST_REQUIRE_GT(metadata.size(), kNativeOnnxWorkerMaxMetadataBytes);
+  BOOST_REQUIRE_LE(metadata.size(), kNativeOnnxWorkerMaxRequestMetadataBytes);
+  const auto frame = composeNativeOnnxWorkerRequest(metadata, {1}, {}, false);
+  NativeOnnxRequestDecoder decoder;
+  BOOST_REQUIRE(decoder.feed(frame.data(), frame.size()) ==
+                NativeOnnxRequestDecoder::Result::Complete);
+  const auto checked = validateNativeOnnxWorkerMetadata(
+    std::string(decoder.metadata().begin(), decoder.metadata().end()));
+  BOOST_REQUIRE_MESSAGE(checked.ok, checked.failureMessage);
+  BOOST_REQUIRE_EQUAL(checked.value.recipe.expectedOutputs.size(), 900);
+  BOOST_CHECK_EQUAL(checked.value.recipe.expectedOutputs.back().name,
+                    recipe.expectedOutputs.back().name);
+  BOOST_CHECK_THROW(composeNativeOnnxWorkerRequest(
+    std::string(kNativeOnnxWorkerMaxRequestMetadataBytes + 1, 'x'), {1}, {}, false),
+    std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(MetadataPreservesNumericAndSymbolicShapeDimensions)
 {
   auto recipe = recipeFromVector(workerAcceptRow());
@@ -1711,6 +1751,85 @@ BOOST_AUTO_TEST_CASE(SubprocessFileBackedMaterializedRoleMatchesInProcess)
   BOOST_CHECK(viaWorker.modelBytes == inProcess.modelBytes);
   BOOST_CHECK_EQUAL(viaWorker.modelDigest, sha256HexOf(viaWorker.modelBytes));
   BOOST_CHECK_EQUAL(viaWorker.nodeCount, recipe.nodeIndices.size());
+}
+
+BOOST_AUTO_TEST_CASE(SubprocessFileBackedWideRoleCarriesAllNamedPorts)
+{
+  const auto worker = requireWorkerBinary("DI_NativeOnnxAssemblyWorker");
+  auto recipe = recipeFromVector(workerAcceptRow());
+  constexpr std::size_t NODE_COUNT = 2250;
+  recipe.materializedRole = true;
+  recipe.nodeIndices.clear();
+  recipe.expectedInputs.clear();
+  recipe.expectedOutputs.clear();
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(13);
+  auto& graph = *model.mutable_graph();
+  graph.set_name("wide-materialized-role");
+  std::vector<std::string> inputs, outputs;
+  const auto addValue = [](onnx::ValueInfoProto& value, const std::string& name) {
+    value.set_name(name);
+    auto& tensor = *value.mutable_type()->mutable_tensor_type();
+    tensor.set_elem_type(onnx::TensorProto::FLOAT);
+    tensor.mutable_shape()->add_dim()->set_dim_value(1);
+  };
+  for (std::size_t i = 0; i < NODE_COUNT; ++i) {
+    const auto suffix = std::string(420, 'a') + std::to_string(i);
+    const auto input = "input-" + suffix;
+    const auto output = "output-" + suffix;
+    auto& node = *graph.add_node();
+    node.set_op_type("Identity");
+    node.add_input(input);
+    node.add_output(output);
+    addValue(*graph.add_input(), input);
+    addValue(*graph.add_output(), output);
+    inputs.push_back(input);
+    outputs.push_back(output);
+    recipe.nodeIndices.push_back(i);
+    recipe.expectedInputs.push_back({input, "float32", {std::int64_t{1}}});
+    recipe.expectedOutputs.push_back({output, "float32", {std::int64_t{1}}});
+  }
+  const auto binary = model.SerializeAsString();
+  NativeCanonicalSource source;
+  source.modelBytes.assign(binary.begin(), binary.end());
+  const auto control = extractionControl();
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  recipe.graphDigest = identity.graphDigest;
+  recipe.canonicalInitializerDigest = identity.initializerDigest;
+  recipe.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(recipe));
+  const auto digest = sha256HexOf(source.modelBytes);
+  const auto request = buildNativeOnnxWorkerRequestMetadata(recipe, binary.size(), digest);
+  BOOST_REQUIRE_GT(request.size(), 2U << 20);
+  BOOST_REQUIRE_LE(request.size(), kNativeOnnxWorkerMaxFileRequestMetadataBytes);
+  const auto resultBytes = resultMetadataJson(inputs, outputs, digest, NODE_COUNT).size();
+  BOOST_REQUIRE_GT(resultBytes, 1U << 20);
+  BOOST_REQUIRE_LE(resultBytes, kNativeOnnxWorkerMaxFileResultMetadataBytes);
+
+  auto scratch = ndnsf::test::makeTestScratchTemplate("wide-role");
+  BOOST_REQUIRE(::mkdtemp(scratch.data()) != nullptr);
+  struct ScratchDirectory {
+    std::filesystem::path path;
+    ~ScratchDirectory()
+    {
+      std::error_code ignored;
+      std::filesystem::remove_all(path, ignored);
+    }
+  } cleanup{scratch};
+  const auto path = cleanup.path / "materialized.onnx";
+  {
+    std::ofstream output(path, std::ios::binary);
+    output.write(binary.data(), binary.size());
+    output.close();
+    BOOST_REQUIRE(output.good());
+  }
+  const auto actual = runNativeOnnxAssemblyWorkerAt(
+    {worker, ""}, {}, recipe, control, nullptr, path);
+  BOOST_CHECK_EQUAL(actual.nodeCount, NODE_COUNT);
+  BOOST_CHECK_EQUAL(actual.modelDigest, digest);
+  BOOST_CHECK(actual.modelBytes == source.modelBytes);
+  BOOST_CHECK(actual.inputNames == inputs);
+  BOOST_CHECK(actual.outputNames == outputs);
 }
 
 BOOST_AUTO_TEST_CASE(SubprocessChainRejectionPropagatesItsOwnCode)

@@ -8589,9 +8589,15 @@ spec231TensorSuffix(const ndn::Name& name, const ndn::Name& producer)
 {
   const auto parsed = ndn_service_framework::parseProducerDataName(name, producer);
   if (!parsed || parsed->nameSpace != "NDNSF-DI" || parsed->category != "tensor" ||
-      parsed->suffix.size() != 19 || parsed->suffix.get(-1) != ndn::name::Component("MANIFEST"))
+      parsed->suffix.empty() || parsed->suffix.get(-1) != ndn::name::Component("MANIFEST"))
     return std::nullopt;
-  return parsed->suffix;
+  const auto& suffix = parsed->suffix;
+  const bool legacy = suffix.size() == 19 && suffix.get(0) == ndn::name::Component("REQUEST") &&
+                      suffix.get(4) == ndn::name::Component("ROUND");
+  const bool n5 = suffix.size() == 26 && suffix.get(0) == ndn::name::Component("request") &&
+                  suffix.get(4) == ndn::name::Component("round") &&
+                  suffix.get(23) == ndn::name::Component("rep");
+  return legacy || n5 ? std::optional(suffix) : std::nullopt;
 }
 
 std::vector<ndn::signal::ScopedConnection>
@@ -8609,10 +8615,14 @@ spec231ConnectPeers(ndn_service_framework::test::NdnsfIntegrationEnvironment& en
           if (suffix && suffix->get(5) == ndn_service_framework::makeNamingDecimalComponent(0))
             control.initialManifestRequested = true;
           if (suffix && suffix->get(5) == ndn_service_framework::makeNamingDecimalComponent(0) &&
-              !control.restartRequestId.empty() && suffix->get(1) ==
-                ndn_service_framework::makeNamingLabelComponent(ndn::Name(control.restartRequestId)
-                  .toUri(ndn::name::UriFormat::CANONICAL)))
-            control.restartManifestRequested = true;
+              !control.restartRequestId.empty()) {
+            const ndn::Name requestId(control.restartRequestId);
+            const auto expected = suffix->get(0) == ndn::name::Component("request") ?
+              requestId.get(-1) : ndn_service_framework::makeNamingLabelComponent(
+                requestId.toUri(ndn::name::UriFormat::CANONICAL));
+            if (suffix->get(1) == expected)
+              control.restartManifestRequested = true;
+          }
           if (suffix && suffix->get(5) == ndn_service_framework::makeNamingDecimalComponent(1))
             control.currentManifestRequested = true;
         }
@@ -8636,13 +8646,16 @@ spec231ConnectPeers(ndn_service_framework::test::NdnsfIntegrationEnvironment& en
             }
           }
           if (control.fault == Spec231DiFault::WRONG_TENSOR_CIPHERTEXT) {
-            const auto parsed = ndn_service_framework::parseProducerDataName(
-              packet.getName(), environment.provider(0).getName());
-            const bool external = parsed && parsed->nameSpace == "NDNSF-DI" &&
-              parsed->category == "tensor" && parsed->suffix.size() == 20 &&
-              parsed->suffix.get(5) == ndn_service_framework::makeNamingDecimalComponent(0) &&
-              parsed->suffix.get(-2) == ndn::name::Component("DATA") &&
-              parsed->suffix.get(-1).isSegment() && parsed->suffix.get(-1).toSegment() == 0;
+            const auto& packetName = packet.getName();
+            std::optional<ndn::Name> externalManifest;
+            if (packetName.size() >= 2 && packetName.get(-2) == ndn::name::Component("DATA") &&
+                packetName.get(-1).isSegment() && packetName.get(-1).toSegment() == 0) {
+              externalManifest = spec231TensorSuffix(
+                ndn::Name(packetName.getPrefix(-2)).append("MANIFEST"),
+                environment.provider(0).getName());
+            }
+            const bool external = externalManifest && externalManifest->get(5) ==
+              ndn_service_framework::makeNamingDecimalComponent(0);
             const bool firstManifest = suffix &&
               suffix->get(5) == ndn_service_framework::makeNamingDecimalComponent(0);
             if (external || firstManifest) {
@@ -11049,6 +11062,24 @@ BOOST_AUTO_TEST_CASE(Spec231DiTerminalControlCodecRejectsWrongBindingsAndMalform
   value = nativeParseJson(wire);
   value["extra"] = true;
   BOOST_CHECK(detail::nativeCancellationPhase(nativeCanonicalJson(value), expected).empty());
+
+  const auto* scope = detail::NATIVE_EXACT_RETENTION_SCOPE;
+  for (const auto* phase : {"ready", "release", "released"}) {
+    const auto proof = detail::nativeCancellationWire(expected, phase, scope);
+    BOOST_CHECK_EQUAL(detail::nativeCancellationPhase(proof, expected, scope), phase);
+    BOOST_CHECK(detail::nativeCancellationPhase(proof, expected).empty());
+    for (const auto* field : {"requestId", "role", "planDigest", "phase"}) {
+      auto stale = nativeParseJson(proof);
+      stale[field] = "stale";
+      BOOST_CHECK(detail::nativeCancellationPhase(nativeCanonicalJson(stale), expected,
+                                                 scope).empty());
+    }
+    auto stale = nativeParseJson(proof);
+    stale["attempt"] = 2;
+    BOOST_CHECK(detail::nativeCancellationPhase(nativeCanonicalJson(stale), expected,
+                                               scope).empty());
+  }
+  BOOST_CHECK(detail::nativeCancellationPhase(wire, expected, scope).empty());
 }
 
 BOOST_AUTO_TEST_CASE(Spec231DiTerminalCancelWhileDownstreamWaitsForInitialInput)

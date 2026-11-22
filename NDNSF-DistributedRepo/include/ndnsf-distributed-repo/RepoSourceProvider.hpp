@@ -450,6 +450,31 @@ public:
       "initializer_data_name", objectName + "/initializer");
     const auto initializerDigest = source.value("initializer_digest", std::string{});
     const auto sourceSize = source.value("bytes", std::uint64_t{0});
+    const auto initializerSize = source.value("initializer_bytes", std::uint64_t{0});
+    const auto requireDeadline = [&] {
+      if (std::chrono::steady_clock::now() >= request.deadline)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Timeout,
+          "repository source deadline expired");
+    };
+    const ndnsf::di::NativeAssemblyControl sourceControl{
+      request.deadline, requireDeadline, request.maxSourceBytes, request.maxSourceBytes};
+    const auto validateInitializer = [&] (const ndnsf::di::NativeCanonicalSource& value) {
+      try {
+        const auto bytes = ndnsf::di::nativeCanonicalInitializerByteSize(value);
+        if (initializerDigest.empty() || bytes == 0 || bytes > request.maxSourceBytes ||
+            (initializerSize != 0 && bytes != initializerSize) ||
+            ndnsf::di::nativeCanonicalInitializerDigest(value, sourceControl) != initializerDigest)
+          throw ndnsf::di::RepositorySourceError(
+            ndnsf::di::RepositorySourceError::Kind::Unavailable,
+            "fallback initializer does not match pinned digest or size");
+        return bytes;
+      }
+      catch (...) {
+        requireDeadline();
+        throw;
+      }
+    };
     ++m_lookups;
 
     const auto readObject = [&] (const std::string& name,
@@ -499,24 +524,15 @@ public:
       manifest.generation = 0;
       return manifest;
     };
-    const auto ingestObject = [&] (const std::string& name,
-                                   const std::vector<std::uint8_t>& bytes,
-                                   const std::string& objectType) {
-      const auto manifest = makeManifest(name, bytes, objectType);
+    const auto ingestRanges = [&] (const RepoObjectManifest& manifest, const auto& read) {
       constexpr std::uint64_t kWriteWindow = 1U << 20;
-      const auto requireDeadline = [&] {
-        if (std::chrono::steady_clock::now() >= request.deadline)
-          throw ndnsf::di::RepositorySourceError(
-            ndnsf::di::RepositorySourceError::Kind::Timeout,
-            "repository source ingest deadline expired");
-      };
       try {
         for (std::uint64_t offset = 0; offset < manifest.size;) {
           requireDeadline();
           const auto length = std::min(kWriteWindow, manifest.size - offset);
-          std::vector<std::uint8_t> part(
-            bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-            bytes.begin() + static_cast<std::ptrdiff_t>(offset + length));
+          const auto part = read(offset, length);
+          if (part.size() != length)
+            throw std::runtime_error("repository source ingest range is incomplete");
           m_repo->putRange(manifest, {offset, length}, part);
           offset += length;
         }
@@ -524,10 +540,18 @@ public:
         m_repo->commitRanges(manifest);
       }
       catch (...) {
-        try { m_repo->abortRanges(name); }
+        try { m_repo->abortRanges(manifest.objectName); }
         catch (...) {}
+        requireDeadline();
         throw;
       }
+    };
+    const auto ingestObject = [&] (const std::string& name,
+                                   const std::vector<std::uint8_t>& bytes,
+                                   const std::string& objectType) {
+      ingestRanges(makeManifest(name, bytes, objectType), [&] (auto offset, auto length) {
+        return std::vector<std::uint8_t>(bytes.begin() + offset, bytes.begin() + offset + length);
+      });
     };
 
     ndnsf::di::NativeCanonicalSource sourceValue;
@@ -551,18 +575,9 @@ public:
         throw ndnsf::di::RepositorySourceError(
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
           "fallback source does not match pinned digest or size");
-      if (sourceValue.initializerBytes && initializerDigest.empty())
-        throw ndnsf::di::RepositorySourceError(
-          ndnsf::di::RepositorySourceError::Kind::Unavailable,
-          "fallback initializer is not pinned by the catalog");
-      if (sourceValue.initializerBytes &&
-          (sourceValue.initializerBytes->empty() ||
-           sourceValue.initializerBytes->size() > request.maxSourceBytes ||
-           ndnsf::di::nativePlanningDigest(sourceValue.initializerBytes->data(),
-                                            sourceValue.initializerBytes->size()) != initializerDigest))
-        throw ndnsf::di::RepositorySourceError(
-          ndnsf::di::RepositorySourceError::Kind::Unavailable,
-          "fallback initializer does not match pinned digest or size");
+      if (!initializerDigest.empty() || sourceValue.initializerBytes ||
+          sourceValue.initializerRangeSource)
+        (void)validateInitializer(sourceValue);
       // Validate all fallback material before either object is persisted. If a
       // later range write fails, RepoCore aborts only the staging reservation;
       // a successfully committed canonical object is safe durable material
@@ -574,33 +589,39 @@ public:
 
     if (!initializerDigest.empty()) {
       if (!m_repo->has(initializerName)) {
-        std::optional<std::vector<std::uint8_t>> initializerBytes;
-        if (sourceLoadedFromFallback) {
-          // The first fallback already loaded and validated the complete
-          // canonical source. Reuse its initializer instead of reading the
-          // large source a second time on an external-data model.
-          initializerBytes = sourceValue.initializerBytes->copy();
-        }
-        else {
+        std::optional<ndnsf::di::NativeCanonicalSource> fallbackInitializer;
+        const auto* initializer = &sourceValue;
+        // Keep the first validated owner instead of copying its model or weights.
+        if (!sourceLoadedFromFallback) {
           if (!sourceFallback)
             throw ndnsf::di::RepositorySourceError(
               ndnsf::di::RepositorySourceError::Kind::Unavailable,
               "repository initializer is absent and no fallback is configured");
-          auto fallbackValue = sourceFallback(request);
-          initializerBytes = fallbackValue.initializerBytes->copy();
+          fallbackInitializer.emplace(sourceFallback(request));
+          initializer = &*fallbackInitializer;
         }
-        if (!initializerBytes || initializerBytes->empty() ||
-            initializerBytes->size() > request.maxSourceBytes ||
-            ndnsf::di::nativePlanningDigest(initializerBytes->data(),
-                                             initializerBytes->size()) != initializerDigest)
-          throw ndnsf::di::RepositorySourceError(
-            ndnsf::di::RepositorySourceError::Kind::Unavailable,
-            "fallback initializer does not match pinned digest or size");
-        ingestObject(initializerName, *initializerBytes, "canonical-initializer");
+        RepoObjectManifest manifest;
+        manifest.objectName = initializerName;
+        manifest.objectType = "canonical-initializer";
+        manifest.sha256 = initializerDigest.substr(7);
+        manifest.size = validateInitializer(*initializer);
+        manifest.segmentCount = 1;
+        ingestRanges(manifest, [&] (auto offset, auto length) {
+          return ndnsf::di::readNativeCanonicalInitializerRange(
+            *initializer, offset, length, sourceControl);
+        });
       }
-      sourceValue.initializerBytes = readObject(initializerName, initializerDigest, 0);
+      const auto manifest = m_repo->getManifest(initializerName);
+      if (manifest.sha256 != initializerDigest.substr(7) || manifest.size == 0 ||
+          manifest.size > request.maxSourceBytes ||
+          (initializerSize != 0 && manifest.size != initializerSize))
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "repository initializer manifest differs from pinned source");
+      sourceValue.initializerBytes.reset();
       sourceValue.initializerRangeSource = std::make_shared<RangeSource>(
-        m_repo, m_repo->getManifest(initializerName));
+        m_repo, manifest);
+      (void)validateInitializer(sourceValue);
     }
     return sourceValue;
   }
@@ -620,17 +641,21 @@ public:
       throw ndnsf::di::RepositorySourceError(
         ndnsf::di::RepositorySourceError::Kind::Unavailable,
         "repository artifact publication identity is incomplete");
+    const ndnsf::di::NativeAssemblyControl sourceControl{
+      control.deadline, [&control] { control.requireActive(); },
+      std::max(model.canonicalSourceBytes, model.canonicalInitializerBytes),
+      options.maxPublicationBytes != 0 ? options.maxPublicationBytes
+                                       : std::numeric_limits<std::uint64_t>::max()};
+    const auto initializerSize = ndnsf::di::nativeCanonicalInitializerByteSize(source);
+    const bool hasInitializer = initializerSize != 0;
     if (source.modelBytes.size() != model.canonicalSourceBytes ||
         ndnsf::di::nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) !=
           model.canonicalSourceDigest ||
-        source.initializerBytes.has_value() != (model.canonicalInitializerBytes != 0) ||
-        (source.initializerBytes &&
-         (source.initializerBytes->size() != model.canonicalInitializerBytes ||
-          ndnsf::di::nativePlanningDigest(source.initializerBytes->data(),
-                                          source.initializerBytes->size()) !=
-            model.canonicalInitializerObjectDigest)))
-        throw ndnsf::di::RepositorySourceError(
-          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+        initializerSize != model.canonicalInitializerBytes ||
+        (hasInitializer && ndnsf::di::nativeCanonicalInitializerDigest(source, sourceControl) !=
+          model.canonicalInitializerObjectDigest))
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Unavailable,
         "repository artifact source differs from inspected identity");
     if (source.materialManifest) {
       ndnsf::di::validateNativeCanonicalMaterialManifest(
@@ -724,7 +749,7 @@ public:
         total += bytes;
       };
       add(source.modelBytes.size());
-      if (source.initializerBytes) add(source.initializerBytes->size());
+      if (hasInitializer) add(initializerSize);
       for (const auto& layer : source.layerPayloads) add(layer.bytes.size());
       if (source.materialManifest) {
         for (const auto& payload : source.materialManifest->payloads) add(payload.byteSize());
@@ -738,7 +763,7 @@ public:
     const auto makeReceipt = [&] (const std::string& manifestJson) {
       ndnsf::di::NativePreparedCanonicalPublication receipt;
       receipt.sourceDataName = sourceName;
-      receipt.initializerDataName = source.initializerBytes ? initializerName : std::string{};
+      receipt.initializerDataName = hasInitializer ? initializerName : std::string{};
       receipt.rootDataName = rootName;
       receipt.materialManifestDataName = source.materialManifest ? materialManifestName : std::string{};
       receipt.materialManifestDigest = source.materialManifest
@@ -765,7 +790,7 @@ public:
       }
       receipt.rollbackOwned = false;
       receipt.rollbackDataNames = {sourceName};
-      if (source.initializerBytes)
+      if (hasInitializer)
         receipt.rollbackDataNames.push_back(initializerName);
       receipt.rollbackDataNames.insert(receipt.rollbackDataNames.end(),
                                        receipt.layerDataNames.begin(), receipt.layerDataNames.end());
@@ -813,7 +838,7 @@ public:
             metadata.value("canonicalSourceBytes", std::uint64_t{0}) !=
               model.canonicalSourceBytes ||
             metadata.value("canonicalInitializerDataName", std::string{}) !=
-              (source.initializerBytes ? initializerName : std::string{}) ||
+              (hasInitializer ? initializerName : std::string{}) ||
             metadata.value("canonicalInitializerObjectDigest", std::string{}) !=
               model.canonicalInitializerObjectDigest ||
             metadata.value("canonicalInitializerBytes", std::uint64_t{0}) !=
@@ -852,19 +877,11 @@ public:
               manifest.sha256 != expectedDigest.substr(7))
             rejectConflict();
 
-          std::vector<std::uint8_t> bytes;
-          bytes.reserve(static_cast<std::size_t>(manifest.size));
-          constexpr std::uint64_t window = 1U << 20;
-          for (std::uint64_t offset = 0; offset < manifest.size;) {
-            control.requireActive();
-            const auto length = std::min(window, manifest.size - offset);
-            const auto part = m_repo->getRange(name, {offset, length});
-            if (part.size() != length)
-              rejectConflict();
-            bytes.insert(bytes.end(), part.begin(), part.end());
-            offset += length;
-          }
-          if (ndnsf::di::nativePlanningDigest(bytes.data(), bytes.size()) != expectedDigest)
+          ndnsf::di::NativeCanonicalSource stored;
+          stored.initializerRangeSource = std::make_shared<RangeSource>(m_repo, manifest);
+          auto readControl = sourceControl;
+          readControl.maxSourceBytes = std::max(readControl.maxSourceBytes, manifest.size);
+          if (ndnsf::di::nativeCanonicalInitializerDigest(stored, readControl) != expectedDigest)
             rejectConflict();
           return true;
         };
@@ -873,7 +890,7 @@ public:
         if (!source.preparedMetadataJson.empty())
           complete = checkObject(preparedMetadataName, preparedMetadataDigest,
                                  preparedMetadataBytes) && complete;
-        if (source.initializerBytes)
+        if (hasInitializer)
           complete = checkObject(initializerName, model.canonicalInitializerObjectDigest,
                                  model.canonicalInitializerBytes) && complete;
         if (!source.layerPayloads.empty()) {
@@ -938,21 +955,21 @@ public:
       std::to_string(random()) + "-" + std::to_string(random()) + "-" +
       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     std::uint64_t publicationBytes = 0;
-    const auto putRanges = [&] (const std::string& objectName,
-                                const std::vector<std::uint8_t>& bytes,
-                                const std::string& objectType) {
+    const auto putObject = [&] (const std::string& objectName,
+                                std::uint64_t size, const std::string& digest,
+                                const std::string& objectType, const auto& read) {
       if (options.maxPublicationBytes != 0 &&
-          (bytes.size() > options.maxPublicationBytes -
+          (size > options.maxPublicationBytes -
              std::min<std::uint64_t>(publicationBytes, options.maxPublicationBytes)))
         throw ndnsf::di::RepositorySourceError(
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
           "repository publication exceeds the configured material budget");
-      publicationBytes += bytes.size();
+      publicationBytes += size;
       ndnsf_distributed_repo::RepoObjectManifest manifest;
       manifest.objectName = objectName;
       manifest.objectType = objectType;
-      manifest.sha256 = ndnsf_distributed_repo::sha256Hex(bytes);
-      manifest.size = bytes.size();
+      manifest.sha256 = digest.substr(7);
+      manifest.size = size;
       manifest.segmentCount = 1;
       manifest.generation = 0;
       manifest.operationId = operationPrefix + "-" + std::to_string(ownedManifests.size());
@@ -964,23 +981,11 @@ public:
           throw ndnsf::di::RepositorySourceError(
             ndnsf::di::RepositorySourceError::Kind::Unavailable,
             "repository publication object conflicts with an existing object");
-        std::vector<std::uint8_t> existing;
-        existing.reserve(static_cast<std::size_t>(current.size));
-        constexpr std::uint64_t readWindow = 1U << 20;
-        for (std::uint64_t offset = 0; offset < current.size;) {
-          control.requireActive();
-          const auto length = std::min(readWindow, current.size - offset);
-          const auto part = m_repo->getRange(objectName, {offset, length});
-          if (part.size() != length)
-            throw ndnsf::di::RepositorySourceError(
-              ndnsf::di::RepositorySourceError::Kind::Unavailable,
-              "repository existing object range is incomplete");
-          existing.insert(existing.end(), part.begin(), part.end());
-          offset += length;
-        }
-        if (existing.size() != bytes.size() ||
-            ndnsf::di::nativePlanningDigest(existing.data(), existing.size()) !=
-              "sha256:" + current.sha256)
+        ndnsf::di::NativeCanonicalSource existing;
+        existing.initializerRangeSource = std::make_shared<RangeSource>(m_repo, current);
+        auto readControl = sourceControl;
+        readControl.maxSourceBytes = std::max(readControl.maxSourceBytes, current.size);
+        if (ndnsf::di::nativeCanonicalInitializerDigest(existing, readControl) != digest)
           throw ndnsf::di::RepositorySourceError(
             ndnsf::di::RepositorySourceError::Kind::Unavailable,
             "repository existing object content differs from its manifest");
@@ -992,9 +997,9 @@ public:
         for (std::uint64_t offset = 0; offset < manifest.size;) {
           control.requireActive();
           const auto length = std::min(window, manifest.size - offset);
-          std::vector<std::uint8_t> part(
-            bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-            bytes.begin() + static_cast<std::ptrdiff_t>(offset + length));
+          const auto part = read(offset, length);
+          if (part.size() != length)
+            throw std::runtime_error("repository publication range is incomplete");
           if (firstRange) {
             m_repo->putRangeIfAbsent(manifest, {offset, length}, part);
             firstRange = false;
@@ -1021,10 +1026,22 @@ public:
       }
     };
 
+    const auto putRanges = [&] (const std::string& name,
+                                const std::vector<std::uint8_t>& bytes,
+                                const std::string& type) {
+      putObject(name, bytes.size(), ndnsf::di::nativePlanningDigest(bytes.data(), bytes.size()),
+        type, [&] (auto offset, auto length) {
+          return std::vector<std::uint8_t>(bytes.begin() + offset, bytes.begin() + offset + length);
+        });
+    };
+
     try {
       putRanges(sourceName, source.modelBytes, "ndnsf-di-canonical-source");
-      if (source.initializerBytes)
-        putRanges(initializerName, *source.initializerBytes, "ndnsf-di-canonical-initializer");
+      if (hasInitializer)
+        putObject(initializerName, initializerSize, model.canonicalInitializerObjectDigest,
+          "ndnsf-di-canonical-initializer", [&] (auto offset, auto length) {
+            return ndnsf::di::readNativeCanonicalInitializerRange(source, offset, length, sourceControl);
+          });
       std::vector<std::string> layerNames;
       layerNames.reserve(source.layerPayloads.size());
       for (const auto& layer : source.layerPayloads) {
@@ -1055,7 +1072,7 @@ public:
         {"canonicalSourceDataName", sourceName},
         {"canonicalSourceDigest", model.canonicalSourceDigest},
         {"canonicalSourceBytes", model.canonicalSourceBytes},
-        {"canonicalInitializerDataName", source.initializerBytes ? initializerName : ""},
+        {"canonicalInitializerDataName", hasInitializer ? initializerName : ""},
         {"canonicalInitializerObjectDigest", model.canonicalInitializerObjectDigest},
         {"canonicalInitializerBytes", model.canonicalInitializerBytes},
         {"canonicalGraphDigest", model.canonicalGraphDigest},

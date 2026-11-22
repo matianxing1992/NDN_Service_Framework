@@ -6,6 +6,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-preparation.hpp"
 
 #include "ndnsf-distributed-repo/ArtifactTypes.hpp"
 
@@ -23,7 +24,10 @@ NDN_LOG_INIT(ndnsf.di.Spec220PreparationTrace);
 
 namespace {
 
-constexpr std::size_t STORED_METADATA_ADMISSION_BYTES = 448u * 1024u * 1024u;
+// Allow two copies of the 16 MiB index and three 64 MiB metadata objects,
+// with the existing margin for bounded container overhead.
+constexpr std::size_t STORED_METADATA_ADMISSION_BYTES =
+  2 * (208U << 20) + (24U << 20);
 
 bool digest(const std::string& value)
 {
@@ -477,9 +481,9 @@ ModelPreparationCache::reserveMemory(const PreparationSpec& spec,
       spec.maxAssembledBytes > std::numeric_limits<std::size_t>::max())
     throw std::runtime_error("DI_NATIVE_PREPARATION_SIZE_OVERFLOW");
   if (spec.sourceFreeStoredModel) {
-    // Reserve twice the format's 212 MiB index/catalog/metadata wire ceiling,
-    // plus bounded container overhead. This is cache admission, not OS RAM.
+    // This is cache admission accounting. Actual RSS is measured separately.
     addSize(reservation, STORED_METADATA_ADMISSION_BYTES);
+    addSize(reservation, 2 * nativeStoredCatalogReadLimit(spec.catalogConfigurationJson.size()));
   }
   else {
     addSize(reservation, static_cast<std::size_t>(spec.maxSourceBytes));

@@ -14,6 +14,13 @@
 
 namespace ndn_service_framework {
 
+inline constexpr std::uint64_t MAX_REQUEST_RESPONSE_BYTES = 512ULL << 20;
+inline constexpr std::uint64_t MAX_REQUEST_RESPONSE_PACKET_FILE_BYTES = 1ULL << 30;
+inline constexpr std::uint64_t REQUEST_RESPONSE_PACKET_FILE_CHARGE =
+    ndn::MAX_NDN_PACKET_SIZE + 2 * sizeof(std::uint64_t);
+inline constexpr std::uint64_t MAX_REQUEST_RESPONSE_SEGMENTS =
+    MAX_REQUEST_RESPONSE_PACKET_FILE_BYTES / REQUEST_RESPONSE_PACKET_FILE_CHARGE;
+
 /** Canonical, non-secret binding for one request attempt or stream event. */
 struct RequestSecurityBinding
 {

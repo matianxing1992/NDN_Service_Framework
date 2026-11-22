@@ -18,10 +18,31 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <variant>
 
 namespace ndnsf::di {
+
+std::size_t
+RoleSpec::dependencyReadWidth() const
+{
+  if (!stepScopedDependencyReads && stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2)
+    return inputs.size();
+
+  std::size_t unbound = 0;
+  std::size_t widestStep = 0;
+  std::map<std::string_view, std::size_t> readsByStep;
+  for (const auto& edge : inputs) {
+    if (edge.consumerStepId.empty()) {
+      ++unbound;
+    }
+    else {
+      widestStep = std::max(widestStep, ++readsByStep[edge.consumerStepId]);
+    }
+  }
+  return unbound + widestStep;
+}
 
 namespace {
 
@@ -672,7 +693,8 @@ ProviderRoleWorker::executeAsyncImpl(
       }
       // Generation epochs overlap exact peer reads with compute. A finite V2 program can
       // span many blocks, so only its consuming step starts a step-bound read.
-      const bool prefetchPeer = !finiteStepProgram && edge.operationKind == "TENSOR_PARTIAL" &&
+      const bool prefetchPeer = !finiteStepProgram && !item.role.stepScopedDependencyReads &&
+        edge.operationKind == "TENSOR_PARTIAL" &&
         edge.useNdnsfDataV1 && edge.declaredByV3 && !edge.manifestDataName.empty() &&
         cancellable && cancellable->supportsPromptPrefetchCancellation(edge);
       if (item.role.steps && !item.role.steps->empty() && !edge.consumerStepId.empty() &&
@@ -1384,50 +1406,57 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       return item.role.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 &&
              !item.role.generationLineage && edge.operationKind == "APPLICATION_INPUT";
     });
-  // When each produced value stops being needed. A 28-layer unit produces two values per layer and
-  // every one of them used to live in `produced` until the whole template finished, so a local
-  // handoff retained every activation it had ever produced -- the opposite of what D5 and C10 ask
-  // for. The last consumer is knowable up front from the sealed template, so it is computed once.
-  //
-  // A value is still needed after its last step when it carries a role output (the terminal pass
-  // reads it back to return an already-published edge) or when it is a terminal slot surfaced as a
-  // result. Both are marked `KEEP_TO_END`.
-  constexpr std::size_t KEEP_TO_END = std::numeric_limits<std::size_t>::max();
-  if (!item.stepLastUse) {
-    NativeWorkScope prepareWork(item.role.workStatistics, "role-step-template-prepare",
-                                NativeWorkKind::LOCAL);
-    auto& lastUseOf = item.stepLastUse.emplace();
+  const auto& responseScope = item.role.publishedStepResponseScope;
+  const bool releaseAfterPublish = responseScope &&
+    item.role.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 &&
+    !item.role.generationLineage && !item.role.streamingStateExecution &&
+    !item.role.candidateDecodeStateIdentity && item.role.stateOutputNames.empty();
+  const auto keepPublishedOutput = [&](const DependencyEdge& edge) {
+    return !releaseAfterPublish ||
+      !edge.declaredByV3 || !edge.useNdnsfDataV1 || edge.scope == *responseScope ||
+      (edge.operationKind != "TENSOR_PARTIAL" && edge.operationKind != "ACTIVATION" &&
+       edge.operationKind != "PIPELINE_TRANSFER");
+  };
+  // Exact publication owns the wire originals. Keep the adapter allocation
+  // until its last local read, or until the caller takes its result.
+  constexpr std::size_t kKeepToEnd = std::numeric_limits<std::size_t>::max();
+  if (!item.sealedStepIndex) {
+    NativeWorkScope indexWork(item.role.workStatistics, "role-step-template-prepare",
+                              NativeWorkKind::LOCAL);
+    auto& stepIndex = item.sealedStepIndex.emplace();
     for (std::size_t index = 0; index < steps.size(); ++index) {
       for (const auto& slot : steps[index].inputSlots) {
         if (slot.producerStepId.empty()) continue;
-        lastUseOf[slot.producerStepId + "\n" + slot.producerSlotId] = index;
+        stepIndex.lastUseOf[slot.producerStepId + "\n" + slot.producerSlotId] = index;
       }
     }
-    for (const auto& edge : item.role.outputs) {
+    for (std::size_t index = 0; index < item.role.outputs.size(); ++index) {
+      const auto& edge = item.role.outputs[index];
       if (edge.producerStepId.empty()) continue;
-      lastUseOf[edge.producerStepId + "\n" + edge.producerSlotId] = KEEP_TO_END;
+      const auto key = edge.producerStepId + "\n" + edge.producerSlotId;
+      stepIndex.outputsByStep[edge.producerStepId].push_back(index);
+      stepIndex.edgeKeys.insert(key);
+      if (keepPublishedOutput(edge)) stepIndex.lastUseOf[key] = kKeepToEnd;
     }
-    {
-      std::set<std::string> consumed;
-      for (const auto& step : steps) {
-        for (const auto& slot : step.inputSlots) {
-          if (slot.producerStepId.empty()) continue;
-          consumed.insert(slot.producerStepId + "\n" + slot.producerSlotId);
-        }
-      }
-      std::set<std::string> edges;
-      for (const auto& edge : item.role.outputs)
-        edges.insert(edge.producerStepId + "\n" + edge.producerSlotId);
-      for (const auto& step : steps) {
-        for (const auto& slot : step.outputSlots) {
-          const auto key = step.stepId + "\n" + slot.slotId;
-          if (consumed.count(key) != 0 || edges.count(key) != 0) continue;
-          lastUseOf[key] = KEEP_TO_END;
-        }
-      }
+    // Publish a ready authenticated root before sibling traffic on the shared Face.
+    for (auto& entry : stepIndex.outputsByStep) {
+      auto& indices = entry.second;
+      std::stable_partition(indices.begin(), indices.end(), [&](std::size_t index) {
+        return item.role.outputs[index].segmentManifest.has_value();
+      });
     }
   }
-  const auto& lastUseOf = *item.stepLastUse;
+  const auto& [lastUseOf, edgeKeys, outputsByStep] = *item.sealedStepIndex;
+  const std::vector<std::size_t> noOutputEdges;
+  const auto releaseStepInputs = [&](const NativeExecutionStepSpec& step, std::size_t stepIndex) {
+    item.stepCollectedInputs.erase(step.stepId);
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "LOCAL_STEP") continue;
+      const auto key = slot.producerStepId + "\n" + slot.producerSlotId;
+      const auto last = lastUseOf.find(key);
+      if (last != lastUseOf.end() && last->second == stepIndex) produced.erase(key);
+    }
+  };
   for (auto stepIt = steps.begin() + static_cast<std::ptrdiff_t>(item.resumeStepIndex);
        stepIt != steps.end(); ++stepIt) {
     const auto& step = *stepIt;
@@ -1515,6 +1544,8 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
           }
         }
       }
+    }
+    if (step.operation == "SUM" || item.role.stepScopedDependencyReads) {
       // Start this step's reads together before waiting for any result.
       // The fetch owner still bounds concurrency and validates each slot.
       for (const auto& edge : item.role.inputs) {
@@ -1689,9 +1720,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       produced.emplace(step.stepId + "\n" + outputSlot,
                        sumTensorBundleViews(outputSlot, contributions,
                                             item.role.workStatistics));
-      // The step is done: its collected inputs are released so a long template does not retain
-      // every contribution it ever read, and so a retry of this step cannot see a stale value.
-      item.stepCollectedInputs.erase(step.stepId);
+      releaseStepInputs(step, item.resumeStepIndex);
       continue;
     }
 
@@ -1743,23 +1772,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       }
       produced.emplace(step.stepId + "\n" + slot.slotId, found->second);
     }
-    // This step is complete, so its collected inputs are released now rather than at the end of
-    // the template: a 28-layer unit should not retain every contribution it ever read.
-    item.stepCollectedInputs.erase(step.stepId);
-    // Anything this step was the last consumer of is released too. A value still needed stays in
-    // `produced`; one whose last use was here and that no edge or terminal slot needs is gone, so
-    // the retained set tracks the live dependency cone rather than the whole history.
-    {
-      const auto stepIndex = static_cast<std::size_t>(
-        std::distance(steps.begin(), stepIt));
-      for (auto it = produced.begin(); it != produced.end();) {
-        const auto use = lastUseOf.find(it->first);
-        if (use != lastUseOf.end() && use->second != KEEP_TO_END && use->second <= stepIndex)
-          it = produced.erase(it);
-        else
-          ++it;
-      }
-    }
+    releaseStepInputs(step, item.resumeStepIndex);
     // Keep the decode-state successors the adapter returned. They are not step slots
     // -- the runtime packs state from the result by tensor name -- so dropping them
     // here would make every epoch report a missing state output even though the
@@ -1775,17 +1788,10 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     // waiting for this contribution would otherwise wait for work that itself
     // waits on the peer. The scope is recorded so the final pass does not publish
     // the same object twice.
-    std::vector<const DependencyEdge*> stepOutputs;
-    for (const auto& edge : item.role.outputs) {
-      if (edge.producerStepId == step.stepId) stepOutputs.push_back(&edge);
-    }
-    // Let a ready authenticated root reach its consumer before sibling outputs
-    // can fill the shared Face with their segment requests.
-    std::stable_partition(stepOutputs.begin(), stepOutputs.end(), [](const auto* edge) {
-      return edge->segmentManifest.has_value();
-    });
-    for (const auto* output : stepOutputs) {
-      const auto& edge = *output;
+    const auto stepEdges = outputsByStep.find(step.stepId);
+    const auto& outputEdges = stepEdges != outputsByStep.end() ? stepEdges->second : noOutputEdges;
+    for (const auto edgeIndex : outputEdges) {
+      const auto& edge = item.role.outputs[edgeIndex];
       const auto key = step.stepId + "\n" + edge.producerSlotId;
       const auto value = produced.find(key);
       if (value == produced.end()) {
@@ -1858,25 +1864,17 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
                         item.role.role + " scope=" + edge.scope);
       }
     }
+    // Every peer edge from this CALL has committed by this point. A slot
+    // without a future local read or a requested result can now be released.
+    for (const auto& slot : step.outputSlots) {
+      const auto key = step.stepId + "\n" + slot.slotId;
+      if (edgeKeys.count(key) != 0 && lastUseOf.count(key) == 0) produced.erase(key);
+    }
   }
 
-  // The unit is complete only now, so its declared role outputs are packed from
-  // the terminal steps. Every output edge names the step that produced it. An edge
-  // whose step already published it is returned but not sent again: republishing
-  // the same name and content would be idempotent for a reader and wasteful for
-  // the transport, and a second send after a peer consumed the first is exactly
-  // the duplicate the contract asks to ignore rather than repeat.
+  // Unpublished edges still need a value for the final publication pass.
   for (const auto& edge : item.role.outputs) {
-    if (item.publishedScopes.count(edge.scope) != 0) {
-      const auto key = edge.producerStepId + "\n" + edge.producerSlotId;
-      const auto found = produced.find(key);
-      if (found == produced.end()) {
-        throw std::runtime_error(
-          "sealed unit did not produce a declared output edge: " + edge.scope);
-      }
-      result.outputsByScope.emplace(edge.scope, found->second);
-      continue;
-    }
+    if (item.publishedScopes.count(edge.scope) != 0 && !keepPublishedOutput(edge)) continue;
     const auto key = edge.producerStepId + "\n" + edge.producerSlotId;
     const auto found = produced.find(key);
     if (found == produced.end()) {
@@ -1896,20 +1894,10 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
   // on an output edge would require inventing a consumer that does not exist. Only
   // values with no consumer inside this unit are surfaced, so intermediate
   // activations stay out of the result.
-  std::set<std::string> consumedKeys;
-  for (const auto& step : steps) {
-    for (const auto& slot : step.inputSlots) {
-      if (slot.producerStepId.empty()) continue;
-      consumedKeys.insert(slot.producerStepId + "\n" + slot.producerSlotId);
-    }
-  }
-  std::set<std::string> edgeKeys;
-  for (const auto& edge : item.role.outputs)
-    edgeKeys.insert(edge.producerStepId + "\n" + edge.producerSlotId);
   for (const auto& step : steps) {
     for (const auto& slot : step.outputSlots) {
       const auto key = step.stepId + "\n" + slot.slotId;
-      if (consumedKeys.count(key) != 0) continue;
+      if (lastUseOf.count(key) != 0) continue;
       if (edgeKeys.count(key) != 0) continue;
       const auto found = produced.find(key);
       if (found == produced.end()) continue;

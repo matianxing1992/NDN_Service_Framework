@@ -54,6 +54,20 @@
 namespace ndnsf::di {
 namespace {
 
+constexpr std::size_t
+requestMetadataLimit(bool hasModelFile)
+{
+  return hasModelFile ? kNativeOnnxWorkerMaxFileRequestMetadataBytes
+                      : kNativeOnnxWorkerMaxRequestMetadataBytes;
+}
+
+constexpr std::size_t
+responseMetadataLimit(std::uint8_t status)
+{
+  return status == kNativeOnnxWorkerDigestOnlyStatus ? kNativeOnnxWorkerMaxFileResultMetadataBytes
+                                                   : kNativeOnnxWorkerMaxMetadataBytes;
+}
+
 constexpr std::uint64_t MaxWorkerFramePayloadBytes = 2ULL * 1024 * 1024 * 1024;
 constexpr std::size_t WorkerPayloadReserveChunk = 16 * 1024 * 1024;
 
@@ -1252,7 +1266,7 @@ NativeOnnxRequestDecoder::feed(const std::uint8_t* data, std::size_t size)
       // payload bound before accepting bytes.  Model and initializer storage
       // grows in bounded chunks below; never reserve a header-declared GiB
       // amount before the metadata recipe has been checked.
-      if (m_header.metadataLength > kNativeOnnxWorkerMaxMetadataBytes ||
+      if (m_header.metadataLength > requestMetadataLimit(m_header.hasModelFile) ||
           m_header.modelLength > MaxWorkerFramePayloadBytes ||
           m_header.initializerLength > MaxWorkerFramePayloadBytes ||
           m_header.initializerLength > MaxWorkerFramePayloadBytes -
@@ -1370,7 +1384,7 @@ NativeOnnxResponseDecoder::feed(const std::uint8_t* data, std::size_t size)
       m_header.modelLength = readU64le(header + 12);
       m_header.status = header[20];
       if (m_header.status > kNativeOnnxWorkerDigestOnlyStatus ||
-          m_header.metadataLength > kNativeOnnxWorkerMaxMetadataBytes ||
+          m_header.metadataLength > responseMetadataLimit(m_header.status) ||
           (m_header.status == 0 && m_header.modelLength == 0) ||
           (m_header.status != 0 && m_header.status !=
              kNativeOnnxWorkerDigestOnlyStatus && m_header.modelLength != 0) ||
@@ -1429,7 +1443,8 @@ composeNativeOnnxWorkerRequest(const std::string& metadata,
                                const std::vector<std::uint8_t>& initializer,
                                bool hasInitializer)
 {
-  if (hasInitializer != !initializer.empty()) {
+  if (metadata.size() > kNativeOnnxWorkerMaxRequestMetadataBytes ||
+      hasInitializer != !initializer.empty()) {
     workerFail("WORKER_PROTOCOL");
   }
   std::vector<std::uint8_t> frame;
@@ -1456,7 +1471,7 @@ composeNativeOnnxWorkerResponse(std::uint8_t status,
   if (status > kNativeOnnxWorkerDigestOnlyStatus ||
       (status == 0 && model.empty()) ||
       (status != 0 && !model.empty()) ||
-      metadata.size() > kNativeOnnxWorkerMaxMetadataBytes) {
+      metadata.size() > responseMetadataLimit(status)) {
     workerFail("WORKER_PROTOCOL");
   }
   std::vector<std::uint8_t> frame;
@@ -2110,6 +2125,9 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
     recipe, fileBacked ? std::optional<std::uint64_t>(modelFileBytes) :
                          std::nullopt,
     fileBacked ? modelFileDigest : std::string{});
+  if (metadata.size() > requestMetadataLimit(fileBacked)) {
+    workerFail("WORKER_METADATA", "request metadata exceeds the worker frame limit");
+  }
   // Keep the parent bounded while sending a large canonical initializer.  The
   // old composer materialized metadata + model + initializer as one more
   // contiguous vector before the nonblocking pipe could consume it.  Each
@@ -2508,7 +2526,7 @@ writeResponseFrame(std::uint8_t status, const std::string& metadata,
   if (status > kNativeOnnxWorkerDigestOnlyStatus ||
       (status == 0 && model.empty()) ||
       (status != 0 && !model.empty()) ||
-      metadata.size() > kNativeOnnxWorkerMaxMetadataBytes ||
+      metadata.size() > responseMetadataLimit(status) ||
       metadata.size() > std::numeric_limits<std::uint32_t>::max()) {
     workerFail("WORKER_PROTOCOL");
   }

@@ -30,7 +30,8 @@ class NativeStaticProjectionLayout final
   using SlotGeometry = std::tuple<std::string, std::string,
     decltype(NativeStepSlotSpec{}.shape), std::string, std::string, std::string, std::string>;
   using StepGeometry = std::tuple<std::string, std::string,
-    std::vector<SlotGeometry>, std::vector<SlotGeometry>, decltype(NativeExecutionStepSpec{}.sourceLayers)>;
+    std::vector<SlotGeometry>, std::vector<SlotGeometry>,
+    decltype(NativeExecutionStepSpec{}.sourceLayers), std::vector<std::uint64_t>>;
   using StepGeometryKey = std::pair<std::string, std::vector<StepGeometry>>;
   using Identity = std::tuple<std::string, std::string, std::string,
     std::map<std::string, std::string>, std::map<std::string, RoleGeometry>,
@@ -49,7 +50,7 @@ class NativeStaticProjectionLayout final
     };
     for (const auto& step : plan.steps)
       result.second.emplace_back(step.stepId, step.unitId,
-        slots(step.inputSlots), slots(step.outputSlots), step.sourceLayers);
+        slots(step.inputSlots), slots(step.outputSlots), step.sourceLayers, step.onnxNodeIndices);
     return result;
   }
   bool matches(const NativePlacementPlanCore& core) const
@@ -73,7 +74,8 @@ class NativeStaticProjectionLayout final
       if (std::get<0>(cached) != current.stepId || std::get<1>(cached) != current.unitId ||
           !sameSlots(std::get<2>(cached), current.inputSlots) ||
           !sameSlots(std::get<3>(cached), current.outputSlots) ||
-          std::get<4>(cached) != current.sourceLayers) return false;
+          std::get<4>(cached) != current.sourceLayers ||
+          std::get<5>(cached) != current.onnxNodeIndices) return false;
     }
     if (std::get<0>(identity) != core.candidateDigest || std::get<1>(identity) != core.modelDigest ||
         std::get<2>(identity) != core.graphDigest || std::get<3>(identity) != core.assignment.providerByRole ||
@@ -431,17 +433,9 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
       return;
     }
     endpoint.namingStepId = dependency.producerStepId.empty() ? "role-execution"
-      : dependency.producerStepId;
+      : detail::nativeTensorNamingCoordinate(dependency.producerStepId);
     endpoint.namingPortId = dependency.producerSlotId.empty() ? "role-execution"
-      : dependency.producerSlotId;
-    if (core.executionPlan.modelFamily == "onnx-source") {
-      // Source ports can contain arbitrary ONNX identifiers. Keep ordinary names readable
-      // and bind other ports to a bounded, disjoint digest coordinate.
-      const auto& port = endpoint.namingPortId;
-      if (port.size() > 64 || std::any_of(port.begin(), port.end(),
-            [] (unsigned char byte) { return byte <= 0x20 || byte >= 0x7f; }))
-        endpoint.namingPortId = nativePlanningDigest(port);
-    }
+      : detail::nativeTensorNamingCoordinate(dependency.producerSlotId);
     const auto role = core.roleContracts().find(endpoint.producerRole);
     if (!dependency.producerStepId.empty()) {
       const auto& step = exactStep(core.executionPlan, dependency.producerStepId,

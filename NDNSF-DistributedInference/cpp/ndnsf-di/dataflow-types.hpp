@@ -305,9 +305,15 @@ struct RoleSpec
   // tensors or slot names.
   std::shared_ptr<const std::vector<NativeExecutionStepSpec>> steps;
   std::string stepPlanVersion;
+  // Process-local scheduling policy for ordinary sealed roles.
+  bool stepScopedDependencyReads = false;
+  std::size_t dependencyReadWidth() const;
   std::uint64_t tensorDegree = 1;
   // Process-local immutable admission, retained independently of runner reuse.
   std::shared_ptr<const AutomaticOnnxRequestBinding> automaticBinding;
+  // The stateless Selection handler consumes terminal slots and this response
+  // scope. With no scope policy, preserve the full public worker result.
+  std::optional<std::string> publishedStepResponseScope;
 };
 
 /** Attach certified endpoints to a role spec's edges.

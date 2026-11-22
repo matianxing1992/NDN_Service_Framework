@@ -19,6 +19,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 #include <variant>
@@ -296,7 +297,7 @@ private:
   friend std::shared_ptr<const NativeFixedRoleAssignmentV1>
   nativeFixedRoleAssignmentV1FromProjection(NativeSelectionProjectionV3 projection);
   friend std::shared_ptr<const NativeFixedRoleAssignmentV1>
-  nativeFixedRoleAssignmentV1FromJson(std::istream& input);
+  nativeFixedRoleAssignmentV1FromWire(std::string_view payload);
   NativeFixedRoleAssignmentV1(std::string provider, std::string digest,
                              std::shared_ptr<const NativeSelectionRoleV3> role,
                              std::shared_ptr<const NativeFixedExecutionTemplateV1> executionTemplate);
@@ -321,6 +322,11 @@ nativeFixedRoleAssignmentV1FromProjection(NativeSelectionProjectionV3 projection
 
 std::string nativeFixedRoleAssignmentV1ToJson(const NativeFixedRoleAssignmentV1& assignment);
 std::shared_ptr<const NativeFixedRoleAssignmentV1> nativeFixedRoleAssignmentV1FromJson(std::istream& input);
+
+/** Encode and recover the authenticated fixed source, preserving its canonical assignment digest. */
+std::string nativeFixedRoleAssignmentV1ToWire(const NativeFixedRoleAssignmentV1& assignment);
+std::shared_ptr<const NativeFixedRoleAssignmentV1>
+nativeFixedRoleAssignmentV1FromWire(std::string_view payload);
 
 /** Current invocation bindings with a reference to an already fixed role. */
 std::string nativeSelectionInvocationV1ToJson(

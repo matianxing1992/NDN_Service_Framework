@@ -1,0 +1,88 @@
+{
+  "id": "wan2.1-t2v-14b-metadata-v1",
+  "repository": "Wan-AI/Wan2.1-T2V-14B",
+  "revision": "b62153b54fce61f5908de23f6d8715e147de0daf",
+  "sources": [
+    {
+      "file": "diffusion_pytorch_model.safetensors.index.json",
+      "bytes": 96805,
+      "sha256": "d62743ee76929dc76264d4b86abd710eab38157e17ab12659e66158efb8e069c"
+    },
+    {
+      "file": "google/umt5-xxl/spiece.model",
+      "bytes": 4548313,
+      "sha256": "e3909a67b780650b35cf529ac782ad2b6b26e6d1f849d3fbb6a872905f452458"
+    },
+    {
+      "file": "google/umt5-xxl/tokenizer.json",
+      "bytes": 16837417,
+      "sha256": "6e197b4d3dbd71da14b4eb255f4fa91c9c1f2068b20a2de2472967ca3d22602b"
+    }
+  ],
+  "safetensors_header_ranges": [
+    {
+      "file": "diffusion_pytorch_model-00001-of-00006.safetensors",
+      "range": [
+        0,
+        18999
+      ],
+      "full_bytes": 9887603256,
+      "sha256": "e73d1c5e283ef1e5f8e62d217a6bd729c1ca50db35bec187454f2e68337da8c5"
+    },
+    {
+      "file": "diffusion_pytorch_model-00002-of-00006.safetensors",
+      "range": [
+        0,
+        19135
+      ],
+      "full_bytes": 9839059648,
+      "sha256": "54ab4f21e332a6b2b2204bcbddd1f377ef5b3cce8e5127a0f1b13acd09ce6792"
+    },
+    {
+      "file": "diffusion_pytorch_model-00003-of-00006.safetensors",
+      "range": [
+        0,
+        19231
+      ],
+      "full_bytes": 9839059744,
+      "sha256": "3f89807653274961ab58b9115b366f658b96ed6590ffa1372d7dda5da1066798"
+    },
+    {
+      "file": "diffusion_pytorch_model-00004-of-00006.safetensors",
+      "range": [
+        0,
+        19231
+      ],
+      "full_bytes": 9839059744,
+      "sha256": "e2743cce9d4d4e5bed65d3c14b040563b0e8d45787c400350920e6e271e3692b"
+    },
+    {
+      "file": "diffusion_pytorch_model-00005-of-00006.safetensors",
+      "range": [
+        0,
+        19231
+      ],
+      "full_bytes": 9839059744,
+      "sha256": "54e8afc9e9fe5ebd4314d82aabefada15d9f4ce467317ec794116114de61c41c"
+    },
+    {
+      "file": "diffusion_pytorch_model-00006-of-00006.safetensors",
+      "range": [
+        0,
+        15223
+      ],
+      "full_bytes": 7910235256,
+      "sha256": "aa5fc298969c89420413bc3b5f0d862664ab04a36b6a49ad6d1fb77f98a5a617"
+    }
+  ],
+  "pytorch_mapped_metadata": {
+    "models_t5_umt5-xxl-enc-bf16.pth": {
+      "full_bytes": 11361920418,
+      "metadata_sha256": "67a4c31c2d41531e2b177bba8565418dfd4fa9dd270e6ef8ebe7ac1d3a80b311"
+    },
+    "Wan2.1_VAE.pth": {
+      "full_bytes": 507609880,
+      "metadata_sha256": "3411d0042907aa16efcf08d13049aa4fbf0fdff104049bdf8c46077d2d64dad0"
+    }
+  }
+}

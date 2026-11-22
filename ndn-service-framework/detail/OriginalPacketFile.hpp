@@ -9,6 +9,8 @@
 #include <mutex>
 #include <vector>
 
+namespace ndn { class Data; }
+
 namespace ndn_service_framework::detail {
 
 /** Transient original packet owner. Wire and offsets live in private files;
@@ -21,17 +23,32 @@ public:
     const std::filesystem::path& directory, const ndn::Name& dataPrefix,
     std::uint64_t segmentCount, std::uint64_t maxStorageBytes,
     const NextPacket& nextPacket, const std::function<void()>& requireActive = {});
+  /** Create a request-owned file for exact packets without a common FinalBlock.
+   * The caller owns name uniqueness, signer admission and the name/ordinal index.
+   */
+  static std::shared_ptr<OriginalPacketFile> createExact(
+    const std::filesystem::path& directory, const ndn::Name& producer,
+    std::uint64_t maxStorageBytes);
+  /** Append admitted originals and return the first committed ordinal. */
+  std::uint64_t appendExact(
+    const std::vector<std::shared_ptr<const ndn::Data>>& originals,
+    const std::function<void()>& requireActive = {});
+  std::vector<std::uint8_t> readExactPacket(std::uint64_t ordinal,
+                                           const ndn::Name& expectedName) const;
   ~OriginalPacketFile();
   OriginalPacketFile(const OriginalPacketFile&) = delete;
   OriginalPacketFile& operator=(const OriginalPacketFile&) = delete;
   std::vector<std::uint8_t> read(std::uint64_t segment) const;
-  std::uint64_t storageBytes() const noexcept { return m_storageBytes; }
+  std::uint64_t storageBytes() const;
 
 private:
   OriginalPacketFile() = default;
+  std::vector<std::uint8_t> readWire(std::uint64_t ordinal) const;
   ndn::Name m_dataPrefix;
   std::uint64_t m_segmentCount = 0;
   std::uint64_t m_storageBytes = 0;
+  std::uint64_t m_exactBudget = 0;
+  std::uint64_t m_exactPacketOffset = 0;
   std::FILE* m_packets = nullptr;
   std::FILE* m_index = nullptr;
   mutable std::mutex m_mutex;

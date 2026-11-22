@@ -9,6 +9,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import time
 import types
 
 import numpy as np
@@ -68,7 +69,7 @@ def cpu_attention(q, k, v, q_lens=None, k_lens=None, dropout_p=0., softmax_scale
     return result.transpose(1, 2).contiguous()
 
 
-def dit_reference(root, recipe):
+def load_dit_model(root, recipe):
     for row in recipe['sources']:
         if row['file'] in recipe['shards'] or row['file'] == 'config.json':
             verify(root / row['file'], row)
@@ -95,18 +96,27 @@ def dit_reference(root, recipe):
     model.load_state_dict(weights, strict=True, assign=True)
     del weights
     model.eval().requires_grad_(False)
-    latent = torch.linspace(-0.25, 0.25, 48 * 3 * 2 * 2, dtype=torch.float32).reshape(1, 48, 3, 2, 2)
+    return model
+
+
+def dit_reference(root, recipe, shape, padded_tokens):
+    model = load_dit_model(root, recipe)
+    latent = torch.linspace(-0.25, 0.25, int(np.prod(shape)), dtype=torch.float32).reshape(shape)
     context = torch.linspace(-0.1, 0.1, 512 * 4096, dtype=torch.float32).reshape(1, 512, 4096)
     timestep = torch.tensor([500], dtype=torch.int64)
-    valid = torch.zeros((1, 1, 1, 128), dtype=torch.bool)
-    valid[:, :, :, :3] = True
+    valid = torch.zeros((1, 1, 1, padded_tokens), dtype=torch.bool)
+    tokens = shape[2] * (shape[3] // 2) * (shape[4] // 2)
+    valid[:, :, :, :tokens] = True
+    started, cpu_started = time.monotonic(), time.process_time()
     with torch.inference_mode():
-        result = model([latent[0]], timestep, [context[0]], 128)[0].unsqueeze(0)
+        result = model([latent[0]], timestep, [context[0]], padded_tokens)[0].unsqueeze(0)
+    timing = dict(forward_wall_seconds=time.monotonic() - started,
+                  forward_cpu_seconds=time.process_time() - cpu_started)
     return [('latent', latent), ('context', context), ('timestep', timestep),
-            ('video-valid', valid)], 'prediction', result, [1, 48, 3, 2, 2]
+            ('video-valid', valid)], 'prediction', result, shape, timing
 
 
-def umt5_reference(root, recipe):
+def load_umt5_model(root, recipe):
     original = next(row for row in recipe['sources']
                     if row['file'] == 'models_t5_umt5-xxl-enc-bf16.pth')
     verify(root / original['file'], original)
@@ -118,26 +128,24 @@ def umt5_reference(root, recipe):
                            strict=True, assign=True)
     del state
     model.eval().requires_grad_(False)
+    return model
+
+
+def umt5_reference(root, recipe):
+    model = load_umt5_model(root, recipe)
     ids = torch.zeros((1, 512), dtype=torch.int64)
     ids[0, :3] = torch.tensor([23, 17, 1])
     mask = torch.zeros((1, 512), dtype=torch.bool)
     mask[0, :3] = True
+    started, cpu_started = time.monotonic(), time.process_time()
     with torch.inference_mode():
         result = model(ids, mask)[:, :3].contiguous()
-    return [('token-ids', ids), ('key-mask', mask)], 'text-context', result, [1, 3, 4096]
+    timing = dict(forward_wall_seconds=time.monotonic() - started,
+                  forward_cpu_seconds=time.process_time() - cpu_started)
+    return [('token-ids', ids), ('key-mask', mask)], 'text-context', result, [1, 3, 4096], timing
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--component', choices=('dit', 'umt5'), required=True)
-    parser.add_argument('--asset-root', type=Path, required=True)
-    parser.add_argument('--model', type=Path, required=True)
-    parser.add_argument('--output', type=Path, required=True)
-    args = parser.parse_args()
-    if args.output.exists():
-        raise FileExistsError(args.output)
-    root = args.asset_root.resolve(strict=True)
-    recipe = json.loads(RECIPE.read_bytes())
+def prepare_reference_environment(root, recipe):
     for row in recipe['network_reference']['sources']:
         verify(root / row['local_file'], row)
     if torch.__version__.split('+')[0] != '2.6.0' or np.__version__ != '1.26.4':
@@ -152,8 +160,38 @@ def main():
     package = types.ModuleType('wan22_cpu_reference')
     package.__path__ = [str(root / 'reference-source')]
     sys.modules[package.__name__] = package
-    inputs, name, result, shape = (dit_reference if args.component == 'dit'
-                                   else umt5_reference)(root, recipe)
+    return packages
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--component', choices=('dit', 'umt5'), required=True)
+    parser.add_argument('--asset-root', type=Path, required=True)
+    parser.add_argument('--model', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--frames', type=int, default=9)
+    parser.add_argument('--height', type=int, default=32)
+    parser.add_argument('--width', type=int, default=32)
+    args = parser.parse_args()
+    if (not 1 <= args.frames <= 361 or args.frames % 4 != 1 or
+            not 32 <= args.height <= 320 or args.height % 32 or
+            not 32 <= args.width <= 320 or args.width % 32):
+        parser.error('require frames=4n+1 <=361 and spatial multiples of 32 <=320')
+    if args.component != 'dit' and (args.frames, args.height, args.width) != (9, 32, 32):
+        parser.error('video geometry applies only to the DiT reference')
+    if args.output.exists():
+        raise FileExistsError(args.output)
+    root = args.asset_root.resolve(strict=True)
+    recipe = json.loads(RECIPE.read_bytes())
+    packages = prepare_reference_environment(root, recipe)
+    shape = [1, 48, (args.frames - 1) // 4 + 1, args.height // 16, args.width // 16]
+    tokens = shape[2] * (shape[3] // 2) * (shape[4] // 2)
+    padded_tokens = (tokens + 127) // 128 * 128
+    started, cpu_started = time.monotonic(), time.process_time()
+    inputs, name, result, shape, timing = (dit_reference(root, recipe, shape, padded_tokens)
+                                          if args.component == 'dit'
+                                          else umt5_reference(root, recipe))
+    elapsed, cpu_elapsed = time.monotonic() - started, time.process_time() - cpu_started
     if list(result.shape) != shape or result.dtype != torch.float32 or not torch.isfinite(result).all():
         raise ValueError('source reference returned incomplete or nonfinite output')
     args.output.mkdir()
@@ -177,6 +215,12 @@ def main():
                                   cpu_attention='PyTorch SDPA MATH FP32, original key lengths preserved',
                                   t5_import='unused CUDA wrapper omitted; encoder arithmetic unchanged',
                                   driver_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                                  geometry=dict(frames=args.frames, height=args.height,
+                                                width=args.width) if args.component == 'dit' else None,
+                                  padded_video_tokens=padded_tokens if args.component == 'dit' else None,
+                                  source_reference_wall_seconds=elapsed,
+                                  source_reference_cpu_seconds=cpu_elapsed,
+                                  **timing,
                                   scope=args.component + ', real weights, bounded input, CPU reference'))
     (args.output / 'oracle.json').write_text(json.dumps(config, indent=2) + '\n')
     print(args.output / 'oracle.json')

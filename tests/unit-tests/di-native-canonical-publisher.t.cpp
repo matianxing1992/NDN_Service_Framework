@@ -1840,7 +1840,35 @@ BOOST_AUTO_TEST_CASE(RangeOnlyInitializerPreservesMaterialAndAssemblyIdentity)
   BOOST_CHECK_EQUAL(actual->canonicalJson(), expected->canonicalJson());
   BOOST_CHECK_EQUAL(canonicalOnnxSourceIdentity(source, control).graphDigest,
                     expectedIdentity.graphDigest);
+  const auto readsBeforeShared = range->reads;
   validateNativeCanonicalMaterialManifest(source, *actual, control);
+  const auto sharedReads = range->reads - readsBeforeShared;
+
+  auto detached = *actual;
+  auto otherRange = std::make_shared<InitializerRangeFixture>();
+  otherRange->bytes = range->bytes;
+  std::size_t detachedChunks = 0;
+  for (auto& payload : detached.payloads) {
+    if (payload.rangeSource) {
+      payload.rangeSource = otherRange;
+      ++detachedChunks;
+    }
+  }
+  BOOST_REQUIRE_GT(detachedChunks, 0U);
+  const auto readsBeforeDetached = range->reads;
+  validateNativeCanonicalMaterialManifest(source, detached, control);
+  // The detached payload must still be read and compared to its source interval.
+  BOOST_CHECK_EQUAL(range->reads - readsBeforeDetached, sharedReads);
+  BOOST_CHECK_EQUAL(otherRange->reads, 2 * detachedChunks);
+  auto chunk = std::find_if(detached.payloads.begin(), detached.payloads.end(),
+    [] (const auto& payload) { return static_cast<bool>(payload.rangeSource); });
+  otherRange->bytes.at(chunk->rangeOffset) ^= 1;
+  const auto changed = chunk->copyBytes();
+  chunk->digest = nativePlanningDigest(changed.data(), changed.size());
+  BOOST_CHECK_EXCEPTION(validateNativeCanonicalMaterialManifest(source, detached, control),
+    std::invalid_argument, [] (const auto& error) {
+      return std::string(error.what()) == "native canonical material initializer chunks differ";
+    });
   for (std::size_t i = 0; i < actual->payloads.size(); ++i)
     BOOST_CHECK(actual->payloads[i].copyBytes() == expected->payloads[i].copyBytes());
   source.materialManifest = actual;
@@ -1850,6 +1878,14 @@ BOOST_AUTO_TEST_CASE(RangeOnlyInitializerPreservesMaterialAndAssemblyIdentity)
   vectorSource.materialPayloads = expected->payloads;
   BOOST_CHECK(materializeNativeCanonicalModel(source, {0, 1}, control) ==
               materializeNativeCanonicalModel(vectorSource, {0, 1}, control));
+  auto unexpected = source;
+  auto unknownPayload = actual->payloads.front();
+  unknownPayload.payloadId = "unexpected-fixture-payload";
+  unexpected.materialPayloads.push_back(std::move(unknownPayload));
+  BOOST_CHECK_EXCEPTION(materializeNativeCanonicalModel(unexpected, {0, 1}, control),
+    std::runtime_error, [](const auto& error) {
+      return std::string(error.what()) == "DI_NATIVE_ONNX_MATERIAL_PAYLOAD";
+    });
   BOOST_CHECK_GT(range->reads, 0U);
   BOOST_CHECK_LE(range->largestRead, NativeCanonicalMaterialBundleMaxBytes);
 
@@ -2814,6 +2850,144 @@ BOOST_AUTO_TEST_CASE(MaterializedRoleRebuildsInternalStageBoundary)
                     onnx::TensorProto::FLOAT);
   BOOST_REQUIRE_EQUAL(role.graph().output(0).type().tensor_type().shape().dim_size(), 2);
   BOOST_CHECK_EQUAL(role.graph().output(0).type().tensor_type().shape().dim(1).dim_value(), 4);
+}
+
+BOOST_AUTO_TEST_CASE(MaterializedLoopRoleUsesCapturedTensorAndInitializer)
+{
+  onnx::ModelProto model;
+  model.set_ir_version(9);
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  graph.set_name("loop-capture");
+  const auto port = [] (onnx::ValueInfoProto* value, const char* name, int dtype, bool vector) {
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(dtype);
+    auto* shape = tensor->mutable_shape();
+    if (vector) shape->add_dim()->set_dim_value(1);
+  };
+  const auto emit = [] (onnx::GraphProto& scope, const char* op, const char* output,
+                         std::initializer_list<const char*> inputs) {
+    auto* node = scope.add_node();
+    node->set_op_type(op);
+    node->add_output(output);
+    for (const auto* name : inputs) node->add_input(name);
+    return node;
+  };
+  const auto parameter = [] (onnx::GraphProto& scope, const char* name, int dtype, bool vector) {
+    auto* tensor = scope.add_initializer();
+    tensor->set_name(name);
+    tensor->set_data_type(dtype);
+    if (vector) tensor->add_dims(1);
+    return tensor;
+  };
+  const auto subgraph = [] (onnx::NodeProto& node, const char* name) -> onnx::GraphProto& {
+    auto* attr = node.add_attribute();
+    attr->set_name(name);
+    attr->set_type(onnx::AttributeProto::GRAPH);
+    auto* graph = attr->mutable_g();
+    graph->set_name(name);
+    return *graph;
+  };
+  constexpr auto FLOAT = onnx::TensorProto::FLOAT;
+  constexpr auto BOOL = onnx::TensorProto::BOOL;
+  constexpr auto INT64 = onnx::TensorProto::INT64;
+  port(graph.add_input(), "x", FLOAT, true);
+  port(graph.add_input(), "initial", FLOAT, true);
+  port(graph.add_value_info(), "captured", FLOAT, true);
+  port(graph.add_output(), "y", FLOAT, true);
+  parameter(graph, "weight", FLOAT, true)->add_float_data(2);
+  parameter(graph, "unused", FLOAT, true)->add_float_data(99);
+  parameter(graph, "steps", INT64, false)->add_int64_data(2);
+  parameter(graph, "enabled", BOOL, false)->add_int32_data(1);
+  emit(graph, "Identity", "captured", {"x"});
+
+  auto& body = subgraph(*emit(graph, "Loop", "y", {"steps", "enabled", "initial"}), "body");
+  port(body.add_input(), "iteration", INT64, false);
+  port(body.add_input(), "condition", BOOL, false);
+  port(body.add_input(), "state", FLOAT, true);
+  port(body.add_output(), "continue", BOOL, false);
+  port(body.add_output(), "next", FLOAT, true);
+  emit(body, "Identity", "continue", {"condition"});
+  auto* branch = emit(body, "If", "next", {"condition"});
+  auto& yes = subgraph(*branch, "then_branch");
+  parameter(yes, "local-offset", FLOAT, true)->add_float_data(0.5F);
+  emit(yes, "Add", "increment", {"captured", "weight"});
+  emit(yes, "Add", "offset-increment", {"increment", "local-offset"});
+  emit(yes, "Add", "updated", {"state", "offset-increment"});
+  port(yes.add_output(), "updated", FLOAT, true);
+  auto& no = subgraph(*branch, "else_branch");
+  emit(no, "Identity", "unmodified", {"state"});
+  port(no.add_output(), "unmodified", FLOAT, true);
+
+  const auto wire = model.SerializeAsString();
+  NativeCanonicalSource source;
+  source.modelBytes.assign(wire.begin(), wire.end());
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(10), [] {}, 1U << 20, 1U << 20};
+  const auto manifest = deriveNativeCanonicalMaterialManifest(source, control);
+  BOOST_REQUIRE(manifest);
+  BOOST_CHECK_NO_THROW(validateNativeCanonicalMaterialManifest(source, *manifest, control));
+  const auto loop = std::find_if(manifest->references.begin(), manifest->references.end(),
+    [] (const auto& item) { return item.logicalName == "node/1"; });
+  BOOST_REQUIRE(loop != manifest->references.end());
+  BOOST_CHECK(loop->dependencies == (std::vector<std::string>{"enabled", "steps", "weight"}));
+  const Input fixture;
+  const auto inspected = inspectNativeOnnxSourceGraph(source, fixture.model.descriptor, control);
+  const auto capture = std::find_if(inspected.graph.edges.begin(), inspected.graph.edges.end(),
+    [] (const auto& edge) { return edge.id == "captured"; });
+  BOOST_REQUIRE(capture != inspected.graph.edges.end());
+  BOOST_CHECK_EQUAL(capture->producer, "onnx-node-0");
+  BOOST_CHECK(capture->consumers == (std::vector<std::string>{"onnx-node-1"}));
+  BOOST_CHECK(inspected.initializerConsumers.at("weight") == (std::vector<std::uint64_t>{1}));
+  BOOST_CHECK(inspected.initializerConsumers.at("unused").empty());
+
+  const auto json = manifest->canonicalJson();
+  NativeCanonicalSource selected;
+  selected.materialManifest = parseNativeCanonicalMaterialManifest(
+    std::vector<std::uint8_t>(json.begin(), json.end()));
+  std::string weightPayload;
+  for (const auto& item : manifest->references) {
+    if (item.logicalName == "weight") weightPayload = item.payloadId;
+    if (item.kind == "graph-template" || item.logicalName == "node/1" ||
+        std::find(loop->dependencies.begin(), loop->dependencies.end(), item.logicalName) !=
+          loop->dependencies.end()) {
+      const auto payload = std::find_if(manifest->payloads.begin(), manifest->payloads.end(),
+        [&] (const auto& record) { return record.payloadId == item.payloadId; });
+      BOOST_REQUIRE(payload != manifest->payloads.end());
+      selected.materialPayloads.push_back(*payload);
+    }
+  }
+  BOOST_REQUIRE(!weightPayload.empty());
+  const std::vector<NativeAssemblyTensorContractV3> inputs{
+    {"initial", "float32", {std::int64_t{1}}}, {"captured", "float32", {std::int64_t{1}}}};
+  const std::vector<NativeAssemblyTensorContractV3> outputs{{"y", "float32", {std::int64_t{1}}}};
+  auto missing = selected;
+  auto& payloads = missing.materialPayloads;
+  payloads.erase(std::remove_if(payloads.begin(), payloads.end(),
+    [&] (const auto& payload) { return payload.payloadId == weightPayload; }), payloads.end());
+  BOOST_CHECK_EXCEPTION(materializeNativeCanonicalModel(missing, {1}, inputs, outputs, control),
+    std::runtime_error, [] (const auto& error) {
+      return std::string(error.what()) == "DI_NATIVE_ONNX_MATERIAL_INITIALIZER";
+    });
+
+  const auto assembled = materializeNativeCanonicalModel(selected, {1}, inputs, outputs, control);
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "canonical-loop-capture");
+  Ort::SessionOptions options;
+  options.SetIntraOpNumThreads(1);
+  Ort::Session session(env, assembled.data(), assembled.size(), options);
+  const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  constexpr std::array<std::int64_t, 1> shape{1};
+  float initial = 1.0F, activation = 3.0F;
+  const std::array<Ort::Value, 2> values{
+    Ort::Value::CreateTensor<float>(memory, &initial, 1, shape.data(), shape.size()),
+    Ort::Value::CreateTensor<float>(memory, &activation, 1, shape.data(), shape.size())};
+  const std::array<const char*, 2> names{"initial", "captured"};
+  const char* resultName = "y";
+  const auto result = session.Run(Ort::RunOptions{}, names.data(), values.data(), values.size(),
+                                  &resultName, 1);
+  BOOST_REQUIRE_EQUAL(result.front().GetTensorTypeAndShapeInfo().GetElementCount(), 1);
+  BOOST_CHECK_EQUAL(result.front().GetTensorData<float>()[0], 12.0F);
 }
 
 BOOST_AUTO_TEST_CASE(MaterializedRoleKeepsUnrankedBoundaryTensor)

@@ -106,6 +106,10 @@ runnerReuseKey(const NativeSelectionProjectionV3& projection,
   if (!projection.plan.steps.empty()) {
     frame("sealed-role-steps-v1");
     frame(detail::nativeRoleStepContractDigest(projection.plan, role.selectedRole));
+    for (const auto& step : projection.plan.steps) {
+      if (step.unitId == role.selectedRole && !step.onnxNodeIndices.empty())
+        frame(step.artifactEntry);
+    }
   }
   frame(role.roleKind);
   frame(role.adapterId);

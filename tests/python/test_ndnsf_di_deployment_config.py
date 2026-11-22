@@ -1609,6 +1609,109 @@ def minindn_deployment(deployment):
     return base, config
 
 
+@pytest.mark.parametrize('change, message', [
+    ('normal', ''),
+    ('trace', ''),
+    ('trace-limit', ''),
+    ('trace-limit-disabled', 'requires test_wan_fixture_trace=true'),
+    ('trace-limit-zero', 'expected integer'),
+    ('trace-limit-bool', 'expected integer'),
+    ('trace-limit-excess', 'exceeds native trace byte limit'),
+    ('trace-not-opted-in', 'requires MiniNDN Wan generation and test_only=true'),
+    ('trace-wrong-type', 'expected boolean'),
+    ('mixed', 'without turns'),
+    ('same-model', 'distinct DiT and VAE'),
+    ('tokenizer-output', 'output overlaps protected input'),
+    ('shared-handle', 'component private files must be distinct'),
+    ('component-output', 'overlaps Wan clip output directory'),
+    ('missing-weight', 'required input is unavailable'),
+])
+def test_minindn_launches_wan_requester_with_isolated_component_paths(
+        ops, minindn_deployment, change, message):
+    parser, _ = ops
+    root, config = minindn_deployment
+    requester = config['requester']
+    turns = requester.pop('turns')
+    requester['fixed_placement'] = {'role_providers': {'rank0': '/test/p0', 'rank1': '/test/p1'}}
+    models = root / 'components'
+    models.mkdir(mode=0o700)
+    tokenizer_dir = root / 'text'
+    tokenizer_dir.mkdir(mode=0o700)
+    (tokenizer_dir / 'tokenizer.json').write_text('{}')
+    wan = requester['wan_generation'] = {
+        'denoiser_config_file': 'components/dit.json',
+        'decoder_config_file': 'components/vae.json',
+        'output_directory': 'clips/clip-1',
+        'tokenizer': {'file': 'text/tokenizer.json', 'digest': 'sha256:' + 'a' * 64, 'slots': 3},
+        'positive_prompt': 'lake',
+        'negative_prompt': '',
+    }
+    if change in ('trace', 'trace-not-opted-in', 'trace-wrong-type') or change.startswith('trace-limit'):
+        requester['test_wan_fixture_trace'] = 'true' if change == 'trace-wrong-type' else True
+        if change == 'trace' or change.startswith('trace-limit'):
+            requester['test_only'] = True
+    if change.startswith('trace-limit'):
+        requester['test_wan_fixture_trace_max_bytes'] = 2 << 30
+        if change == 'trace-limit-disabled':
+            requester['test_wan_fixture_trace'] = False
+        elif change == 'trace-limit-zero':
+            requester['test_wan_fixture_trace_max_bytes'] = 0
+        elif change == 'trace-limit-bool':
+            requester['test_wan_fixture_trace_max_bytes'] = True
+        elif change == 'trace-limit-excess':
+            requester['test_wan_fixture_trace_max_bytes'] += 1
+    if change == 'mixed':
+        requester['turns'] = turns
+    if change == 'same-model':
+        wan['decoder_config_file'] = wan['denoiser_config_file']
+    if change == 'tokenizer-output':
+        wan['output_directory'] = 'text'
+    for key in ('dit', 'vae'):
+        model = {
+            'schema': 'ndnsf-di-native-requester-v1',
+            'core': {'trust_schema_file': '../trust.conf'},
+            'grant': {'requester_private_key_file': '../key.pem'},
+            'catalog': {'source': {'file': '../plan.json'}},
+            'model_input': {
+                'mode': 'source', 'preparation_state_file': f'private/{key}-prep.json',
+                'private_handle_file': f'private/{key}-handle.json',
+            },
+        }
+        if key == 'vae' and change == 'shared-handle':
+            model['model_input']['private_handle_file'] = 'private/dit-handle.json'
+        if key == 'vae' and change == 'component-output':
+            model['model_input']['private_handle_file'] = '../clips/clip-1/vae-handle.json'
+        if key == 'vae' and change == 'missing-weight':
+            model['catalog']['source']['initializer_file'] = '../missing-weight.bin'
+        (models / (key + '.json')).write_text(json.dumps(model))
+    deployment = write_config(root, config)
+    if message:
+        with pytest.raises(parser.DeploymentConfigError, match=message):
+            parser.load_deployment(deployment)
+        return
+    frozen = parser.load_deployment(deployment)
+    assert not (root / 'clips').exists()
+    assert not (models / 'private').exists()
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    actor = next(a for a in frozen['actors'] if a['kind'] == 'requester')
+    argv, _ = cluster._native_launch(frozen, actor, root,
+        {'boot_id': 'wan-test', 'configuration_sha256': 'b' * 64})
+    assert argv == [str(root / 'release/bin/DI_NativeRequester'), '--config',
+                    str(root / 'requester.json')]
+    native = json.loads((root / 'requester.json').read_text())
+    assert 'turns' not in native
+    assert native.get('test_wan_fixture_trace', False) is (change in ('trace', 'trace-limit'))
+    if change == 'trace-limit':
+        assert native['test_wan_fixture_trace_max_bytes'] == 2 << 30
+    assert native['wan_generation']['denoiser_config_file'] == str(models / 'dit.json')
+    assert native['wan_generation']['decoder_config_file'] == str(models / 'vae.json')
+    assert native['wan_generation']['tokenizer']['file'] == str(tokenizer_dir / 'tokenizer.json')
+    assert native['wan_generation']['output_directory'] == str(root / 'clips/clip-1')
+    assert (root / 'clips').is_dir()
+    assert not (root / 'clips/clip-1').exists()
+    assert (models / 'private').stat().st_mode & 0o777 == 0o700
+
+
 @pytest.mark.parametrize('departure', [False, True])
 def test_native_qualification_barriers_require_explicit_minindn_mode(ops, minindn_deployment, departure):
     parser, _ = ops
@@ -2336,6 +2439,25 @@ def test_diagnostic_log_filter_rejects_invalid_values(ops, tmp_path, monkeypatch
              'diagnostic_logging': True}
     with pytest.raises(cluster.ClusterError, match='invalid NDNSF_DI_DIAGNOSTIC_LOG_FILTER'):
         cluster._environment(tmp_path, tmp_path/'nfd.sock', 'repo', state)
+
+
+def test_provider_native_launch_passes_exact_transport_parameters(ops, deployment):
+    parser, _ = ops
+    base, config = deployment
+    (base / 'trust-root-registry-v1.json').write_text('{}')
+    (base / 'recipients.json').write_text(json.dumps({'/test/p1': 'key.pem'}))
+    config['actors'][-1]['parameters'] = {
+        'exact-packet-disk-mib': 1024,
+        'tensor-segment-bytes': 7600,
+        'grant-authority-public-key': 'key.pem', 'recipient-key-map': 'recipients.json'}
+    native = parser.load_deployment(write_config(base, config))
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    directory = base / 'native-inputs'
+    directory.mkdir()
+    state = {'boot_id': uuid.uuid4().hex, 'configuration_sha256': 'a' * 64}
+    argv, _ = cluster._native_launch(native, native['actors'][-1], directory, state)
+    assert argv[argv.index('--exact-packet-disk-mib') + 1] == '1024'
+    assert argv[argv.index('--tensor-segment-bytes') + 1] == '7600'
 
 
 @pytest.mark.parametrize('debug', (False, True))
@@ -5802,6 +5924,10 @@ def test_installed_slurm_caller_persists_intent_and_never_resubmits(
     (lambda c: c["actors"][-1].update(parameters={"artifact-cache-max-mib": True}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"artifact-cache-max-mib": -1}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"artifact-cache-max-mib": 2147483648}), "native signed int MiB"),
+    (lambda c: c["actors"][-1].update(parameters={"exact-packet-disk-mib": 0}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"exact-packet-disk-mib": 131073}), "native disk ceiling"),
+    (lambda c: c["actors"][-1].update(parameters={"tensor-segment-bytes": True}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"tensor-segment-bytes": 8801}), "native NDN packet ceiling"),
     (lambda c: c["actors"][-1].update(parameters={"assembly-timeout-ms": True}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"assembly-timeout-ms": 3600001}), "native assembly limit"),
     (lambda c: c["actors"][-1].update(parameters={"conversation-retention-ms": 0}), "expected integer"),

@@ -1272,6 +1272,11 @@ namespace ndn_service_framework{
              * cancellation, not a receipt proving remote execution stopped. */
             bool CancelCollaboration(const RequestId& requestId);
 
+            /** Remove local response admission while keeping one already
+             * granted scope for a bounded remote cancellation exchange.
+             * The exchange owner must clear the scope after use. */
+            bool CancelCollaboration(const RequestId& requestId, const KeyScope& controlScope);
+
             template<typename RequestT, typename ResponseT>
             ndn::Name RequestService(const ServiceName& service,
                                      const RequestT& request,
@@ -1650,19 +1655,23 @@ namespace ndn_service_framework{
               void stop();
               bool terminal = false;
               std::shared_ptr<ndn::SegmentFetcher> fetcher;
+              ndn::signal::ScopedConnection onValidated;
+              ndn::signal::ScopedConnection onData;
               ndn::signal::ScopedConnection onComplete;
               ndn::signal::ScopedConnection onError;
               ndn::scheduler::ScopedEventId deadline;
+              std::uint64_t expectedBytes = 0;
+              std::uint64_t encodedBytes = 0;
+              std::string keyId;
+              std::string error;
+              ndn::Buffer plaintext;
+              std::vector<ndn::Buffer> nonces;
             };
 
             void
             startLargeResponseReferenceFetch(ResponseMessage response,
                 const ndn::Name& responseName, const ndn::Name& serviceName,
                 const ndn::Name& requestId, const ndn::Name& providerName);
-            std::optional<ResponseMessage>
-            decodeLargeResponseReferencePayload(const ResponseMessage& response,
-                const ndn::Name& responseName, const ndn::Name& serviceName,
-                const ndn::Buffer& encodedEnvelope, std::string& error);
 
             std::optional<RequestNameV2>
             resolvePendingPublicationContext(const ndn::Name& messageName) const;

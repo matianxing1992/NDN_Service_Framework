@@ -1,0 +1,5 @@
+# Host-side Wan prompt preparation and the SentencePiece verification oracle.
+ftfy==6.2.3
+regex==2024.11.6
+wcwidth==0.2.14
+sentencepiece==0.2.0

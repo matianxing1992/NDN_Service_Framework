@@ -80,6 +80,7 @@ struct NativeRequestOptions
   // This is distinct from the non-authoritative handle.observe() callback.
   std::function<void(const std::vector<std::uint8_t>&)> onGenerationEvent;
   std::shared_ptr<class NativeWorkStatistics> workStatistics;
+  std::optional<std::size_t> maxInlineInputBytes;
 };
 
 /** Pinned service/task metadata supplied by the application's catalog owner.

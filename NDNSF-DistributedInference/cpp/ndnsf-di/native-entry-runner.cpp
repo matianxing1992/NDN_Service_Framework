@@ -2,6 +2,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -64,6 +65,95 @@ decodeNativeSourceEntryFiles(const std::string& wire)
   if (encodeNativeSourceEntryFiles(entries) != nativeCanonicalJson(values))
     throw std::invalid_argument("source artifact has unknown entry file fields");
   return entries;
+}
+
+std::vector<NativeSubgraphEntryContract>
+readNativeOnnxEntryTable(const NativeModelRunnerSpec& spec)
+{
+  const auto table = nativeParseJson(spec.metadata.at(NATIVE_ONNX_ENTRY_TABLE));
+  if (!table.is_array() || table.empty())
+    throw std::invalid_argument("canonical ONNX entry table must be a nonempty array");
+  std::vector<NativeSubgraphEntryContract> entries;
+  std::set<std::string> paths, ids;
+  for (const auto& row : table) {
+    if (!row.is_object() || row.size() != 5)
+      throw std::invalid_argument("canonical ONNX entry table row is invalid");
+    NativeSubgraphEntryContract entry;
+    entry.unitId = spec.role;
+    entry.entryId = row.at("id").get<std::string>();
+    entry.inputNames = row.at("inputs").get<std::vector<std::string>>();
+    entry.outputNames = row.at("outputs").get<std::vector<std::string>>();
+    entry.relativeGraphPath = row.at("file").get<std::string>();
+    entry.graphDigest = row.at("digest").get<std::string>();
+    for (const auto& name : entry.inputNames) entry.inputSlotByGraphName.emplace(name, name);
+    for (const auto& name : entry.outputNames) entry.outputSlotByGraphName.emplace(name, name);
+    entry.validate();
+    if (entry.graphDigest.empty() ||
+        entry.relativeGraphPath != "entry-" + entry.graphDigest.substr(7) + ".onnx" ||
+        !paths.insert(entry.relativeGraphPath).second || !ids.insert(entry.entryId).second)
+      throw std::invalid_argument("canonical ONNX entry table duplicates or escapes its file set");
+    entries.push_back(std::move(entry));
+  }
+  return entries;
+}
+
+namespace {
+
+NativeJson
+checkOnnxEntryTable(const NativeSelectionProjectionV3& projection,
+                    const NativeModelRunnerSpec& spec, bool rebind)
+{
+  const auto& role = projection.assemblyContract();
+  validateNativeOnnxEntrySelection(projection.plan, role);
+  if (projection.generationContract.enabled || projection.automaticShapeSeed || spec.entryContract ||
+      spec.role != role.selectedRole || spec.backend != role.backend ||
+      spec.metadata.at("canonicalOnnxEntryBinding") !=
+        detail::nativeRoleStepContractDigest(projection.plan, spec.role))
+    throw std::invalid_argument("canonical ONNX entries differ from the selected execution");
+  const auto entries = readNativeOnnxEntryTable(spec);
+  auto rebound = NativeJson::array();
+  std::set<std::string> ids;
+  std::size_t index = 0;
+  const auto matches = [](const auto& names, const auto& slots) {
+    return std::equal(names.begin(), names.end(), slots.begin(), slots.end(),
+                      [](const auto& name, const auto& slot) { return name == slot.slotId; });
+  };
+  for (const auto& step : projection.plan.steps) {
+    if (step.unitId != spec.role || step.operation != "CALL_SUBGRAPH") continue;
+    if (index >= entries.size() || step.onnxNodeIndices.empty() || step.artifactEntry.empty() ||
+        !ids.insert(step.artifactEntry).second ||
+        (!rebind && step.artifactEntry != entries[index].entryId) ||
+        !matches(entries[index].inputNames, step.inputSlots) ||
+        !matches(entries[index].outputNames, step.outputSlots))
+      throw std::invalid_argument("canonical ONNX entry table has an unbound CALL");
+    if (rebind) {
+      const auto& entry = entries[index];
+      rebound.push_back({{"id", step.artifactEntry}, {"file", entry.relativeGraphPath},
+                         {"digest", entry.graphDigest}, {"inputs", entry.inputNames},
+                         {"outputs", entry.outputNames}});
+    }
+    ++index;
+  }
+  if (index != entries.size())
+    throw std::invalid_argument("canonical ONNX entry table contains unselected entries");
+  return rebound;
+}
+
+} // namespace
+
+void
+validateNativeOnnxEntryTable(const NativeSelectionProjectionV3& projection,
+                            const NativeModelRunnerSpec& spec)
+{
+  (void)checkOnnxEntryTable(projection, spec, false);
+}
+
+void
+bindNativeOnnxEntryTable(const NativeSelectionProjectionV3& projection,
+                        NativeModelRunnerSpec& spec)
+{
+  const auto rebound = checkOnnxEntryTable(projection, spec, true);
+  spec.metadata.at(NATIVE_ONNX_ENTRY_TABLE) = nativeCanonicalJson(rebound);
 }
 
 void

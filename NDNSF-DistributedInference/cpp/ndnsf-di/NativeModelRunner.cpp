@@ -387,7 +387,10 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
   std::shared_ptr<NativeModelRunner> runner;
   const bool sourceProgram = spec.metadata.count("sourceEntryFiles") != 0 ||
                              spec.metadata.count("sourceEntryProgram") != 0;
-  if (spec.entryContract || sourceProgram) {
+  const bool canonicalEntries = spec.metadata.count(NATIVE_ONNX_ENTRY_TABLE) != 0;
+  if (spec.entryContract || sourceProgram || canonicalEntries) {
+    if (canonicalEntries && (sourceProgram || spec.entryContract))
+      throw std::invalid_argument("runner has conflicting ONNX entry contracts");
     std::vector<NativeSubgraphEntryContract> entries;
     const auto root = std::filesystem::path(spec.path).parent_path();
     if (sourceProgram) {
@@ -419,6 +422,9 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
         entries.push_back(std::move(entry));
       }
     }
+    else if (canonicalEntries) {
+      entries = readNativeOnnxEntryTable(spec);
+    }
     else {
       const auto& entry = *spec.entryContract;
       entry.validate();
@@ -437,7 +443,7 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
                   spec.sourceProgramDependencyEntries.end(), entry.entryId) !=
         spec.sourceProgramDependencyEntries.end();
       child.sourceProgramDependencyEntries.clear();
-      if (sourceProgram) {
+      if (sourceProgram || canonicalEntries) {
         child.path = (root / entry.relativeGraphPath).string();
         for (auto metadata = child.metadata.begin(); metadata != child.metadata.end();) {
           if (metadata->first.rfind("inputScope.", 0) == 0 ||
@@ -446,9 +452,20 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
           else
             ++metadata;
         }
-        for (const auto* key : {"sourceEntryFiles", "sourceEntryProgram", "assembledCachePath",
-                                "protectedResidentIdentity"})
-          child.metadata.erase(key);
+        if (sourceProgram) {
+          for (const auto* key : {"sourceEntryFiles", "sourceEntryProgram", "assembledCachePath",
+                                  "protectedResidentIdentity"})
+            child.metadata.erase(key);
+          child.protectedResidentUse.reset();
+          child.residencyIdentity.reset();
+        }
+        else {
+          child.metadata.erase(NATIVE_ONNX_ENTRY_TABLE);
+          child.metadata.erase("canonicalOnnxEntryBinding");
+          // Each stateless entry owns a session. Bound its retained Conv workspace.
+          if (!child.protectedResidentUse)
+            child.metadata["disableCpuMemArena"] = "true";
+        }
         // ORT derives a profile filename from the prefix and timestamp.
         // Several children can start in the same millisecond.
         for (const auto* key : {"providerProfilePrefix", "provider_profile_prefix"}) {
@@ -457,8 +474,6 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
             profile->second += "-entry-" + nativePlanningDigest(entry.entryId).substr(7);
         }
         child.metadata["assembledModelDigest"] = entry.graphDigest;
-        child.protectedResidentUse.reset();
-        child.residencyIdentity.reset();
       }
       child.metadata["forceOutputBundle"] = "true";
       for (std::size_t i = 0; i < entry.inputNames.size(); ++i) {

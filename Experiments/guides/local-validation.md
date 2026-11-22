@@ -15,11 +15,18 @@ sudo ndnsf-di cluster down --config deployment.json
 MiniNDN使用 platform.kind=minindn，声明绝对topology路径与其SHA256，
 nodes覆盖全部拓扑主机。每个managed NFD使用独立socket，各actor使用独立凭据HOME。
 本机/MiniNDN up的当前最大timeout为3600秒；状态与失败仍以原生结果为准。
+有线性能基线使用每条直连的单向 `delay=0.05ms`，对应约 0.1 ms 的传播往返时延。
+记录拓扑摘要、链路延迟与带宽，匹配比较使用同一拓扑。历史兼容入口和显式网络扰动
+沿用各自的拓扑参数。
 
 维护的 Qwen 实验入口是 Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py；
 run --deployment deployment.json --verify 委托上述owner和C++ oracle。
 先读当前 --help/schema，再使用明确支持的参数。
 历史 --profile/stage/native-tracer 入口属于兼容实验，不证明统一部署路径。
+
+Provider 可用 `parameters.tensor-segment-bytes` 配置 DI 张量分段的载荷上限，默认 7,000 B。
+做大对象验收时将其与 `exact-packet-disk-mib`、实际 Producer 名、签名方案和拓扑一起记录。
+安装版在已认证 ACK 中声明分段上限，并对每个实际签名包及整批保留执行现有 wire 检查。
 
 Qwen CPU TP 三轮验收还要运行同一安装前缀中的独立未切分模型对照。使用本次部署
 的状态文件，其路径为 deployment.json 中的 `storage.state_root` 加

@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -569,6 +570,7 @@ std::string NativeSplitCandidate::canonicalJson() const
                                  {"output_slots", slots(step.outputSlots)},
                                  {"local_state_slots", step.localStateSlots}};
       if (step.sourceLayers.second != 0) value["source_layers"] = step.sourceLayers;
+      if (!step.onnxNodeIndices.empty()) value["onnx_node_indices"] = step.onnxNodeIndices;
       steps.push_back(std::move(value));
     }
     executionPlanJson["steps"] = std::move(steps);
@@ -946,6 +948,10 @@ nativePlanRequiredCapabilities(const NativeExecutionPlan& plan)
   if (std::any_of(plan.steps.begin(), plan.steps.end(),
                   [] (const auto& step) { return step.operation == "SUM"; })) {
     required.emplace_back(NATIVE_SUM_CAPABILITY_V1);
+  }
+  if (std::any_of(plan.steps.begin(), plan.steps.end(),
+                  [] (const auto& step) { return !step.onnxNodeIndices.empty(); })) {
+    required.emplace_back(NATIVE_ONNX_ENTRY_CAPABILITY_V1);
   }
   return required;
 }

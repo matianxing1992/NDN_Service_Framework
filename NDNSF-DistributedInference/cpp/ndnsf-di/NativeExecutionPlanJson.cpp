@@ -20,6 +20,7 @@
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <zlib.h>
 
 #include <algorithm>
 #include <cctype>
@@ -45,7 +46,9 @@ std::vector<NativeDependencySpec> bindFixedTemplateDependencies(
   const NativeJson& bindings, const NativeFixedExecutionTemplateV1& fixed);
 void requireOnlyBindingKeys(const NativeJson& value, std::initializer_list<const char*> keys);
 std::vector<NativeExecutionStepSpec> nativeStepsFromJson(const boost::property_tree::ptree& root);
+std::vector<NativeExecutionStepSpec> nativeStepsFromTypedJson(const NativeJson& value);
 NativeJson nativeStepsJson(const std::vector<NativeExecutionStepSpec>& steps);
+bool hasCanonicalOnnxEntries(const NativeFixedExecutionTemplateV1& execution);
 
 NativeJson jsonValue(const NativeAssemblyTensorContractV3& value);
 NativeJson jsonValue(const NativeSelectionRoleV3& value);
@@ -1479,23 +1482,32 @@ segmentNamingFromJson(const boost::property_tree::ptree& dependency,
 
 } // namespace
 
+namespace {
+
+bool
+isShortTensorNamingCoordinate(const std::string& id)
+{
+  return !id.empty() && id.size() <= 64 &&
+    std::all_of(id.begin(), id.end(), [] (unsigned char c) { return c > 0x20 && c < 0x7f; });
+}
+
+} // namespace
+
+std::string
+detail::nativeTensorNamingCoordinate(const std::string& id)
+{
+  return isShortTensorNamingCoordinate(id) ? id : nativePlanningDigest(id);
+}
+
 void detail::validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpoint)
 {
   validateNativeTensorEndpointV3(endpoint);
   if (!endpoint.namingStepId.empty()) {
-    // N5 coordinates: a declared layer interval must be non-empty and half-open, and the step and port
-    // identifiers must be single bounded atoms. The phase is derived from the round and stride, so it is not
-    // validated here.
-    // A step or port identifier is one bounded public component. It is appended as a component, so a separator
-    // inside it never expands the name; only control characters are refused.
-    const auto atom = [](const std::string& value) {
-      return !value.empty() && value.size() <= 64 &&
-        std::all_of(value.begin(), value.end(), [](unsigned char c) {
-          return c > 0x20 && c < 0x7f;
-        });
+    // Long graph IDs use the digest coordinate. Both forms encode one component.
+    const auto valid = [] (const std::string& id) {
+      return isShortTensorNamingCoordinate(id) || isSha256Digest(id);
     };
-    if (!atom(endpoint.namingStepId) ||
-        (!atom(endpoint.namingPortId) && !isSha256Digest(endpoint.namingPortId)))
+    if (!valid(endpoint.namingStepId) || !valid(endpoint.namingPortId))
       throw std::invalid_argument("tensor naming step or port is not an atom");
     if (endpoint.namingLayerEnd != 0 && endpoint.namingLayerBegin >= endpoint.namingLayerEnd)
       throw std::invalid_argument("tensor naming layer interval must be non-empty");
@@ -1715,6 +1727,7 @@ NativeJson nativeStepsJson(const std::vector<NativeExecutionStepSpec>& steps)
                             {"local_state_slots", step.localStateSlots}};
     if (!step.artifactEntry.empty()) entry["artifact_entry"] = step.artifactEntry;
     if (step.sourceLayers.second != 0) entry["source_layers"] = step.sourceLayers;
+    if (!step.onnxNodeIndices.empty()) entry["onnx_node_indices"] = step.onnxNodeIndices;
     result.push_back(std::move(entry));
   }
   return result;
@@ -1725,6 +1738,8 @@ std::vector<NativeExecutionStepSpec> nativeStepsFromJson(const boost::property_t
   std::vector<NativeExecutionStepSpec> steps;
   for (const auto& stepNode : root) {
     const auto& step = stepNode.second;
+    if (step.get_child_optional("onnx_node_indices"))
+      throw std::invalid_argument("canonical ONNX step nodes require a typed Selection template");
     NativeExecutionStepSpec spec;
     spec.stepId = step.get<std::string>("step_id", "");
     spec.unitId = step.get<std::string>("unit_id", "");
@@ -1784,6 +1799,25 @@ std::vector<NativeExecutionStepSpec> nativeStepsFromJson(const boost::property_t
         throw std::invalid_argument("step source layers must form a non-empty interval");
     }
     steps.push_back(std::move(spec));
+  }
+  return steps;
+}
+
+std::vector<NativeExecutionStepSpec>
+nativeStepsFromTypedJson(const NativeJson& value)
+{
+  auto legacy = legacyTreeFromValue(value);
+  for (auto& item : legacy) item.second.erase("onnx_node_indices");
+  auto steps = nativeStepsFromJson(legacy);
+  for (std::size_t index = 0; index < steps.size(); ++index) {
+    const auto& step = value.at(index);
+    const auto field = step.find("onnx_node_indices");
+    if (field == step.end()) continue;
+    if (!field->is_array() || field->empty() ||
+        std::any_of(field->begin(), field->end(),
+                    [](const auto& node) { return !node.is_number_unsigned(); }))
+      throw std::invalid_argument("canonical ONNX step nodes require unsigned source indices");
+    steps[index].onnxNodeIndices = field->get<std::vector<std::uint64_t>>();
   }
   return steps;
 }
@@ -1918,6 +1952,20 @@ nativeStageLayoutsFromJson(const NativeJson& rows)
   return result;
 }
 
+void
+readV2StepTemplate(const NativeJson& value, NativeExecutionPlan& plan)
+{
+  requireOnlyBindingKeys(value, {"step_plan_version", "tensor_degree", "stage_layout", "steps"});
+  if (value.at("step_plan_version") != NATIVE_STEP_PLAN_VERSION_V2 ||
+      !value.at("tensor_degree").is_number_integer() ||
+      value.at("tensor_degree") <= 0 || !value.at("steps").is_array())
+    throw std::invalid_argument("v2 step template metadata is invalid");
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.tensorDegree = value.at("tensor_degree").get<std::uint64_t>();
+  plan.steps = nativeStepsFromTypedJson(value.at("steps"));
+  plan.stageLayout = nativeStageLayoutsFromJson(value.at("stage_layout"));
+}
+
 NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   const NativeJson& typedRoot, const boost::property_tree::ptree& root,
   const std::string& selectedRole,
@@ -2035,18 +2083,8 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
 
   projection.plan.version = 3;
   projection.plan.executionPolicy = "DATA_DRIVEN_V2";
-  if (!fixedAssignment && typedRoot.contains("step_template_v2")) {
-    const auto& value = typedRoot.at("step_template_v2");
-    requireOnlyBindingKeys(value, {"step_plan_version", "tensor_degree", "stage_layout", "steps"});
-    if (value.at("step_plan_version") != NATIVE_STEP_PLAN_VERSION_V2 ||
-        !value.at("tensor_degree").is_number_integer() ||
-        value.at("tensor_degree") <= 0 || !value.at("steps").is_array())
-      throw std::invalid_argument("Selection v2 step template metadata is invalid");
-    projection.plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
-    projection.plan.tensorDegree = value.at("tensor_degree").get<std::uint64_t>();
-    projection.plan.steps = nativeStepsFromJson(legacyTreeFromValue(value.at("steps")));
-    projection.plan.stageLayout = nativeStageLayoutsFromJson(value.at("stage_layout"));
-  }
+  if (!fixedAssignment && typedRoot.contains("step_template_v2"))
+    readV2StepTemplate(typedRoot.at("step_template_v2"), projection.plan);
   std::set<std::string> roleSet;
   const auto appendRole = [&] (const std::string& role) {
     if (!role.empty() && roleSet.insert(role).second) {
@@ -2612,6 +2650,7 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     throw std::invalid_argument(
       "V3 Selection role/assembly/dataflow/device binding mismatch");
   }
+  validateNativeOnnxEntrySelection(projection.plan, projection.assemblyContract());
   if (projection.protectedKvRestore) {
     const auto saved = nativeReadSavedKvRole(projection.protectedKvRestore->at("savedRole"));
     (void)nativeReadKvRestore(*projection.protectedKvRestore, projection,
@@ -2622,6 +2661,25 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
 }
 
 } // namespace
+
+NativeExecutionPlan
+nativeCanonicalOnnxStepPlanFromJson(const NativeJson& steps, const NativeJson& dependencies)
+{
+  NativeExecutionPlan plan;
+  readV2StepTemplate(steps, plan);
+  for (const auto& stage : plan.stageLayout)
+    plan.roles.insert(plan.roles.end(), stage.unitRoleIds.begin(), stage.unitRoleIds.end());
+  if (!dependencies.is_array())
+    throw std::invalid_argument("canonical ONNX plan dependencies must be an array");
+  for (const auto& item : dependencies)
+    plan.dependencies.push_back(dependencyFromV3Json(legacyTreeFromValue(item)));
+  if (nativeV2StepTemplateJson(plan) != steps || nativeDependenciesJson(plan.dependencies) !=
+      dependencies || std::any_of(plan.steps.begin(), plan.steps.end(), [](const auto& step) {
+        return step.operation == "CALL_SUBGRAPH" && step.onnxNodeIndices.empty();
+      }))
+    throw std::invalid_argument("canonical ONNX plan differs from its exact V2 encoding");
+  return plan;
+}
 
 NativeSelectionProjectionV3
 nativeSelectionProjectionV3FromJson(std::istream& input,
@@ -3010,7 +3068,7 @@ NativeFixedExecutionTemplateV1 fixedTemplateFromJson(const NativeJson& value)
       !value.at("expand_role_epochs").is_boolean())
     throw std::invalid_argument("invalid fixed execution template fields");
   if (withSteps) {
-    result.steps = nativeStepsFromJson(legacyTreeFromValue(value.at("steps")));
+    result.steps = nativeStepsFromTypedJson(value.at("steps"));
     result.stepPlanVersion = value.at("step_plan_version").get<std::string>();
     result.tensorDegree = value.at("tensor_degree").get<std::uint64_t>();
   }
@@ -3352,7 +3410,22 @@ NativeJson compactEndpointBindings(const NativeJson& values)
     ? compact : values;
 }
 
-NativeJson expandInvocationBindings(const NativeJson& value)
+constexpr std::size_t MAX_INVOCATION_WIRE_BYTES = 4U << 20;
+constexpr std::size_t MAX_STATIC_ONNX_INVOCATION_BYTES = 8U << 20;
+
+std::size_t
+invocationExpansionLimit(const NativeFixedExecutionTemplateV1& execution)
+{
+  // Static CALL plans already own every endpoint in the verified fixed
+  // template. The separate logical limit allows ordinary V2 common fields
+  // to be restored without relaxing the protected Selection wire budget.
+  if (!execution.generation.enabled && hasCanonicalOnnxEntries(execution))
+    return MAX_STATIC_ONNX_INVOCATION_BYTES;
+  return MAX_INVOCATION_WIRE_BYTES;
+}
+
+NativeJson expandInvocationBindings(const NativeJson& value,
+                                    std::size_t maxExpandedBytes)
 {
   const auto automaticEncoding = automaticInvocationEncoding(value);
   const bool automatic = !automaticEncoding.empty();
@@ -3361,9 +3434,8 @@ NativeJson expandInvocationBindings(const NativeJson& value)
       !value.contains("schema_version") || !value.at("schema_version").is_number_integer() ||
       value.at("schema_version") != NativeJson(2)))
     throw std::invalid_argument("invalid compact invocation transport version");
-  constexpr std::size_t MAX_BYTES = 4U << 20;
   const auto encodedBytes = nativeCanonicalJson(value).size();
-  if (encodedBytes > MAX_BYTES)
+  if (encodedBytes > MAX_INVOCATION_WIRE_BYTES)
     throw std::invalid_argument("compact invocation exceeds wire bound");
   auto expandedBytes = encodedBytes;
   auto expanded = value;
@@ -3385,10 +3457,11 @@ NativeJson expandInvocationBindings(const NativeJson& value)
     }
     expandedBytes -= nativeCanonicalJson(bindings).size();
     const auto entriesBytes = nativeCanonicalJson(originalEntries).size();
-    if (entriesBytes > MAX_BYTES - expandedBytes || commas > MAX_BYTES - expandedBytes - entriesBytes)
+    if (entriesBytes > maxExpandedBytes - expandedBytes ||
+        commas > maxExpandedBytes - expandedBytes - entriesBytes)
       throw std::invalid_argument("expanded endpoint bindings exceed wire bound");
     expandedBytes += entriesBytes + commas;
-    if (originalEntries.size() > (MAX_BYTES - expandedBytes) / commonBytes)
+    if (originalEntries.size() > (maxExpandedBytes - expandedBytes) / commonBytes)
       throw std::invalid_argument("expanded endpoint bindings exceed wire bound");
     expandedBytes += originalEntries.size() * commonBytes;
     auto entries = originalEntries;
@@ -3407,7 +3480,7 @@ NativeJson expandInvocationBindings(const NativeJson& value)
     expanded["schema"] = "ndnsf-di-selection-invocation-v1";
     expanded["schema_version"] = 1;
   }
-  if (nativeCanonicalJson(expanded).size() > MAX_BYTES)
+  if (nativeCanonicalJson(expanded).size() > maxExpandedBytes)
     throw std::invalid_argument("expanded invocation exceeds wire bound");
   return expanded;
 }
@@ -3504,7 +3577,11 @@ void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
   const auto automaticEncoding = automaticInvocationEncoding(value);
   if (value.value("schema", std::string{}) == "ndnsf-di-selection-invocation-v2" ||
       automaticEncoding == "compact") {
-    validateNativeSelectionInvocationBindingShapeV1(expandInvocationBindings(value));
+    // The header can be checked before the Provider retrieves the fixed role.
+    // The subsequent binding enforces the limit of that authenticated template.
+    const auto limit = automaticEncoding.empty()
+      ? MAX_STATIC_ONNX_INVOCATION_BYTES : MAX_INVOCATION_WIRE_BYTES;
+    validateNativeSelectionInvocationBindingShapeV1(expandInvocationBindings(value, limit));
     return;
   }
   const bool rangeInvocation = value.value("schema", std::string{}) ==
@@ -3757,11 +3834,93 @@ std::string nativeFixedRoleAssignmentV1ToJson(const NativeFixedRoleAssignmentV1&
     {"execution_template", fixedTemplateJson(*assignment.executionTemplate())}, {"digest", assignment.digest()}});
 }
 
-std::shared_ptr<const NativeFixedRoleAssignmentV1> nativeFixedRoleAssignmentV1FromJson(std::istream& input)
+namespace {
+
+constexpr std::size_t MAX_FIXED_SOURCE_WIRE = 4U << 20;
+// The tiled 81-frame Wan VAE role template expands to about 54 MiB.
+constexpr std::size_t MAX_FIXED_SOURCE_JSON = 56U << 20;
+constexpr std::string_view FIXED_SOURCE_DEFLATE = "NDNSF-DI-FIXED-Z1";
+constexpr std::size_t FIXED_SOURCE_HEADER = FIXED_SOURCE_DEFLATE.size() + 4;
+
+bool
+hasCanonicalOnnxEntries(const NativeFixedExecutionTemplateV1& execution)
+{
+  return std::any_of(execution.steps.begin(), execution.steps.end(),
+                     [](const auto& step) { return !step.onnxNodeIndices.empty(); });
+}
+
+std::string
+unpackFixedSource(std::string_view payload)
+{
+  if (payload.size() <= FIXED_SOURCE_HEADER)
+    throw std::invalid_argument("packed fixed role source header is truncated");
+  std::uint32_t size = 0;
+  for (unsigned byte = 0; byte < 4; ++byte) {
+    const auto value = static_cast<unsigned char>(payload[FIXED_SOURCE_DEFLATE.size() + byte]);
+    size |= std::uint32_t{value} << (8 * byte);
+  }
+  if (size <= payload.size() || size > MAX_FIXED_SOURCE_JSON)
+    throw std::invalid_argument("packed fixed role source expansion exceeds bounds");
+  std::string json(size, '\0');
+  uLongf decoded = size;
+  uLong encoded = payload.size() - FIXED_SOURCE_HEADER;
+  const auto status = uncompress2(reinterpret_cast<Bytef*>(json.data()), &decoded,
+    reinterpret_cast<const Bytef*>(payload.data() + FIXED_SOURCE_HEADER), &encoded);
+  if (status != Z_OK || decoded != size || encoded != payload.size() - FIXED_SOURCE_HEADER)
+    throw std::invalid_argument("packed fixed role source is corrupt or has trailing bytes");
+  return json;
+}
+
+} // namespace
+
+std::string
+nativeFixedRoleAssignmentV1ToWire(const NativeFixedRoleAssignmentV1& assignment)
+{
+  auto json = nativeFixedRoleAssignmentV1ToJson(assignment);
+  if (hasCanonicalOnnxEntries(*assignment.executionTemplate()) &&
+      json.size() > FIXED_SOURCE_HEADER && json.size() <= MAX_FIXED_SOURCE_JSON) {
+    // Only the authenticated transport representation changes. The fixed
+    // assignment digest still commits to the canonical decoded JSON fields.
+    std::string packed(FIXED_SOURCE_DEFLATE);
+    for (unsigned byte = 0; byte < 4; ++byte)
+      packed.push_back(static_cast<char>((json.size() >> (8 * byte)) & 0xff));
+    const auto capacity = std::min(MAX_FIXED_SOURCE_WIRE, json.size() - 1);
+    packed.resize(capacity);
+    uLongf encoded = capacity - FIXED_SOURCE_HEADER;
+    const auto status = compress2(reinterpret_cast<Bytef*>(packed.data() + FIXED_SOURCE_HEADER),
+      &encoded, reinterpret_cast<const Bytef*>(json.data()), json.size(), Z_DEFAULT_COMPRESSION);
+    if (status == Z_OK) {
+      packed.resize(FIXED_SOURCE_HEADER + encoded);
+      return packed;
+    }
+  }
+  if (json.size() > MAX_FIXED_SOURCE_WIRE)
+    throw std::invalid_argument("fixed role recovery source exceeds wire limit");
+  return json;
+}
+
+std::shared_ptr<const NativeFixedRoleAssignmentV1>
+nativeFixedRoleAssignmentV1FromJson(std::istream& input)
+{
+  std::string wire;
+  for (std::istreambuf_iterator<char> it(input), end; it != end; ++it) {
+    if (wire.size() == MAX_FIXED_SOURCE_WIRE)
+      throw std::invalid_argument("fixed role source exceeds wire limit");
+    wire.push_back(*it);
+  }
+  if (wire.compare(0, FIXED_SOURCE_DEFLATE.size(), FIXED_SOURCE_DEFLATE) == 0)
+    throw std::invalid_argument("fixed role JSON input contains a packed source");
+  return nativeFixedRoleAssignmentV1FromWire(wire);
+}
+
+std::shared_ptr<const NativeFixedRoleAssignmentV1>
+nativeFixedRoleAssignmentV1FromWire(std::string_view payload)
 {
   ++detail::fixedAssignmentWork().sourceParses;
-  const std::string wire{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-  if (wire.size() > (4U << 20)) throw std::invalid_argument("fixed role source exceeds wire limit");
+  if (payload.size() > MAX_FIXED_SOURCE_WIRE)
+    throw std::invalid_argument("fixed role source exceeds wire limit");
+  const bool packed = payload.substr(0, FIXED_SOURCE_DEFLATE.size()) == FIXED_SOURCE_DEFLATE;
+  const auto wire = packed ? unpackFixedSource(payload) : std::string(payload);
   const auto root = nativeParseJson(wire, 64);
   const bool automatic = root.value("schema", std::string{}) == "ndnsf-di-fixed-assignment-v2";
   if (!root.is_object() || root.size() != 7 ||
@@ -3786,6 +3945,12 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> nativeFixedRoleAssignmentV1Fr
     throw std::invalid_argument("fixed role source contains a noncanonical role contract");
   auto executionTemplate = std::make_shared<const NativeFixedExecutionTemplateV1>(
     fixedTemplateFromJson(root.at("execution_template")));
+  if (packed && !hasCanonicalOnnxEntries(*executionTemplate))
+    throw std::invalid_argument("packed fixed role source requires canonical ONNX entries");
+  NativeExecutionPlan plan;
+  plan.steps = executionTemplate->steps;
+  plan.stageLayout = executionTemplate->stageLayout;
+  validateNativeOnnxEntrySelection(plan, role);
   validateNativeQwenTensorAssembly(role, executionTemplate->stageLayout);
   validateFixedTemplateProviderCover(*executionTemplate, selected, provider);
   const auto digest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
@@ -4075,7 +4240,7 @@ nativeSelectionInvocationV2ToJson(
   // Reject at the producer before publication if the reader's expanded bound
   // would fail, even when the compact transport itself would fit.
   const auto expandedBytes = nativeCanonicalJson(root).size();
-  if (expandedBytes > (4U << 20))
+  if (expandedBytes > invocationExpansionLimit(*fixedAssignment.executionTemplate()))
     throw std::invalid_argument("expanded invocation exceeds wire bound");
   const auto expandedDataflowBytes = measure ? nativeCanonicalJson(root.at("dataflow")).size() : 0;
   for (const auto* key : {"may_publish", "must_fetch"})
@@ -4086,6 +4251,8 @@ nativeSelectionInvocationV2ToJson(
     root["schema_version"] = 2;
   }
   const auto wire = nativeCanonicalJson(root);
+  if (wire.size() > MAX_INVOCATION_WIRE_BYTES)
+    throw std::invalid_argument("compact invocation exceeds wire bound");
   if (measure) {
     logRuntimeEvidence("NDNSF_DI_INVOCATION_WIRE requestId=" + projection.requestId +
       " role=" + projection.executionRole.roleId + " version=2 wire_bytes=" +
@@ -4120,7 +4287,8 @@ NativeSelectionProjectionV3 nativeSelectionInvocationV1FromJson(
   auto root = nativeParseJson(wire, 64);
   if (root.value("schema", std::string{}) == "ndnsf-di-selection-invocation-v2" ||
       automaticInvocationEncoding(root) == "compact")
-    root = expandInvocationBindings(root);
+    root = expandInvocationBindings(root,
+      invocationExpansionLimit(*fixedAssignment.executionTemplate()));
   return decodeSelectionProjectionV3(root, legacyTreeFromValue(root), selectedRole,
     nullptr, false, &fixedAssignment);
 }
@@ -4496,6 +4664,44 @@ void validateNativeAssembly(const NativeSelectionRoleV3& role)
   const auto confidence = legacyTreeFromValue(NativeJson(role.postprocessConfidenceThreshold))
     .get_value<double>(0.0);
   validateSelectionRoleFields(role, confidence);
+}
+
+void
+validateNativeOnnxEntrySelection(const NativeExecutionPlan& plan,
+                                 const NativeSelectionRoleV3& role)
+{
+  if (std::none_of(plan.steps.begin(), plan.steps.end(),
+                   [](const auto& step) { return !step.onnxNodeIndices.empty(); }))
+    return;
+  if (!role.sourceTransformV1.empty() || !role.tensorShardV1.empty() ||
+      !role.automaticContractDigest.empty() || !role.mergeKind.empty()) {
+    throw std::invalid_argument("canonical ONNX CALL cuts require an ordinary source recipe");
+  }
+  const auto stage = std::find_if(plan.stageLayout.begin(), plan.stageLayout.end(),
+    [&](const auto& value) {
+      return std::find(value.unitRoleIds.begin(), value.unitRoleIds.end(), role.selectedRole) !=
+             value.unitRoleIds.end();
+    });
+  if (stage == plan.stageLayout.end())
+    throw std::invalid_argument("canonical ONNX step role has no stage");
+  const auto member = std::find(stage->unitRoleIds.begin(), stage->unitRoleIds.end(),
+                                role.selectedRole);
+  const auto rank = static_cast<std::uint64_t>(std::distance(stage->unitRoleIds.begin(), member));
+  if (role.tensorParallelDegree != (stage->degree() > 1 ? stage->degree() : 0) ||
+      role.tensorParallelRank != rank)
+    throw std::invalid_argument("canonical ONNX step role disagrees with stage geometry");
+  std::set<std::uint64_t> nodes;
+  for (const auto& step : plan.steps) {
+    if (step.unitId != role.selectedRole || step.operation != "CALL_SUBGRAPH") continue;
+    for (const auto node : step.onnxNodeIndices) {
+      if (node >= role.maxNodes || !nodes.insert(node).second)
+        throw std::invalid_argument("canonical ONNX step selects unauthorized source nodes");
+    }
+  }
+  if (nodes.empty() ||
+      !std::equal(nodes.begin(), nodes.end(), role.nodeIndices.begin(), role.nodeIndices.end())) {
+    throw std::invalid_argument("canonical ONNX step nodes differ from the selected role recipe");
+  }
 }
 
 void

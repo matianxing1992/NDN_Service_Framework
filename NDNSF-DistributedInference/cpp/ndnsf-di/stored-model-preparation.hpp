@@ -44,12 +44,23 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
   const std::function<NativeRequestCatalog()>& loadCatalog, const std::string& configurationJson,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState);
 
+/** Bound a stored catalog read by the local policy size and the format limit. */
+inline constexpr std::size_t
+nativeStoredCatalogReadLimit(std::size_t localCatalogBytes)
+{
+  constexpr std::size_t LEGACY_LIMIT = 4U << 20;
+  if (localCatalogBytes > NATIVE_REQUEST_CATALOG_MAX_BYTES)
+    return NATIVE_REQUEST_CATALOG_MAX_BYTES;
+  return localCatalogBytes < LEGACY_LIMIT ? LEGACY_LIMIT : localCatalogBytes;
+}
+
 /** Recover the real native catalog from admitted encrypted metadata, without source files.
  * Only metadata is fetched here. Weight bundles remain lazy Provider inputs.
  */
 NativeStoredPreparedModel
 nativeOpenStoredPreparedModel(const NativeStoredModelHandle& handle,
-  const NativeStoredModelPacketIo& io, const NativeAssemblyControl& control);
+  const NativeStoredModelPacketIo& io, const NativeAssemblyControl& control,
+  std::size_t maxCatalogBytes = NATIVE_REQUEST_CATALOG_MAX_BYTES);
 
 } // namespace ndnsf::di
 

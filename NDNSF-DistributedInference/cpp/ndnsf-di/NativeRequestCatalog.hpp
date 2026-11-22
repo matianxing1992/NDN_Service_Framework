@@ -1,9 +1,13 @@
 #pragma once
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
+#include <cstddef>
 #include <map>
 #include <utility>
 
 namespace ndnsf::di {
+
+/** Byte limit shared by native catalog loading, publishing and reopening. */
+inline constexpr std::size_t NATIVE_REQUEST_CATALOG_MAX_BYTES = 40U << 20;
 
 class NativePreparedPlanningTemplate;
 struct AutomaticOnnxContract;
