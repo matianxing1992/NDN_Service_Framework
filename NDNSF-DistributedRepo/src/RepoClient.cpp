@@ -1241,7 +1241,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     if (data.getName() != ndn::Name(names[i]) ||
         !prefix.isPrefixOf(data.getName()) ||
         (!request.segmentManifestBinding && !verifyProducerSignature(data)) ||
-        !publication->index.emplace(data.getName(), std::make_pair(i, buffer->size())).second)
+        !publication->index.emplace(data.getName().deepCopy(),
+                                    std::make_pair(i, buffer->size())).second)
       throw std::invalid_argument("repo-original-publication-packet-invalid");
     current();
     if (request.segmentManifestBinding) {
