@@ -1018,18 +1018,20 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
     manifest.packetOffsets.push_back(0);
     // fetchManifest has verified names and full wires in root/page/source order.
     // Use that geometry to rebuild the index without parsing the wires again.
-    const auto append = [&](const ndn::Name& name) {
+    const auto append = [&](std::string name) {
       current();
       const auto wireBytes = packetWires[manifest.packetNames.size()].size();
-      manifest.packetNames.push_back(name.toUri(ndn::name::UriFormat::CANONICAL));
+      manifest.packetNames.push_back(std::move(name));
       manifest.packetOffsets.push_back(manifest.packetOffsets.back() + wireBytes);
     };
-    append(segmentManifest->rootName());
+    constexpr auto canonical = ndn::name::UriFormat::CANONICAL;
+    append(segmentManifest->rootName().toUri(canonical));
     for (uint32_t page = 0; page < manifestProof->pageCount(); ++page) {
-      append(segmentManifest->pageName(page));
+      append(segmentManifest->pageName(page).toUri(canonical));
     }
+    const auto sourcePrefix = segmentManifest->sourceName(0).getPrefix(-1).toUri(canonical) + '/';
     for (uint32_t segment = 0; segment < manifestProof->sourceCount(); ++segment) {
-      append(segmentManifest->sourceName(segment));
+      append(sourcePrefix + ndn::name::Component::fromSegment(segment).toUri(canonical));
     }
     const auto reconstructed = manifest.toJson();
     if (reconstructed.size() != initialClaim.object.manifestBytes ||
