@@ -239,7 +239,7 @@ verifyArtifactBytes(const RepoCore& core, const RepoObjectManifest& manifest,
   uint64_t offset = 0;
   while (offset < reference.sizeBytes) {
     const auto length = std::min<uint64_t>(VERIFY_RANGE_BYTES, reference.sizeBytes - offset);
-    const auto bytes = core.getRange(manifest.objectName, RepoByteRange{offset, length});
+    const auto bytes = core.getRangeForVerification(manifest.objectName, {offset, length});
     if (bytes.size() != length || EVP_DigestUpdate(context.get(), bytes.data(), bytes.size()) != 1) {
       throw std::runtime_error(
         "repo-artifact-byte-verification-failed: stored range length or digest update is invalid");

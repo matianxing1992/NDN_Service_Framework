@@ -24,6 +24,10 @@ listManifestSnapshots(const RepoStoreBackend& store);
 RepoObjectMetadataSnapshot
 probeObjectMetadataSnapshot(const RepoStoreBackend& store, const std::string& objectName);
 
+std::vector<uint8_t>
+readAuthoritativeRange(const RepoStoreBackend& store, const std::string& objectName,
+                       RepoByteRange range);
+
 /** Pure metadata filter; no storage access or admission callback. */
 bool
 matchesPacketLookup(const RepoObjectManifest& manifest, const std::string& canonical,

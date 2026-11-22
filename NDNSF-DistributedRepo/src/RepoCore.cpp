@@ -798,20 +798,37 @@ RepoCore::abortRanges(const std::string& objectName)
   clearRangeReservation(objectName);
 }
 
-std::vector<uint8_t>
-RepoCore::getRange(const std::string& objectName, RepoByteRange range) const
+namespace {
+
+void
+requireRangeReadSupport(const RepoStoreBackend& store, const std::string& objectName)
 {
-  if (!m_store->supportsRange()) {
-    if (!m_store->supportsManifestLookup()) {
+  if (!store.supportsRange()) {
+    if (!store.supportsManifestLookup()) {
       throw std::runtime_error("repo-range-backend-metadata-lookup-not-supported");
     }
-    const auto manifest = m_store->getManifest(objectName);
+    const auto manifest = store.getManifest(objectName);
     constexpr uint64_t LegacyVectorThreshold = 1U << 20;
     if (manifest.size > LegacyVectorThreshold) {
       throw std::runtime_error("repo-range-backend-not-supported-for-large-object");
     }
   }
+}
+
+} // namespace
+
+std::vector<uint8_t>
+RepoCore::getRange(const std::string& objectName, RepoByteRange range) const
+{
+  requireRangeReadSupport(*m_store, objectName);
   return m_store->getRange(objectName, range);
+}
+
+std::vector<uint8_t>
+RepoCore::getRangeForVerification(const std::string& objectName, RepoByteRange range) const
+{
+  requireRangeReadSupport(*m_store, objectName);
+  return detail::readAuthoritativeRange(*m_store, objectName, range);
 }
 
 std::vector<uint8_t>

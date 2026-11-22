@@ -2903,7 +2903,7 @@ struct OwnedPacketFixture
 
   explicit OwnedPacketFixture(
     FilesystemRecoveryPolicy policy = FilesystemRecoveryPolicy::KEEP_UNCONFIRMED,
-    uint64_t capacity = 4U << 20)
+    uint64_t capacity = 4U << 20, bool tiered = false)
     : recoveryPolicy(policy)
     , capacityBytes(capacity)
   {
@@ -2932,7 +2932,7 @@ struct OwnedPacketFixture
     }
     metadata.size = reference.expectedSize = original.size();
     metadata.sha256 = reference.expectedSha256 = sha256(original);
-    open();
+    open(tiered);
     provider = std::make_unique<ndn_service_framework::ServiceProvider>(
       ndn_service_framework::ServiceProvider::LocalMockTag{}, face, ndn::Name("/group"),
       repo, authority, writeFixedKeychainTrust(temp.path(), {producer, repo, authority}));
@@ -2949,15 +2949,16 @@ struct OwnedPacketFixture
   }
 
   void
-  open()
+  open(bool tiered = false)
   {
     StorageCapability capability;
     capability.repoNode = "/repo/a";
     capability.repoMode = "persistent";
     capability.freeBytes = capacityBytes;
-    node = std::make_shared<RepoNode>(ndn::Name("/SERVICE/repo"), capability,
-      std::make_shared<FilesystemRepoStoreBackend>((temp.path() / "objects").string(),
-        capacityBytes, 1024, "owned-node", recoveryPolicy),
+    std::shared_ptr<RepoStoreBackend> store = std::make_shared<FilesystemRepoStoreBackend>(
+      (temp.path() / "objects").string(), capacityBytes, 1024, "owned-node", recoveryPolicy);
+    if (tiered) store = makeTieredRepoStore(std::move(store), capacityBytes, "filesystem");
+    node = std::make_shared<RepoNode>(ndn::Name("/SERVICE/repo"), capability, std::move(store),
       "/repo/a", "/repo/provider",
       (temp.path() / "metadata.sqlite3").string());
   }
@@ -3887,12 +3888,18 @@ BOOST_AUTO_TEST_CASE(CompactManifestDigestDetectsSameSizeMetadataMutation)
 
 BOOST_AUTO_TEST_CASE(CompactManifestConfirmationChecksPhysicalBytesRestartAndDeletion)
 {
-  OwnedPacketFixture fixture;
+  OwnedPacketFixture fixture(FilesystemRecoveryPolicy::KEEP_UNCONFIRMED, 4U << 20, true);
   BOOST_REQUIRE_EQUAL(fixture.insert().state, "DONE");
   detail::OwnedManifestQuery query(fixture.request);
   query.manifestSha256 = sha256(fixture.node->handleManifest(
     detail::encodeOwnedManifestQuery(query), "/provider/a"));
   const auto confirmation = detail::encodeOwnedManifestQuery(query);
+  const RepoByteRange fullRange{0, fixture.original.size()};
+  const auto storedName = fixture.node->core().getManifest(query.objectName).objectName;
+  BOOST_REQUIRE(fixture.node->core().getRange(storedName, fullRange) == fixture.original);
+  const auto cacheHits = fixture.node->core().cacheStatus().hits;
+  BOOST_REQUIRE(fixture.node->core().getRange(storedName, fullRange) == fixture.original);
+  BOOST_REQUIRE_GT(fixture.node->core().cacheStatus().hits, cacheHits);
   const auto payload = fixture.temp.path() / "objects" / "payloads" / "sha256" /
     query.expectedSha256.substr(0, 2) / query.expectedSha256;
   auto corrupt = fixture.original;
@@ -3901,14 +3908,18 @@ BOOST_AUTO_TEST_CASE(CompactManifestConfirmationChecksPhysicalBytesRestartAndDel
     std::ofstream output(payload, std::ios::binary | std::ios::trunc);
     output.write(reinterpret_cast<const char*>(corrupt.data()), corrupt.size());
   }
-  BOOST_CHECK_THROW(fixture.node->handleManifest(confirmation, "/provider/a"), std::exception);
+  BOOST_CHECK_EXCEPTION(fixture.node->handleManifest(confirmation, "/provider/a"),
+    std::runtime_error, [](const auto& error) {
+      return std::string_view(error.what()) ==
+        "repo-artifact-byte-verification-failed: stored bytes do not match full reference digest";
+    });
   {
     std::ofstream output(payload, std::ios::binary | std::ios::trunc);
     output.write(reinterpret_cast<const char*>(fixture.original.data()), fixture.original.size());
   }
   fixture.provider.reset();
   fixture.node.reset();
-  fixture.open();
+  fixture.open(true);
   BOOST_CHECK_EQUAL(toString(fixture.node->handleManifest(confirmation, "/provider/a")),
                     query.manifestSha256);
   const RepoUserStorageDeleteRequest cleanup{1, "compact-confirm-delete", query.objectName,

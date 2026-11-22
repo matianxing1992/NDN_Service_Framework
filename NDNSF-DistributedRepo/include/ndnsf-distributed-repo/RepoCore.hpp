@@ -71,6 +71,9 @@ public:
   void abortRanges(const std::string& objectName);
   std::vector<uint8_t> getRange(const std::string& objectName,
                                 RepoByteRange range) const;
+  /** Read bytes for a physical integrity check without warming or using the Repo cache. */
+  std::vector<uint8_t> getRangeForVerification(const std::string& objectName,
+                                                RepoByteRange range) const;
 
   /** Transaction-bound reads and cleanup. Check and action share m_mutex.
    * expected.operationId must identify the unique publication transaction;

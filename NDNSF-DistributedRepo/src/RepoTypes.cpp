@@ -1137,6 +1137,15 @@ public:
     return m_authoritativeStore->getRange(objectName, range);
   }
 
+  std::vector<uint8_t>
+  readAuthoritativeRange(const std::string& objectName, RepoByteRange range) const
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
+    if (!supportsConcurrentCommittedReads())
+      authorityLock.lock();
+    return detail::readAuthoritativeRange(*m_authoritativeStore, objectName, range);
+  }
+
   /** Serves a prepared batch from one pinned payload copy: the authoritative
    *  snapshot, the admission probe and the cache hit are resolved once when the
    *  context is created, and each read only slices the pinned bytes. The caller
@@ -1619,6 +1628,15 @@ detail::probeObjectMetadataSnapshot(const RepoStoreBackend& store, const std::st
   result.manifestMeasurementAvailable = probe.manifestMeasurementAvailable;
   result.manifestWireBytes = probe.manifestWireBytes;
   return result;
+}
+
+std::vector<uint8_t>
+detail::readAuthoritativeRange(const RepoStoreBackend& store, const std::string& objectName,
+                              RepoByteRange range)
+{
+  if (const auto tiered = dynamic_cast<const TieredRepoStore*>(&store))
+    return tiered->readAuthoritativeRange(objectName, range);
+  return store.getRange(objectName, range);
 }
 
 std::vector<RepoObjectManifest>
