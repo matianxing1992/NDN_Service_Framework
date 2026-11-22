@@ -26,6 +26,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 
@@ -2594,14 +2595,30 @@ RepoDataReference::validateExactPacketSet() const
   if (prefix.empty() || (!metadata.dataPrefix.empty() &&
       !prefix.isPrefixOf(ndn::Name(metadata.dataPrefix))))
     throw std::invalid_argument("repo-exact-packet-prefix-invalid");
-  std::set<ndn::Name> names;
+  const auto canonicalPrefix = prefix.toUri(ndn::name::UriFormat::CANONICAL);
+  const auto prefixLength = canonicalPrefix.size();
+  std::set<ndn::Name> suffixes;
   std::size_t indexBytes = 0;
   for (const auto& text : metadata.packetNames) {
     if (text.empty() || text.size() > 4096 || indexBytes > (4U << 20) - text.size())
       throw std::invalid_argument("repo-exact-packet-index-too-large");
     indexBytes += text.size();
-    const ndn::Name name(text);
-    if (name.empty() || !prefix.isPrefixOf(name) || !names.insert(name).second)
+    ndn::Name suffix;
+    if (text.size() > prefixLength && text.compare(0, prefixLength, canonicalPrefix) == 0 &&
+        text[prefixLength] == '/' &&
+        (text.size() == prefixLength + 1 || text[prefixLength + 1] != '/')) {
+      // The canonical prefix identifies the already parsed components. A
+      // single leading slash makes this remainder an absolute Name without
+      // the URI authority rules for a leading double slash.
+      suffix = ndn::Name(std::string_view(text).substr(prefixLength));
+    }
+    else {
+      const ndn::Name name(text);
+      if (!prefix.isPrefixOf(name))
+        throw std::invalid_argument("repo-exact-packet-name-invalid");
+      suffix = name.getSubName(prefix.size());
+    }
+    if (!suffixes.insert(std::move(suffix)).second)
       throw std::invalid_argument("repo-exact-packet-name-invalid");
   }
 }

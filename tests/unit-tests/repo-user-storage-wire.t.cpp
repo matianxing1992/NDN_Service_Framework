@@ -251,6 +251,29 @@ BOOST_AUTO_TEST_CASE(DecoderRejectsReboundDigestCommitmentsAndNulOperation)
   BOOST_CHECK_THROW(decodeUserStorageInsertRequest(changed), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(ExactPacketIndexComparesTypedNamesAcrossUriSpellings)
+{
+  auto request = sampleInsert();
+  auto& reference = request.reference;
+  reference.dataPrefix = "/producer/kv";
+  auto& names = reference.packetSetMetadata->packetNames;
+  const ndn::Name prefix(reference.dataPrefix);
+  const auto canonicalPrefix = prefix.toUri(ndn::name::UriFormat::CANONICAL);
+  const auto segment = ndn::Name(prefix).appendSegment(0);
+  names[1] = segment.toUri(ndn::name::UriFormat::CANONICAL);
+  names.push_back("ndn://authority/producer/kv/seg=2");
+  names.push_back(canonicalPrefix + "/");
+  BOOST_CHECK(decodeUserStorageInsertRequest(encodeUserStorageInsertRequest(request))
+                .reference.packetSetMetadata->packetNames == names);
+
+  names.push_back(segment.toUri(ndn::name::UriFormat::ALTERNATE));
+  BOOST_CHECK_THROW(encodeUserStorageInsertRequest(request), std::invalid_argument);
+  names.back() = reference.dataPrefix;
+  BOOST_CHECK_THROW(encodeUserStorageInsertRequest(request), std::invalid_argument);
+  names.back() = canonicalPrefix + "-other/seg=3";
+  BOOST_CHECK_THROW(encodeUserStorageInsertRequest(request), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(DecoderRejectsNoncanonicalAndMalformedFieldFrames)
 {
   const auto request = sampleInsert();
