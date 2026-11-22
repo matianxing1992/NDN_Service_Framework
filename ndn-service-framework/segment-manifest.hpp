@@ -101,6 +101,7 @@ public:
 
   ndn::Name pageFullName(uint32_t page) const;
   ndn::Name sourceFullName(uint32_t segment) const;
+  uint32_t sourceWireSize(uint32_t segment) const;
   void acceptPage(uint32_t page, const ndn::Data& data);
   bool matchesSource(uint32_t segment, const ndn::Data& data) const;
 

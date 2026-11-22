@@ -352,6 +352,15 @@ SegmentManifestVerifier::sourceFullName(uint32_t segment) const
   return fullName(m_scope.sourceName(segment), *source);
 }
 
+uint32_t
+SegmentManifestVerifier::sourceWireSize(uint32_t segment) const
+{
+  requireCurrent();
+  const auto& source = m_sources.at(segment);
+  require(source.has_value(), "segment-manifest-source-index-unavailable");
+  return source->wireSize;
+}
+
 void
 SegmentManifestVerifier::acceptPage(uint32_t page, const ndn::Data& data)
 {

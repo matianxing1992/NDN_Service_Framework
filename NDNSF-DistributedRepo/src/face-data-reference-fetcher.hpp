@@ -69,7 +69,8 @@ private:
 class FaceDataReferencePacketSpool final : public DataReferencePacketSource
 {
 public:
-  FaceDataReferencePacketSpool(std::size_t packetCount, uint64_t maxWireBytes);
+  FaceDataReferencePacketSpool(std::size_t packetCount, uint64_t maxWireBytes,
+                             const std::vector<uint32_t>& plannedWireLengths = {});
 
   FaceDataReferencePacketSpool(const FaceDataReferencePacketSpool&) = delete;
   FaceDataReferencePacketSpool& operator=(const FaceDataReferencePacketSpool&) = delete;
@@ -111,6 +112,7 @@ private:
   uint64_t m_maxWireBytes = 0;
   uint64_t m_totalWireBytes = 0;
   bool m_finalized = false;
+  bool m_positioned = false;
   mutable bool m_readSinceAppend = false;
   mutable long m_nextReadOffset = -1;
 };
@@ -187,7 +189,8 @@ private:
         PacketName nameAt, bool exactSize, std::function<void()> requireCurrent,
         std::chrono::steady_clock::time_point deadline =
           std::chrono::steady_clock::time_point::max(),
-        PacketAdmission admit = {}, std::shared_ptr<ManifestSourceWindow> sourceWindow = {}) const;
+        PacketAdmission admit = {}, std::shared_ptr<ManifestSourceWindow> sourceWindow = {},
+        const std::vector<uint32_t>& plannedWireLengths = {}) const;
 
   ndn::Face& m_face;
   std::chrono::milliseconds m_interestLifetime;

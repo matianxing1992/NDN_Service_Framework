@@ -11,8 +11,11 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -357,7 +360,8 @@ struct FetchState : std::enable_shared_from_this<FetchState>
              std::size_t packetCountArg, std::size_t windowSizeArg,
              std::chrono::milliseconds interestLifetimeArg,
              std::chrono::steady_clock::time_point deadlineArg,
-             std::shared_ptr<FetchAdmission> admissionArg)
+             std::shared_ptr<FetchAdmission> admissionArg,
+             const std::vector<uint32_t>& plannedWireLengths)
     : face(faceArg)
     , strand(boost::asio::make_strand(faceArg.getIoContext()))
     , reference(referenceArg)
@@ -371,7 +375,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     , deadline(deadlineArg)
     , admission(std::move(admissionArg))
     , spool(std::make_shared<FaceDataReferencePacketSpool>(
-        packetCountArg, referenceArg.expectedSize))
+        packetCountArg, referenceArg.expectedSize, plannedWireLengths))
   {}
 
   ~FetchState()
@@ -993,18 +997,32 @@ struct FetchState : std::enable_shared_from_this<FetchState>
 } // namespace
 
 FaceDataReferencePacketSpool::FaceDataReferencePacketSpool(
-  std::size_t packetCount, uint64_t maxWireBytes)
+  std::size_t packetCount, uint64_t maxWireBytes, const std::vector<uint32_t>& plannedWireLengths)
   : m_file(std::tmpfile(), &std::fclose)
   , m_packetOffsets(checkedPacketCount(packetCount, maxWireBytes), -1)
   , m_packetLengths(packetCount, 0)
   , m_packetPresent(packetCount, false)
   , m_maxWireBytes(maxWireBytes)
+  , m_positioned(!plannedWireLengths.empty())
 {
   if (!m_file || packetCount == 0 || maxWireBytes == 0) {
     throw std::runtime_error("repo-original-packet-spool-initialization-failed");
   }
   if (std::setvbuf(m_file.get(), m_ioBuffer.data(), _IOFBF, m_ioBuffer.size()) != 0) {
     throw std::runtime_error("repo-original-packet-spool-buffer-initialization-failed");
+  }
+  if (m_positioned) {
+    if (plannedWireLengths.size() != packetCount)
+      throw std::invalid_argument("repo-original-packet-spool-plan-invalid");
+    uint64_t offset = 0;
+    for (std::size_t i = 0; i < packetCount; ++i) {
+      const auto length = plannedWireLengths[i];
+      if (length == 0 || length > ndn::MAX_NDN_PACKET_SIZE || length > maxWireBytes - offset)
+        throw std::invalid_argument("repo-original-packet-spool-plan-invalid");
+      m_packetOffsets[i] = static_cast<long>(offset);
+      m_packetLengths[i] = length;
+      offset += length;
+    }
   }
 }
 
@@ -1051,6 +1069,27 @@ FaceDataReferencePacketSpool::append(std::size_t packetIndex,
       wire.size() > std::numeric_limits<uint32_t>::max()) {
     throw std::runtime_error("repo-original-packet-spool-packet-invalid");
   }
+  if (m_positioned) {
+    if (m_packetLengths[packetIndex] != wire.size())
+      throw std::runtime_error("repo-original-packet-spool-packet-invalid");
+    // Position-independent writes leave stdio's sequential read offset intact.
+    // Positioned spools are readable only after finalization has rejected holes.
+    const auto offset = m_packetOffsets[packetIndex];
+    const auto fd = ::fileno(m_file.get());
+    size_t written = 0;
+    while (written < wire.size()) {
+      const auto count = ::pwrite(fd, wire.data() + written,
+                                  wire.size() - written, offset + static_cast<long>(written));
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        throw std::runtime_error("repo-original-packet-spool-write-failed");
+      written += static_cast<size_t>(count);
+    }
+    m_packetPresent[packetIndex] = true;
+    m_totalWireBytes += wire.size();
+    return;
+  }
   // Sequential writes retain stdio batching. An update stream must position
   // between reading and writing, even when that read ended at physical EOF.
   if (m_readSinceAppend && std::fseek(m_file.get(), 0, SEEK_END) != 0) {
@@ -1073,7 +1112,8 @@ std::vector<uint8_t>
 FaceDataReferencePacketSpool::readPacket(std::size_t packetIndex) const
 {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (packetIndex >= m_packetLengths.size() || !m_packetPresent[packetIndex]) {
+  if (packetIndex >= m_packetLengths.size() || !m_packetPresent[packetIndex] ||
+      (m_positioned && !m_finalized)) {
     throw std::out_of_range("repo-original-packet-spool-packet-unavailable");
   }
   const auto length = m_packetLengths[packetIndex];
@@ -1363,12 +1403,16 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   if (routing.expectedSize < proof->sourceCount()) {
     throw std::invalid_argument("repo-original-named-packet-budget-invalid");
   }
+  std::vector<uint32_t> plannedWireLengths;
+  plannedWireLengths.reserve(proof->sourceCount());
+  for (uint32_t i = 0; i < proof->sourceCount(); ++i)
+    plannedWireLengths.push_back(proof->sourceWireSize(i));
   spools->add(fetch(routing, proof->sourceCount(), sourceNameAt, false,
     current, deadline, [proof](std::size_t i, const ndn::Data& data) {
       if (!proof->matchesSource(static_cast<uint32_t>(i), data)) {
         throw std::runtime_error("repo-manifest-source-proof-rejected");
       }
-    }, std::move(sourceWindow)));
+    }, std::move(sourceWindow), plannedWireLengths));
   current();
   if (spools->totalWireBytes() != reference.expectedSize) {
     throw std::runtime_error("repo-manifest-wire-size-mismatch");
@@ -1408,7 +1452,8 @@ std::shared_ptr<FaceDataReferencePacketSpool>
 FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t packetCount,
   PacketName nameAt, bool exactSize, std::function<void()> requireCurrent,
   std::chrono::steady_clock::time_point deadline, PacketAdmission admit,
-  std::shared_ptr<ManifestSourceWindow> sourceWindow) const
+  std::shared_ptr<ManifestSourceWindow> sourceWindow,
+  const std::vector<uint32_t>& plannedWireLengths) const
 {
   if (m_face.getIoContext().get_executor().running_in_this_thread())
     throw std::logic_error("repo-original-packet-fetch-on-face-thread");
@@ -1422,7 +1467,8 @@ FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t 
   }
   auto admission = std::make_shared<FetchAdmission>(m_fetchActive, m_lifetime);
   auto state = std::make_shared<FetchState>(m_face, reference,
-    static_cast<std::size_t>(packetCount), m_windowSize, m_interestLifetime, deadline, admission);
+    static_cast<std::size_t>(packetCount), m_windowSize, m_interestLifetime, deadline, admission,
+    plannedWireLengths);
   state->exactSize = exactSize;
   state->nameAt = std::move(nameAt);
   state->requireCurrent = std::move(requireCurrent);

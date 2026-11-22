@@ -1109,6 +1109,28 @@ BOOST_AUTO_TEST_CASE(SpoolSequentialWireBytesRemainExactAcrossBufferBoundaries)
   BOOST_CHECK(spool.readRange(0, expected.size()) == expected);
 }
 
+BOOST_AUTO_TEST_CASE(PositionedSpoolRequiresExactLengthsAndCompleteCoverage)
+{
+  BOOST_CHECK_THROW((detail::FaceDataReferencePacketSpool(2, 8, {3})),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW((detail::FaceDataReferencePacketSpool(2, 5, {3, 3})),
+                    std::invalid_argument);
+  detail::FaceDataReferencePacketSpool spool(3, 10, {3, 5, 2});
+  spool.append(2, {9, 10});
+  BOOST_CHECK_THROW(spool.readPacket(2), std::out_of_range);
+  BOOST_CHECK_THROW(spool.append(1, {4}), std::runtime_error);
+  BOOST_CHECK_THROW(spool.append(2, {9, 10}), std::runtime_error);
+  BOOST_CHECK_THROW(spool.finalize(), std::runtime_error);
+  BOOST_CHECK_EQUAL(spool.totalWireBytes(), 2U);
+  spool.append(1, {4, 5, 6, 7, 8});
+  spool.append(0, {1, 2, 3});
+  spool.finalize();
+  BOOST_CHECK_EQUAL(spool.totalWireBytes(), 10U);
+  BOOST_CHECK(spool.readRange(2, 7) == std::vector<uint8_t>({3, 4, 5, 6, 7, 8, 9}));
+  BOOST_CHECK(spool.readPacket(0) == std::vector<uint8_t>({1, 2, 3}));
+  BOOST_CHECK(spool.readPacket(2) == std::vector<uint8_t>({9, 10}));
+}
+
 BOOST_AUTO_TEST_CASE(SpoolReadAppendTransitionsPreservePhysicalAndLogicalOrder)
 {
   constexpr std::size_t count = 64;
