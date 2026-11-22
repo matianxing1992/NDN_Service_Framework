@@ -1287,7 +1287,7 @@ main(int argc, char* argv[])
           return response;
         }, ndn_service_framework::ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
     }
-    repo->registerOriginalDataServing(face);
+    repo->registerOriginalDataServing(face, config.groupPrefix);
     provider.setProviderRequestLifecycleCallback(
       [prefix = config.servicePrefix] (
         const ndn_service_framework::ServiceProvider::ProviderRequestLifecycleStatus& status) {

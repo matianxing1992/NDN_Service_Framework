@@ -108,6 +108,8 @@ public:
    *  must outlive this RepoNode, and callers must opt in explicitly.
    */
   void registerOriginalDataServing(ndn::Face& face);
+  /** On a shared Face, leave this group's Sync Interests to the SVS handler. */
+  void registerOriginalDataServing(ndn::Face& face, const ndn::Name& syncGroup);
   bool isOriginalDataServingReady() const noexcept;
 
   RepoObjectManifest put(const std::string& objectName,

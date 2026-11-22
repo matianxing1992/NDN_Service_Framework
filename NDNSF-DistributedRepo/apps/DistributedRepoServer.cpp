@@ -287,7 +287,7 @@ main(int argc, char* argv[])
       provider.reserveUnaryHandler(
         ndnsf_distributed_repo::makeRepoServiceName(config.servicePrefix, "MANIFEST"));
     }
-    repo->registerOriginalDataServing(face);
+    repo->registerOriginalDataServing(face, config.groupPrefix);
     provider.init();
     provider.fetchPermissionsFromController(config.authorityIdentity);
 

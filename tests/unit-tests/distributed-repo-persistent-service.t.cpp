@@ -4461,7 +4461,8 @@ BOOST_AUTO_TEST_CASE(PersistentOriginalFaceServesExactWireAndBoundsPendingWorkTh
     } while (std::chrono::steady_clock::now() < deadline);
     return complete();
   };
-  fixture.node->registerOriginalDataServing(face);
+  const ndn::Name syncGroup("/repo-test/group");
+  fixture.node->registerOriginalDataServing(face, syncGroup);
   BOOST_REQUIRE(pumpUntil([&] { return fixture.node->isOriginalDataServingReady(); }));
   const auto pending = RepoNodeTestAccess::pending(*fixture.node);
   const auto [pendingBytes, byteLimit] = RepoNodeTestAccess::pendingBytes(*fixture.node);
@@ -4477,12 +4478,17 @@ BOOST_AUTO_TEST_CASE(PersistentOriginalFaceServesExactWireAndBoundsPendingWorkTh
     [](const ndn::Interest&, const ndn::Data&) {},
     [](const ndn::Interest&, const ndn::lp::Nack&) {},
     [](const ndn::Interest&) {});
+  for (const auto version : {2, 3}) {
+    ndn::Interest sync(ndn::Name(syncGroup).appendVersion(version));
+    sync.setApplicationParameters("state-vector");
+    face.receive(sync);
+  }
   auto dispatched = std::make_shared<bool>(false);
   boost::asio::post(face.getIoContext(), [&face, dispatched] {
     boost::asio::post(face.getIoContext(), [dispatched] { *dispatched = true; });
   });
   BOOST_REQUIRE(pumpUntil([&] { return *dispatched; }));
-  // Locally expressed fetches must not loop into Repo's own serving worker.
+  // Neither local fetches nor this group's Sync Interests belong in the read queue.
   BOOST_CHECK_EQUAL(RepoNodeTestAccess::admission(*fixture.node).first, 0U);
   local.cancel();
   received->clear();

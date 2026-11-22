@@ -22,6 +22,7 @@
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/logger.hpp>
+#include <ndn-svs/sync-protocol.hpp>
 #include <boost/asio/post.hpp>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -490,6 +491,12 @@ RepoNode::~RepoNode()
 void
 RepoNode::registerOriginalDataServing(ndn::Face& face)
 {
+  registerOriginalDataServing(face, ndn::Name());
+}
+
+void
+RepoNode::registerOriginalDataServing(ndn::Face& face, const ndn::Name& syncGroup)
+{
   if (m_providerIdentity.empty()) {
     throw std::logic_error("original Data serving requires a Provider identity route");
   }
@@ -498,6 +505,10 @@ RepoNode::registerOriginalDataServing(ndn::Face& face)
   }
 
   const ndn::Name route(m_providerIdentity);
+  using ndn::svs::SvsProtocolVersion;
+  using ndn::svs::SyncProtocolCodec;
+  const auto syncV2 = SyncProtocolCodec::makeSyncName(syncGroup, SvsProtocolVersion::V2);
+  const auto syncV3 = SyncProtocolCodec::makeSyncName(syncGroup, SvsProtocolVersion::V3);
   const std::weak_ptr<RepoNode> weakSelf = shared_from_this();
   if (m_artifactMetadataStore) {
     m_originalDataWorker = std::thread([this, &face] { runOriginalDataWorker(face); });
@@ -508,31 +519,38 @@ RepoNode::registerOriginalDataServing(ndn::Face& face)
     // is advertised as a forwarding-hint route.
     m_originalDataFilter = face.setInterestFilter(
       ndn::InterestFilter(ndn::Name("/")).allowLoopback(false),
-      [weakSelf, &face] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      [weakSelf, &face, hasSyncGroup = !syncGroup.empty(), syncV2, syncV3]
+      (const ndn::InterestFilter&, const ndn::Interest& interest) {
         const auto self = weakSelf.lock();
         if (!self) return;
+        const auto& name = interest.getName();
+        if (hasSyncGroup && interest.hasApplicationParameters() &&
+            name.size() == syncV2.size() + 1 && name[-1].isParametersSha256Digest() &&
+            (syncV2.isPrefixOf(name) || syncV3.isPrefixOf(name))) {
+          return;
+        }
         if (self->m_artifactMetadataStore) {
           self->enqueueOriginalDataInterest(interest);
           return;
         }
         if (interest.getCanBePrefix()) return;
-        const auto name = interest.getName().toUri();
+        const auto nameUri = name.toUri();
         try {
-          if (!self->hasDataPacket(name)) return;
-          const auto wire = self->getDataPacket(name);
+          if (!self->hasDataPacket(nameUri)) return;
+          const auto wire = self->getDataPacket(nameUri);
           ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
           block.parse();
           const ndn::Data data(block);
           if (data.getName() == interest.getName()) {
             face.put(data);
             std::fprintf(stdout, "repo-original-data-served name=%s sha256=%s\n",
-                         name.c_str(), sha256Hex(wire).c_str());
+                         nameUri.c_str(), sha256Hex(wire).c_str());
             std::fflush(stdout);
           }
         }
         catch (const std::exception& error) {
           std::fprintf(stderr, "original Data serving failed name=%s reason=%s\n",
-                       name.c_str(), error.what());
+                       nameUri.c_str(), error.what());
         }
       });
     m_originalDataRoute = face.registerPrefix(
