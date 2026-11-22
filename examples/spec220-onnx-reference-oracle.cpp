@@ -171,7 +171,15 @@ public:
         reject("complete-kv-degree");
       std::vector<std::string> roles;
       for (std::size_t rank = 0; rank < degree; ++rank) {
-        roles.push_back(degree == 1 ? stageName : stageName + "/Tensor/Rank/" +
+        // The rank component is what marks a role as a sharded unit; a name without it is read
+        // as a component set and gets no layer range (NativeRequestCatalog.cpp:1257). Both
+        // producers therefore always emit it, so the suffix is dropped only for the layout that
+        // has a single source-defined stage, which is the case this special form was written for.
+        // The bare stage name is only correct for a layout with one source-defined stage and one rank:
+        // that is the single unit the comment above describes. Every other case is a sharded unit and
+        // must carry the rank component, or a two-rank stage would produce two identical role names.
+        const bool bareSingleUnit = stages.size() == 1 && degree == 1;
+        roles.push_back(bareSingleUnit ? stageName : stageName + "/Tensor/Rank/" +
                        std::to_string(rank));
         if (!allRoles.insert(roles.back()).second)
           reject("complete-kv-duplicate-role");
