@@ -51,6 +51,8 @@ public:
   bool erase(const std::string& objectName) override;
   size_t size() const override;
   std::vector<RepoObjectManifest> listManifests() const override;
+  /** Pin the current catalog for a caller that only reads the packet indexes. */
+  std::vector<std::shared_ptr<const RepoObjectManifest>> listManifestSnapshots() const;
   /** Internal locator integration: copy matching metadata under the existing lock. */
   std::vector<RepoObjectManifest>
   findPacketManifests(const std::string& canonical, const std::string& alternate,

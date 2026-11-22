@@ -1355,6 +1355,12 @@ public:
     return m_authoritativeStore->listManifests();
   }
 
+  std::vector<std::shared_ptr<const RepoObjectManifest>> listManifestSnapshots() const
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    return detail::listManifestSnapshots(*m_authoritativeStore);
+  }
+
   std::vector<RepoObjectManifest>
   findPacketManifests(const std::string& canonical, const std::string& alternate,
                       bool prefixMatch) const
@@ -1578,6 +1584,21 @@ detail::readManifestSnapshot(const RepoStoreBackend& store, const std::string& o
   if (const auto filesystem = dynamic_cast<const FilesystemRepoStoreBackend*>(&store))
     return filesystem->getManifestSnapshot(objectName);
   return std::make_shared<const RepoObjectManifest>(store.getManifest(objectName));
+}
+
+std::vector<std::shared_ptr<const RepoObjectManifest>>
+detail::listManifestSnapshots(const RepoStoreBackend& store)
+{
+  if (const auto tiered = dynamic_cast<const TieredRepoStore*>(&store))
+    return tiered->listManifestSnapshots();
+  if (const auto filesystem = dynamic_cast<const FilesystemRepoStoreBackend*>(&store))
+    return filesystem->listManifestSnapshots();
+  auto manifests = store.listManifests();
+  std::vector<std::shared_ptr<const RepoObjectManifest>> snapshots;
+  snapshots.reserve(manifests.size());
+  for (auto& manifest : manifests)
+    snapshots.push_back(std::make_shared<const RepoObjectManifest>(std::move(manifest)));
+  return snapshots;
 }
 
 RepoObjectMetadataSnapshot

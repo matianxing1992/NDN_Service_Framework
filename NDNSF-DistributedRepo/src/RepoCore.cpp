@@ -15,6 +15,8 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <fstream>
 #include <set>
@@ -1878,27 +1880,27 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   // Misses must not enumerate and parse every stored manifest for every packet.
   // Keep the index local to this transaction; out-of-process metadata changes
   // are checked again before accepting reuse or publishing the new ranges.
-  const std::set<std::string> incomingNames(manifest.packetNames.begin(), manifest.packetNames.end());
+  const std::unordered_set<std::string_view> incomingNames(manifest.packetNames.begin(),
+                                                           manifest.packetNames.end());
   std::set<std::string> indexedPacketNames;
-  std::map<std::string, RepoObjectManifest> catalogMetadata;
-  size_t catalogEntries = 0;
-  for (const auto& stored : m_store->listManifests()) {
-    ++catalogEntries;
-    catalogMetadata.emplace(stored.objectName, stored);
-    if (stored.objectType == "ndn-data-wire") {
+  std::map<std::string, std::shared_ptr<const RepoObjectManifest>> catalogMetadata;
+  const auto catalog = detail::listManifestSnapshots(*m_store);
+  for (const auto& stored : catalog) {
+    catalogMetadata.emplace(stored->objectName, stored);
+    if (stored->objectType == "ndn-data-wire") {
       // Legacy rows may use ALTERNATE URI spelling for the same typed Name.
-      const auto canonical = ndn::Name(stored.objectName).toUri(ndn::name::UriFormat::CANONICAL);
+      const auto canonical = ndn::Name(stored->objectName).toUri(ndn::name::UriFormat::CANONICAL);
       if (incomingNames.count(canonical)) indexedPacketNames.insert(canonical);
     }
-    if (stored.objectType != "original-packet-set") continue;
-    for (const auto& name : stored.packetNames) {
+    if (stored->objectType != "original-packet-set") continue;
+    for (const auto& name : stored->packetNames) {
       if (incomingNames.count(name)) indexedPacketNames.insert(name);
     }
   }
   finishStage("catalog");
   const auto requireCurrentCatalog = [&] {
     if (requireActive) requireActive();
-    const auto current = m_store->listManifests();
+    const auto current = detail::listManifestSnapshots(*m_store);
     const auto rejectCatalog = [&] (const char* kind, const std::string* affected = nullptr,
                                    const std::string* before = nullptr,
                                    const std::string* after = nullptr) {
@@ -1913,9 +1915,9 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
         };
         std::set<std::string> observedNames;
         for (const auto& stored : current) {
-          const bool unique = observedNames.insert(stored.objectName).second;
-          if (!affected && (!unique || !catalogMetadata.count(stored.objectName)))
-            affected = &stored.objectName;
+          const bool unique = observedNames.insert(stored->objectName).second;
+          if (!affected && (!unique || !catalogMetadata.count(stored->objectName)))
+            affected = &stored->objectName;
         }
         if (!affected) {
           for (const auto& [name, metadata] : catalogMetadata) {
@@ -1947,7 +1949,7 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
           }
         }
         NDN_LOG_WARN("NDNSF_REPO_ORIGINAL_CATALOG_REJECTED kind=" << kind
-                     << " snapshotEntries=" << catalogEntries
+                     << " snapshotEntries=" << catalog.size()
                      << " expectedUnique=" << catalogMetadata.size()
                      << " observedEntries=" << current.size()
                      << " observedUnique=" << observedNames.size()
@@ -1967,13 +1969,13 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
     if (current.size() != catalogMetadata.size())
       rejectCatalog("ENTRY_COUNT");
     for (const auto& stored : current) {
-      const auto previous = catalogMetadata.find(stored.objectName);
+      const auto previous = catalogMetadata.find(stored->objectName);
       if (previous == catalogMetadata.end())
-        rejectCatalog("OBJECT_NAME", &stored.objectName);
-      if (!previous->second.hasSameMetadata(stored)) {
-        const auto before = previous->second.toJson();
-        const auto after = stored.toJson();
-        rejectCatalog("METADATA", &stored.objectName, &before, &after);
+        rejectCatalog("OBJECT_NAME", &stored->objectName);
+      if (previous->second != stored && !previous->second->hasSameMetadata(*stored)) {
+        const auto before = previous->second->toJson();
+        const auto after = stored->toJson();
+        rejectCatalog("METADATA", &stored->objectName, &before, &after);
       }
     }
   };
@@ -1992,7 +1994,7 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
     // the physical check: metadata may outlive a missing committed payload.
     const bool hasStoredPacket = stored != catalogMetadata.end() &&
       m_store->has(manifest.packetNames[i]);
-    if (hasStoredPacket && stored->second.objectType != "ndn-data-wire" &&
+    if (hasStoredPacket && stored->second->objectType != "ndn-data-wire" &&
         (!existing || manifest.packetNames[i] != existing->objectName))
       throw std::runtime_error("repo-original-packet-format-conflict");
     if ((hasStoredPacket || indexedPacketNames.count(manifest.packetNames[i])) &&

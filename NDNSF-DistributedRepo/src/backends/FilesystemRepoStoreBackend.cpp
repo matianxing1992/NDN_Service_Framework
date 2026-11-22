@@ -665,8 +665,18 @@ FilesystemRepoStoreBackend::size() const
 std::vector<RepoObjectManifest>
 FilesystemRepoStoreBackend::listManifests() const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto snapshots = listManifestSnapshots();
   std::vector<RepoObjectManifest> manifests;
+  manifests.reserve(snapshots.size());
+  for (const auto& snapshot : snapshots) manifests.push_back(*snapshot);
+  return manifests;
+}
+
+std::vector<std::shared_ptr<const RepoObjectManifest>>
+FilesystemRepoStoreBackend::listManifestSnapshots() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  std::vector<std::shared_ptr<const RepoObjectManifest>> manifests;
   const fs::path directory = fs::path(m_rootPath) / "manifests";
   std::set<std::string> present;
   for (const auto& entry : fs::directory_iterator(directory)) {
@@ -676,10 +686,10 @@ FilesystemRepoStoreBackend::listManifests() const
     const auto key = entry.path().filename().string();
     present.insert(key);
     if (auto cached = cachedManifestUnlocked(entry.path())) {
-      manifests.push_back(*cached);
+      manifests.push_back(std::move(cached));
       continue;
     }
-    manifests.push_back(*parseManifestCachedUnlocked(key, readText(entry.path()), &entry.path()));
+    manifests.push_back(loadManifestUnlocked(entry.path()));
   }
   std::lock_guard<std::mutex> parseLock(m_catalogParseMutex);
   for (auto cached = m_catalogParseCache.begin(); cached != m_catalogParseCache.end();) {
@@ -693,7 +703,7 @@ FilesystemRepoStoreBackend::listManifests() const
   }
   std::sort(manifests.begin(), manifests.end(),
             [](const auto& lhs, const auto& rhs) {
-              return lhs.objectName < rhs.objectName;
+              return lhs->objectName < rhs->objectName;
             });
   return manifests;
 }

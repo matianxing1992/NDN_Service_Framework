@@ -16,6 +16,10 @@ stageOriginalPacketSet(RepoStoreBackend& store, const RepoObjectManifest& manife
 std::shared_ptr<const RepoObjectManifest>
 readManifestSnapshot(const RepoStoreBackend& store, const std::string& objectName);
 
+/** Pin current catalog entries without deep-copying immutable packet indexes. */
+std::vector<std::shared_ptr<const RepoObjectManifest>>
+listManifestSnapshots(const RepoStoreBackend& store);
+
 /** Observe current physical state without copying an owned backend's immutable packet index. */
 RepoObjectMetadataSnapshot
 probeObjectMetadataSnapshot(const RepoStoreBackend& store, const std::string& objectName);
