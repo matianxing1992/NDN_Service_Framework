@@ -1287,6 +1287,10 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   reference.validateExactPacketSet();
   const auto* names = reference.packetSetMetadata
     ? &reference.packetSetMetadata->packetNames : nullptr;
+  const auto matchesIndexedName = [](const std::string& wireName, const ndn::Name& expected) {
+    return wireName == expected.toUri(ndn::name::UriFormat::CANONICAL) ||
+           ndn::Name(wireName) == expected;
+  };
   auto spools = std::make_shared<OrderedPacketSpools>();
   const ndn::Name hint(reference.forwardingHint);
   const auto rootSpool = fetchNamed({scope.rootName()},
@@ -1317,7 +1321,7 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   if (proof->pageCount() != 0) {
     std::vector<ndn::Name> pages;
     for (uint32_t i = 0; i < proof->pageCount(); ++i) {
-      if (names && ndn::Name((*names)[1 + i]) != scope.pageName(i)) {
+      if (names && !matchesIndexedName((*names)[1 + i], scope.pageName(i))) {
         throw std::invalid_argument("repo-manifest-index-name-mismatch");
       }
       pages.push_back(proof->pageFullName(i));
@@ -1329,7 +1333,7 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   }
   if (names) {
     for (uint32_t i = 0; i < proof->sourceCount(); ++i) {
-      if (ndn::Name((*names)[1 + proof->pageCount() + i]) != scope.sourceName(i)) {
+      if (!matchesIndexedName((*names)[1 + proof->pageCount() + i], scope.sourceName(i))) {
         throw std::invalid_argument("repo-manifest-source-name-mismatch");
       }
     }
