@@ -631,6 +631,14 @@ BOOST_AUTO_TEST_CASE(NamedReadRejectsDuplicateBudgetAndCancelledOwnerBeforeInter
     tooMany.push_back(ndn::Name("/publisher/model").appendSegment(i));
   BOOST_CHECK_THROW(fetcher.fetchNamed(tooMany, detail::MAX_NAMED_PACKET_WIRE_BYTES,
     ndn::Name("/repo")), std::invalid_argument);
+  std::vector<ndn::Name> oversizedIndex;
+  const ndn::Name longPrefix = ndn::Name("/publisher/model").append(std::string(1024, 'x'));
+  for (std::size_t i = 0; i < 512; ++i)
+    oversizedIndex.push_back(ndn::Name(longPrefix).appendSegment(i));
+  BOOST_CHECK_EXCEPTION(fetcher.fetchNamed(oversizedIndex, detail::MAX_NAMED_PACKET_WIRE_BYTES,
+    ndn::Name("/repo")), std::invalid_argument, [](const std::invalid_argument& error) {
+      return std::string_view(error.what()) == "repo-original-named-packet-name-invalid";
+    });
   BOOST_CHECK_THROW(fetcher.fetchNamed({name, name}, 4096, ndn::Name("/repo")),
                     std::invalid_argument);
   BOOST_CHECK_THROW(fetcher.fetchNamed({name}, detail::MAX_NAMED_PACKET_WIRE_BYTES + 1,

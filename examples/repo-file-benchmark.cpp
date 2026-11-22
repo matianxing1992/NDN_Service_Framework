@@ -53,10 +53,12 @@ using Json = di::NativeJson;
 constexpr uint64_t FILE_BYTES = 500000000;
 constexpr size_t CONTENT_BYTES = 7000;
 constexpr uint32_t CERTIFICATE_GROUP_SEGMENTS = 2048;
-// Leave room in the Repo's 4096-packet named fetch for the root and index pages.
 constexpr uint32_t LARGE_MANIFEST_GROUP_SEGMENTS = 2560;
-static_assert(1 + LARGE_MANIFEST_GROUP_SEGMENTS +
-  ndn_service_framework::SegmentManifestVerifier::pageCountFor(LARGE_MANIFEST_GROUP_SEGMENTS)
+// Leave room in the Repo's 4096-packet named fetch for the root and index pages.
+constexpr uint32_t MAX_BENCHMARK_MANIFEST_GROUP_SEGMENTS = 3840;
+static_assert(1 + MAX_BENCHMARK_MANIFEST_GROUP_SEGMENTS +
+  ndn_service_framework::SegmentManifestVerifier::pageCountFor(
+    MAX_BENCHMARK_MANIFEST_GROUP_SEGMENTS)
   <= 4096);
 constexpr uint32_t MANIFEST_READ_WINDOW = 32;
 
@@ -136,7 +138,7 @@ run(int argc, char** argv)
     std::cout << "[--phase write|read|write-read] [--reference PATH] "
                  "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
                  "[--manifest-read-pipeline serial|paired] [--manifest-insert indexed|compact] "
-                 "[--manifest-group-segments 2048|2560] ";
+                 "[--manifest-group-segments 2048|2560|3840] ";
     std::cout << "\nUses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
                  "whole-group reads and at most "
               << di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS
@@ -179,12 +181,16 @@ run(int argc, char** argv)
           "a signing certificate requires authenticated benchmark mode");
   const auto groupSize = options.find("--manifest-group-segments");
   require(groupSize == options.end() || (useManifest && phaseOption != "read" &&
-          (groupSize->second == "2048" || groupSize->second == "2560")),
-          "manifest group size requires manifest publication and 2048 or 2560 segments");
-  const auto manifestGroupSize = groupSize != options.end() && groupSize->second == "2560"
-    ? LARGE_MANIFEST_GROUP_SEGMENTS : CERTIFICATE_GROUP_SEGMENTS;
+          (groupSize->second == "2048" || groupSize->second == "2560" ||
+           groupSize->second == "3840")),
+          "manifest group size requires manifest publication and 2048, 2560 or 3840 segments");
+  auto manifestGroupSize = CERTIFICATE_GROUP_SEGMENTS;
+  if (groupSize != options.end()) {
+    if (groupSize->second == "2560") manifestGroupSize = LARGE_MANIFEST_GROUP_SEGMENTS;
+    if (groupSize->second == "3840") manifestGroupSize = MAX_BENCHMARK_MANIFEST_GROUP_SEGMENTS;
+  }
   const size_t maxSourcePackets = useManifest
-    ? (phaseOption == "read" ? LARGE_MANIFEST_GROUP_SEGMENTS : manifestGroupSize)
+    ? (phaseOption == "read" ? MAX_BENCHMARK_MANIFEST_GROUP_SEGMENTS : manifestGroupSize)
     : (useCertificate ? CERTIFICATE_GROUP_SEGMENTS : di::NATIVE_STORED_MODEL_UPLOAD_PACKETS);
   require(phaseOption == "write" || phaseOption == "read" || phaseOption == "write-read",
           "benchmark phase must be write, read or write-read");

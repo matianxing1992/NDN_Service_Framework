@@ -148,9 +148,11 @@ public:
              PacketAdmission admit = {}) const;
 
 private:
+  using PacketName = std::function<ndn::Name(std::size_t)>;
+
   std::shared_ptr<FaceDataReferencePacketSpool>
   fetch(const RepoDataReference& routing, std::size_t packetCount,
-        std::vector<ndn::Name> names, bool exactSize, std::function<void()> requireCurrent,
+        PacketName nameAt, bool exactSize, std::function<void()> requireCurrent,
         std::chrono::steady_clock::time_point deadline =
           std::chrono::steady_clock::time_point::max(),
         PacketAdmission admit = {}) const;

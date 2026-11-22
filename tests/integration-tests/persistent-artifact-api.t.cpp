@@ -3229,9 +3229,9 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   // Qualify the v3 writer filter, Repo proof path, persistent originals and
   // the real Owner read after re-opening the store.
   SegmentManifestScope manifestScope{sourceIdentity, ndn::Name(sourceIdentity)
-    .append("NDNSF").append("REPO_TEST").appendVersion(1)};
+    .append("NDNSF").append("REPO_TEST").append(std::string(40, 'x')).appendVersion(1)};
   manifestScope.bindingDigest[0] = 0x81;
-  constexpr uint32_t manifestSources = 129;
+  constexpr uint32_t manifestSources = 3840;
   std::vector<ndn::ConstBufferPtr> contents;
   for (uint32_t i = 0; i < manifestSources; ++i) {
     contents.push_back(std::make_shared<const ndn::Buffer>(
@@ -3256,10 +3256,18 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
       manifestGrantReply.grant.ownerEpoch});
   manifestInsert.schemaVersion = 4;
   std::vector<std::vector<uint8_t>> manifestWires;
+  std::size_t ordinaryNameBytes = 0;
+  std::size_t sourceFullNameBytes = 0;
   for (const auto& packet : manifestPublication.packets()) {
     const auto& wire = packet.wireEncode();
     manifestWires.emplace_back(wire.begin(), wire.end());
+    ordinaryNameBytes += packet.getName().toUri(ndn::name::UriFormat::CANONICAL).size();
+    if (packet.getName()[-1].isSegment()) {
+      sourceFullNameBytes += packet.getFullName().toUri(ndn::name::UriFormat::CANONICAL).size();
+    }
   }
+  BOOST_REQUIRE_LE(ordinaryNameBytes, 512U << 10);
+  BOOST_REQUIRE_GT(sourceFullNameBytes, 512U << 10);
   const repo::RepoTarget manifestTarget{target.repoNode, target.providerIdentity,
                                         target.servicePrefix};
   const auto clientConfig = [&] {

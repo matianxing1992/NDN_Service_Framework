@@ -567,7 +567,15 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       fail("repo-original-packet-fetch-deadline");
       return;
     }
-    ndn::Interest interest(packetName(index));
+    ndn::Name name;
+    try {
+      name = packetName(index);
+    }
+    catch (const std::exception& error) {
+      fail(error.what());
+      return;
+    }
+    ndn::Interest interest(std::move(name));
     interest.setCanBePrefix(false);
     interest.setMustBeFresh(false);
     if (!reference.forwardingHint.empty()) {
@@ -597,11 +605,11 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       if (attempt == 1) traceManifestSource(interest.getName(), "request-express");
       pending->second.handle = face.expressInterest(
         interest,
-        [self, index, attempt] (const ndn::Interest&, const ndn::Data& data) {
+        [self, index, attempt] (const ndn::Interest& expressed, const ndn::Data& data) {
           traceManifestRoot(data.getName(), "request-face-data");
           if (attempt == 1) traceManifestSource(data.getName(), "request-face-data");
-          boost::asio::post(self->strand, [self, index, attempt, data] {
-            self->onData(index, attempt, data);
+          boost::asio::post(self->strand, [self, index, attempt, name = expressed.getName(), data] {
+            self->onData(index, attempt, name, data);
           });
         },
         [self, index, attempt] (const ndn::Interest&, const ndn::lp::Nack&) {
@@ -622,7 +630,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   }
 
   void
-  onData(std::size_t index, unsigned attempt, const ndn::Data& data)
+  onData(std::size_t index, unsigned attempt, const ndn::Name& name, const ndn::Data& data)
   {
     if (standardTransport || !checkCurrent())
       return;
@@ -642,7 +650,6 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     }
     std::vector<uint8_t> wire;
     try {
-      const auto name = packetName(index);
       const bool matched = admit ? ndn::Interest(name).matchesData(data) : data.getName() == name;
       if (!matched) {
         onFailure(index, attempt, "repo-original-packet-name-mismatch");
@@ -837,12 +844,12 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   ndn::Name
   packetName(std::size_t index) const
   {
-    return names.empty() ? expectedPacketName(reference, index) : names.at(index);
+    return nameAt ? nameAt(index) : expectedPacketName(reference, index);
   }
 
   // Set once before posting launchWindow; the historic reference path retains exact-size checks.
   bool exactSize = true;
-  std::vector<ndn::Name> names;
+  std::function<ndn::Name(std::size_t)> nameAt;
   std::function<void()> requireCurrent;
   FaceDataReferenceFetcher::PacketAdmission admit;
   ndn::Face& face;
@@ -1236,15 +1243,31 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
         proof->acceptPage(static_cast<uint32_t>(i), data);
       }));
   }
-  std::vector<ndn::Name> sources;
-  for (uint32_t i = 0; i < proof->sourceCount(); ++i) {
-    if (names && ndn::Name((*names)[1 + proof->pageCount() + i]) != scope.sourceName(i)) {
-      throw std::invalid_argument("repo-manifest-source-name-mismatch");
+  if (names) {
+    for (uint32_t i = 0; i < proof->sourceCount(); ++i) {
+      if (ndn::Name((*names)[1 + proof->pageCount() + i]) != scope.sourceName(i)) {
+        throw std::invalid_argument("repo-manifest-source-name-mismatch");
+      }
     }
-    sources.push_back(proof->sourceFullName(i));
   }
-  spools->add(fetchNamed(sources, reference.expectedSize - spools->totalWireBytes(),
-    hint, current, deadline, [proof](std::size_t i, const ndn::Data& data) {
+  // A verified index determines unique source names. Only the active Interest
+  // window needs full names, so there is no caller-supplied name list to charge.
+  const auto sourceNameAt = [proof](std::size_t i) {
+    auto name = proof->sourceFullName(static_cast<uint32_t>(i));
+    if (name.toUri(ndn::name::UriFormat::CANONICAL).size() > 4096) {
+      throw std::invalid_argument("repo-original-named-packet-name-invalid");
+    }
+    return name;
+  };
+  RepoDataReference routing;
+  routing.dataPrefix = sourceNameAt(0).toUri();
+  routing.forwardingHint = reference.forwardingHint;
+  routing.expectedSize = reference.expectedSize - spools->totalWireBytes();
+  if (routing.expectedSize < proof->sourceCount()) {
+    throw std::invalid_argument("repo-original-named-packet-budget-invalid");
+  }
+  spools->add(fetch(routing, proof->sourceCount(), sourceNameAt, false,
+    current, deadline, [proof](std::size_t i, const ndn::Data& data) {
       if (!proof->matchesSource(static_cast<uint32_t>(i), data)) {
         throw std::runtime_error("repo-manifest-source-proof-rejected");
       }
@@ -1279,13 +1302,14 @@ FaceDataReferenceFetcher::fetchNamed(const std::vector<ndn::Name>& names,
   routing.dataPrefix = names.front().toUri();
   routing.forwardingHint = forwardingHint.toUri();
   routing.expectedSize = maxWireBytes;
-  return fetch(routing, names.size(), names, false, std::move(requireCurrent),
+  return fetch(routing, names.size(), [names](std::size_t i) { return names.at(i); },
+               false, std::move(requireCurrent),
                deadline, std::move(admit));
 }
 
 std::shared_ptr<FaceDataReferencePacketSpool>
 FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t packetCount,
-  std::vector<ndn::Name> names, bool exactSize, std::function<void()> requireCurrent,
+  PacketName nameAt, bool exactSize, std::function<void()> requireCurrent,
   std::chrono::steady_clock::time_point deadline, PacketAdmission admit) const
 {
   if (m_face.getIoContext().get_executor().running_in_this_thread())
@@ -1302,7 +1326,7 @@ FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t 
   auto state = std::make_shared<FetchState>(m_face, reference,
     static_cast<std::size_t>(packetCount), m_windowSize, m_interestLifetime, deadline, admission);
   state->exactSize = exactSize;
-  state->names = std::move(names);
+  state->nameAt = std::move(nameAt);
   state->requireCurrent = std::move(requireCurrent);
   state->admit = std::move(admit);
   if (!state->admit) {
