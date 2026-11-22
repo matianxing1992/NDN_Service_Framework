@@ -166,7 +166,7 @@ def test_long_deadline_rejects_local_launch_before_side_effects(ops, tmp_path, m
     assert not root.exists()
 
 
-@pytest.mark.parametrize('timeout', [21600, 86400])
+@pytest.mark.parametrize('timeout', [21600, 86400, 259200])
 def test_minindn_long_finite_deadline_reaches_admission(ops, tmp_path, monkeypatch, timeout):
     from contextlib import nullcontext
     cluster = importlib.import_module('_spec217_ops.cluster')
@@ -188,12 +188,25 @@ def test_minindn_long_finite_deadline_reaches_admission(ops, tmp_path, monkeypat
 
 
 @pytest.mark.parametrize('action,timeout', [('up', value) for value in
-    (True, 0, -1, float('nan'), float('inf'), 86401)] +
-    [('status', 3601), ('down', 3601)])
+    (True, 0, -1, float('nan'), float('inf'), 259201)] +
+    [('prepare', 86401), ('benchmark-repo', 86401), ('status', 3601), ('down', 3601)])
 def test_cluster_deadline_rejects_invalid_before_configuration(ops, tmp_path, action, timeout):
     cluster = importlib.import_module('_spec217_ops.cluster')
     with pytest.raises(cluster.ClusterError, match='timeout must be'):
         cluster.run_cluster(action, tmp_path / 'absent.json', timeout=timeout)
+
+
+@pytest.mark.parametrize('platform,operation', [
+    ('slurm-apptainer', 'run'), ('host', 'run'), ('minindn', 'prepare')])
+def test_multiday_deadline_rejects_other_operations_before_mutation(
+        ops, tmp_path, monkeypatch, platform, operation):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    monkeypatch.setattr(cluster, 'load_deployment', lambda _: {
+        'platform': {'kind': platform}, 'operation': operation})
+    root = tmp_path / 'must-not-create'
+    with pytest.raises(cluster.ClusterError, match='requires a MiniNDN inference run'):
+        cluster._up(tmp_path / 'deployment.json', root, 259200)
+    assert not root.exists()
 
 
 def test_allocation_long_deadline_reaches_bound_configuration_check(ops, monkeypatch, tmp_path):

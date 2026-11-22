@@ -926,6 +926,9 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
               load_deployment(source, prepare_only=True) if prepare_only
               else load_deployment(source))
     prepare_only = config.get('operation') == 'prepare'
+    if timeout > 86400 and (config['platform']['kind'] != 'minindn' or
+                            prepare_only or repo_benchmark is not None):
+        raise ClusterError('timeout above 86400 seconds requires a MiniNDN inference run')
     if repo_benchmark is not None:
         if config['platform']['kind'] == 'minindn':
             if not prepare_only:
@@ -1206,7 +1209,8 @@ def _stop_provider(root, state, actor_id, timeout):
 def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_id=None,
                 repo_benchmark=None):
     """Run the host operation or inspect/close its persisted owned processes."""
-    maximum = 86400 if action in ('up', 'prepare', 'benchmark-repo') else 3600
+    maximum = (259200 if action == 'up' else
+               86400 if action in ('prepare', 'benchmark-repo') else 3600)
     if type(timeout) not in (int, float) or not 0 < timeout <= maximum:
         raise ClusterError('timeout must be in (0,%d] seconds' % maximum)
     if type(debug) is not bool or (debug and action not in ('up', 'prepare', 'benchmark-repo')):

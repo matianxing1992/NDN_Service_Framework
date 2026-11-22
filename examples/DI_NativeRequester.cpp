@@ -774,8 +774,6 @@ runWanRequester(const ptree& config, const std::filesystem::path& base, Runtime&
   options.inlineLimit = config.get<std::size_t>("inline_limit_bytes", 4096);
   options.generationId = config.get<std::string>("generation_id");
   const auto timeout = config.get<std::int64_t>("timeout_ms");
-  if (timeout <= 0 || timeout > 86'400'000)
-    throw std::invalid_argument("Wan generation timeout_ms is outside the supported range");
   options.deadline = std::chrono::steady_clock::now() + Milliseconds(timeout);
   options.childRequest = childOptions;
   const auto prompts = [&] {
@@ -1112,6 +1110,11 @@ run(int argc, char** argv)
   }
   const auto& request = config.get_child("request");
   const auto wanConfig = config.get_child_optional("wan_generation");
+  if (wanConfig) {
+    const auto timeout = wanConfig->get<std::int64_t>("timeout_ms");
+    if (timeout <= 0 || timeout > 259'200'000)
+      throw std::invalid_argument("Wan generation timeout_ms is outside the supported range");
+  }
   const auto captureFixtureTrace = config.get<bool>("test_wan_fixture_trace", false);
   if (captureFixtureTrace && (!wanConfig || !config.get<bool>("test_only", false)))
     throw std::invalid_argument("test_wan_fixture_trace requires Wan generation and test_only=true");
