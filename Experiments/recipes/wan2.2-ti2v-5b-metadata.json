@@ -1,0 +1,236 @@
+{
+  "id": "wan2.2-ti2v-5b-metadata-v1",
+  "repository": "Wan-AI/Wan2.2-TI2V-5B",
+  "revision": "921dbaf3f1674a56f47e83fb80a34bac8a8f203e",
+  "sources": [
+    {
+      "file": "config.json",
+      "bytes": 251,
+      "sha256": "d1fea36899d00c2501b836c13ad65af56e2f9529ba622e50886d3f5c3e6c02bc"
+    },
+    {
+      "file": "diffusion_pytorch_model.safetensors.index.json",
+      "bytes": 72865,
+      "sha256": "bfa2337f1163e195d24151a72298daf34a620543898109be47e414c8daa5b3fe"
+    },
+    {
+      "file": "Wan2.2_VAE.pth",
+      "bytes": 2818839170,
+      "sha256": "20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36"
+    },
+    {
+      "file": "diffusion_pytorch_model-00001-of-00003.safetensors",
+      "bytes": 9825014472,
+      "sha256": "720b06c4ade5e87c1246bba8ac95b664c638749cd9b102cf84d823bb44c026a1"
+    },
+    {
+      "file": "diffusion_pytorch_model-00002-of-00003.safetensors",
+      "bytes": 9995661736,
+      "sha256": "09ec5ef720d8396f6cfa51fbdcbdb2327e37722afd6e89fd38f1e7e5e782c283"
+    },
+    {
+      "file": "diffusion_pytorch_model-00003-of-00003.safetensors",
+      "bytes": 178558176,
+      "sha256": "6306f7894c345de9093ad588771c2abfaeb668a81f7a6d9a918bd26ba3568e49"
+    },
+    {
+      "file": "google/umt5-xxl/tokenizer.json",
+      "bytes": 16837417,
+      "sha256": "6e197b4d3dbd71da14b4eb255f4fa91c9c1f2068b20a2de2472967ca3d22602b"
+    },
+    {
+      "file": "models_t5_umt5-xxl-enc-bf16.pth",
+      "bytes": 11361920418,
+      "sha256": "7cace0da2b446bbbbc57d031ab6cf163a3d59b366da94e5afe36745b746fd81d"
+    }
+  ],
+  "model_config": {
+    "_class_name": "WanModel",
+    "_diffusers_version": "0.33.0",
+    "dim": 3072,
+    "eps": 1e-06,
+    "ffn_dim": 14336,
+    "freq_dim": 256,
+    "in_dim": 48,
+    "model_type": "ti2v",
+    "num_heads": 24,
+    "num_layers": 30,
+    "out_dim": 48,
+    "text_len": 512
+  },
+  "indexed_tensor_bytes": 19999150848,
+  "indexed_tensor_count": 825,
+  "shards": [
+    "diffusion_pytorch_model-00001-of-00003.safetensors",
+    "diffusion_pytorch_model-00002-of-00003.safetensors",
+    "diffusion_pytorch_model-00003-of-00003.safetensors"
+  ],
+  "safetensors_headers": [
+    {
+      "file": "diffusion_pytorch_model-00001-of-00003.safetensors",
+      "header_bytes": 41664,
+      "sha256": "bb082910209d10fdd12ac4ce8db8be96caa85ade3158b6e3f06e5276339dc7b5"
+    },
+    {
+      "file": "diffusion_pytorch_model-00002-of-00003.safetensors",
+      "header_bytes": 41376,
+      "sha256": "8d14af6f643407dbad98efca6fefd078260d7b2eb24af6d9e26d98bd044a33e5"
+    },
+    {
+      "file": "diffusion_pytorch_model-00003-of-00003.safetensors",
+      "header_bytes": 472,
+      "sha256": "a02cec11dc1594949709fab8d551d2a38b9d0d3a80232e3d1082795001cb0c1d"
+    }
+  ],
+  "vae_normalization": {
+    "latent_mean": [
+      -0.2289,
+      -0.0052,
+      -0.1323,
+      -0.2339,
+      -0.2799,
+      0.0174,
+      0.1838,
+      0.1557,
+      -0.1382,
+      0.0542,
+      0.2813,
+      0.0891,
+      0.157,
+      -0.0098,
+      0.0375,
+      -0.1825,
+      -0.2246,
+      -0.1207,
+      -0.0698,
+      0.5109,
+      0.2665,
+      -0.2108,
+      -0.2158,
+      0.2502,
+      -0.2055,
+      -0.0322,
+      0.1109,
+      0.1567,
+      -0.0729,
+      0.0899,
+      -0.2799,
+      -0.123,
+      -0.0313,
+      -0.1649,
+      0.0117,
+      0.0723,
+      -0.2839,
+      -0.2083,
+      -0.052,
+      0.3748,
+      0.0152,
+      0.1957,
+      0.1433,
+      -0.2944,
+      0.3573,
+      -0.0548,
+      -0.1681,
+      -0.0667
+    ],
+    "latent_std": [
+      0.4765,
+      1.0364,
+      0.4514,
+      1.1677,
+      0.5313,
+      0.499,
+      0.4818,
+      0.5013,
+      0.8158,
+      1.0344,
+      0.5894,
+      1.0901,
+      0.6885,
+      0.6165,
+      0.8454,
+      0.4978,
+      0.5759,
+      0.3523,
+      0.7135,
+      0.6804,
+      0.5833,
+      1.4146,
+      0.8986,
+      0.5659,
+      0.7069,
+      0.5338,
+      0.4889,
+      0.4917,
+      0.4069,
+      0.4999,
+      0.6866,
+      0.4093,
+      0.5709,
+      0.6065,
+      0.6415,
+      0.4944,
+      0.5726,
+      1.2042,
+      0.5458,
+      1.6887,
+      0.3971,
+      1.06,
+      0.3943,
+      0.5537,
+      0.5444,
+      0.4089,
+      0.7468,
+      0.7744
+    ]
+  },
+  "vae_reference": {
+    "repository": "Wan-Video/Wan2.2",
+    "revision": "1ea34ff48f87168174e12956e200b1d908b1c5ff",
+    "file": "wan/modules/vae2_2.py",
+    "sha256": "eab5ce4aa1ce03af2978f2a8e8364c419f5fbb8535d265ac86b0b02ddcf0c1f6",
+    "bytes": 31846
+  },
+  "converted_vae": {
+    "file": "vae-fp32.safetensors",
+    "bytes": 2818778360,
+    "sha256": "8c37b3dd8cbf4f01dbae62613fcff4e8ac499457665e2b5f6a03f9523b4f8c7c",
+    "producer": "Experiments/prepare-wan-checkpoint.py"
+  },
+  "converted_umt5": {
+    "file": "umt5-fp32.safetensors",
+    "bytes": 22723666120,
+    "sha256": "2d8750ba344f08e880930bea5a8a4ef7cf5c08876bc0af2e0ff9a8f2752e2234",
+    "producer": "Experiments/prepare-wan-checkpoint.py"
+  },
+  "network_reference": {
+    "repository": "Wan-Video/Wan2.2",
+    "revision": "1ea34ff48f87168174e12956e200b1d908b1c5ff",
+    "sources": [
+      {
+        "file": "wan/modules/model.py",
+        "local_file": "reference-source/model.py",
+        "bytes": 18097,
+        "sha256": "8b39115298ca7322806c19b3165b3f435a94fe4a58f0624aec24f8e7f4997432"
+      },
+      {
+        "file": "wan/modules/attention.py",
+        "local_file": "reference-source/attention.py",
+        "bytes": 5435,
+        "sha256": "23fe7c6f6e4065242d95e5e188cb2d1a16bd283f05dca7e7e878977158fcfdbc"
+      },
+      {
+        "file": "wan/modules/t5.py",
+        "local_file": "reference-source/t5.py",
+        "bytes": 16910,
+        "sha256": "8b0cebf3192c542f92a344255a06c203df3ba24160715899a055cc8de0cd930f"
+      },
+      {
+        "file": "wan/modules/tokenizers.py",
+        "local_file": "reference-source/tokenizers.py",
+        "bytes": 2431,
+        "sha256": "cf5b189c1ae017326efadab2fc6380ba223fa7a59d0be6464bd264db53c76934"
+      }
+    ]
+  }
+}

@@ -323,6 +323,14 @@ def build(bld):
                     install_path=None)
 
     if 'di' in bld.env.NDNSF_COMPONENTS:
+        bld.program(name='di-wan-checkpoint-oracle',
+                    target='../di-wan-checkpoint-oracle',
+                    source=['di-wan-checkpoint-oracle.cpp'],
+                    includes=['..'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX ONNX',
+                    rpath=[bld.env.LIBDIR], linkflags=['-Wl,-rpath,$ORIGIN/../lib'],
+                    install_path='${BINDIR}')
+
         bld.program(name='ndnsf-di-device-query',
                     target='../ndnsf-di-device-query',
                     source=['device-query.cpp'],
