@@ -7,6 +7,8 @@
 #include <ndn-cxx/encoding/block.hpp>
 #include <ndn-cxx/util/logger.hpp>
 #include <ndn-cxx/util/random.hpp>
+#include <ndn-cxx/util/sha256.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -1979,7 +1981,13 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
       }
     }
   };
-  for (size_t i = 0; i < manifest.packetNames.size(); ++i) {
+  // RepoNode already checked the ordered packet view of an owned spool. For a
+  // new set with no possible name collisions, bind the staged bytes to that
+  // view below. Existing names still require the per-packet storage checks.
+  const bool verifyStagedSpool = stageTogether && !existing && indexedPacketNames.empty() &&
+    std::none_of(manifest.packetNames.begin(), manifest.packetNames.end(),
+      [&](const auto& name) { return catalogMetadata.count(name) != 0; });
+  for (size_t i = 0; !verifyStagedSpool && i < manifest.packetNames.size(); ++i) {
     if (requireActive) requireActive();
     const auto length = manifest.packetOffsets[i + 1] - manifest.packetOffsets[i];
     const auto wire = readRange(manifest.packetOffsets[i], static_cast<std::size_t>(length));
@@ -2020,10 +2028,25 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   try {
     if (stageTogether) {
       writeAdmittedRangesLocked(manifest, [&](const auto& normalized) {
+        ndn::util::Sha256 stagedDigest;
+        uint64_t stagedBytes = 0;
         detail::stageOriginalPacketSet(*m_store, normalized, [&](auto offset, auto length) {
           if (requireActive) requireActive();
-          return readRange(offset, length);
+          auto bytes = readRange(offset, length);
+          if (verifyStagedSpool) {
+            if (offset != stagedBytes || bytes.size() != length ||
+                length > normalized.size - stagedBytes) {
+              throw std::runtime_error("repo-original-packet-input-truncated");
+            }
+            stagedDigest.update(ndn::span<const uint8_t>(bytes));
+            stagedBytes += length;
+          }
+          return bytes;
         });
+        if (verifyStagedSpool && (stagedBytes != normalized.size ||
+            ndn::toHex(*stagedDigest.computeDigest(), false) != normalized.sha256)) {
+          throw std::runtime_error("repo-original-packet-spool-digest-mismatch");
+        }
       });
     }
     else {

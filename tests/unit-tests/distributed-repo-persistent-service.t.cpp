@@ -2983,9 +2983,48 @@ struct OwnedPacketFixture
   }
 
   void
-  usePacketSpool()
+  usePacketSpool(bool alterStagedBytes = false)
   {
-    node->setDataReferenceSpoolFetcher([this](const RepoDataReference&) {
+    class AlteredRangeSource : public detail::DataReferencePacketSource
+    {
+    public:
+      explicit AlteredRangeSource(std::shared_ptr<detail::DataReferencePacketSource> source)
+        : m_source(std::move(source))
+      {
+      }
+
+      std::size_t
+      packetCount() const noexcept override
+      {
+        return m_source->packetCount();
+      }
+
+      uint64_t
+      totalWireBytes() const override
+      {
+        return m_source->totalWireBytes();
+      }
+
+      std::vector<uint8_t>
+      readPacket(std::size_t index) const override
+      {
+        return m_source->readPacket(index);
+      }
+
+      std::vector<uint8_t>
+      readRange(uint64_t offset, std::size_t length) const override
+      {
+        auto bytes = m_source->readRange(offset, length);
+        if (offset == 0 && !bytes.empty()) bytes.back() ^= 1;
+        return bytes;
+      }
+
+    private:
+      std::shared_ptr<detail::DataReferencePacketSource> m_source;
+    };
+
+    node->setDataReferenceSpoolFetcher([this, alterStagedBytes](const RepoDataReference&)
+        -> std::shared_ptr<detail::DataReferencePacketSource> {
       ++fetches;
       auto spool = std::make_shared<detail::FaceDataReferencePacketSpool>(
         packets.size(), original.size());
@@ -2993,6 +3032,7 @@ struct OwnedPacketFixture
         spool->append(i - 1, packets[i - 1]);
       }
       spool->finalize();
+      if (alterStagedBytes) return std::make_shared<AlteredRangeSource>(std::move(spool));
       return spool;
     });
   }
@@ -3091,6 +3131,28 @@ BOOST_AUTO_TEST_CASE(OwnedSpoolPublishesOnceAndConfirmsAmbiguousCommitBeforeClai
       BOOST_CHECK(fixture.node->getRange(name, {0, stored.size}) == fixture.original);
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(OwnedSpoolRejectsStagedBytesThatDifferFromAdmittedPackets)
+{
+  OwnedPacketFixture fixture;
+  fixture.usePacketSpool(true);
+  const auto result = fixture.insert();
+  BOOST_CHECK_EQUAL(result.state, "FAILED");
+  BOOST_CHECK(result.message.find("repo-original-packet-spool-digest-mismatch") !=
+              std::string::npos);
+  const auto& name = fixture.request.reference.objectName;
+  BOOST_CHECK_THROW(fixture.node->getManifest(name), std::out_of_range);
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+
+  fixture.usePacketSpool();
+  const auto repeated = fixture.insert();
+  BOOST_REQUIRE_MESSAGE(repeated.state == "DONE", repeated.message);
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+  fixture.provider.reset();
+  fixture.node.reset();
+  fixture.open();
+  BOOST_CHECK(fixture.node->getRange(name, {0, fixture.original.size()}) == fixture.original);
 }
 
 BOOST_AUTO_TEST_CASE(LargeDigestOwnedUploadPreservesOriginalWireAndRecoveryManifest)
