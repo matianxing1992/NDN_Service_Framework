@@ -141,9 +141,9 @@ run(int argc, char** argv)
                  "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
                  "[--manifest-read-pipeline serial|paired|quad] "
                  "[--manifest-insert indexed|compact] "
-                 "[--manifest-group-segments 2048|2560|3840] ";
+                 "[--manifest-group-segments 2048|2560|3840] [--manifest-write-slots 3|5] ";
     std::cout << "\nUses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
-                 "whole-group reads and at most "
+                 "whole-group reads, with a default of "
               << di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS
               << " concurrent native commits. Deadline 1800 seconds. Report must not exist.\n";
     return 0;
@@ -155,7 +155,8 @@ run(int argc, char** argv)
       std::string(argv[i]) == "--signing-certificate" ||
       std::string(argv[i]) == "--manifest-read-pipeline" ||
       std::string(argv[i]) == "--manifest-insert" ||
-      std::string(argv[i]) == "--manifest-group-segments";
+      std::string(argv[i]) == "--manifest-group-segments" ||
+      std::string(argv[i]) == "--manifest-write-slots";
     require(i + 1 < argc && known && options.emplace(argv[i], argv[i + 1]).second,
             "invalid benchmark option");
   }
@@ -171,6 +172,13 @@ run(int argc, char** argv)
           (insertMode->second == "indexed" || insertMode->second == "compact")),
           "manifest INSERT mode requires manifest publication");
   const bool compactInsert = insertMode != options.end() && insertMode->second == "compact";
+  const auto writeSlots = options.find("--manifest-write-slots");
+  require(writeSlots == options.end() || (useManifest && phaseOption != "read" &&
+          (writeSlots->second == "3" || writeSlots->second == "5")),
+          "manifest write slots require manifest publication and a capacity of 3 or 5");
+  const auto writeCapacity = writeSlots != options.end() && writeSlots->second == "5"
+    ? di::NativeModelCommitPipeline::MAX_CONFIGURED_COMMITS
+    : di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS;
   const auto readPipeline = options.find("--manifest-read-pipeline");
   const bool boundedRead = readPipeline != options.end();
   size_t readGroups = 1;
@@ -295,7 +303,7 @@ run(int argc, char** argv)
   }
   bootstrap["publicationIncludesReadback"] = false;
   bootstrap["publicationMode"] = "bounded-pipeline";
-  bootstrap["publicationMaxActiveCommits"] = di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS;
+  bootstrap["publicationMaxActiveCommits"] = writeCapacity;
   record(std::move(bootstrap));
   auto work = std::async(std::launch::async, [&] {
     std::string phase = "publication";
@@ -418,12 +426,12 @@ run(int argc, char** argv)
           {"minimumWireBytes", group.minimumWireBytes},
           {"maximumWireBytes", group.maximumWireBytes},
           {"publicationMode", "bounded-pipeline"},
-          {"publicationMaxActiveCommits", di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS},
+          {"publicationMaxActiveCommits", writeCapacity},
           {"cpuScope", "process CPU during overlapping group interval"}});
         return row;
       };
       const Measurement publicationTime;
-      di::NativeModelCommitPipeline pipeline(current, NDNSF_DI_WIRE_LIMIT);
+      di::NativeModelCommitPipeline pipeline(current, NDNSF_DI_WIRE_LIMIT, writeCapacity);
       while (payloadBytes < FILE_BYTES) {
         const Measurement groupTime;
         Group group;
@@ -531,7 +539,7 @@ run(int argc, char** argv)
         {"wireBytes", wireBytes}, {"sha256", expected}, {"groups", groups.size()},
         {"publicationIncludesReadback", false}, {"publicationMode", "bounded-pipeline"},
         {"sourceGroupLimit", maxSourcePackets},
-        {"publicationMaxActiveCommits", di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS}});
+        {"publicationMaxActiveCommits", writeCapacity}});
       record(std::move(published));
       if (phaseOption == "write") {
         // The reference is an input record for a later independent reader, not
@@ -576,7 +584,7 @@ run(int argc, char** argv)
           {"sha256", expected}, {"wireBytes", wireBytes}, {"groups", groups.size()},
           {"contentSegmentBytes", CONTENT_BYTES}, {"stagedPhase", "write"},
           {"publicationMode", "bounded-pipeline"},
-          {"publicationMaxActiveCommits", di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS}});
+          {"publicationMaxActiveCommits", writeCapacity}});
         record(written);
         return written;
       }
@@ -719,7 +727,7 @@ run(int argc, char** argv)
       if (phaseOption != "read") {
         result["publicationIncludesReadback"] = false;
         result["publicationMode"] = "bounded-pipeline";
-        result["publicationMaxActiveCommits"] = di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS;
+        result["publicationMaxActiveCommits"] = writeCapacity;
       }
       record(result);
       return result;

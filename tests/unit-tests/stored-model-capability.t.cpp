@@ -287,12 +287,12 @@ BOOST_AUTO_TEST_CASE(LegacyJournalResumesWhenCoordinatesAreSupplied)
 
 BOOST_AUTO_TEST_CASE(CommitPipelineBackpressurePreventsWorkerBeyondCapacity)
 {
-  constexpr auto capacity = NativeModelCommitPipeline::MAX_ACTIVE_COMMITS;
+  constexpr auto capacity = NativeModelCommitPipeline::MAX_CONFIGURED_COMMITS;
   std::atomic<unsigned> started{0};
   std::atomic<bool> release{false}, extraAttempt{false};
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   auto owner = std::async(std::launch::async, [&] {
-    NativeModelCommitPipeline pipeline([] {}, 1ULL << 20);
+    NativeModelCommitPipeline pipeline([] {}, 1ULL << 20, capacity);
     for (unsigned i = 0; i <= capacity; ++i) {
       if (i == capacity) extraAttempt = true;
       pipeline.submit(1, [&](const auto& current) {
@@ -315,6 +315,17 @@ BOOST_AUTO_TEST_CASE(CommitPipelineBackpressurePreventsWorkerBeyondCapacity)
   release = true;
   BOOST_CHECK_NO_THROW(owner.get());
   BOOST_CHECK_EQUAL(started.load(), capacity + 1);
+}
+
+BOOST_AUTO_TEST_CASE(CommitPipelineRejectsInvalidConfiguredCapacity)
+{
+  for (const auto capacity : {std::size_t{0},
+                              NativeModelCommitPipeline::MAX_CONFIGURED_COMMITS + 1}) {
+    BOOST_CHECK_EXCEPTION(NativeModelCommitPipeline([] {}, 1ULL << 20, capacity),
+      std::invalid_argument, [](const std::invalid_argument& error) {
+        return std::string_view(error.what()) == "REPO_COMMIT_PIPELINE_CAPACITY_INVALID";
+      });
+  }
 }
 
 BOOST_AUTO_TEST_CASE(CommitPipelineBoundsWorkersAndObservesInSubmissionOrder)

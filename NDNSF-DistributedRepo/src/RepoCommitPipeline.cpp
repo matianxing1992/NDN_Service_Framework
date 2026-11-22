@@ -6,14 +6,23 @@ namespace ndnsf_distributed_repo {
 
 RepoCommitPipeline::RepoCommitPipeline(CurrentCheck requireCurrent,
                                        std::uint64_t maxGroupWireBytes)
+  : RepoCommitPipeline(std::move(requireCurrent), maxGroupWireBytes, MAX_ACTIVE_COMMITS)
+{
+}
+
+RepoCommitPipeline::RepoCommitPipeline(CurrentCheck requireCurrent,
+                                       std::uint64_t maxGroupWireBytes, std::size_t capacity)
   : m_requireCurrent(std::move(requireCurrent))
   , m_owner(std::this_thread::get_id())
   , m_cancelled(std::make_shared<std::atomic<bool>>(false))
   , m_maxGroupWireBytes(maxGroupWireBytes)
+  , m_capacity(capacity)
 {
   if (!m_requireCurrent) throw std::invalid_argument("REPO_COMMIT_PIPELINE_CURRENT_MISSING");
   if (m_maxGroupWireBytes == 0)
     throw std::invalid_argument("REPO_COMMIT_PIPELINE_WIRE_LIMIT_MISSING");
+  if (m_capacity == 0 || m_capacity > MAX_CONFIGURED_COMMITS)
+    throw std::invalid_argument("REPO_COMMIT_PIPELINE_CAPACITY_INVALID");
   m_requireCurrent();
 }
 
@@ -78,7 +87,7 @@ RepoCommitPipeline::submit(std::uint64_t wireBytes, Commit commit,
     if (m_closed || !commit || wireBytes == 0 || wireBytes > m_maxGroupWireBytes)
       throw std::invalid_argument("REPO_COMMIT_PIPELINE_SUBMISSION_INVALID");
     m_requireCurrent();
-    while (m_pending.size() >= MAX_ACTIVE_COMMITS) completeFirst();
+    while (m_pending.size() >= m_capacity) completeFirst();
     m_requireCurrent();
     const auto cancelled = m_cancelled;
     // Reserve the owner record before starting a task: allocation failure must

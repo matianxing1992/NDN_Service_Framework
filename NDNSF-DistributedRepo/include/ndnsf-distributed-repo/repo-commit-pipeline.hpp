@@ -17,7 +17,7 @@ namespace ndnsf_distributed_repo {
 
 /** Bounded concurrent publication for one caller scope.
  *
- *  Submissions run on worker threads, at most MAX_ACTIVE_COMMITS at a time; drain()
+ *  Submissions run on worker threads, at most the configured capacity at a time; drain()
  *  confirms everything outstanding before a dependent object is submitted, and a
  *  failure cancels and drains the rest. The owner thread is fixed at construction so a
  *  stray thread cannot drive the scope.
@@ -36,8 +36,11 @@ public:
   using CurrentCheck = std::function<void()>;
   using Commit = std::function<void(const CurrentCheck&)>;
   static constexpr std::size_t MAX_ACTIVE_COMMITS = 3;
+  static constexpr std::size_t MAX_CONFIGURED_COMMITS = 5;
 
   RepoCommitPipeline(CurrentCheck requireCurrent, std::uint64_t maxGroupWireBytes);
+  RepoCommitPipeline(CurrentCheck requireCurrent, std::uint64_t maxGroupWireBytes,
+                     std::size_t capacity);
   ~RepoCommitPipeline() noexcept;
   RepoCommitPipeline(const RepoCommitPipeline&) = delete;
   RepoCommitPipeline&
@@ -74,6 +77,7 @@ private:
   std::shared_ptr<std::atomic<bool>> m_cancelled;
   std::deque<Pending> m_pending;
   std::uint64_t m_maxGroupWireBytes = 0;
+  std::size_t m_capacity;
   bool m_closed = false;
 };
 
