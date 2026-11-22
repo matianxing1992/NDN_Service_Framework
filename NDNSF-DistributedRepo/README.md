@@ -66,7 +66,9 @@ revalidating the current Owner claim. Other modes retain the full index transfer
 benchmark independently verifies the complete restored original wire and reconstructed file.
 With an explicit `--manifest-read-pipeline`, the native file benchmark accepts
 `--manifest-read-total-window 32|48|64`. It divides the Interest limit among the selected
-concurrent groups and defaults to 32.
+concurrent groups and defaults to 32. With concurrent reads, a finished fetch frees its
+network slot while the benchmark independently verifies that group in file order.
+The benchmark can retain one completed group alongside the active fetches.
 
 NDNSF-DistributedRepo is an experimental C++ subproject for a distributed,
 NDN-native, policy-controlled artifact and intermediate-data storage layer for

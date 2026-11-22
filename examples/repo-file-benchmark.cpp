@@ -714,6 +714,12 @@ run(int argc, char** argv)
           const auto& packets = ownerPackets ? ownerPackets->packetWires() : legacyPackets;
           current();
           require(packets.size() == names.size(), "benchmark packet count changed");
+          const auto next = groupIndex + readGroups;
+          const bool overlapNext = readGroups > 1 && next < groups.size();
+          // The completed fetch has released its network slot. Keep at most
+          // one completed group alongside the bounded fetches for the oracle.
+          if (overlapNext)
+            submitRead(next);
           for (size_t index = 0; index < packets.size(); ++index) {
             const auto& wire = packets[index];
             wireHash.update(ndn::span<const uint8_t>(wire.data(), wire.size()));
@@ -733,8 +739,7 @@ run(int argc, char** argv)
             {"authentication", authentication}, {"manifestControlPackets", firstSource},
             {"status", "VERIFIED"}});
           record(std::move(row));
-          const auto next = groupIndex + readGroups;
-          if (useCertificate && next < groups.size()) submitRead(next);
+          if (useCertificate && !overlapNext && next < groups.size()) submitRead(next);
         }
       }
       catch (...) {
