@@ -239,6 +239,8 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
                CUDA_VISIBLE_DEVICES=(','.join(actor['resources']['gpu_devices'])
                                      if visible_devices is None else visible_devices))
     kind = actor['kind']
+    if kind in ('repo', 'requester') and repo_benchmark is not None and state.get('runtime_timing'):
+        env['NDNSF_REPO_SOURCE_TIMING'] = '1'
     params = dict(actor.get('parameters', {}))
     periodic = params.pop('core-svs-periodic-sync-ms', None)
     if periodic is not None:
@@ -305,8 +307,6 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
                 argv += ['--' + option, str(params[option])]
         if 'handler-threads' in params:
             env['NDNSF_HANDLER_THREADS'] = str(params['handler-threads'])
-        if repo_benchmark is not None and state.get('runtime_timing'):
-            env['NDNSF_REPO_SOURCE_TIMING'] = '1'
     else:
         if 'core-work-timeout-ms' in params:
             env['NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS'] = str(params.pop('core-work-timeout-ms'))

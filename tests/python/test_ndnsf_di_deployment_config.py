@@ -1265,7 +1265,9 @@ def test_periodic_sync_setting_rejects_nonconsumer_actors(ops, deployment, exter
         module.load_deployment(write_config(root, config))
 
 
-def test_periodic_sync_setting_survives_file_benchmark_requester(ops, deployment, monkeypatch):
+@pytest.mark.parametrize('timing', [False, True])
+def test_periodic_sync_setting_survives_file_benchmark_requester(ops, deployment, monkeypatch,
+                                                               timing):
     module = importlib.import_module('_spec217_ops.deployment_config')
     cluster = importlib.import_module('_spec217_ops.cluster')
     root, config = _stored_deployment(deployment, prepare=True)
@@ -1276,13 +1278,14 @@ def test_periodic_sync_setting_survives_file_benchmark_requester(ops, deployment
     before = copy.deepcopy(frozen)
     monkeypatch.setenv('NDNSF_SVS_PERIODIC_SYNC_MS', '30000')
     argv, env = cluster._native_launch(frozen, actor, root,
-        dict(boot_id='a' * 32, configuration_sha256='b' * 64),
+        dict(boot_id='a' * 32, configuration_sha256='b' * 64, runtime_timing=timing),
         repo_benchmark=dict(source='/input.bin', sha256='a' * 64, authentication='manifest',
                             signing_certificate='/test/KEY/data/issuer/v=1'))
     assert Path(argv[0]).name == 'ndnsf-repo-file-benchmark'
     assert argv[argv.index('--authentication') + 1] == 'manifest'
     assert argv[argv.index('--signing-certificate') + 1] == '/test/KEY/data/issuer/v=1'
     assert env['NDNSF_SVS_PERIODIC_SYNC_MS'] == '1000'
+    assert env.get('NDNSF_REPO_SOURCE_TIMING') == ('1' if timing else None)
     assert '--core-svs-periodic-sync-ms' not in argv
     assert frozen == before
 
