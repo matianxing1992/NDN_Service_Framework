@@ -276,12 +276,12 @@ run(int argc, char** argv)
         const repo::RepoOperationOptions operation{deadline, active, {}};
         repo::RepoDataPublication publication;
         publication.target = packetTarget;
-        publication.producerIdentity = identity.toUri();
+        publication.producerIdentity = identity.toUri(ndn::name::UriFormat::ALTERNATE);
         publication.generation = 1;
-        const auto object = rootName(group).toUri(ndn::name::UriFormat::CANONICAL);
+        const auto object = rootName(group).toUri(ndn::name::UriFormat::ALTERNATE);
         const auto expiry = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch() + (deadline - Clock::now()));
-        const auto grant = client.authorizeWrite({packetTarget, identity.toUri(), object,
+        const auto grant = client.authorizeWrite({packetTarget, publication.producerIdentity, object,
           group.wireDigest, static_cast<uint64_t>(expiry.count())}, operation);
         publication.ownerIdentity = grant.ownerIdentity;
         publication.grantId = grant.grantId;
@@ -566,7 +566,7 @@ run(int argc, char** argv)
           repo::RepoDataFetch retrieval;
           retrieval.ownerClaim.emplace();
           retrieval.ownerClaim->target = packetTarget;
-          retrieval.ownerClaim->objectName = names.front().toUri(ndn::name::UriFormat::CANONICAL);
+          retrieval.ownerClaim->objectName = names.front().toUri(ndn::name::UriFormat::ALTERNATE);
           if (useManifest) {
             retrieval.ownerClaim->segmentManifest =
               std::make_shared<ndn_service_framework::SegmentManifestScope>(scope);
