@@ -138,7 +138,7 @@ def run(args):
                 guard()
                 cmd = [str(binary), nodes[receiver]["nfd"]["socket"], str(payload), str(window),
                        str(trial + 1), "4096", str(producer_cpu), str(consumer_cpu),
-                       "digest", str(args.seconds),
+                       args.interest_mode, str(args.seconds),
                        nodes[sender]["nfd"]["socket"], str(router_pid), group["prefix"], str(wire)]
                 row = dict(command=cmd, window=window, trial=trial + 1)
                 measurements.append(row)
@@ -167,7 +167,8 @@ def run(args):
                        if row["window"] == window and row.get("exit") == 0 and "payloadGbps" in row]
             if len(samples) == args.samples:
                 rates[window] = statistics.median(samples)
-        result = dict(direction=args.direction, endpoints=dict(sender=sender, receiver=receiver),
+        result = dict(direction=args.direction, interestMode=args.interest_mode,
+                      endpoints=dict(sender=sender, receiver=receiver),
                       cpuAffinity=sorted(os.sched_getaffinity(0)),
                       nfdAffinity={row["id"]: row["cpu_affinity"] for row in state["launches"]
                                    if "cpu_affinity" in row},
@@ -187,6 +188,8 @@ def main():
     for name in ("config", "reference", "store", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--direction", choices=("write", "read"), required=True)
+    parser.add_argument("--interest-mode", choices=("digest", "ordinary"), default="digest",
+                        help="replay the same stored Data using full digest or ordinary names")
     parser.add_argument("--cpu-placement", type=Path)
     parser.add_argument("--router", default="router")
     parser.add_argument("--group", type=int, default=0)
