@@ -1042,13 +1042,20 @@ FaceDataReferencePacketSpool::readRange(uint64_t offset, std::size_t length) con
     const auto packetBegin = m_logicalOffsets[index];
     const auto withinPacket = cursor - packetBegin;
     const auto available = static_cast<uint64_t>(m_packetLengths[index]) - withinPacket;
-    const auto chunk = static_cast<std::size_t>(
-      std::min<uint64_t>(available, length - copied));
+    const auto remaining = length - copied;
+    auto chunk = static_cast<std::size_t>(std::min<uint64_t>(available, remaining));
     const auto physicalOffset = m_packetOffsets[index] + static_cast<long>(withinPacket);
+    ++index;
+    // A run is contiguous only if logical neighbors are also adjacent in the
+    // receive-order file. A recovered or reordered packet can break the run.
+    while (chunk < remaining && index < m_packetLengths.size() &&
+           m_packetOffsets[index] == physicalOffset + static_cast<long>(chunk)) {
+      chunk += std::min<std::size_t>(m_packetLengths[index], remaining - chunk);
+      ++index;
+    }
     readAt(physicalOffset, result.data() + copied, chunk);
     copied += chunk;
     cursor += chunk;
-    ++index;
   }
   return result;
 }
