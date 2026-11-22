@@ -36,12 +36,12 @@
 #include <cstring>
 #include <future>
 #include <limits>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace ndnsf_distributed_repo {
@@ -1174,7 +1174,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     std::atomic<size_t> admissionDrops{0};
     size_t replyBudgetBytes = 0;
     ndn::Name prefix;
-    std::map<ndn::Name, std::pair<size_t, size_t>> index;
+    std::unordered_map<ndn::Name, std::pair<size_t, size_t>> index;
     std::shared_ptr<detail::FaceDataReferencePacketSpool> spool;
     std::optional<ndn_service_framework::SegmentManifestVerifier> proof;
     ndn::ScopedInterestFilterHandle filter;
@@ -1190,6 +1190,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   auto publication = std::make_shared<Publication>();
   publication->prefix = prefix;
   publication->replyBudgetBytes = request.reference.expectedSize;
+  publication->index.reserve(names.size());
   auto stop = ndn::make_scope_exit([&] {
     publication->stopped.store(true);
     if (!publication->faceLease) return;
