@@ -1065,6 +1065,11 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     names.size(), request.reference.expectedSize);
   ndn::util::Sha256 digest;
   std::vector<uint64_t> offsets{0};
+  std::vector<std::string> canonicalNames;
+  uint64_t contentBytes = 0;
+  if (request.segmentManifestBinding) {
+    canonicalNames.reserve(names.size());
+  }
   for (size_t i = 0; i < names.size(); ++i) {
     current();
     const auto wire = nextOriginalPacket();
@@ -1079,6 +1084,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
       throw std::invalid_argument("repo-original-publication-packet-invalid");
     current();
     if (request.segmentManifestBinding) {
+      canonicalNames.push_back(data.getName().toUri(ndn::name::UriFormat::CANONICAL));
+      contentBytes += data.getContent().value_size();
       if (i == 0) {
         auto root = writer.validateManifestRootUntil(*wire, manifestScope, deadline);
         if (!root) {
@@ -1184,13 +1191,24 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   const auto insertReply = requestTargetedReply(writer, provider,
     makeRepoServiceName(servicePrefix, "INSERT"), encoded, remaining(), current,
     "repo-original-publication-insert-timeout", "repo-original-publication-insert-not-confirmed: ");
-  const auto status = parseOperationStatusJson(toString(insertReply));
+  const auto insertStatus = toString(insertReply);
+  const auto status = parseOperationStatusJson(insertStatus);
   noteStage("insert");
   if (status.operationId != request.operationId || status.operation != "INSERT" ||
       status.state != "DONE" || ndn::Name(status.objectName) != ndn::Name(request.reference.objectName))
     throw std::runtime_error("repo-original-publication-insert-not-confirmed: " + status.message);
 
   detail::OwnedManifestQuery manifestQuery(request);
+  std::optional<RepoObjectManifest> expectedManifest;
+  const auto committedManifestOperationId = request.segmentManifestBinding
+    ? detail::extractCommittedManifestOperationId(insertStatus) : std::string{};
+  if (!committedManifestOperationId.empty()) {
+    expectedManifest = detail::makeOriginalPacketSetManifest(
+      request.reference, std::move(canonicalNames), std::move(offsets),
+      request.reference.expectedSha256, contentBytes, committedManifestOperationId,
+      request.generation);
+    manifestQuery.manifestSha256 = sha256Hex(toBytes(expectedManifest->toJson()));
+  }
   const auto encodedManifestQuery = detail::encodeOwnedManifestQuery(manifestQuery);
   const auto readManifest = [&] {
     current();
@@ -1199,6 +1217,12 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     const auto wire = requestTargetedReply(writer, provider,
       makeRepoServiceName(servicePrefix, "MANIFEST"), encodedManifestQuery,
       remaining(), current);
+    if (expectedManifest) {
+      if (toString(wire) != manifestQuery.manifestSha256) {
+        throw std::runtime_error("repo-original-publication-manifest-digest-mismatch");
+      }
+      return std::move(*expectedManifest);
+    }
     if (wire.empty() || wire.size() > MAX_PACKET_INDEX_BYTES)
       throw std::runtime_error("repo-original-publication-manifest-budget");
     const auto manifest = parseManifestJson(toString(wire));
@@ -1237,7 +1261,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   noteStage("withdraw-producer");
   const auto manifest = readManifest();
   current();
-  noteStage("manifest-confirmation");
+  noteStage(expectedManifest ? "manifest-confirmation-digest" : "manifest-confirmation");
   return manifest;
 }
 

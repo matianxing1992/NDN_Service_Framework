@@ -2091,7 +2091,7 @@ RepoNode::insertWirePacketsImpl(
   const std::string& operationId, uint64_t generation,
   const std::string& authenticatedWriter,
   const std::optional<RepoUserStorageBinding>& storageBinding,
-  const std::function<void()>& requireActive)
+  const std::function<void()>& requireActive, std::string* committedManifestOperationId)
 {
   if (reference.objectName.empty()) {
     throw std::invalid_argument("repo data reference objectName must not be empty");
@@ -2268,39 +2268,14 @@ RepoNode::insertWirePacketsImpl(
       // Core admits immutable packet clashes and rechecks the current catalog
       // under its transaction lock; no separate Node catalog snapshot is needed.
 
-      RepoObjectManifest manifest;
-      manifest.objectName = ndn::Name(reference.objectName).toUri(ndn::name::UriFormat::CANONICAL);
-      manifest.objectType = "original-packet-set";
-      manifest.sha256 = hashText.str();
-      manifest.size = totalSize;
-      if (packetNames.size() > std::numeric_limits<uint32_t>::max()) {
-        throw std::invalid_argument("repo-packet-count-overflow");
-      }
-      manifest.segmentCount = static_cast<uint32_t>(packetNames.size());
-      manifest.packetNames = packetNames;
-      manifest.packetOffsets = std::move(packetOffsets);
-      manifest.envelopeBytes = contentBytes;
-      manifest.dataPrefix = expectedPrefix.toUri(ndn::name::UriFormat::CANONICAL);
-      manifest.operationId = status.operationId;
-      if (reference.packetSetMetadata) {
-        // Publication metadata is opaque. Physical index, digest, generation,
-        // operation and quota measurements above remain owned by Repo.
-        const auto& metadata = *reference.packetSetMetadata;
-        manifest.publicationIdentity = metadata.publicationIdentity;
-        manifest.protectionEpoch = metadata.protectionEpoch;
-        manifest.keyReferenceId = metadata.keyReferenceId;
-        manifest.keyReferenceVersion = metadata.keyReferenceVersion;
-        manifest.ciphertextManifestDigest = metadata.ciphertextManifestDigest;
-        manifest.servingLocator = metadata.servingLocator;
-        manifest.contentDigest = metadata.contentDigest;
-        manifest.plaintextSize = metadata.plaintextSize;
-        if (transportRoot) {
-          manifest.envelopeBytes = measuredEnvelopeBytes;
-          manifest.dataPrefix = transportRoot->dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
-        }
+      auto manifest = detail::makeOriginalPacketSetManifest(
+        reference, std::move(packetNames), std::move(packetOffsets), hashText.str(),
+        contentBytes, status.operationId, storageBinding ? generation : 0);
+      if (transportRoot) {
+        manifest.envelopeBytes = measuredEnvelopeBytes;
+        manifest.dataPrefix = transportRoot->dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
       }
       if (storageBinding) {
-        manifest.generation = generation;
         (void)reservePersistentOriginalPacketStorage(
           manifest, status.operationId, authenticatedWriter, *storageBinding);
       }
@@ -2389,6 +2364,13 @@ RepoNode::insertWirePacketsImpl(
         requireCurrent();
       }
 
+      if (committedManifestOperationId != nullptr) {
+        // Reuse may retain the operation that first committed the immutable object.
+        manifest.operationId = storedManifest.operationId;
+        if (manifest.hasSameMetadata(storedManifest)) {
+          *committedManifestOperationId = storedManifest.operationId;
+        }
+      }
       status.state = "DONE";
       status.message = "stored app-owned segmented Data wire packets";
       status.completedSegments = packetCount;
@@ -2991,12 +2973,14 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
       };
       requireProof();
       const auto& packets = fetched.packets;
-      return toBytes(insertWirePacketsImpl(
+      std::string committedManifestOperationId;
+      const auto status = insertWirePacketsImpl(
         owned.reference, packets->packetCount(),
         [&](std::size_t index) { return packets->readPacket(index); },
         [&](uint64_t offset, std::size_t length) { return packets->readRange(offset, length); },
         owned.operationId, owned.generation, requesterIdentity,
-        owned.storageBinding, requireProof).toJson());
+        owned.storageBinding, requireProof, &committedManifestOperationId);
+      return toBytes(detail::encodeManifestInsertStatus(status, committedManifestOperationId));
     }
     if (m_dataReferenceSpoolFetcher) {
       const auto packetSpool = m_dataReferenceSpoolFetcher(owned.reference);

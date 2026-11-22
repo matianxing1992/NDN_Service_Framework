@@ -3478,6 +3478,17 @@ BOOST_AUTO_TEST_CASE(OwnedManifestReadbackBindsAuthenticatedWriterGrantAndPhysic
 
 BOOST_AUTO_TEST_CASE(CompactOwnedManifestQueryHasBoundedCanonicalFraming)
 {
+  RepoOperationStatus status;
+  status.operationId = "retry";
+  status.state = "DONE";
+  const auto durableOperation = std::string("first-\"commit");
+  const auto statusWire = detail::encodeManifestInsertStatus(status, durableOperation);
+  BOOST_CHECK_EQUAL(parseOperationStatusJson(statusWire).operationId, status.operationId);
+  BOOST_CHECK_EQUAL(detail::extractCommittedManifestOperationId(statusWire), durableOperation);
+  BOOST_CHECK_EQUAL(detail::encodeManifestInsertStatus(status, {}), status.toJson());
+  status.state = "FAILED";
+  BOOST_CHECK_EQUAL(detail::encodeManifestInsertStatus(status, durableOperation), status.toJson());
+
   OwnedPacketFixture fixture;
   detail::OwnedManifestQuery query(fixture.request);
   const auto wire = detail::encodeOwnedManifestQuery(query);

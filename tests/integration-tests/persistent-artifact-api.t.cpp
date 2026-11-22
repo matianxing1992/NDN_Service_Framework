@@ -3341,6 +3341,25 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   const auto retry = commitManifest(manifestInsert);
   BOOST_REQUIRE(retry.packetSet);
   BOOST_CHECK_EQUAL(retry.packetSet->wireDigest, admittedManifest.packetSet->wireDigest);
+  BOOST_CHECK_EQUAL(retry.packetSet->operationId, admittedManifest.packetSet->operationId);
+  auto renewedManifestGrant = manifestGrant;
+  renewedManifestGrant.grantId += "-renewed";
+  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
+    return repo::RepoClientCompat::requestUserStorageGrant(environment.user(), target,
+      renewedManifestGrant, 15000, std::move(timeout), std::move(complete));
+  });
+  BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
+  const auto renewedManifestGrantReply =
+    repo::RepoUserStorageGrantReply::fromJson(responseString(response));
+  auto reusedManifest = manifestInsert;
+  reusedManifest.operationId += "-reuse";
+  reusedManifest.storageBinding.grantId = renewedManifestGrantReply.grant.grantId;
+  reusedManifest.storageBinding.ownerEpoch = renewedManifestGrantReply.grant.ownerEpoch;
+  const auto reuse = commitManifest(reusedManifest);
+  BOOST_REQUIRE(reuse.packetSet);
+  BOOST_CHECK_EQUAL(reuse.packetSet->operationId, admittedManifest.packetSet->operationId);
+  BOOST_CHECK_EQUAL(reuse.packetSet->wireDigest, admittedManifest.packetSet->wireDigest);
+  BOOST_CHECK(reuse.packetSet->packetNames == admittedManifest.packetSet->packetNames);
   auto conflictingRetry = manifestInsert;
   ++conflictingRetry.generation;
   BOOST_CHECK_EXCEPTION(commitManifest(conflictingRetry), std::runtime_error, [](const auto& error) {

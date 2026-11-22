@@ -247,7 +247,8 @@ private:
     const std::string& operationId, uint64_t generation,
     const std::string& authenticatedWriter,
     const std::optional<RepoUserStorageBinding>& storageBinding,
-    const std::function<void()>& requireActive = {});
+    const std::function<void()>& requireActive = {},
+    std::string* committedManifestOperationId = nullptr);
   std::vector<uint8_t> handleInsert(const std::vector<uint8_t>& request,
                                    const std::string& requesterIdentity, bool networkRequest);
 

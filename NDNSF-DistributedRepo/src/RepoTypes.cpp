@@ -1,4 +1,5 @@
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
+#include "owned-manifest-query.hpp"
 #include "packet-store-lookup.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
@@ -2522,6 +2523,18 @@ RepoOperationStatus::toJson() const
   os << ",\"expiresAtMs\":" << expiresAtMs;
   os << "}";
   return os.str();
+}
+
+std::string
+detail::encodeManifestInsertStatus(const RepoOperationStatus& status,
+                                   const std::string& committedManifestOperationId)
+{
+  auto wire = status.toJson();
+  if (status.state == "DONE" && !committedManifestOperationId.empty()) {
+    wire.pop_back();
+    wire += ",\"committedManifestOperationId\":" + jsonQuote(committedManifestOperationId) + "}";
+  }
+  return wire;
 }
 
 bool

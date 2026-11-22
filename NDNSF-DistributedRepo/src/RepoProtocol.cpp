@@ -715,6 +715,42 @@ decodeUserStorageInsertRequest(const std::vector<uint8_t>& request)
 
 namespace detail {
 
+RepoObjectManifest
+makeOriginalPacketSetManifest(const RepoDataReference& reference,
+                              std::vector<std::string> packetNames,
+                              std::vector<uint64_t> packetOffsets,
+                              std::string wireSha256, uint64_t contentBytes,
+                              std::string operationId, uint64_t generation)
+{
+  if (packetNames.size() > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("repo-packet-count-overflow");
+  }
+  RepoObjectManifest manifest;
+  manifest.objectName = ndn::Name(reference.objectName).toUri(ndn::name::UriFormat::CANONICAL);
+  manifest.objectType = "original-packet-set";
+  manifest.sha256 = std::move(wireSha256);
+  manifest.size = packetOffsets.back();
+  manifest.segmentCount = static_cast<uint32_t>(packetNames.size());
+  manifest.packetNames = std::move(packetNames);
+  manifest.packetOffsets = std::move(packetOffsets);
+  manifest.envelopeBytes = contentBytes;
+  manifest.dataPrefix = ndn::Name(reference.dataPrefix).toUri(ndn::name::UriFormat::CANONICAL);
+  manifest.operationId = std::move(operationId);
+  manifest.generation = generation;
+  if (reference.packetSetMetadata) {
+    const auto& metadata = *reference.packetSetMetadata;
+    manifest.publicationIdentity = metadata.publicationIdentity;
+    manifest.protectionEpoch = metadata.protectionEpoch;
+    manifest.keyReferenceId = metadata.keyReferenceId;
+    manifest.keyReferenceVersion = metadata.keyReferenceVersion;
+    manifest.ciphertextManifestDigest = metadata.ciphertextManifestDigest;
+    manifest.servingLocator = metadata.servingLocator;
+    manifest.contentDigest = metadata.contentDigest;
+    manifest.plaintextSize = metadata.plaintextSize;
+  }
+  return manifest;
+}
+
 std::vector<uint8_t>
 encodeOwnedManifestQuery(const OwnedManifestQuery& request)
 {
@@ -778,6 +814,12 @@ decodeOwnedManifestQuery(const std::vector<uint8_t>& request)
   if (cursor != request.size() || encodeOwnedManifestQuery(decoded) != request)
     throw std::invalid_argument("repo-owned-manifest-query-noncanonical");
   return decoded;
+}
+
+std::string
+extractCommittedManifestOperationId(const std::string& statusJson)
+{
+  return extractJsonString(statusJson, "committedManifestOperationId");
 }
 
 } // namespace detail

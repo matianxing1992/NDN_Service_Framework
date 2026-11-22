@@ -40,6 +40,22 @@ encodeOwnedManifestQuery(const OwnedManifestQuery& request);
 OwnedManifestQuery
 decodeOwnedManifestQuery(const std::vector<uint8_t>& request);
 
+/** Add the optional durable index identity to a successful RPOI3 reply. */
+std::string
+encodeManifestInsertStatus(const RepoOperationStatus& status,
+                           const std::string& committedManifestOperationId);
+
+std::string
+extractCommittedManifestOperationId(const std::string& statusJson);
+
+/** Assemble persisted original-packet metadata from a checked local packet index. */
+RepoObjectManifest
+makeOriginalPacketSetManifest(const RepoDataReference& reference,
+                              std::vector<std::string> packetNames,
+                              std::vector<uint64_t> packetOffsets,
+                              std::string wireSha256, uint64_t contentBytes,
+                              std::string operationId, uint64_t generation);
+
 } // namespace ndnsf_distributed_repo::detail
 
 #endif // NDNSF_DISTRIBUTED_REPO_OWNED_MANIFEST_QUERY_HPP
