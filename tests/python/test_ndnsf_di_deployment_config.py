@@ -5956,6 +5956,25 @@ def test_invalid_configuration_is_rejected_without_mutation(ops, deployment, cha
     assert sorted(str(item.relative_to(root)) for item in root.rglob("*")) == before
 
 
+def test_large_native_json_uses_compact_atomic_writer_and_bounded_reader(ops, tmp_path):
+    parser, _ = ops
+    processes = importlib.import_module('_spec217_ops.processes')
+    value = {'padding': 'c' * (85 * 1024 * 1024), 'roles': ['first', 'second']}
+    path = tmp_path / 'large-requester.json'
+    processes.write_json(path, value)
+    assert 64 * 1024 * 1024 < path.stat().st_size < 100 * 1024 * 1024
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert parser._read_json(path) == value
+    with path.open('rb') as stream:
+        assert stream.read(12) == b'{"padding":"'
+    assert not list(tmp_path.glob('*.tmp'))
+    oversized = tmp_path / 'oversized.json'
+    with oversized.open('wb') as stream:
+        stream.truncate(parser.MAX_JSON_BYTES + 1)
+    with pytest.raises(parser.DeploymentConfigError, match='JSON exceeds 128 MiB'):
+        parser._read_json(oversized)
+
+
 def test_installed_file_tampering_and_duplicate_json_keys(ops, deployment):
     parser, _ = ops
     root, config = deployment

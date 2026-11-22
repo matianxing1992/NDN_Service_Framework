@@ -2,6 +2,7 @@
 #include "interruptible-preparation.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/wan/wan-generation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
@@ -110,9 +111,8 @@ ptree
 readJson(const std::filesystem::path& path)
 {
   ptree value;
-  std::ifstream input(path);
-  if (!input)
-    throw std::runtime_error("requester configuration is unavailable: " + path.string());
+  const auto bytes = readBytes(path, NATIVE_RUNTIME_CONFIG_MAX_BYTES);
+  std::istringstream input(std::string(bytes.begin(), bytes.end()));
   boost::property_tree::read_json(input, value);
   return value;
 }

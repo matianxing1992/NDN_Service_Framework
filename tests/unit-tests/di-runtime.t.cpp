@@ -501,7 +501,7 @@ BOOST_AUTO_TEST_CASE(LargeNativeCatalogFreezesWithinRequesterFileBound)
   std::ifstream input(sourcePath);
   ndnsf::di::NativeJson configJson;
   input >> configJson;
-  configJson.at("catalog")["description"] = std::string(35U << 20, 'c');
+  configJson.at("catalog")["description"] = std::string(84U << 20, 'c');
   RuntimeConfig config;
   config.nativeConfigPath = files.write("wide-requester.json",
     ndnsf::di::nativeCanonicalJson(configJson)).string();
@@ -522,7 +522,8 @@ BOOST_AUTO_TEST_CASE(LargeNativeCatalogFreezesWithinRequesterFileBound)
   });
   oversized->close();
   BOOST_CHECK(oversized->drain(std::chrono::seconds(2)));
-  std::filesystem::resize_file(config.nativeConfigPath, LIMIT + (4U << 20) + 1);
+  std::filesystem::resize_file(config.nativeConfigPath,
+    ndnsf::di::NATIVE_RUNTIME_CONFIG_MAX_BYTES + 1);
   BOOST_CHECK_EXCEPTION(Runtime::open(config), DiError, [] (const DiError& error) {
     return error.code() == "INVALID_RUNTIME_CONFIGURATION" &&
       error.boundary() == "configuration";

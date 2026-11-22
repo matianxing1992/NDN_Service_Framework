@@ -18,7 +18,7 @@ def write_json(path: Path, value: dict) -> None:
     descriptor = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, 'w') as stream:
-            json.dump(value, stream, indent=2, sort_keys=True)
+            json.dump(value, stream, sort_keys=True, separators=(',', ':'))
             stream.write('\n')
             stream.flush()
             os.fsync(stream.fileno())

@@ -313,7 +313,7 @@ def prepare_warm(cold_path):
         for path, value in files.items():
             with path.open('x', encoding='utf-8') as stream:
                 created.append(path)
-                json.dump(value, stream, sort_keys=True)
+                json.dump(value, stream, sort_keys=True, separators=(',', ':'))
                 stream.write('\n')
     except Exception:
         for path in created:

@@ -7,7 +7,10 @@
 namespace ndnsf::di {
 
 /** Byte limit shared by native catalog loading, publishing and reopening. */
-inline constexpr std::size_t NATIVE_REQUEST_CATALOG_MAX_BYTES = 40U << 20;
+inline constexpr std::size_t NATIVE_REQUEST_CATALOG_MAX_BYTES = 96U << 20;
+/** A local requester configuration includes the catalog and bounded runtime settings. */
+inline constexpr std::size_t NATIVE_RUNTIME_CONFIG_MAX_BYTES =
+  NATIVE_REQUEST_CATALOG_MAX_BYTES + (4U << 20);
 
 class NativePreparedPlanningTemplate;
 struct AutomaticOnnxContract;

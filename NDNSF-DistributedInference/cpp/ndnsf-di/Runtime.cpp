@@ -84,9 +84,6 @@ namespace {
 
 using detail::FrozenConfig;
 
-// The requester config embeds a native catalog alongside its local settings.
-constexpr std::size_t MAX_RUNTIME_CONFIG_BYTES = NATIVE_REQUEST_CATALOG_MAX_BYTES + (4U << 20);
-
 std::string readConfig(const std::filesystem::path& path)
 {
   std::error_code ec;
@@ -94,7 +91,7 @@ std::string readConfig(const std::filesystem::path& path)
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "configuration",
                   "native runtime configuration file is unavailable");
   const auto size = std::filesystem::file_size(path, ec);
-  if (ec || size == 0 || size > MAX_RUNTIME_CONFIG_BYTES)
+  if (ec || size == 0 || size > NATIVE_RUNTIME_CONFIG_MAX_BYTES)
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "configuration",
                   "native runtime configuration size is invalid");
   std::ifstream input(path, std::ios::binary);

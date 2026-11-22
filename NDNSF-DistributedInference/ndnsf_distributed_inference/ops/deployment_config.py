@@ -88,10 +88,9 @@ def _pairs(items):
     return result
 
 
-# The installed stack ledger is a legitimate operator artifact that exceeds a few
-# MiB (the local install records its whole file list), so the JSON reader keeps a
-# generous but still bounded limit.
-MAX_JSON_BYTES = 64 * 1024 * 1024
+# Full video catalogs and installed stack ledgers are legitimate large operator
+# inputs. Keep a finite file bound, including the enclosing runtime settings.
+MAX_JSON_BYTES = 128 * 1024 * 1024
 
 
 def _read_json(path):
@@ -100,7 +99,7 @@ def _read_json(path):
     with path.open("rb") as stream:
         raw = stream.read(MAX_JSON_BYTES + 1)
     if len(raw) > MAX_JSON_BYTES:
-        _fail("config", "JSON exceeds 64 MiB")
+        _fail("config", f"JSON exceeds {MAX_JSON_BYTES // (1024 * 1024)} MiB")
     try:
         return json.loads(raw, object_pairs_hook=_pairs)
     except (UnicodeError, json.JSONDecodeError, RecursionError):

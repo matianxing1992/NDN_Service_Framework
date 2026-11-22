@@ -577,7 +577,9 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
 {
   control.requireActive();
   if (configurationJson.size() > NATIVE_REQUEST_CATALOG_MAX_BYTES)
-    throw std::invalid_argument("request catalog configuration exceeds limit");
+    throw std::invalid_argument("request catalog configuration exceeds limit: actual=" +
+      std::to_string(configurationJson.size()) + " limit=" +
+      std::to_string(NATIVE_REQUEST_CATALOG_MAX_BYTES));
   const auto root = nativeParseJson(configurationJson);
   if (root.at("schema") != "ndnsf-di-native-request-catalog-v1")
     throw std::invalid_argument("unsupported native request catalog schema");

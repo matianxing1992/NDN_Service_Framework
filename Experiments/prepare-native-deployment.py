@@ -56,7 +56,7 @@ def digest(data):
 def write_json(path, value):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with path.open("x") as stream:
-        json.dump(value, stream, indent=2, sort_keys=True)
+        json.dump(value, stream, sort_keys=True, separators=(',', ':'))
         stream.write("\n")
 
 
