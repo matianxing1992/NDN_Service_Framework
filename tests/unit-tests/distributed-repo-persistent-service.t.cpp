@@ -124,6 +124,17 @@ struct RepoNodeTestAccess
     return node.m_storageWriteBytes;
   }
 
+  static RepoOperationStatus
+  insertOwnedSpool(RepoNode& node, const RepoUserStorageInsertRequest& request,
+                   std::size_t packetCount,
+                   const std::function<std::vector<uint8_t>(std::size_t)>& readPacket,
+                   const RepoCore::OriginalPacketRangeReader& readRange,
+                   const std::function<void()>& requireActive)
+  {
+    return node.insertWirePacketsImpl(request.reference, packetCount, readPacket, readRange,
+      request.operationId, request.generation, "/provider/a", request.storageBinding, requireActive);
+  }
+
   static std::pair<std::size_t, std::size_t>
   admission(RepoNode& node)
   {
@@ -4163,6 +4174,61 @@ BOOST_AUTO_TEST_CASE(OwnedInsertRestartRecoversPhysicalCommitBeforeClaimPublicat
   BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
   BOOST_CHECK_EQUAL(fixture.usage().committedBytes,
     manifest.size + fixture.node->getManifest(manifest.objectName).toJson().size());
+}
+
+BOOST_AUTO_TEST_CASE(OwnedSpoolLeavesWorkerFreeAndClaimHiddenDuringFinalVerification)
+{
+  using namespace std::chrono_literals;
+  OwnedPacketFixture fixture;
+  const auto& name = fixture.request.reference.objectName;
+  std::promise<void> published;
+  auto reached = published.get_future();
+  std::promise<void> resume;
+  auto resumeRead = resume.get_future();
+  auto writing = std::async(std::launch::async, [&] {
+    const auto handler = std::this_thread::get_id();
+    bool paused = false;
+    return RepoNodeTestAccess::insertOwnedSpool(*fixture.node, fixture.request,
+      fixture.packets.size(), [&](std::size_t index) { return fixture.packets.at(index); },
+      [&](uint64_t offset, std::size_t length) {
+        return std::vector<uint8_t>(fixture.original.begin() + offset,
+                                    fixture.original.begin() + offset + length);
+      }, [&] {
+        if (std::this_thread::get_id() == handler && !paused && fixture.node->core().has(name)) {
+          paused = true;
+          published.set_value();
+          resumeRead.wait();
+        }
+      });
+  });
+  if (reached.wait_for(3s) != std::future_status::ready) {
+    resume.set_value();
+    const auto result = writing.get();
+    BOOST_FAIL("owned write did not reach verification on the handler: " << result.message);
+    return;
+  }
+  auto queued = std::async(std::launch::async, [&] {
+    RepoNodeTestAccess::write(*fixture.node, 1024, [] {});
+  });
+  const auto freeWorker = queued.wait_for(3s) == std::future_status::ready;
+  BOOST_CHECK_THROW(fixture.node->getManifest(name), std::out_of_range);
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+  BOOST_CHECK_GT(fixture.usage().reservedBytes, 0U);
+  fixture.node->stopOriginalPacketOperations();
+  resume.set_value();
+  BOOST_CHECK(freeWorker);
+  queued.get();
+  const auto failed = writing.get();
+  BOOST_CHECK_EQUAL(failed.state, "FAILED");
+  BOOST_CHECK_EQUAL(failed.message, "repo-original-packet-insert-shutting-down");
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+
+  fixture.provider.reset();
+  fixture.node.reset();
+  fixture.open();
+  BOOST_CHECK(fixture.node->getRange(name, {0, fixture.original.size()}) == fixture.original);
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+  BOOST_CHECK_GT(fixture.usage().committedBytes, fixture.original.size());
 }
 
 BOOST_AUTO_TEST_CASE(OwnerCleanupRemovesCanonicalPacketIndexOnlyAfterDurableConfirmation)

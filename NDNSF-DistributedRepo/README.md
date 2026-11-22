@@ -44,7 +44,10 @@ Validated original-packet INSERT commits use one Node-owned storage worker. Queu
 writes share a 64 MiB wire-byte budget (minimum 1 KiB charge per job), with bounded-caller
 backpressure and cancellation checks. The synchronous result waits for durable storage; stopping
 rejects new admissions and cancels queued writes before Node teardown joins the worker. Legacy
-mutation paths retain their transaction fence. The filesystem backend permits committed cache
+mutation paths retain their transaction fence. For an owned spool on a backend supporting
+concurrent committed reads, the caller verifies the persisted bytes after releasing the worker.
+It checks the current grant and physical commitment under the write fence before committing
+the Owner ledger. The filesystem backend permits committed cache
 hits and disk reads during unrelated writes: metadata-cache synchronization is separate from
 the write fence, and committed files use independent read-only descriptors with no staging
 fallback. Original-packet admission is checked again after copying the wire. Other backends

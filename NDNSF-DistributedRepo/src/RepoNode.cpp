@@ -2356,6 +2356,95 @@ RepoNode::insertWirePacketsImpl(
         traceManifestInsertStorage(reference.objectName, status.operationId, stage);
       }
     };
+    auto manifest = detail::makeOriginalPacketSetManifest(
+      reference, std::move(packetNames), std::move(packetOffsets), hashText.str(),
+      contentBytes, status.operationId, storageBinding ? generation : 0);
+    if (transportRoot) {
+      manifest.envelopeBytes = measuredEnvelopeBytes;
+      manifest.dataPrefix = transportRoot->dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
+    }
+    auto commitReadRange = sourceReadRange;
+    if (!commitReadRange) {
+      const auto& commitOffsets = manifest.packetOffsets;
+      commitReadRange = [&readPacket, &commitOffsets] (uint64_t offset, std::size_t length) {
+        if (offset > commitOffsets.back() || length > commitOffsets.back() - offset) {
+          throw std::out_of_range("repo-packet-source-range-invalid");
+        }
+        std::vector<uint8_t> bytes(length);
+        uint64_t cursor = offset;
+        std::size_t copied = 0;
+        while (copied < length) {
+          auto packet = std::upper_bound(commitOffsets.begin(), commitOffsets.end(), cursor);
+          if (packet == commitOffsets.begin() || packet == commitOffsets.end()) {
+            throw std::runtime_error("repo-packet-source-index-invalid");
+          }
+          const auto index = static_cast<std::size_t>(
+            std::distance(commitOffsets.begin(), packet) - 1);
+          const auto packetBegin = commitOffsets[index];
+          const auto packetLength = commitOffsets[index + 1] - packetBegin;
+          const auto withinPacket = cursor - packetBegin;
+          if (withinPacket >= packetLength) {
+            throw std::runtime_error("repo-packet-source-index-invalid");
+          }
+          const auto chunk = static_cast<std::size_t>(std::min<uint64_t>(
+            packetLength - withinPacket, length - copied));
+          const auto packetWire = readPacket(index);
+          if (packetWire.size() != packetLength) {
+            throw std::runtime_error("repo-packet-source-size-changed");
+          }
+          std::copy_n(packetWire.begin() + static_cast<std::ptrdiff_t>(withinPacket),
+                      chunk, bytes.begin() + static_cast<std::ptrdiff_t>(copied));
+          copied += chunk;
+          cursor += chunk;
+        }
+        return bytes;
+      };
+    }
+    const auto grantObjectName = storageBinding
+      ? ndn::Name(manifest.objectName).toUri(ndn::name::UriFormat::ALTERNATE) : std::string{};
+    const auto requireCurrent = [&] {
+      if (requireActive) {
+        requireActive();
+      }
+      if (storageBinding) {
+        if (m_ownedInsertStopping.load(std::memory_order_acquire)) {
+          throw std::runtime_error("repo-original-packet-insert-shutting-down");
+        }
+        (void)m_artifactMetadataStore->validateUserStorageGrant(
+          authenticatedWriter, m_repoNode, storageBinding->ownerIdentity,
+          storageBinding->grantId,
+          grantObjectName,
+          storageBinding->ownerEpoch, nowMilliseconds());
+      }
+    };
+    const bool useOwnedSpool = storageBinding && sourceReadRange;
+    const bool verifyOutsideWorker = useOwnedSpool && m_core.supportsConcurrentCommittedReads();
+    const auto commitOwner = [&](const RepoUserStorageObject& measured) {
+      auto admitted = m_artifactMetadataStore->lookupUserStorageWrite(
+        m_repoNode, storageBinding->ownerIdentity, status.operationId);
+      if (!admitted) {
+        throw std::runtime_error("repo-user-storage-operation-missing");
+      }
+      if (admitted->state == RepoUserStorageWriteState::RESERVED) {
+        (void)m_artifactMetadataStore->settleUserStorageReservation(
+          m_repoNode, storageBinding->ownerIdentity, status.operationId,
+          measured.manifestBytes, nowMilliseconds());
+      }
+      else if (admitted->object.objectName != measured.objectName ||
+               admitted->object.wireSha256 != measured.wireSha256 ||
+               admitted->object.generation != measured.generation ||
+               admitted->object.payloadWireBytes != measured.payloadWireBytes ||
+               admitted->object.manifestBytes != measured.manifestBytes) {
+        throw std::runtime_error(
+          "repo-user-storage-inventory-conflict: committed original packet set changed");
+      }
+      requireCurrent();
+      (void)m_artifactMetadataStore->commitUserStorage(
+        m_repoNode, storageBinding->ownerIdentity, status.operationId, nowMilliseconds());
+      requireCurrent();
+    };
+
+    RepoObjectManifest storedManifest;
     traceStorage("wait-start");
     executeStorageWrite(totalSize, [&] {
       traceStorage("worker-start");
@@ -2363,124 +2452,52 @@ RepoNode::insertWirePacketsImpl(
       std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
       if (requireActive)
         requireActive();
-      // Core admits immutable packet clashes and rechecks the current catalog
-      // under its transaction lock; no separate Node catalog snapshot is needed.
-
-      auto manifest = detail::makeOriginalPacketSetManifest(
-        reference, std::move(packetNames), std::move(packetOffsets), hashText.str(),
-        contentBytes, status.operationId, storageBinding ? generation : 0);
-      if (transportRoot) {
-        manifest.envelopeBytes = measuredEnvelopeBytes;
-        manifest.dataPrefix = transportRoot->dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
-      }
       if (storageBinding) {
         (void)reservePersistentOriginalPacketStorage(
           manifest, status.operationId, authenticatedWriter, *storageBinding);
       }
-      auto commitReadRange = sourceReadRange;
-      if (!commitReadRange) {
-        const auto& commitOffsets = manifest.packetOffsets;
-        commitReadRange = [&readPacket, &commitOffsets] (uint64_t offset, std::size_t length) {
-          if (offset > commitOffsets.back() || length > commitOffsets.back() - offset) {
-            throw std::out_of_range("repo-packet-source-range-invalid");
-          }
-          std::vector<uint8_t> bytes(length);
-          uint64_t cursor = offset;
-          std::size_t copied = 0;
-          while (copied < length) {
-            auto packet = std::upper_bound(commitOffsets.begin(), commitOffsets.end(), cursor);
-            if (packet == commitOffsets.begin() || packet == commitOffsets.end()) {
-              throw std::runtime_error("repo-packet-source-index-invalid");
-            }
-            const auto index = static_cast<std::size_t>(
-              std::distance(commitOffsets.begin(), packet) - 1);
-            const auto packetBegin = commitOffsets[index];
-            const auto packetLength = commitOffsets[index + 1] - packetBegin;
-            const auto withinPacket = cursor - packetBegin;
-            if (withinPacket >= packetLength) {
-              throw std::runtime_error("repo-packet-source-index-invalid");
-            }
-            const auto chunk = static_cast<std::size_t>(std::min<uint64_t>(
-              packetLength - withinPacket, length - copied));
-            const auto packetWire = readPacket(index);
-            if (packetWire.size() != packetLength) {
-              throw std::runtime_error("repo-packet-source-size-changed");
-            }
-            std::copy_n(packetWire.begin() + static_cast<std::ptrdiff_t>(withinPacket),
-                        chunk, bytes.begin() + static_cast<std::ptrdiff_t>(copied));
-            copied += chunk;
-            cursor += chunk;
-          }
-          return bytes;
-        };
-      }
-      const auto grantObjectName = storageBinding
-        ? ndn::Name(manifest.objectName).toUri(ndn::name::UriFormat::ALTERNATE) : std::string{};
-      const auto requireCurrent = [&] {
-        if (requireActive) {
-          requireActive();
-        }
-        if (storageBinding) {
-          if (m_ownedInsertStopping.load(std::memory_order_acquire)) {
-            throw std::runtime_error("repo-original-packet-insert-shutting-down");
-          }
-          (void)m_artifactMetadataStore->validateUserStorageGrant(
-            authenticatedWriter, m_repoNode, storageBinding->ownerIdentity,
-            storageBinding->grantId,
-            grantObjectName,
-            storageBinding->ownerEpoch, nowMilliseconds());
-        }
-      };
-      const bool useOwnedSpool = storageBinding && sourceReadRange;
-      auto storedManifest = useOwnedSpool
+      storedManifest = useOwnedSpool
         ? m_core.commitOwnedOriginalPacketSpool(manifest, commitReadRange, requireCurrent)
         : m_core.commitOriginalPacketReader(manifest, commitReadRange, requireCurrent);
-
-      if (storageBinding) {
+      if (storageBinding && !verifyOutsideWorker) {
         requireCurrent();
         if (!useOwnedSpool) {
           storedManifest = m_core.confirmDurablePublicationIfCurrent(storedManifest);
         }
-        const auto measured = measurePersistentUserStorageObject(storedManifest);
-        auto admitted = m_artifactMetadataStore->lookupUserStorageWrite(
-          m_repoNode, storageBinding->ownerIdentity, status.operationId);
-        if (!admitted) {
-          throw std::runtime_error("repo-user-storage-operation-missing");
-        }
-        if (admitted->state == RepoUserStorageWriteState::RESERVED) {
-          (void)m_artifactMetadataStore->settleUserStorageReservation(
-            m_repoNode, storageBinding->ownerIdentity, status.operationId,
-            measured.manifestBytes, nowMilliseconds());
-        }
-        else if (admitted->object.objectName != measured.objectName ||
-                 admitted->object.wireSha256 != measured.wireSha256 ||
-                 admitted->object.generation != measured.generation ||
-                 admitted->object.payloadWireBytes != measured.payloadWireBytes ||
-                 admitted->object.manifestBytes != measured.manifestBytes) {
-          throw std::runtime_error(
-            "repo-user-storage-inventory-conflict: committed original packet set changed");
-        }
-        requireCurrent();
-        (void)m_artifactMetadataStore->commitUserStorage(
-          m_repoNode, storageBinding->ownerIdentity, status.operationId, nowMilliseconds());
-        requireCurrent();
+        commitOwner(measurePersistentUserStorageObject(storedManifest));
       }
-
-      if (committedManifestOperationId != nullptr) {
-        // Reuse may retain the operation that first committed the immutable object.
-        manifest.operationId = storedManifest.operationId;
-        if (manifest.hasSameMetadata(storedManifest)) {
-          *committedManifestOperationId = storedManifest.operationId;
-        }
-      }
-      status.state = "DONE";
-      status.message = "stored app-owned segmented Data wire packets";
-      status.completedSegments = packetCount;
-      status.totalSegments = packetCount;
-      rememberStatus(status);
       traceStorage("worker-finish");
     }, requireActive);
     traceStorage("wait-finish");
+    if (verifyOutsideWorker) {
+      // Only the physical bytes have committed. The reserved Owner write
+      // still controls visibility until it is settled under the write fence.
+      requireCurrent();
+      traceStorage("owner-verify-start");
+      const auto measured = measurePersistentUserStorageObject(storedManifest);
+      traceStorage("owner-verify-finish");
+      std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+      requireCurrent();
+      const auto current = measurePersistentUserStorageObject(storedManifest, false);
+      if (current.payloadWireBytes != measured.payloadWireBytes ||
+          current.manifestBytes != measured.manifestBytes)
+        throw std::runtime_error(
+          "repo-user-storage-inventory-conflict: committed original packet set changed");
+      commitOwner(measured);
+    }
+
+    if (committedManifestOperationId != nullptr) {
+      // Reuse may retain the operation that first committed the immutable object.
+      manifest.operationId = storedManifest.operationId;
+      if (manifest.hasSameMetadata(storedManifest)) {
+        *committedManifestOperationId = storedManifest.operationId;
+      }
+    }
+    status.state = "DONE";
+    status.message = "stored app-owned segmented Data wire packets";
+    status.completedSegments = packetCount;
+    status.totalSegments = packetCount;
+    rememberStatus(status);
     return status;
   }
   catch (const std::exception& e) {
