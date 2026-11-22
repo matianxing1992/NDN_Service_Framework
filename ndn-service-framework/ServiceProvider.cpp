@@ -7517,7 +7517,7 @@ namespace ndn_service_framework
             !hasCurrentWorkAuthority()) {
             return {};
         }
-        const auto current = currentWorkPredicate(m_assignment.workDeadline);
+        const auto current = currentExactPublicationPredicate();
         if (!current()) {
             return {};
         }
@@ -7596,7 +7596,7 @@ namespace ndn_service_framework
             !hasCurrentWorkAuthority()) {
             return false;
         }
-        const auto current = currentWorkPredicate(m_assignment.workDeadline);
+        const auto current = currentExactPublicationPredicate();
         if (m_provider.m_fetchStopping->load() || !current()) {
             return false;
         }

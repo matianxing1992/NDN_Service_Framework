@@ -144,6 +144,10 @@ BOOST_AUTO_TEST_CASE(ManifestOriginalsAnswerOrdinaryAndPendingDigestInterests)
   environment.pumpUntil([&] { return received.size() == 2; });
   BOOST_REQUIRE_EQUAL(received.size(), 2U);
   BOOST_CHECK(received.back().wireEncode() == original.wireEncode());
+
+  BOOST_REQUIRE(context.tryReleaseExactPacketRetention());
+  BOOST_CHECK(!ExactPublicationOracle::publishManifest(context, scope));
+  BOOST_CHECK(!ExactPublicationOracle::replayManifest(context, *handle));
 }
 
 BOOST_AUTO_TEST_CASE(ManifestReadAdmitsRootBeforeSchedulingProvenMembers)
