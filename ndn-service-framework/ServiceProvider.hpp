@@ -1473,6 +1473,9 @@ namespace ndn_service_framework{
             void setPendingRequestTimeoutGrace(ndn::time::milliseconds grace);
             void setPerformanceMode(bool enabled);
             void setHandlerThreads(size_t n);
+            /** Give one registered synchronous unary service an independent bounded worker.
+             * Configure on the Face thread or before the Provider starts processing events. */
+            void reserveUnaryHandler(const ndn::Name& serviceName);
             size_t getHandlerThreads() const;
             size_t getHandlerQueueDepth() const;
             /** Validate original Data with the configured trust and Producer policy.
@@ -2264,6 +2267,8 @@ namespace ndn_service_framework{
                 std::condition_variable drained;
                 ServiceProvider* owner = nullptr;
                 std::size_t activeOwnerCalls = 0;
+                std::optional<ndn::Name> reservedUnaryService;
+                BoundedWorkerPool reservedUnaryPool{"ServiceProvider reserved unary handler", 32};
 
                 ServiceProvider* acquireOwner() noexcept
                 {

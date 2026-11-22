@@ -38,7 +38,7 @@ printUsage(std::ostream& output)
             "[--cache-bytes N] [--large-object-threshold-bytes N] "
             "[--failure-domain NAME] [--ack-collection-ms N] "
             "[--request-timeout-ms N] [--availability-freshness-ms N] "
-            "[--manifest-fetch-window N]\n";
+            "[--manifest-fetch-window N] [--manifest-handler shared|reserved]\n";
 }
 
 ndn::security::Certificate
@@ -209,13 +209,19 @@ main(int argc, char* argv[])
     repo->registerServices(provider, publisherUser,
                            config.ackCollectionTimeMs,
                            config.requestTimeoutMs);
+    if (config.reserveManifestHandler) {
+      provider.reserveUnaryHandler(
+        ndnsf_distributed_repo::makeRepoServiceName(config.servicePrefix, "MANIFEST"));
+    }
     repo->registerOriginalDataServing(face);
     provider.init();
     provider.fetchPermissionsFromController(config.authorityIdentity);
 
     std::cout << "Persistent Repo serving " << repo->servicePrefix()
               << " as " << config.repoNode << " using "
-              << repoStoreRoot << " handlers=" << provider.getHandlerThreads() << std::endl;
+              << repoStoreRoot << " handlers=" << provider.getHandlerThreads()
+              << " manifestHandler=" << (config.reserveManifestHandler ? "reserved" : "shared")
+              << std::endl;
     if (std::getenv("NDNSF_DEPLOYMENT_BOOT_ID") != nullptr) {
       // The manager's fresh owned log binds this marker to its PID/launch.
       // Construction alone does not prove Controller permission or NAC readiness.

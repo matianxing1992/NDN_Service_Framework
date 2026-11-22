@@ -522,6 +522,16 @@ BOOST_AUTO_TEST_CASE(PersistentOperationWorkerTimeoutsAreParsedAndBounded)
   BOOST_CHECK_EQUAL(parsed.ackCollectionTimeMs, 400);
   BOOST_CHECK_EQUAL(parsed.requestTimeoutMs, 7000);
   BOOST_CHECK_EQUAL(parsed.manifestFetchWindow, 0U);
+  BOOST_CHECK(!parsed.reserveManifestHandler);
+  auto executorArguments = arguments;
+  executorArguments.insert(executorArguments.end(), {"--manifest-handler", "reserved"});
+  auto executorArgv = mutableArgv(executorArguments);
+  BOOST_CHECK(PersistentRepoServerConfig::fromArguments(
+    static_cast<int>(executorArgv.size()), executorArgv.data()).reserveManifestHandler);
+  executorArguments.back() = "invalid";
+  executorArgv = mutableArgv(executorArguments);
+  BOOST_CHECK_THROW(PersistentRepoServerConfig::fromArguments(
+    static_cast<int>(executorArgv.size()), executorArgv.data()), std::invalid_argument);
 
   auto windowArguments = arguments;
   windowArguments.insert(windowArguments.end(), {"--manifest-fetch-window", "24"});

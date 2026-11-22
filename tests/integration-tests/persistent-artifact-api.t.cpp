@@ -2855,6 +2855,12 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     return node;
   };
   auto node = openRepo();
+  auto& repoProvider = environment.provider(1);
+  const auto manifestService = repoService(servicePrefix, "MANIFEST");
+  BOOST_CHECK_THROW(repoProvider.reserveUnaryHandler(repoService(servicePrefix, "UNKNOWN")),
+                    std::invalid_argument);
+  repoProvider.reserveUnaryHandler(manifestService);
+  BOOST_CHECK_THROW(repoProvider.reserveUnaryHandler(manifestService), std::invalid_argument);
   environment.enableProductionIngressForTest();
   environment.pumpUntilWithAttributeAuthority([&] {
     return node->isOriginalDataServingReady();

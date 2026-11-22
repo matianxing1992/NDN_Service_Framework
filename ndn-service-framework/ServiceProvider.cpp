@@ -4803,6 +4803,7 @@ namespace ndn_service_framework
 	        }
         m_cryptoProduceQueue.shutdown();
         m_ackPool.shutdown();
+        m_registrationControl->reservedUnaryPool.shutdown();
         m_handlerPool.shutdown();
     }
 
@@ -8093,6 +8094,18 @@ namespace ndn_service_framework
         NDN_LOG_WARN("NDNSF provider worker threads: " << n);
     }
 
+    void
+    ServiceProvider::reserveUnaryHandler(const ndn::Name& serviceName)
+    {
+        const auto service = m_services.find(serviceName);
+        if (m_registrationControl->reservedUnaryService || service == m_services.end() ||
+            (!service->second.requestHandler && !service->second.targetedRequestHandler)) {
+            throw std::invalid_argument("reserved unary handler requires a single registered service");
+        }
+        m_registrationControl->reservedUnaryPool.setThreadCount(1);
+        m_registrationControl->reservedUnaryService = serviceName;
+    }
+
     size_t ServiceProvider::getHandlerThreads() const
     {
         return m_handlerPool.getThreadCount();
@@ -9926,11 +9939,14 @@ namespace ndn_service_framework
                 requesterName, serviceName, requestId, std::move(requestMessage),
                 std::move(selectionDigest), consumeProviderToken);
         }
-        if (m_handlerPool.getThreadCount() == 0) {
-            return false;
-        }
         const bool streamedMode = requestMessage.hasStreamRequestOptions() &&
                                   static_cast<bool>(service->second.streamingHandler);
+        const bool reserved = !streamedMode &&
+            m_registrationControl->reservedUnaryService == serviceName;
+        auto& handlerPool = reserved ? m_registrationControl->reservedUnaryPool : m_handlerPool;
+        if (handlerPool.getThreadCount() == 0) {
+            return false;
+        }
         auto requestHandler =
             targetedMode
                 ? service->second.targetedRequestHandler
@@ -9977,7 +9993,7 @@ namespace ndn_service_framework
             }
         }
 
-        const bool queued = m_handlerPool.post(
+        const bool queued = handlerPool.post(
             [this,
              requesterName,
              providerName,

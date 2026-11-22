@@ -126,6 +126,13 @@ PersistentRepoServerConfig::fromArguments(int argc, char* argv[])
     config.manifestFetchWindow = static_cast<uint32_t>(window);
     options.erase(it);
   }
+  if (const auto it = options.find("--manifest-handler"); it != options.end()) {
+    if (it->second != "shared" && it->second != "reserved") {
+      throw std::invalid_argument("manifest-handler must be shared or reserved");
+    }
+    config.reserveManifestHandler = it->second == "reserved";
+    options.erase(it);
+  }
   if (const auto it = options.find("--availability-freshness-ms"); it != options.end()) {
     config.availabilityFreshnessMs = parseUnsigned(it->second, it->first);
     options.erase(it);
