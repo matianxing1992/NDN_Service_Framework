@@ -15,6 +15,7 @@
 #include <array>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <iterator>
 #include <limits>
@@ -24,6 +25,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace ndnsf_distributed_repo::detail {
@@ -40,6 +42,30 @@ traceManifestRoot(const ndn::Name& name, const char* stage) noexcept
   }
   catch (...) {
     // Diagnostic logging must not affect the original Interest or Data path.
+  }
+}
+
+void
+traceManifestSource(const ndn::Name& name, const char* stage) noexcept
+{
+  try {
+    static const bool enabled = [] {
+      const auto* value = std::getenv("NDNSF_REPO_SOURCE_TIMING");
+      return value != nullptr && std::string_view(value) == "1";
+    }();
+    if (!enabled || name.size() < 2) return;
+    static const ndn::name::Component sourceComponent("DATA");
+    const bool full = name[-1].isImplicitSha256Digest();
+    const size_t components = name.size() - full;
+    constexpr size_t SAMPLE_EVERY = 128;
+    if (components < 2 || name[components - 2] != sourceComponent ||
+        !name[components - 1].isSegment() || name[components - 1].toSegment() % SAMPLE_EVERY != 0)
+      return;
+    ndn_service_framework::logControlTiming("repo-manifest-source", stage,
+      full ? name.getPrefix(-1) : name);
+  }
+  catch (...) {
+    // Sample failures must not change the original Interest or Data path.
   }
 }
 
@@ -568,10 +594,12 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       // state lock until its handle is installed so an early callback or a
       // sibling failure cannot remove a placeholder before registration.
       traceManifestRoot(interest.getName(), "request-express");
+      if (attempt == 1) traceManifestSource(interest.getName(), "request-express");
       pending->second.handle = face.expressInterest(
         interest,
         [self, index, attempt] (const ndn::Interest&, const ndn::Data& data) {
           traceManifestRoot(data.getName(), "request-face-data");
+          if (attempt == 1) traceManifestSource(data.getName(), "request-face-data");
           boost::asio::post(self->strand, [self, index, attempt, data] {
             self->onData(index, attempt, data);
           });
@@ -599,6 +627,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     if (standardTransport || !checkCurrent())
       return;
     traceManifestRoot(data.getName(), "request-strand-data");
+    if (attempt == 1) traceManifestSource(data.getName(), "request-strand-data");
     {
       std::lock_guard<std::mutex> lock(mutex);
       const auto pending = pendingInterests.find(index);
@@ -697,6 +726,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         }
         try {
           spool->append(index, wire);
+          if (attempt == 1) traceManifestSource(data.getName(), "request-spooled");
         }
         catch (const std::exception&) {
           failLocked("repo-original-packet-spool-write-failed");

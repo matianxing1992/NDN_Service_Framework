@@ -1288,6 +1288,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
             if (!state || state->stopped.load() ||
                 std::chrono::steady_clock::now() >= deadline ||
                 (state->proof && !state->proof->isCurrent())) return;
+            if (state->proof)
+              detail::traceManifestSource(interest.getName(), "producer-receive-interest");
             // SDK bootstrap may set CanBePrefix; only an exact indexed Name is served.
             auto name = interest.getName();
             if (!name.empty() && name.at(-1).isImplicitSha256Digest()) {
@@ -1317,6 +1319,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
               if (state->stopped.load() || std::chrono::steady_clock::now() >= deadline) return;
               const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
               if (interest.matchesData(data)) {
+                if (state->proof)
+                  detail::traceManifestSource(interest.getName(), "producer-submit-data");
                 face.put(data);
               }
               // Retain the admission/spool through the queued put callback.
