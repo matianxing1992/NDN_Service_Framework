@@ -1238,6 +1238,34 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerStagesAllOutputsBeforePublishingAny)
   BOOST_CHECK(io->publishedByScope.empty());
 }
 
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPublishesReadyManifestBeforeSiblingOutputs)
+{
+  RoleSpec role{"/Producer", {}, {
+    DependencyEdge{"first", "/Producer", "/First", "/first", 1},
+    DependencyEdge{"manifest", "/Producer", "/Remote", "/manifest", 2},
+    DependencyEdge{"last", "/Producer", "/Last", "/last", 1},
+  }};
+  role.outputs[1].segmentManifest = TensorSegmentManifestGeometry{2, 4};
+  auto io = std::make_shared<FakeDependencyIo>();
+  ProviderRoleWorker worker(1);
+  const auto result = worker.executeAsync("manifest-sibling-order", role, io,
+    [](const RoleExecutionContext&) {
+      auto manifest = bundle("manifest", "manifest");
+      manifest.expectedSegments = 2;
+      return std::map<std::string, TensorBundle>{
+        {"first", bundle("first", "x")},
+        {"manifest", std::move(manifest)},
+        {"last", bundle("last", "y")},
+      };
+    }).get();
+  BOOST_REQUIRE_EQUAL(result.outputTimings.size(), 3);
+  BOOST_CHECK_EQUAL(result.outputTimings[0].scope, "manifest");
+  BOOST_CHECK_EQUAL(result.outputTimings[1].scope, "first");
+  BOOST_CHECK_EQUAL(result.outputTimings[2].scope, "last");
+  std::lock_guard<std::mutex> lock(io->mutex);
+  BOOST_CHECK_EQUAL(io->publishedByScope.size(), 3);
+}
+
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerDoesNotOccupyComputeWorkerWhileWaitingForInputs)
 {
   RoleSpec consumer{

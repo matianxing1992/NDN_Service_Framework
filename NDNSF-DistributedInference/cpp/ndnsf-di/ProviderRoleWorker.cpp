@@ -1775,8 +1775,17 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     // waiting for this contribution would otherwise wait for work that itself
     // waits on the peer. The scope is recorded so the final pass does not publish
     // the same object twice.
+    std::vector<const DependencyEdge*> stepOutputs;
     for (const auto& edge : item.role.outputs) {
-      if (edge.producerStepId != step.stepId) continue;
+      if (edge.producerStepId == step.stepId) stepOutputs.push_back(&edge);
+    }
+    // Let a ready authenticated root reach its consumer before sibling outputs
+    // can fill the shared Face with their segment requests.
+    std::stable_partition(stepOutputs.begin(), stepOutputs.end(), [](const auto* edge) {
+      return edge->segmentManifest.has_value();
+    });
+    for (const auto* output : stepOutputs) {
+      const auto& edge = *output;
       const auto key = step.stepId + "\n" + edge.producerSlotId;
       const auto value = produced.find(key);
       if (value == produced.end()) {
@@ -2306,6 +2315,9 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
     stagedOutputs.emplace_back(edge, std::move(bundle));
   }
   outputWork.finish();
+  std::stable_partition(stagedOutputs.begin(), stagedOutputs.end(), [](const auto& staged) {
+    return staged.first.segmentManifest.has_value();
+  });
   result.outputTimings.reserve(item.role.outputs.size());
   for (auto& staged : stagedOutputs) {
     const auto& edge = staged.first;
