@@ -1188,6 +1188,9 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     std::atomic<size_t> admissionDrops{0};
     size_t replyBudgetBytes = 0;
     ndn::Name prefix;
+    ndn::Name sourcePrefix;
+    // One entry per proven source ordinal; root and pages are indexed by name.
+    std::vector<size_t> sourcePacketSizes;
     std::unordered_map<ndn::Name, std::pair<size_t, size_t>> index;
     std::shared_ptr<detail::FaceDataReferencePacketSpool> spool;
     std::optional<ndn_service_framework::SegmentManifestVerifier> proof;
@@ -1204,7 +1207,12 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   auto publication = std::make_shared<Publication>();
   publication->prefix = prefix;
   publication->replyBudgetBytes = request.reference.expectedSize;
-  publication->index.reserve(names.size());
+  if (request.segmentManifestBinding) {
+    publication->sourcePrefix = manifestScope.sourceName(0).getPrefix(-1);
+  }
+  else {
+    publication->index.reserve(names.size());
+  }
   auto stop = ndn::make_scope_exit([&] {
     publication->stopped.store(true);
     if (!publication->faceLease) return;
@@ -1252,15 +1260,22 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     if (!parsed || block.size() != buffer->size())
       throw std::invalid_argument("repo-original-publication-packet-invalid");
     const ndn::Data data(block);
-    if (data.getName() != ndn::Name(names[i]) ||
-        !prefix.isPrefixOf(data.getName()) ||
-        (!request.segmentManifestBinding && !verifyProducerSignature(data)) ||
-        !publication->index.emplace(data.getName().deepCopy(),
-                                    std::make_pair(i, buffer->size())).second)
+    const auto& name = data.getName();
+    auto canonicalName = request.segmentManifestBinding
+      ? name.toUri(ndn::name::UriFormat::CANONICAL) : std::string{};
+    if ((!request.segmentManifestBinding || canonicalName != names[i]) &&
+        name != ndn::Name(names[i]))
+      throw std::invalid_argument("repo-original-publication-packet-invalid");
+    if (!prefix.isPrefixOf(name) ||
+        (!request.segmentManifestBinding && !verifyProducerSignature(data)))
+      throw std::invalid_argument("repo-original-publication-packet-invalid");
+    const bool isSource = publication->proof && i > publication->proof->pageCount();
+    if (!isSource &&
+        !publication->index.emplace(name.deepCopy(), std::make_pair(i, buffer->size())).second)
       throw std::invalid_argument("repo-original-publication-packet-invalid");
     current();
     if (request.segmentManifestBinding) {
-      canonicalNames.push_back(data.getName().toUri(ndn::name::UriFormat::CANONICAL));
+      canonicalNames.push_back(std::move(canonicalName));
       contentBytes += data.getContent().value_size();
       if (i == 0) {
         auto root = writer.validateManifestRootUntil(*buffer, manifestScope, deadline);
@@ -1274,14 +1289,17 @@ RepoClientCompat::commitUserStorageOriginalPackets(
         if (1 + publication->proof->pageCount() + publication->proof->sourceCount() != names.size()) {
           throw std::invalid_argument("repo-original-publication-root-count-mismatch");
         }
+        publication->sourcePacketSizes.reserve(publication->proof->sourceCount());
       }
       else {
         auto& proof = *publication->proof;
         if (i <= proof.pageCount()) {
           proof.acceptPage(static_cast<uint32_t>(i - 1), data);
         }
-        else if (!proof.matchesSource(static_cast<uint32_t>(i - 1 - proof.pageCount()), data)) {
-          throw std::invalid_argument("repo-original-publication-source-proof-invalid");
+        else {
+          if (!proof.matchesSource(static_cast<uint32_t>(i - 1 - proof.pageCount()), data))
+            throw std::invalid_argument("repo-original-publication-source-proof-invalid");
+          publication->sourcePacketSizes.push_back(buffer->size());
         }
       }
     }
@@ -1325,9 +1343,29 @@ RepoClientCompat::commitUserStorageOriginalPackets(
             if (!name.empty() && name.at(-1).isImplicitSha256Digest()) {
               name = name.getPrefix(-1);
             }
-            const auto found = state->index.find(name);
-            if (found == state->index.end()) return;
-            const auto [packetIndex, packetBytes] = found->second;
+            size_t packetIndex;
+            size_t packetBytes;
+            if (state->proof && name.size() == state->sourcePrefix.size() + 1 &&
+                state->sourcePrefix.isPrefixOf(name) && name[-1].isSegment()) {
+              uint64_t segment;
+              try {
+                segment = name[-1].toSegment();
+              }
+              catch (const ndn::tlv::Error&) {
+                return;
+              }
+              if (segment >= state->sourcePacketSizes.size() ||
+                  name[-1] != ndn::name::Component::fromSegment(segment))
+                return;
+              packetIndex = 1 + state->proof->pageCount() + static_cast<size_t>(segment);
+              packetBytes = state->sourcePacketSizes[static_cast<size_t>(segment)];
+            }
+            else {
+              const auto found = state->index.find(name);
+              if (found == state->index.end()) return;
+              packetIndex = found->second.first;
+              packetBytes = found->second.second;
+            }
             auto bytes = state->pendingBytes.load();
             do {
               if (packetBytes > state->replyBudgetBytes ||
