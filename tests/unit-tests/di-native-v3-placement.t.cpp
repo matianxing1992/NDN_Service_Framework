@@ -1319,8 +1319,14 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
         auto prefetchSealing = sealing;
         auto prefetchProposal = proposal;
         withPrefetchContracts(prefetchSealing, prefetchProposal);
+        auto prefetchExecution = execution;
+        for (auto& dependency : prefetchExecution.dependencies) {
+          dependency.topicPrefix = "/tensor";
+          dependency.objectNameTemplate =
+            "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+        }
         const auto prefetchSealed = projectionPlan(NativePlanSealer::sealCore(
-          input.inspected, input.split, prefetchProposal, execution, input.offers,
+          input.inspected, input.split, prefetchProposal, prefetchExecution, input.offers,
           input.ackDigest, prefetchSealing));
         const auto prefetchGroups = NativeGroupProjectionBuilder::build(
           prefetchSealed, input.split, keys, prefetchContext, 2U << 20);
@@ -1352,6 +1358,18 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
         BOOST_CHECK_EQUAL(publishedManifest.segmentManifest->segmentPayloadBytes, chunk);
         BOOST_CHECK(!publishedManifest.inlineFirstSegment);
         BOOST_CHECK_EQUAL(publishedManifest.prefetchBundleBytes, 0U);
+        for (const auto& role : execution.roles) {
+          const auto projection = NativePlanSealer::project(prefetchSealed, original.at(role),
+            manifestGroups.at(role));
+          const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+          std::istringstream invocation(nativeSelectionInvocationV2ToJson(projection, *fixed));
+          const auto decoded = nativeSelectionInvocationV1FromJson(invocation, role, *fixed);
+          const auto& endpoint = role == execution.roles.front()
+            ? decoded.dataflow.mayPublish.front() : decoded.dataflow.mustFetch.front();
+          BOOST_REQUIRE(endpoint.segmentManifest);
+          BOOST_CHECK(*endpoint.segmentManifest == *publishedManifest.segmentManifest);
+          BOOST_CHECK(!endpoint.inlineFirstSegment);
+        }
 
         // The legacy sizing declaration alone cannot opt a consumer into proof mode.
         manifestContext.manifestSegmentBytesByProvider.erase(targetProvider);

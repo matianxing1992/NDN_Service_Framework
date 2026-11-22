@@ -3086,6 +3086,24 @@ std::uint64_t unsignedBinding(const NativeJson& value, const char* key)
   return number.get<std::uint64_t>();
 }
 
+std::optional<TensorSegmentManifestGeometry>
+segmentManifestBinding(const NativeJson& binding, bool rangeInvocation)
+{
+  const auto shape = binding.find("segment_manifest_v1");
+  if (shape == binding.end()) {
+    return std::nullopt;
+  }
+  if (rangeInvocation) {
+    throw std::invalid_argument("compact endpoint ranges do not support segment manifests");
+  }
+  requireOnlyBindingKeys(*shape, {"source_segments", "segment_payload_bytes"});
+  if (shape->size() != 2) {
+    throw std::invalid_argument("invalid invocation segment manifest fields");
+  }
+  return makeSegmentManifestGeometry(unsignedBinding(*shape, "source_segments"),
+                                     unsignedBinding(*shape, "segment_payload_bytes"));
+}
+
 NativeJson dependencyBindingsJson(const std::vector<NativeDependencySpec>& dependencies)
 {
   auto result = NativeJson::array();
@@ -3220,16 +3238,7 @@ NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
       if (binding.contains("prefetch_bundle_bytes") != binding.contains("prefetch_segment_bytes"))
         throw std::invalid_argument("invocation prefetch binding is incomplete");
       endpoint.inlineFirstSegment = binding.value("inline_first_segment", false);
-      endpoint.segmentManifest.reset();
-      if (binding.contains("segment_manifest_v1")) {
-        const auto& shape = binding.at("segment_manifest_v1");
-        requireOnlyBindingKeys(shape, {"source_segments", "segment_payload_bytes"});
-        if (compact || !shape.is_object() || shape.size() != 2) {
-          throw std::invalid_argument("compact endpoint ranges do not support segment manifests");
-        }
-        endpoint.segmentManifest = makeSegmentManifestGeometry(
-          unsignedBinding(shape, "source_segments"), unsignedBinding(shape, "segment_payload_bytes"));
-      }
+      endpoint.segmentManifest = segmentManifestBinding(binding, compact);
       if (!input) endpoint.namingCapabilityDigest = namingCapability;
       if (input) {
         endpoint.tensorDigest = binding.at("tensor_digest").get<std::string>();
@@ -3553,7 +3562,7 @@ void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
       requireOnlyBindingKeys(binding, {"producer_namespace", "requester", "group_id", "group_epoch", "microbatch",
         "segment_count", "manifest_digest", "endpoint_digest", "no_progress_deadline_ms", "hard_deadline_ms",
         "tensor_digest", "layout_digest", "target_layout_digest", "prefetch_bundle_bytes", "prefetch_segment_bytes",
-        "inline_first_segment"});
+        "inline_first_segment", "segment_manifest_v1"});
       for (const auto* field : {"producer_namespace", "requester", "group_id", "group_epoch", "manifest_digest", "endpoint_digest"})
         if (!binding.at(field).is_string()) throw std::invalid_argument("invocation endpoint binding must be a string");
       if (rangeInvocation &&
@@ -3573,6 +3582,7 @@ void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
       }
       if (binding.contains("inline_first_segment") && !binding.at("inline_first_segment").is_boolean())
         throw std::invalid_argument("invocation inline binding must be boolean");
+      (void)segmentManifestBinding(binding, rangeInvocation);
     }
   }
   if (value.contains("generation_contract"))
