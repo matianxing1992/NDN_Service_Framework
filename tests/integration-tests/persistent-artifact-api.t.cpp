@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/service-provider-test-access.hpp"
 #include "tests/fixtures/syscall-fault.hpp"
 #include "tests/unit-tests/native-protected-kv-fixture.hpp"
 #include "ndnsf-integration-fixture.hpp"
@@ -262,8 +263,9 @@ dispatchRepoRequest(ndn_service_framework::ServiceProvider& provider,
 void
 releaseRepoNodeServiceHandlersForRestart(
   ndn_service_framework::ServiceProvider& provider,
-  const ndn::Name& servicePrefix)
+  const ndn::Name& servicePrefix, repo::RepoNode& node)
 {
+  node.stopOriginalPacketOperations();
   const auto unavailableAck = [] (const ndn_service_framework::RequestMessage&) {
     ndn_service_framework::ServiceProvider::AckDecision decision;
     decision.status = false;
@@ -767,7 +769,7 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
   BOOST_CHECK(node->core().has(repo::artifactStorageObjectName(successful.first.reference)));
   BOOST_CHECK_EQUAL(persistentReceiptRows(database, target.repoNode,
     target.providerIdentity, successful.first.reference), 1);
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix, *node);
   // Same contract as the final teardown, and the same correction: pump the full window, because a
   // predicate that is already true runs no iteration at all.
   environment.pumpUntil([&] { return false; });
@@ -804,7 +806,7 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
     return ownerState->completed.load() == ownerState->calls.load();
   });
   BOOST_REQUIRE_EQUAL(ownerState->completed.load(), ownerState->calls.load());
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix, *node);
   // Replacing the handlers does not drain the Face event loop, and the queued completions of the
   // requests that just ran still reference the node. Pump for the full window: `pumpFaces` loops
   // `while (i < 200 && !done())`, so a predicate that is already true runs **no** iteration - the
@@ -979,7 +981,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
         catalog.updatePublishOperationTarget(operationId, target, interruptedAt);
       }
     }
-    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *node);
     node.reset();
     const auto payload = committedPayloadPath(objects, reference);
     if (corrupt) writeFile(payload, {0x62, 0x61, 0x64, 0x21});
@@ -1036,7 +1038,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     const auto rereadAggregate = catalog.lookupAggregateReceipt(terminal->status.receiptId);
     BOOST_REQUIRE(rereadAggregate);
     BOOST_CHECK_EQUAL(*rereadAggregate, *aggregateJson);
-    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *node);
     node.reset();
   }
 }
@@ -1135,7 +1137,6 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
       seedObjects.string(), 1024 * 1024, 4096, "spec202-source-loss-seed"),
     seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   sourceLossSeed->registerServices(environment.provider(0));
-  unselectedNode->registerServices(environment.provider(2), publisherUsers[2], 1500, 8000);
   environment.enableProductionIngressForTest();
   environment.pumpUntilWithAttributeAuthority([&] {
     return std::all_of(publisherUsers.begin(), publisherUsers.end(), [] (const auto& user) {
@@ -1192,7 +1193,9 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
       catch (...) { BOOST_ERROR("source-loss seed cleanup failed while pumping Faces"); }
     }
   } releaseAndDrain{held, [&] {
-    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+    if (!sourceLossSeed)
+      return;
+    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *sourceLossSeed);
     runWithFacePump(environment, [&] { sourceLossSeed.reset(); return true; });
   }};
   auto bStoreCalls = std::make_shared<std::atomic<unsigned>>(0);
@@ -1250,7 +1253,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
       response.setErrorInfo("spec202-C-store-must-not-be-emitted");
       return response;
     });
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *sourceLossSeed);
   sourceLossSeed.reset();
   sourceLossSeed = std::make_shared<repo::RepoNode>(
     servicePrefix, seedCapability,
@@ -2112,7 +2115,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), lateCommitReference), 0);
   assertArtifactVisibility(*replicaNode, 1, lateCommitManifest, lateCommitBytes,
                            false, "replica-stale-owner-proof-denied");
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *seedNode);
   const auto seedStopped = runWithFacePump(environment, [&] {
     seedNode.reset();
     return true;
@@ -2157,7 +2160,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       // callbacks, so a failed status request remains visible in the test
       // report instead of hanging in RepoNode worker destruction.
       try {
-        releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+        releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *recoveredSeedNode);
         (void)runWithFacePump(environment, [&] {
           recoveredSeedNode.reset();
           return true;
@@ -2202,7 +2205,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   // Count 2 is durable before its STORE can be emitted. A later owner restart
   // must replay that same operation ID once in the new worker pass; the target
   // commits one local receipt and the owner records that exact result.
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *recoveredSeedNode);
   recoveredSeedNode.reset();
   const std::vector<uint8_t> exhaustedReplayBytes{0x72, 0x65, 0x70};
   const auto exhaustedReplayReference = makeReference(
@@ -2266,7 +2269,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     seedCatalog.updatePublishOperationTarget(
       exhaustedReplayOperationId, exhausted, exhaustedAt);
   }
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *exhaustedSeedNode);
   exhaustedSeedNode.reset();
   auto exhaustedReplayStoreCalls = std::make_shared<std::atomic<unsigned>>(0);
   ndn_service_framework::ServiceProvider::AckStrategyHandler exhaustedReplayAck =
@@ -2276,18 +2279,15 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       decision.message = "repo-ready";
       return decision;
     };
-  // Route the injected request counter through Provider 1 to the selected
-  // replica's registered production handler on Provider 2. This preserves the
-  // selected Provider identity while keeping the test out of private methods.
-  replicaNode->registerServices(environment.provider(2));
+  // Wrap the real replica STORE callback on its own Provider.
+  auto replicaStore = ndn_service_framework::ServiceProviderTestAccess::copyLegacyServiceHandlers(
+    environment.provider(1), storeService).second;
   ndn_service_framework::ServiceProvider::RequestHandler exhaustedReplayStore =
-    [&environment, exhaustedReplayStoreCalls, replicaProvider, storeService] (
-      const ndn::Name& requesterIdentity, const ndn::Name&, const ndn::Name&,
-      const ndn::Name& requestId,
-      const ndn_service_framework::RequestMessage& request) {
+    [handler = replicaStore, exhaustedReplayStoreCalls] (
+      const ndn::Name& requesterIdentity, const ndn::Name& provider, const ndn::Name& service,
+      const ndn::Name& requestId, const ndn_service_framework::RequestMessage& request) {
         exhaustedReplayStoreCalls->fetch_add(1);
-        return environment.provider(2).dispatchRequest(
-          requesterIdentity, replicaProvider, storeService, requestId, request);
+        return handler(requesterIdentity, provider, service, requestId, request);
       };
   environment.provider(1).addService(
     storeService, exhaustedReplayAck, std::move(exhaustedReplayStore));
@@ -2318,7 +2318,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE),
     exhaustedReplayReference), 1);
 
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *recoveredSeedNode);
   recoveredSeedNode.reset();
   auto recoverySeedNode = std::make_shared<repo::RepoNode>(
     servicePrefix, seedCapability,
@@ -2327,9 +2327,6 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), seedDatabase.string(), artifactLimits);
   recoverySeedNode->registerServices(
     environment.provider(0), publisherUsers[0], recoveryAckMs, 20000);
-
-  // Provider 2's registered replica handlers remain available to the injected
-  // response-fault wrapper below.
 
   auto delayedStoreCalls = std::make_shared<std::atomic<unsigned>>(0);
   ndn_service_framework::ServiceProvider::RequestHandler delayedStore =
@@ -2352,12 +2349,11 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     };
   auto commitThenErrorCalls = std::make_shared<std::atomic<unsigned>>(0);
   ndn_service_framework::ServiceProvider::RequestHandler commitThenError =
-    [&environment, commitThenErrorCalls, replicaProvider, storeService] (
-      const ndn::Name& requesterIdentity, const ndn::Name&, const ndn::Name&,
+    [handler = std::move(replicaStore), commitThenErrorCalls] (
+      const ndn::Name& requesterIdentity, const ndn::Name& provider, const ndn::Name& service,
       const ndn::Name& requestId,
       const ndn_service_framework::RequestMessage& request) {
-        const auto committed = environment.provider(2).dispatchRequest(
-          requesterIdentity, replicaProvider, storeService, requestId, request);
+        const auto committed = handler(requesterIdentity, provider, service, requestId, request);
         if (!committed.getStatus()) {
           return committed;
         }
@@ -2434,9 +2430,9 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   std::weak_ptr<repo::RepoNode> previousSeed = recoverySeedNode;
   std::weak_ptr<repo::RepoNode> previousReplica = replicaNode;
   std::weak_ptr<repo::RepoNode> previousUnselected = unselectedNode;
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(2), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *recoverySeedNode);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix, *replicaNode);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(2), servicePrefix, *unselectedNode);
   BOOST_REQUIRE(runWithFacePump(environment, [&] {
     recoverySeedNode.reset();
     replicaNode.reset();
@@ -2455,7 +2451,6 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       replicaObjects.string(), 1024 * 1024, 4096, "spec192-recovery-replica"),
     replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), replicaDatabase.string(), artifactLimits);
   replicaNode->registerServices(environment.provider(1), publisherUsers[1], 1500, 8000);
-  replicaNode->registerServices(environment.provider(2));
   unselectedNode = std::make_shared<repo::RepoNode>(
     servicePrefix, unselectedCapability,
     std::make_shared<repo::FilesystemRepoStoreBackend>(
@@ -2485,6 +2480,8 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK_EQUAL(persistentReceiptRows(
     replicaDatabase, replicaRepo, replicaProvider.toUri(ndn::name::UriFormat::ALTERNATE), exhaustedReplayReference), 1);
 
+  auto reopenedStore = ndn_service_framework::ServiceProviderTestAccess::copyLegacyServiceHandlers(
+    environment.provider(1), storeService);
   environment.provider(1).addService(
     storeService, std::move(readyAck),
     std::move(delayedStore));
@@ -2544,10 +2541,11 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   environment.pumpUntilWithAttributeAuthority([&] {
     return std::chrono::steady_clock::now() >= lateResponseDrainDeadline;
   });
-  replicaNode->registerServices(environment.provider(1), publisherUsers[1], 1500, 8000);
+  environment.provider(1).addService(
+    storeService, std::move(reopenedStore.first), std::move(reopenedStore.second));
 
   // Recover a real accepted operation; B has emitted STORE before C loses its source.
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *recoverySeedNode);
   runWithFacePump(environment, [&] { recoverySeedNode.reset(); return true; });
   auto sourceLossSeed = std::make_shared<repo::RepoNode>(
     servicePrefix, seedCapability,
@@ -2606,7 +2604,9 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       catch (...) { BOOST_ERROR("source-loss seed cleanup failed while pumping Faces"); }
     }
   } releaseAndDrain{held, [&] {
-    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+    if (!sourceLossSeed)
+      return;
+    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *sourceLossSeed);
     runWithFacePump(environment, [&] { sourceLossSeed.reset(); return true; });
   }};
   auto bStoreCalls = std::make_shared<std::atomic<unsigned>>(0);
@@ -2664,7 +2664,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       response.setErrorInfo("spec202-C-store-must-not-be-emitted");
       return response;
     });
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix, *sourceLossSeed);
   sourceLossSeed.reset();
   sourceLossSeed = std::make_shared<repo::RepoNode>(
     servicePrefix, seedCapability,
@@ -3014,8 +3014,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_REQUIRE(fs::remove(cipher));
   const auto sourceSpoolReads = originalInsertFetches->load();
   const std::weak_ptr<repo::RepoNode> originalRepo = node;
-  node->stopOriginalPacketOperations();
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix, *node);
   runWithFacePump(environment, [&] { node.reset(); return true; });
   BOOST_REQUIRE(originalRepo.expired());
   node = openRepo();
@@ -3413,8 +3412,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
            std::string::npos;
   });
   const std::weak_ptr<repo::RepoNode> previousManifestRepo = node;
-  node->stopOriginalPacketOperations();
-  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix, *node);
   runWithFacePump(environment, [&] { node.reset(); return true; });
   BOOST_REQUIRE(previousManifestRepo.expired());
   node = openRepo();

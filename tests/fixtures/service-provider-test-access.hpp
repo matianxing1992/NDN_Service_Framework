@@ -17,6 +17,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ndn_service_framework {
@@ -52,6 +53,16 @@ struct NetworkTelemetryStoreTestAccess
 /** Test-only private access; no independent protocol or lifecycle implementation. */
 struct ServiceProviderTestAccess
 {
+  /** Capture the registered callbacks on the Face thread before injecting a test fault. */
+  static std::pair<ServiceProvider::AckStrategyHandler, ServiceProvider::RequestHandler>
+  copyLegacyServiceHandlers(ServiceProvider& provider, const ndn::Name& name)
+  {
+    const auto& service = provider.m_services.at(name);
+    BOOST_REQUIRE(!service.registrationState);
+    BOOST_REQUIRE(service.ackHandler && service.requestHandler);
+    return {service.ackHandler, service.requestHandler};
+  }
+
   static void recordSelectionReceived(ServiceProvider& provider, const std::string& digest,
                                       const ndn::Name& service, const ndn::Name& request)
   {
