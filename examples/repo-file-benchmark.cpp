@@ -53,6 +53,11 @@ using Json = di::NativeJson;
 constexpr uint64_t FILE_BYTES = 500000000;
 constexpr size_t CONTENT_BYTES = 7000;
 constexpr uint32_t CERTIFICATE_GROUP_SEGMENTS = 2048;
+// Leave room in the Repo's 4096-packet named fetch for the root and index pages.
+constexpr uint32_t LARGE_MANIFEST_GROUP_SEGMENTS = 2560;
+static_assert(1 + LARGE_MANIFEST_GROUP_SEGMENTS +
+  ndn_service_framework::SegmentManifestVerifier::pageCountFor(LARGE_MANIFEST_GROUP_SEGMENTS)
+  <= 4096);
 constexpr uint32_t MANIFEST_READ_WINDOW = 32;
 
 void
@@ -130,7 +135,8 @@ run(int argc, char** argv)
     for (const auto& option : required) std::cout << option << " VALUE ";
     std::cout << "[--phase write|read|write-read] [--reference PATH] "
                  "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
-                 "[--manifest-read-pipeline serial|paired] [--manifest-insert indexed|compact] ";
+                 "[--manifest-read-pipeline serial|paired] [--manifest-insert indexed|compact] "
+                 "[--manifest-group-segments 2048|2560] ";
     std::cout << "\nUses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
                  "whole-group reads and at most "
               << di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS
@@ -143,7 +149,8 @@ run(int argc, char** argv)
       std::string(argv[i]) == "--reference" || std::string(argv[i]) == "--authentication" ||
       std::string(argv[i]) == "--signing-certificate" ||
       std::string(argv[i]) == "--manifest-read-pipeline" ||
-      std::string(argv[i]) == "--manifest-insert";
+      std::string(argv[i]) == "--manifest-insert" ||
+      std::string(argv[i]) == "--manifest-group-segments";
     require(i + 1 < argc && known && options.emplace(argv[i], argv[i + 1]).second,
             "invalid benchmark option");
   }
@@ -170,8 +177,15 @@ run(int argc, char** argv)
   const auto selectedCertificate = options.find("--signing-certificate");
   require(useCertificate || selectedCertificate == options.end(),
           "a signing certificate requires authenticated benchmark mode");
-  const size_t maxSourcePackets = useCertificate ? CERTIFICATE_GROUP_SEGMENTS :
-    di::NATIVE_STORED_MODEL_UPLOAD_PACKETS;
+  const auto groupSize = options.find("--manifest-group-segments");
+  require(groupSize == options.end() || (useManifest && phaseOption != "read" &&
+          (groupSize->second == "2048" || groupSize->second == "2560")),
+          "manifest group size requires manifest publication and 2048 or 2560 segments");
+  const auto manifestGroupSize = groupSize != options.end() && groupSize->second == "2560"
+    ? LARGE_MANIFEST_GROUP_SEGMENTS : CERTIFICATE_GROUP_SEGMENTS;
+  const size_t maxSourcePackets = useManifest
+    ? (phaseOption == "read" ? LARGE_MANIFEST_GROUP_SEGMENTS : manifestGroupSize)
+    : (useCertificate ? CERTIFICATE_GROUP_SEGMENTS : di::NATIVE_STORED_MODEL_UPLOAD_PACKETS);
   require(phaseOption == "write" || phaseOption == "read" || phaseOption == "write-read",
           "benchmark phase must be write, read or write-read");
   for (const auto& option : required) {
@@ -443,7 +457,7 @@ run(int argc, char** argv)
         if (useManifest) {
           const auto manifest = ndn_service_framework::ManifestPublication::prepare(*packetKeys,
             ndn::security::signingByCertificate(certificate), manifestScope(identity, group.prefix),
-            {CERTIFICATE_GROUP_SEGMENTS, repo::REPO_USER_STORAGE_OBJECT_MAX_BYTES,
+            {manifestGroupSize, repo::REPO_USER_STORAGE_OBJECT_MAX_BYTES,
              static_cast<uint32_t>(groupPackets)}, manifestContent, {}, ndn::time::seconds(60));
           for (const auto& packet : manifest.packets()) {
             appendOriginal(packet);
@@ -502,6 +516,7 @@ run(int argc, char** argv)
       published.update(Json{{"phase", "publication-total"}, {"payloadBytes", payloadBytes},
         {"wireBytes", wireBytes}, {"sha256", expected}, {"groups", groups.size()},
         {"publicationIncludesReadback", false}, {"publicationMode", "bounded-pipeline"},
+        {"sourceGroupLimit", maxSourcePackets},
         {"publicationMaxActiveCommits", di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS}});
       record(std::move(published));
       if (phaseOption == "write") {
