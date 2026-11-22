@@ -938,6 +938,13 @@ FilesystemRepoStoreBackend::stageRanges(const RepoObjectManifest& manifest,
 void
 FilesystemRepoStoreBackend::commitRanges(const RepoObjectManifest& manifest)
 {
+  commitRanges(manifest, false);
+}
+
+void
+FilesystemRepoStoreBackend::commitRanges(const RepoObjectManifest& manifest,
+                                         bool verifyExistingDigest)
+{
   validateManifestForPayload(manifest);
   std::lock_guard<std::mutex> lock(m_mutex);
   const auto reference = artifactReference(manifest);
@@ -1005,9 +1012,18 @@ FilesystemRepoStoreBackend::commitRanges(const RepoObjectManifest& manifest)
     releaseReservationUnlocked(manifest.objectName);
   };
   try {
-    if (!m_payloadStore.isCommitted(reference, generation)) {
+    if (verifyExistingDigest || !m_payloadStore.isCommitted(reference, generation)) {
       // finalize synchronizes the staged payload before hash and publication.
-      m_payloadStore.finalize(reference, generation);
+      try {
+        m_payloadStore.finalize(reference, generation);
+      }
+      catch (const FilesystemArtifactPayloadStore::DigestMismatch& error) {
+        if (verifyExistingDigest) {
+          throw std::runtime_error(std::string("repo-original-packet-spool-digest-mismatch: ") +
+                                   error.what());
+        }
+        throw;
+      }
     }
     const auto payload = m_payloadStore.inspectCommitted(reference);
     if (!payload.exists || !payload.regularFile || payload.sizeBytes != manifest.size)

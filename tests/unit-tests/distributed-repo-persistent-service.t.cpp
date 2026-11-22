@@ -3188,6 +3188,48 @@ BOOST_AUTO_TEST_CASE(OwnedSpoolRejectsStagedBytesThatDifferFromAdmittedPackets)
   BOOST_CHECK(fixture.node->getRange(name, {0, fixture.original.size()}) == fixture.original);
 }
 
+BOOST_AUTO_TEST_CASE(OwnedSpoolRechecksExistingPayloadBeforePublishingAnObject)
+{
+  for (const bool tiered : {false, true}) {
+    BOOST_TEST_CONTEXT("tiered=" << tiered) {
+      OwnedPacketFixture fixture(FilesystemRecoveryPolicy::KEEP_UNCONFIRMED, 4U << 20, tiered);
+      const auto& reference = fixture.request.reference;
+      const auto& digest = reference.expectedSha256;
+      const auto payload = fixture.temp.path() / "objects" / "payloads" / "sha256" /
+        digest.substr(0, 2) / digest;
+      std::filesystem::create_directories(payload.parent_path());
+      const auto writePayload = [&](const auto& bytes) {
+        std::ofstream output(payload, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        output.close();
+        BOOST_REQUIRE(output.good());
+      };
+      auto altered = fixture.original;
+      altered.back() ^= 1;
+      writePayload(altered);
+      fixture.usePacketSpool(true);
+
+      const auto result = fixture.insert();
+      BOOST_CHECK_EQUAL(result.state, "FAILED");
+      BOOST_CHECK(result.message.find("repo-original-packet-spool-digest-mismatch") !=
+                  std::string::npos);
+      BOOST_CHECK_THROW(fixture.node->core().getManifest(reference.objectName), std::out_of_range);
+      BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+
+      writePayload(fixture.original);
+      fixture.usePacketSpool();
+      const auto repeated = fixture.insert();
+      BOOST_REQUIRE_MESSAGE(repeated.state == "DONE", repeated.message);
+      BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+      fixture.provider.reset();
+      fixture.node.reset();
+      fixture.open(tiered);
+      BOOST_CHECK(fixture.node->getRange(reference.objectName, {0, fixture.original.size()}) ==
+                  fixture.original);
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(LargeDigestOwnedUploadPreservesOriginalWireAndRecoveryManifest)
 {
   OwnedPacketFixture fixture(FilesystemRecoveryPolicy::KEEP_UNCONFIRMED, 64U << 20);

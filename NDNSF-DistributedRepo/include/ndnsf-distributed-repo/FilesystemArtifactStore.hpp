@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 namespace ndnsf_distributed_repo {
@@ -112,6 +113,12 @@ struct ArtifactPublishOperationRecord
 class FilesystemArtifactPayloadStore final : public PayloadStore
 {
 public:
+  class DigestMismatch : public std::runtime_error
+  {
+  public:
+    using std::runtime_error::runtime_error;
+  };
+
   explicit FilesystemArtifactPayloadStore(
     std::string rootPath, uint64_t maxRangeBytes = 16 * 1024 * 1024,
     bool createDirectories = true);

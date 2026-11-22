@@ -7,10 +7,16 @@
 
 namespace ndnsf_distributed_repo::detail {
 
-/** Stage a complete checked source through the store's existing range authority. */
+/** Stage a complete source. Generic backends bind its digest here if requested. */
 void
 stageOriginalPacketSet(RepoStoreBackend& store, const RepoObjectManifest& manifest,
-  const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read);
+  const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read,
+  bool bindDigest);
+
+/** Publish staged ranges. Filesystem authorities bind their physical bytes if requested. */
+void
+commitStagedRanges(RepoStoreBackend& store, const RepoObjectManifest& manifest,
+                   bool bindDigest);
 
 /** Pin current immutable metadata; generic backends retain their owned-value contract. */
 std::shared_ptr<const RepoObjectManifest>

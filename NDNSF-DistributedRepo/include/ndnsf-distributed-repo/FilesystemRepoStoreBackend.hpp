@@ -67,6 +67,8 @@ public:
   void stageOriginalPacketSet(const RepoObjectManifest& manifest,
     const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read);
   void commitRanges(const RepoObjectManifest& manifest) override;
+  /** Recheck the physical digest even when a content-addressed payload already exists. */
+  void commitRanges(const RepoObjectManifest& manifest, bool verifyExistingDigest);
   std::vector<uint8_t> getRange(const std::string& objectName,
                                 RepoByteRange range) const override;
   RepoObjectManifest getManifest(const std::string& objectName) const override;

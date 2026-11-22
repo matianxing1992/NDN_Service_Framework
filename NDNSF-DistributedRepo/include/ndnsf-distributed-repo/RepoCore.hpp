@@ -250,7 +250,7 @@ private:
   void putAdmittedRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
   void writeAdmittedRangesLocked(const RepoObjectManifest&,
     const std::function<void(const RepoObjectManifest&)>& write);
-  RepoObjectManifest commitRangesLocked(const RepoObjectManifest&);
+  RepoObjectManifest commitRangesLocked(const RepoObjectManifest&, bool bindDigest = false);
 
   void refreshCapabilityUsage();
 

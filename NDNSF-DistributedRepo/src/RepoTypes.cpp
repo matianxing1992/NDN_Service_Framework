@@ -976,10 +976,11 @@ public:
   }
 
   void stageOriginalPacketSet(const RepoObjectManifest& manifest,
-    const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read)
+    const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read,
+    bool bindDigest)
   {
     std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
-    detail::stageOriginalPacketSet(*m_authoritativeStore, manifest, read);
+    detail::stageOriginalPacketSet(*m_authoritativeStore, manifest, read, bindDigest);
     noteRangeWrite(manifest.objectName);
   }
 
@@ -998,9 +999,14 @@ public:
 
   void commitRanges(const RepoObjectManifest& manifest) override
   {
+    commitRanges(manifest, false);
+  }
+
+  void commitRanges(const RepoObjectManifest& manifest, bool bindDigest)
+  {
     std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
     try {
-      m_authoritativeStore->commitRanges(manifest);
+      detail::commitStagedRanges(*m_authoritativeStore, manifest, bindDigest);
     }
     catch (const std::exception& e) {
       if (isAmbiguousCommitError(e)) {
@@ -1008,15 +1014,7 @@ public:
       }
       throw;
     }
-    std::lock_guard<std::mutex> lock(m_mutex);
-    invalidate(manifest.objectName);
-    try {
-      ++m_epochs[manifest.objectName];
-    }
-    catch (...) {
-      m_status.reconciliationRequired = true;
-    }
-    ++m_status.backingWrites;
+    noteRangeWrite(manifest.objectName);
   }
 
   void abortRanges(const std::string& objectName) override
@@ -1672,10 +1670,11 @@ detail::matchesPacketLookup(const RepoObjectManifest& manifest, const std::strin
 
 void
 detail::stageOriginalPacketSet(RepoStoreBackend& store, const RepoObjectManifest& manifest,
-  const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read)
+  const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read,
+  bool bindDigest)
 {
   if (auto* tiered = dynamic_cast<TieredRepoStore*>(&store)) {
-    tiered->stageOriginalPacketSet(manifest, read);
+    tiered->stageOriginalPacketSet(manifest, read, bindDigest);
     return;
   }
   if (auto* filesystem = dynamic_cast<FilesystemRepoStoreBackend*>(&store)) {
@@ -1683,15 +1682,42 @@ detail::stageOriginalPacketSet(RepoStoreBackend& store, const RepoObjectManifest
     return;
   }
   constexpr uint64_t CHUNK_BYTES = 1U << 20;
+  std::optional<ndn::util::Sha256> stagedDigest;
+  if (bindDigest) {
+    stagedDigest.emplace();
+  }
   for (uint64_t offset = 0; offset < manifest.size;) {
     const auto length = static_cast<std::size_t>(std::min(CHUNK_BYTES, manifest.size - offset));
     const auto bytes = read(offset, length);
     if (bytes.size() != length) {
       throw std::runtime_error("repo-original-packet-input-truncated");
     }
+    if (stagedDigest) {
+      stagedDigest->update(ndn::span<const uint8_t>(bytes));
+    }
     store.putRange(manifest, {offset, length}, bytes);
     offset += length;
   }
+  if (stagedDigest && ndn::toHex(*stagedDigest->computeDigest(), false) != manifest.sha256) {
+    throw std::runtime_error("repo-original-packet-spool-digest-mismatch");
+  }
+}
+
+void
+detail::commitStagedRanges(RepoStoreBackend& store, const RepoObjectManifest& manifest,
+                           bool bindDigest)
+{
+  if (bindDigest) {
+    if (auto* tiered = dynamic_cast<TieredRepoStore*>(&store)) {
+      tiered->commitRanges(manifest, true);
+      return;
+    }
+    if (auto* filesystem = dynamic_cast<FilesystemRepoStoreBackend*>(&store)) {
+      filesystem->commitRanges(manifest, true);
+      return;
+    }
+  }
+  store.commitRanges(manifest);
 }
 
 std::shared_ptr<const RepoObjectManifest>

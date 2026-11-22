@@ -841,7 +841,7 @@ FilesystemArtifactPayloadStore::finalize(const ArtifactReference& artifact,
   }
   if (fs::exists(committedStatus)) {
     if (sha256File(committed) != artifact.contentDigest) {
-      throw std::runtime_error(
+      throw DigestMismatch(
         "repo-artifact-committed-corrupt: committed payload digest mismatch");
     }
     return;
@@ -870,7 +870,7 @@ FilesystemArtifactPayloadStore::finalize(const ArtifactReference& artifact,
   }
   ::close(fd);
   if (sha256File(staging) != artifact.contentDigest) {
-    throw std::runtime_error(
+    throw DigestMismatch(
       "repo-artifact-digest-mismatch: staged payload failed full verification");
   }
 

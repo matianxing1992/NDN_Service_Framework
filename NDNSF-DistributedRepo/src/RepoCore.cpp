@@ -686,7 +686,7 @@ RepoCore::commitRangesIfOwned(const RepoObjectManifest& manifest)
 }
 
 RepoObjectManifest
-RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
+RepoCore::commitRangesLocked(const RepoObjectManifest& manifest, bool bindDigest)
 {
   rejectExternallySuppliedDataReceipt(manifest);
   auto commitManifest = manifest;
@@ -723,7 +723,7 @@ RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
     if (commitManifest.objectType == "original-packet-set") {
       payloadAlreadyCommitted = m_store->hasCommittedPayload(commitManifest);
     }
-    m_store->commitRanges(commitManifest);
+    detail::commitStagedRanges(*m_store, commitManifest, bindDigest);
     if (commitManifest.objectType == "original-packet-set") {
       try {
         extendPacketBaseIndex(commitManifest);
@@ -2137,25 +2137,10 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   try {
     if (stageTogether) {
       writeAdmittedRangesLocked(manifest, [&](const auto& normalized) {
-        ndn::util::Sha256 stagedDigest;
-        uint64_t stagedBytes = 0;
         detail::stageOriginalPacketSet(*m_store, normalized, [&](auto offset, auto length) {
           if (requireActive) requireActive();
-          auto bytes = readRange(offset, length);
-          if (verifyStagedSpool) {
-            if (offset != stagedBytes || bytes.size() != length ||
-                length > normalized.size - stagedBytes) {
-              throw std::runtime_error("repo-original-packet-input-truncated");
-            }
-            stagedDigest.update(ndn::span<const uint8_t>(bytes));
-            stagedBytes += length;
-          }
-          return bytes;
-        });
-        if (verifyStagedSpool && (stagedBytes != normalized.size ||
-            ndn::toHex(*stagedDigest.computeDigest(), false) != normalized.sha256)) {
-          throw std::runtime_error("repo-original-packet-spool-digest-mismatch");
-        }
+          return readRange(offset, length);
+        }, verifyStagedSpool);
       });
     }
     else {
@@ -2174,7 +2159,7 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
     finishStage("range-write");
     requireCurrentCatalog();
     finishStage("catalog-recheck");
-    auto committed = commitRangesLocked(manifest);
+    auto committed = commitRangesLocked(manifest, verifyStagedSpool);
     finishStage("publish");
     return committed;
   }
