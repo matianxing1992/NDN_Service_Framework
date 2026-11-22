@@ -10,6 +10,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <future>
 #include <fstream>
@@ -17,10 +19,33 @@
 #include <iomanip>
 #include <iostream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 using Clock = std::chrono::steady_clock;
+
+bool
+sampleSource(const ndn::Name& name)
+{
+  static const ndn::name::Component sourceComponent("DATA");
+  return name.size() >= 2 && name[-2] == sourceComponent &&
+         name[-1].isSegment() && name[-1].toSegment() % 128 == 0;
+}
+
+void
+traceSource(const ndn::Name& name, const char* event)
+{
+  using std::chrono::duration_cast;
+  using std::chrono::microseconds;
+  const auto steady = duration_cast<microseconds>(Clock::now().time_since_epoch()).count();
+  const auto wall = duration_cast<microseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  std::fprintf(stderr, "NDNSF_CONTROL_TIMING role=repo-manifest-source event=%s "
+               "steady_us=%lld timestamp_us=%lld requestId=%s\n", event,
+               static_cast<long long>(steady), static_cast<long long>(wall),
+               name.toUri().c_str());
+}
 
 void
 pin(int cpu)
@@ -52,6 +77,7 @@ struct Run
   const std::vector<ndn::Name>& names;
   const std::vector<std::size_t>& payloadSizes;
   const Clock::time_point until;
+  bool traceSources = false;
   std::size_t next = 0;
   std::size_t complete = 0;
   std::size_t timeouts = 0;
@@ -86,8 +112,11 @@ struct Run
     request.setCanBePrefix(false);
     request.setInterestLifetime(ndn::time::milliseconds(1500));
     interestWire += request.wireEncode().size();
+    const bool trace = traceSources && sampleSource(packets[i].getName());
+    if (trace) traceSource(packets[i].getName(), "request-express");
     face.expressInterest(request,
-      [this, i, sentAt, sampleLatency] (const ndn::Interest&, const ndn::Data& packet) {
+      [this, i, sentAt, sampleLatency, trace] (const ndn::Interest&, const ndn::Data& packet) {
+        if (trace) traceSource(packet.getName(), "request-face-data");
         if (sampleLatency) {
           const auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
             Clock::now() - sentAt).count();
@@ -188,13 +217,26 @@ main(int argc, char** argv)
     std::promise<void> registered;
     auto ready = registered.get_future();
     std::atomic<std::size_t> producerCount{0};
+    std::atomic<bool> traceProducer{false};
+    const char* traceSetting = std::getenv("NDNSF_NFD_WIRE_SOURCE_TIMING");
+    const bool traceSources = traceSetting != nullptr && std::string_view(traceSetting) == "1";
     producer.setInterestFilter(ndn::InterestFilter(prefix),
       [&] (const ndn::InterestFilter&, const ndn::Interest& request) {
+        bool trace = false;
+        if (traceSources && traceProducer.load(std::memory_order_relaxed)) {
+          const auto& name = request.getName();
+          const auto sourceName = name[-1].isImplicitSha256Digest() ? name.getPrefix(-1) : name;
+          trace = sampleSource(sourceName);
+          if (trace) traceSource(sourceName, "producer-receive-interest");
+        }
         const auto found = byName.find(request.getName());
-        if (found == byName.end() || !request.matchesData(packets[found->second])) {
+        if (found == byName.end()) throw std::runtime_error("unexpected producer name");
+        const auto& data = packets[found->second];
+        if (!request.matchesData(data)) {
           throw std::runtime_error("unexpected producer name");
         }
-        producer.put(packets[found->second]);
+        if (trace) traceSource(data.getName(), "producer-submit-data");
+        producer.put(data);
         producerCount.fetch_add(1);
       },
       [&] (const ndn::Name&) { registered.set_value(); },
@@ -224,7 +266,8 @@ main(int argc, char** argv)
       const auto nfdCpuStart = cpuTime(nfdClock);
       const auto startCpu = threadCpu();
       const auto start = Clock::now();
-      Run measured{consumer, packets, names, payloadSizes, start + duration};
+      if (traceSources) traceProducer.store(true, std::memory_order_relaxed);
+      Run measured{consumer, packets, names, payloadSizes, start + duration, traceSources};
       measured.start(window);
       const auto wall = std::chrono::duration<double>(Clock::now() - start).count();
       const auto cpu = threadCpu() - startCpu;
