@@ -52,7 +52,8 @@ namespace repo = ndnsf_distributed_repo;
 using Clock = std::chrono::steady_clock;
 using Json = di::NativeJson;
 constexpr uint64_t FILE_BYTES = 500000000;
-constexpr size_t CONTENT_BYTES = 7000;
+constexpr size_t DEFAULT_CONTENT_BYTES = 7000;
+constexpr size_t LARGE_CONTENT_BYTES = 8400;
 constexpr uint32_t CERTIFICATE_GROUP_SEGMENTS = 2048;
 constexpr uint32_t LARGE_MANIFEST_GROUP_SEGMENTS = 2560;
 // Leave room in the Repo's 4096-packet named fetch for the root and index pages.
@@ -142,6 +143,7 @@ run(int argc, char** argv)
                  "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
                  "[--manifest-read-pipeline serial|paired|quad] "
                  "[--manifest-insert indexed|compact] "
+                 "[--manifest-segment-bytes 7000|8400] "
                  "[--manifest-group-segments 2048|2560|3840] [--manifest-write-slots 3|5] ";
     std::cout << "\nUses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
                  "whole-group reads, with a default of "
@@ -156,6 +158,7 @@ run(int argc, char** argv)
       std::string(argv[i]) == "--signing-certificate" ||
       std::string(argv[i]) == "--manifest-read-pipeline" ||
       std::string(argv[i]) == "--manifest-insert" ||
+      std::string(argv[i]) == "--manifest-segment-bytes" ||
       std::string(argv[i]) == "--manifest-group-segments" ||
       std::string(argv[i]) == "--manifest-write-slots";
     require(i + 1 < argc && known && options.emplace(argv[i], argv[i + 1]).second,
@@ -168,6 +171,13 @@ run(int argc, char** argv)
           authentication == "manifest", "unsupported benchmark authentication");
   const bool useCertificate = authentication != "digest";
   const bool useManifest = authentication == "manifest";
+  const auto configuredSegmentBytes = options.find("--manifest-segment-bytes");
+  require(configuredSegmentBytes == options.end() || (useManifest &&
+          (configuredSegmentBytes->second == "7000" || configuredSegmentBytes->second == "8400")),
+          "manifest segment bytes require manifest mode and a payload of 7000 or 8400 bytes");
+  const auto contentBytes = configuredSegmentBytes != options.end() &&
+                            configuredSegmentBytes->second == "8400"
+    ? LARGE_CONTENT_BYTES : DEFAULT_CONTENT_BYTES;
   const auto insertMode = options.find("--manifest-insert");
   require(insertMode == options.end() || (useManifest && phaseOption != "read" &&
           (insertMode->second == "indexed" || insertMode->second == "compact")),
@@ -296,7 +306,7 @@ run(int argc, char** argv)
   }
   auto bootstrap = total.result();
   bootstrap["phase"] = "bootstrap";
-  bootstrap["contentSegmentBytes"] = CONTENT_BYTES;
+  bootstrap["contentSegmentBytes"] = contentBytes;
   bootstrap["authentication"] = authentication;
   if (useCertificate) {
     bootstrap["keyAlgorithm"] = keyType == ndn::KeyType::EC ? "ECDSA" : "RSA";
@@ -387,7 +397,7 @@ run(int argc, char** argv)
                 reference.value("authentication", "digest") == authentication &&
                 (!useCertificate || reference.at("signingCertificate") ==
                                       certificate.getName().toUri()) &&
-                reference.at("contentSegmentBytes") == CONTENT_BYTES,
+                reference.at("contentSegmentBytes") == contentBytes,
                 "benchmark reference identity mismatch");
         for (const auto& item : reference.at("groups")) {
           Group group;
@@ -398,7 +408,7 @@ run(int argc, char** argv)
           group.wireBytes = item.at("wireBytes").get<uint64_t>();
           require(group.packetCount > 0 &&
                   group.packetCount <= maxSourcePackets &&
-                  group.payloadBytes > 0 && group.payloadBytes <= group.packetCount * CONTENT_BYTES &&
+                  group.payloadBytes > 0 && group.payloadBytes <= group.packetCount * contentBytes &&
                   group.wireBytes >= group.payloadBytes,
                   "benchmark reference group invalid");
           payloadBytes += group.payloadBytes;
@@ -443,7 +453,7 @@ run(int argc, char** argv)
         di::NativeStoredModelPacketIo::PacketWires wires;
         ndn::util::Sha256 wireHash;
         const auto groupPackets = std::min<uint64_t>(maxSourcePackets,
-          (FILE_BYTES - payloadBytes + CONTENT_BYTES - 1) / CONTENT_BYTES);
+          (FILE_BYTES - payloadBytes + contentBytes - 1) / contentBytes);
         const auto appendOriginal = [&](const ndn::Data& packet) {
           const auto& wire = packet.wireEncode();
           wires.emplace_back(wire.begin(), wire.end());
@@ -458,9 +468,9 @@ run(int argc, char** argv)
         }
         for (size_t segment = 0; segment < groupPackets; ++segment) {
           current();
-          std::array<uint8_t, CONTENT_BYTES> buffer;
+          std::array<uint8_t, LARGE_CONTENT_BYTES> buffer;
           const auto count = static_cast<size_t>(std::min<uint64_t>(
-            buffer.size(), FILE_BYTES - payloadBytes));
+            contentBytes, FILE_BYTES - payloadBytes));
           input.read(reinterpret_cast<char*>(buffer.data()), count);
           require(static_cast<size_t>(input.gcount()) == count, "benchmark source truncated");
           const ndn::span<const uint8_t> content(buffer.data(), count);
@@ -561,7 +571,7 @@ run(int argc, char** argv)
         const auto referencePath = options.at("--reference");
         const auto temporary = referencePath + ".tmp";
         Json reference{{"schema", "ndnsf-repo-file-benchmark-reference-v1"},
-          {"fileBytes", FILE_BYTES}, {"sha256", expected}, {"contentSegmentBytes", CONTENT_BYTES},
+          {"fileBytes", FILE_BYTES}, {"sha256", expected}, {"contentSegmentBytes", contentBytes},
           {"orderedWireSha256", digest(orderedWire)}, {"groups", referenceGroups}};
         if (useCertificate) {
           reference["authentication"] = authentication;
@@ -586,7 +596,7 @@ run(int argc, char** argv)
         auto written = total.result();
         written.update(Json{{"phase", "complete"}, {"pass", true}, {"fileBytes", FILE_BYTES},
           {"sha256", expected}, {"wireBytes", wireBytes}, {"groups", groups.size()},
-          {"contentSegmentBytes", CONTENT_BYTES}, {"stagedPhase", "write"},
+          {"contentSegmentBytes", contentBytes}, {"stagedPhase", "write"},
           {"publicationMode", "bounded-pipeline"},
           {"publicationMaxActiveCommits", writeCapacity}});
         record(written);
@@ -730,7 +740,7 @@ run(int argc, char** argv)
       auto result = total.result();
       result.update(Json{{"phase", "complete"}, {"pass", true}, {"fileBytes", FILE_BYTES},
         {"sha256", expected}, {"wireBytes", wireBytes}, {"groups", groups.size()},
-        {"contentSegmentBytes", CONTENT_BYTES},
+        {"contentSegmentBytes", contentBytes},
         {"authentication", authentication},
         {"stagedPhase", phaseOption == "read" ? "read" : "write-read"},
         {"retainedGroupMetadata", "prefix/count/digest only; names regenerated per read group"},
