@@ -19,6 +19,14 @@ PROVIDERS = ('provider', 'provider2', 'control')
 COMPONENTS = ('umt5', 'dit', 'vae')
 
 
+def requester_task(catalog):
+    tasks = catalog['model']['adapter']['tasks']
+    if (not isinstance(tasks, list) or len(tasks) != 1 or
+            not isinstance(tasks[0], str) or not tasks[0]):
+        raise ValueError('Wan component catalog must declare one request task')
+    return tasks[0]
+
+
 def installed_ledger(prefix, file_digest, capture_fixture_trace):
     files = {}
     paths = [prefix / 'bin' / program for program in (
@@ -191,7 +199,7 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
                 group=network['group'], trust_schema_file=str(trust))
     identity = digest(b'ndnsf-wan-fixture/request-v1')
     request = dict(schema='ndnsf-di-native-request-runtime-v1', service=network['service'],
-                   task='task', provider_names=[identities[role] for role in providers],
+                   provider_names=[identities[role] for role in providers],
                    adapter_composition_digest=identity, task_descriptor_digest=identity,
                    input_layout_digest=identity, security_policy_digest=digest(policy.read_bytes()),
                    timeout_ms=180000, ack_timeout_ms=2000, max_candidates=1, max_policy_ms=5000)
@@ -204,7 +212,8 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
                 if name in catalog['source']:
                     catalog['source'][name] = str(base / catalog['source'][name])
         candidate = layout[component]['candidate_digest']
-        return dict(schema='ndnsf-di-native-requester-v1', core=core, grant=grant, request=request,
+        return dict(schema='ndnsf-di-native-requester-v1', core=core, grant=grant,
+                    request=dict(request, task=requester_task(catalog)),
                     catalog=catalog, model_input=dict(
                         mode='source', repo_target=repo_target,
                         preparation_state_file=str(root / 'models' / component / 'preparation.json'),
