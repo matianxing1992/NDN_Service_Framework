@@ -1098,6 +1098,10 @@ BOOST_AUTO_TEST_CASE(SpoolReadAppendTransitionsPreservePhysicalAndLogicalOrder)
   BOOST_CHECK(spool.readRange(0, expected.size()) == expected);
   const std::vector<uint8_t> crossing(expected.begin() + 65000, expected.begin() + 85000);
   BOOST_CHECK(spool.readRange(65000, crossing.size()) == crossing);
+  const auto lastBoundary = expected.size() - bytes;
+  const std::vector<uint8_t> reordered(expected.begin() + lastBoundary - 3,
+                                       expected.begin() + lastBoundary + 5);
+  BOOST_CHECK(spool.readRange(lastBoundary - 3, reordered.size()) == reordered);
   BOOST_CHECK(spool.readPacket(0) == wires.front());
   BOOST_CHECK(spool.readPacket(count - 1) == wires.back());
 }

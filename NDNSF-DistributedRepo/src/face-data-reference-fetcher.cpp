@@ -24,6 +24,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace ndnsf_distributed_repo::detail {
 namespace {
@@ -920,6 +921,7 @@ FaceDataReferencePacketSpool::append(std::size_t packetIndex,
   if (m_readSinceAppend && std::fseek(m_file.get(), 0, SEEK_END) != 0) {
     throw std::runtime_error("repo-original-packet-spool-seek-failed");
   }
+  m_nextReadOffset = -1;
   const long offset = std::ftell(m_file.get());
   if (offset < 0 || std::fwrite(wire.data(), 1, wire.size(), m_file.get()) != wire.size()) {
     throw std::runtime_error("repo-original-packet-spool-write-failed");
@@ -940,12 +942,22 @@ FaceDataReferencePacketSpool::readPacket(std::size_t packetIndex) const
   }
   const auto length = m_packetLengths[packetIndex];
   std::vector<uint8_t> wire(length);
+  readAt(m_packetOffsets[packetIndex], wire.data(), wire.size());
+  return wire;
+}
+
+void
+FaceDataReferencePacketSpool::readAt(long offset, uint8_t* output, std::size_t length) const
+{
+  // Preserve the stdio read buffer across adjacent packets. A seek is still
+  // required after appending or when logical order jumps in the spool file.
+  const auto previousOffset = std::exchange(m_nextReadOffset, -1L);
   m_readSinceAppend = true;
-  if (std::fseek(m_file.get(), m_packetOffsets[packetIndex], SEEK_SET) != 0 ||
-      std::fread(wire.data(), 1, wire.size(), m_file.get()) != wire.size()) {
+  if ((previousOffset != offset && std::fseek(m_file.get(), offset, SEEK_SET) != 0) ||
+      std::fread(output, 1, length, m_file.get()) != length) {
     throw std::runtime_error("repo-original-packet-spool-read-failed");
   }
-  return wire;
+  m_nextReadOffset = offset + static_cast<long>(length);
 }
 
 std::vector<uint8_t>
@@ -977,11 +989,7 @@ FaceDataReferencePacketSpool::readRange(uint64_t offset, std::size_t length) con
     const auto chunk = static_cast<std::size_t>(
       std::min<uint64_t>(available, length - copied));
     const auto physicalOffset = m_packetOffsets[index] + static_cast<long>(withinPacket);
-    m_readSinceAppend = true;
-    if (std::fseek(m_file.get(), physicalOffset, SEEK_SET) != 0 ||
-        std::fread(result.data() + copied, 1, chunk, m_file.get()) != chunk) {
-      throw std::runtime_error("repo-original-packet-spool-read-failed");
-    }
+    readAt(physicalOffset, result.data() + copied, chunk);
     copied += chunk;
     cursor += chunk;
     ++index;

@@ -59,6 +59,9 @@ public:
   readRange(uint64_t offset, std::size_t length) const override;
 
 private:
+  void
+  readAt(long offset, uint8_t* output, std::size_t length) const;
+
   static constexpr std::size_t STDIO_BUFFER_BYTES = 64U << 10;
   mutable std::mutex m_mutex;
   // FILE must close before its borrowed stdio buffer is destroyed.
@@ -72,6 +75,7 @@ private:
   uint64_t m_totalWireBytes = 0;
   bool m_finalized = false;
   mutable bool m_readSinceAppend = false;
+  mutable long m_nextReadOffset = -1;
 };
 
 /** Fetch the exact original Data packet set through a shared Face.
