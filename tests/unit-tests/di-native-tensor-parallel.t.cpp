@@ -9645,6 +9645,7 @@ BOOST_AUTO_TEST_CASE(TwoProvidersRunTheFullStackOverNamedDataAndSample)
       in.executionObjectDigest = computeTensorExecutionObjectDigest(endpoint);
       in.namingOperationStride = endpoint.namingOperationStride;
       in.planDigest = planDigest;
+      in.layoutDigest = endpoint.layoutDigest;
       in.manifestContractDigest = endpoint.manifestDigest;
       in.tensorDigest = tensorDigest;
       in.securityProfile = endpoint.securityProfile;
@@ -9731,6 +9732,7 @@ BOOST_AUTO_TEST_CASE(TwoProvidersRunTheFullStackOverNamedDataAndSample)
       out.executionObjectDigest = computeTensorExecutionObjectDigest(outEndpoint);
       out.namingOperationStride = outEndpoint.namingOperationStride;
       out.planDigest = planDigest;
+      out.layoutDigest = outEndpoint.layoutDigest;
       out.manifestContractDigest = outEndpoint.manifestDigest;
       out.tensorDigest = tensorDigest;
       out.securityProfile = outEndpoint.securityProfile;
