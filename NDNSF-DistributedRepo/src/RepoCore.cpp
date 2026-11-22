@@ -1386,6 +1386,10 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
 
   std::shared_ptr<const RepoObjectManifest> manifest;
   std::shared_ptr<const PacketIndexProof> packetProof;
+  std::optional<ndn::Name> indexedPrefix;
+  std::string canonicalBase;
+  std::string alternateBase;
+  const std::vector<PacketIndexProof::SegmentPosition>* indexedPositions = nullptr;
   std::vector<std::size_t> indices;
   const auto requireSameManifest = [&] {
     requireActive();
@@ -1399,23 +1403,40 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
   for (const auto& name : names) {
     requireActive();
     if (manifest) {
-      // Same-object fast path: this batch already resolved and will re-validate
-      // the manifest once at the end, so later names only need their index in
-      // that immutable manifest instead of another snapshot read and payload
-      // probe per packet.
-      const auto canonical = name.toUri(ndn::name::UriFormat::CANONICAL);
-      // The alternate spelling is only needed when the canonical form does not
-      // match, so it stays unbuilt on the normal path.
-      std::optional<std::string> alternate;
+      // Reuse the table for consecutive Interests under the same typed prefix.
+      // Exact name checks still distinguish URI aliases and segment encodings.
+      auto prefix = name.getPrefix(-1);
+      if (!indexedPrefix || prefix != *indexedPrefix) {
+        indexedPrefix = std::move(prefix);
+        canonicalBase = indexedPrefix->empty() ? std::string{} :
+          indexedPrefix->toUri(ndn::name::UriFormat::CANONICAL);
+        alternateBase = indexedPrefix->empty() ? std::string{} :
+          indexedPrefix->toUri(ndn::name::UriFormat::ALTERNATE);
+        indexedPositions = nullptr;
+        if (packetProof) {
+          const auto table = packetProof->segments.find(canonicalBase);
+          if (table != packetProof->segments.end())
+            indexedPositions = &table->second;
+        }
+      }
+      const auto canonicalSuffix = name[-1].toUri(ndn::name::UriFormat::CANONICAL);
+      std::optional<std::string> alternateSuffix;
       const auto matchesName = [&](std::size_t candidate) {
         if (candidate >= manifest->packetNames.size())
           return false;
-        const auto& stored = manifest->packetNames[candidate];
-        if (stored == canonical)
+        const std::string_view stored(manifest->packetNames[candidate]);
+        const auto slash = stored.find_last_of('/');
+        if (slash == std::string_view::npos)
+          return false;
+        const auto base = stored.substr(0, slash);
+        const auto suffix = stored.substr(slash + 1);
+        if (base == canonicalBase && suffix == canonicalSuffix)
           return true;
-        if (!alternate)
-          alternate = name.toUri(ndn::name::UriFormat::ALTERNATE);
-        return stored == *alternate;
+        if (base != alternateBase)
+          return false;
+        if (!alternateSuffix)
+          alternateSuffix = name[-1].toUri(ndn::name::UriFormat::ALTERNATE);
+        return suffix == *alternateSuffix;
       };
       std::optional<std::size_t> index;
       bool indexedSegment = false;
@@ -1423,9 +1444,8 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
         try {
           const auto segment = name[-1].toSegment();
           indexedSegment = true;
-          const auto table = packetProof->segments.find(packetBaseName(canonical));
-          if (table != packetProof->segments.end() && !table->second.empty()) {
-            const auto& positions = table->second;
+          if (indexedPositions && !indexedPositions->empty()) {
+            const auto& positions = *indexedPositions;
             const auto first = positions.front().segment;
             // Dense segments use one ordinal access; sparse or high values use
             // the bounded sorted table, exactly as the exact-read lookup does.

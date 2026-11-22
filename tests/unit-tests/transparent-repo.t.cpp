@@ -1440,6 +1440,8 @@ BOOST_AUTO_TEST_CASE(PacketBatchColdLookupRetainsHeterogeneousAdmittedHolder)
   const ndn::Name base("/actual/batch-asymmetric");
   const auto shared = ndn::Name(base).appendSegment(2);
   const auto sharedWire = packet(shared);
+  const ndn::Name other("/actual/8=batch-other/seg=2");
+  const auto otherWire = packet(other);
   const std::array<ndn::Name, 2> roots{
     ndn::Name(base).appendSegment(0), ndn::Name("/actual/batch-heterogeneous/manifest")};
   std::string acceptedObject;
@@ -1455,7 +1457,12 @@ BOOST_AUTO_TEST_CASE(PacketBatchColdLookupRetainsHeterogeneousAdmittedHolder)
       manifest.packetNames = {manifest.objectName,
         shared.toUri(ndn::name::UriFormat::CANONICAL)};
       manifest.packetOffsets = {0, rootBytes, bytes.size()};
-      manifest.segmentCount = 2;
+      if (root == roots.back()) {
+        bytes.insert(bytes.end(), otherWire.begin(), otherWire.end());
+        manifest.packetNames.push_back(other.toUri(ndn::name::UriFormat::ALTERNATE));
+        manifest.packetOffsets.push_back(bytes.size());
+      }
+      manifest.segmentCount = manifest.packetNames.size();
       manifest.size = bytes.size();
       manifest.sha256 = sha256Hex(bytes);
       manifest.generation = 1;
@@ -1466,19 +1473,21 @@ BOOST_AUTO_TEST_CASE(PacketBatchColdLookupRetainsHeterogeneousAdmittedHolder)
   RepoCore reopened(fixture.capability(), fixture.store("batch-asymmetric"));
   unsigned rejected = 0;
   unsigned accepted = 0;
-  const auto result = reopened.tryGetDataPacketBatch({ndn::Interest(shared), ndn::Interest(shared)},
+  const auto result = reopened.tryGetDataPacketBatch(
+    {ndn::Interest(shared), ndn::Interest(other), ndn::Interest(shared)},
     [&](const RepoObjectManifest& manifest) {
       if (manifest.objectName != acceptedObject) { ++rejected; return false; }
       ++accepted;
       return true;
     }, [] {});
   BOOST_REQUIRE(result);
-  BOOST_REQUIRE_EQUAL(result->size(), 2U);
+  BOOST_REQUIRE_EQUAL(result->size(), 3U);
   BOOST_CHECK_GT(rejected, 0U);
   BOOST_CHECK_EQUAL(accepted, 2U);
-  for (const auto& data : *result) {
-    const auto& wire = data.wireEncode();
-    BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) == sharedWire);
+  for (std::size_t i = 0; i < result->size(); ++i) {
+    const auto& wire = result->at(i).wireEncode();
+    BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) ==
+                (i == 1 ? otherWire : sharedWire));
   }
 }
 
