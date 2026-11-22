@@ -755,11 +755,20 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
           }
           detail::traceManifestRoot(reply.data.getName(), "repo-face-put");
           face.put(reply.data);
-          detail::traceManifestSource(reply.data.getName(), "repo-submit-data");
+          const bool sampled =
+            detail::traceManifestSource(reply.data.getName(), "repo-submit-data");
           NDN_LOG_DEBUG("original packet put name=" << reply.data.getName());
           // Keep each lease through its own queued put, including when a later
           // reply fails. Only the foreign-thread dispatch is shared by a batch.
-          boost::asio::post(face.getIoContext(), [completion = reply.completion] {});
+          if (sampled) {
+            boost::asio::post(face.getIoContext(),
+              [completion = reply.completion, name = reply.data.getName()] {
+                detail::traceManifestSource(name, "repo-put-queue-marker");
+              });
+          }
+          else {
+            boost::asio::post(face.getIoContext(), [completion = reply.completion] {});
+          }
         }
       });
     }
