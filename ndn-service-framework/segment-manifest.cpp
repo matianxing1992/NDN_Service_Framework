@@ -392,9 +392,22 @@ SegmentManifestVerifier::matchesSource(uint32_t segment, const ndn::Data& data) 
   if (!isCurrent() || segment >= sourceCount() || !m_sources[segment]) {
     return false;
   }
-  return data.getFinalBlock() == ndn::name::Component::fromSegment(sourceCount() - 1) &&
-         matches(data, fullName(m_scope.sourceName(segment), *m_sources[segment]),
-                 *m_sources[segment]) && isCurrent();
+  static const ndn::name::Component sourceComponent("DATA");
+  const auto& name = data.getName();
+  const auto& entry = *m_sources[segment];
+  // Match the exact typed name and then compare the same full-wire digest.
+  // The already-encoded Data caches its implicit digest after Interest matching.
+  if (name.size() != m_scope.objectPrefix.size() + 2 ||
+      !m_scope.objectPrefix.isPrefixOf(name) || name[-2] != sourceComponent ||
+      name[-1] != ndn::name::Component::fromSegment(segment) ||
+      data.getFinalBlock() != ndn::name::Component::fromSegment(sourceCount() - 1) ||
+      data.getSignatureType() != ndn::tlv::DigestSha256 ||
+      data.wireEncode().size() != entry.wireSize) {
+    return false;
+  }
+  const auto digest = data.getFullName()[-1].value_bytes();
+  return std::equal(digest.begin(), digest.end(), entry.digest.begin(), entry.digest.end()) &&
+         isCurrent();
 }
 
 } // namespace ndn_service_framework
