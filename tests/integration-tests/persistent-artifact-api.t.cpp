@@ -3291,7 +3291,37 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_CHECK_EXCEPTION(commitManifest(wrongManifest), std::invalid_argument, wrongBinding);
   auto wrongGrant = manifestInsert;
   wrongGrant.storageBinding.grantId += "-unknown";
-  BOOST_CHECK_THROW(commitManifest(wrongGrant), std::runtime_error);
+  BOOST_CHECK_EXCEPTION(commitManifest(wrongGrant), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()) ==
+           "repo-original-publication-insert-not-confirmed: repo-user-storage-unauthorized";
+  });
+  BOOST_CHECK_EXCEPTION(node->insertWirePackets(manifestInsert, manifestWires,
+    sourceIdentity.toUri(ndn::name::UriFormat::ALTERNATE)), std::invalid_argument,
+    [](const auto& error) {
+      return std::string(error.what()) == "repo-manifest-insert-requires-network-proof";
+    });
+  const std::vector<std::pair<std::string, ndn::Name>> missingPackets{
+    {"root", manifestScope.rootName()}, {"page", manifestScope.pageName(0)},
+    {"source", manifestScope.sourceName(128)}};
+  for (const auto& [kind, missing] : missingPackets) {
+    BOOST_TEST_CONTEXT("missing manifest " << kind) {
+      FaultProfile faults;
+      faults.dropDataPredicate = [missing](const auto& data) { return data.getName() == missing; };
+      auto attempt = environment.beginRequest("repo-manifest-missing-" + kind, std::move(faults));
+      environment.markRequestPublished(attempt);
+      BOOST_CHECK_EXCEPTION(commitManifest(manifestInsert), std::runtime_error,
+        [](const auto& error) {
+          const std::string message(error.what());
+          return message == "repo-original-publication-insert-not-confirmed: "
+                            "repo-original-packet-timeout" ||
+                 message == "repo-original-publication-insert-not-confirmed: "
+                            "repo-original-packet-fetch-deadline";
+        });
+      BOOST_CHECK_GT(environment.bridgeStats().droppedPackets, 0U);
+      BOOST_CHECK(node->core().list().empty());
+      environment.resetRequest(attempt);
+    }
+  }
   BOOST_CHECK(node->core().list().empty());
   const auto admittedManifest = commitManifest(manifestInsert);
   BOOST_REQUIRE(admittedManifest.packetSet);
