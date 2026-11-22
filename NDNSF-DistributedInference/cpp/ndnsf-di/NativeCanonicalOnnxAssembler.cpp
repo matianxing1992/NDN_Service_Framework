@@ -3442,6 +3442,10 @@ prepareNativeCanonicalOnnxRole(
       const auto sourceTransform = role.sourceTransformV1.empty() || isEntryProgram
         ? std::optional<NativeOnnxSourceTransformV1>{}
         : NativeOnnxSourceTransformV1::parse(role.sourceTransformV1);
+      // An injected Conv bias can be outside the selected nodes' declared inputs.
+      std::vector<std::string> transformInitializers;
+      if (sourceTransform && sourceTransform->kind == "add-conv-bias")
+        transformInitializers.push_back(sourceTransform->bias);
       std::map<std::string, MaterialObjectReceipt> selectedObjects;
       {
         using Reference = NativeCanonicalSource::MaterialReference;
@@ -3473,10 +3477,7 @@ prepareNativeCanonicalOnnxRole(
           selectedDependencies.insert(found->second->dependencies.begin(),
                                       found->second->dependencies.end());
         }
-        // The admitted Conv bias transform can name an initializer outside
-        // the selected nodes' declared inputs.
-        if (sourceTransform && sourceTransform->kind == "add-conv-bias")
-          selectedDependencies.insert(sourceTransform->bias);
+        selectedDependencies.insert(transformInitializers.begin(), transformInitializers.end());
         for (const auto& dependency : selectedDependencies) {
           assemblyControl.requireActive();
           const auto found = initializers.find(dependency);
