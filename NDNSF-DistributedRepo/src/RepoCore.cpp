@@ -1708,6 +1708,13 @@ RepoCore::validateReadPacketIndex(const RepoObjectManifest& manifest) const
   getPacketIndexProof(manifest);
 }
 
+void
+RepoCore::warmCommittedPacketSet(const RepoObjectManifest& manifest,
+                                 const std::function<void()>& requireCurrent) const noexcept
+{
+  detail::warmCommittedRangeCache(*m_store, manifest, requireCurrent);
+}
+
 std::shared_ptr<const RepoCore::PacketIndexProof>
 RepoCore::getPacketIndexProof(const RepoObjectManifest& manifest,
   const std::shared_ptr<const RepoObjectManifest>& owner) const

@@ -696,9 +696,12 @@ receipts, locations, and operation records. `--cache-bytes` must be positive;
 the server rejects a zero cache budget during configuration validation.
 
 The server defaults to a 1 GiB logical cache budget and a 32 MiB per-object
-threshold. Memory grows on demand. A range read of a qualifying committed object
-prefetches its related packet set into the same LRU, in bounded read chunks;
-subsequent segments reuse those bytes. Larger objects remain range-readable
+threshold. Memory grows on demand. The authenticated initial Owner lookup for an
+exact committed packet set can warm the LRU before segment retrieval when service
+handlers and the storage backend support concurrent reads. In-flight warmups share
+the configured byte limit. Other cold range reads can fill the same LRU in bounded
+read chunks, and subsequent segments reuse those bytes. Cache miss and backing-read
+counters describe demand reads. Larger objects remain range-readable
 without whole-object cache admission. Manifest freshness and live storage
 admission are checked on reads, including cache hits. The budget counts payload
 and serialized metadata; process RSS also includes other runtime allocations.

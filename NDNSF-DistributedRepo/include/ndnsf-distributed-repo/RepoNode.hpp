@@ -223,6 +223,10 @@ public:
   std::vector<uint8_t> handleStatus(const std::vector<uint8_t>& request) const;
 
 private:
+  std::vector<uint8_t> listUserStorage(const std::vector<uint8_t>& request,
+                                      const std::string& authenticatedOwner,
+                                      bool warmCache) const;
+
   friend struct RepoNodeTestAccess;
   void executeStorageWrite(uint64_t bytes, std::function<void()> write,
                            const std::function<void()>& requireActive = {});

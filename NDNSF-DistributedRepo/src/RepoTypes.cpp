@@ -8,6 +8,7 @@
 #include "ndnsf-distributed-repo/detail/StrictJson.hpp"
 
 #include <ndn-cxx/name.hpp>
+#include <ndn-cxx/util/scope.hpp>
 
 #include <openssl/sha.h>
 #include <sqlite3.h>
@@ -1066,9 +1067,8 @@ public:
       throw std::out_of_range("repo-range-read-out-of-bounds");
     // Admission is still checked by Core on every Interest. This cache only
     // accelerates immutable committed bytes, never staging or missing payloads.
-    const bool cacheable = range.lengthBytes != 0 && m_status.budgetBytes != 0 && manifest.size != 0 &&
-      manifest.size <= m_largeObjectThreshold && manifest.size <= m_status.budgetBytes &&
-      m_authoritativeStore->hasCommittedPayload(manifest);
+    const bool cacheable = range.lengthBytes != 0 && canCacheRangePayload(manifest);
+    bool warming = false;
     std::optional<std::vector<uint8_t>> cachedBytes;
     uint64_t observedEpoch = 0;
     {
@@ -1091,6 +1091,7 @@ public:
         }
       }
       if (!cachedBytes) {
+        warming = m_rangeWarming.count(objectName) != 0;
         ++m_status.misses;
         ++m_status.backingReads;
       }
@@ -1103,25 +1104,9 @@ public:
       }
       return std::move(*cachedBytes);
     }
-    if (cacheable) {
+    if (cacheable && !warming) {
       try {
-        // One packet request brings its related packet set into the existing
-        // bounded LRU. Chunked reads retain the backend's range contract.
-        std::vector<uint8_t> bytes;
-        bytes.reserve(manifest.size);
-        constexpr uint64_t PREFETCH_CHUNK_BYTES = 1ULL << 20;
-        while (bytes.size() < manifest.size) {
-          const auto length = std::min<uint64_t>(PREFETCH_CHUNK_BYTES,
-                                                 manifest.size - bytes.size());
-          auto part = m_authoritativeStore->getRange(objectName, {bytes.size(), length});
-          if (part.size() != length)
-            throw std::runtime_error("repo-range-prefetch-truncated");
-          bytes.insert(bytes.end(), part.begin(), part.end());
-        }
-        if (sha256Hex(bytes) != manifest.sha256 ||
-            !m_authoritativeStore->getManifest(objectName).hasSameMetadata(manifest) ||
-            !m_authoritativeStore->hasCommittedPayload(manifest))
-          throw std::runtime_error("repo-range-prefetch-identity-mismatch");
+        auto bytes = loadRangeCachePayload(manifest);
         std::vector<uint8_t> result(bytes.begin() + range.offsetBytes,
                                     bytes.begin() + range.offsetBytes + range.lengthBytes);
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -1136,6 +1121,49 @@ public:
       }
     }
     return m_authoritativeStore->getRange(objectName, range);
+  }
+
+  void
+  warmRangeCache(const RepoObjectManifest& expected,
+                 const std::function<void()>& requireCurrent) const noexcept
+  {
+    try {
+      requireCurrent();
+      const auto& objectName = expected.objectName;
+      if (!supportsConcurrentCommittedReads())
+        return;
+      const auto snapshot = detail::readManifestSnapshot(*m_authoritativeStore, objectName);
+      const auto& manifest = *snapshot;
+      if (!manifest.hasSameMetadata(expected) || !canCacheRangePayload(manifest))
+        return;
+
+      uint64_t observedEpoch = 0;
+      {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_cache.find(objectName);
+        if ((found != m_cache.end() && found->second.manifest.hasSameMetadata(manifest)) ||
+            manifest.size > m_status.budgetBytes - m_rangeWarmingBytes ||
+            !m_rangeWarming.insert(objectName).second)
+          return;
+        m_rangeWarmingBytes += manifest.size;
+        const auto epoch = m_epochs.find(objectName);
+        observedEpoch = epoch == m_epochs.end() ? 0 : epoch->second;
+      }
+      const auto release = ndn::make_scope_exit([&] {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_rangeWarming.erase(objectName);
+        m_rangeWarmingBytes -= manifest.size;
+      });
+      auto bytes = loadRangeCachePayload(manifest, requireCurrent);
+      requireCurrent();
+      std::lock_guard<std::mutex> lock(m_mutex);
+      const auto epoch = m_epochs.find(objectName);
+      if ((epoch == m_epochs.end() ? 0 : epoch->second) == observedEpoch)
+        admitNoThrow({manifest, std::move(bytes)});
+    }
+    catch (...) {
+      // Cache admission is optional. Original packet reads check the current store.
+    }
   }
 
   std::vector<uint8_t>
@@ -1447,6 +1475,35 @@ private:
     return payloadBytes + nameBytes + manifestBytes;
   }
 
+  bool
+  canCacheRangePayload(const RepoObjectManifest& manifest) const
+  {
+    return manifest.size != 0 && manifest.size <= m_largeObjectThreshold &&
+      manifest.size <= m_status.budgetBytes && m_authoritativeStore->hasCommittedPayload(manifest);
+  }
+
+  std::vector<uint8_t>
+  loadRangeCachePayload(const RepoObjectManifest& manifest,
+                        const std::function<void()>& requireCurrent = {}) const
+  {
+    std::vector<uint8_t> bytes;
+    bytes.reserve(manifest.size);
+    constexpr uint64_t PREFETCH_CHUNK_BYTES = 1ULL << 20;
+    while (bytes.size() < manifest.size) {
+      if (requireCurrent) requireCurrent();
+      const auto length = std::min<uint64_t>(PREFETCH_CHUNK_BYTES, manifest.size - bytes.size());
+      auto part = m_authoritativeStore->getRange(manifest.objectName, {bytes.size(), length});
+      if (part.size() != length)
+        throw std::runtime_error("repo-range-prefetch-truncated");
+      bytes.insert(bytes.end(), part.begin(), part.end());
+    }
+    if (sha256Hex(bytes) != manifest.sha256 ||
+        !detail::readManifestSnapshot(*m_authoritativeStore, manifest.objectName)
+          ->hasSameMetadata(manifest) || !m_authoritativeStore->hasCommittedPayload(manifest))
+      throw std::runtime_error("repo-range-prefetch-identity-mismatch");
+    return bytes;
+  }
+
   void invalidate(const std::string& objectName) const
   {
     const auto found = m_cache.find(objectName);
@@ -1539,6 +1596,8 @@ private:
   mutable std::unordered_map<std::string, uint64_t> m_epochs;
   mutable std::unordered_map<std::string, uint64_t> m_pins;
   mutable std::list<std::string> m_lru;
+  mutable std::set<std::string> m_rangeWarming;
+  mutable uint64_t m_rangeWarmingBytes = 0;
   mutable uint64_t m_usedBytes = 0;
   mutable RepoCacheStatus m_status;
 };
@@ -1638,6 +1697,14 @@ detail::readAuthoritativeRange(const RepoStoreBackend& store, const std::string&
   if (const auto tiered = dynamic_cast<const TieredRepoStore*>(&store))
     return tiered->readAuthoritativeRange(objectName, range);
   return store.getRange(objectName, range);
+}
+
+void
+detail::warmCommittedRangeCache(const RepoStoreBackend& store, const RepoObjectManifest& manifest,
+                                const std::function<void()>& requireCurrent) noexcept
+{
+  if (const auto tiered = dynamic_cast<const TieredRepoStore*>(&store))
+    tiered->warmRangeCache(manifest, requireCurrent);
 }
 
 std::vector<RepoObjectManifest>

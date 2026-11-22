@@ -28,6 +28,11 @@ std::vector<uint8_t>
 readAuthoritativeRange(const RepoStoreBackend& store, const std::string& objectName,
                        RepoByteRange range);
 
+/** Optionally admit a verified committed payload to the bounded range cache. */
+void
+warmCommittedRangeCache(const RepoStoreBackend& store, const RepoObjectManifest& manifest,
+                        const std::function<void()>& requireCurrent) noexcept;
+
 /** Pure metadata filter; no storage access or admission callback. */
 bool
 matchesPacketLookup(const RepoObjectManifest& manifest, const std::string& canonical,

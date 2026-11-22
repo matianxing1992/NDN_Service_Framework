@@ -361,6 +361,47 @@ BOOST_AUTO_TEST_CASE(RangePrefetchRespectsBudgetAndWholeObjectThreshold)
   }
 }
 
+BOOST_AUTO_TEST_CASE(CommittedRangeWarmupRejectsInvalidPayloadAndReleasesAdmission)
+{
+  Fixture fixture;
+  auto authority = std::make_shared<CountingStore>(fixture.store("range-warmup"));
+  auto tiered = makeTieredRepoStore(authority, 8192, "filesystem", 8192);
+  const std::vector<uint8_t> bytes(4096, 42);
+  RepoObjectManifest manifest;
+  manifest.objectName = "/producer/warm-packet-set";
+  manifest.sha256 = sha256Hex(bytes);
+  manifest.size = bytes.size();
+  authority->put(manifest, bytes);
+  const auto committed = authority->getManifest(manifest.objectName);
+
+  auto stale = committed;
+  ++stale.generation;
+  detail::warmCommittedRangeCache(*tiered, stale, [] {});
+  BOOST_CHECK_EQUAL(authority->rangeReads, 0U);
+
+  authority->afterRangeRead = [](auto& range) { range[0] ^= 1; };
+  detail::warmCommittedRangeCache(*tiered, committed, [] {});
+  BOOST_CHECK_EQUAL(tiered->cacheStatus().entryCount, 0U);
+
+  bool cancelled = false;
+  authority->afterRangeRead = [&](auto&) { cancelled = true; };
+  detail::warmCommittedRangeCache(*tiered, committed, [&] {
+    if (cancelled)
+      throw std::runtime_error("test warmup cancelled");
+  });
+  BOOST_CHECK_EQUAL(tiered->cacheStatus().entryCount, 0U);
+
+  authority->afterRangeRead = {};
+  detail::warmCommittedRangeCache(*tiered, committed, [] {});
+  const auto warmedReads = authority->rangeReads;
+  detail::warmCommittedRangeCache(*tiered, committed, [] {});
+  BOOST_CHECK_EQUAL(tiered->cacheStatus().entryCount, 1U);
+  BOOST_CHECK_EQUAL(warmedReads, 3U);
+  BOOST_CHECK(tiered->getRange(manifest.objectName, {125, 16}) ==
+              std::vector<uint8_t>(16, 42));
+  BOOST_CHECK_EQUAL(authority->rangeReads, warmedReads);
+}
+
 BOOST_AUTO_TEST_CASE(ManifestMetadataComparisonMatchesSerializedIdentity)
 {
   RepoObjectManifest baseline;

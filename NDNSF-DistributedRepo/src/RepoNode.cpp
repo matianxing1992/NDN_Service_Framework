@@ -1629,7 +1629,7 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
   const auto ownerClaimService = makeRepoServiceName(m_servicePrefix, "USER_STORAGE_LIST");
   ownerClaimRegistration->service = provider.addScopedService(
     ownerClaimService, ack,
-    [node = weak_from_this(), traceRequest, service = ownerClaimService.toUri()](
+    [node = weak_from_this(), &provider, traceRequest, service = ownerClaimService.toUri()](
       const ndn::Name& owner, const ndn::Name&, const ndn::Name&, const ndn::Name&,
       const ndn_service_framework::RequestMessage& request) {
       const auto self = node.lock();
@@ -1637,8 +1637,9 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
         return makeError("repo-user-storage-unavailable");
       traceRequest(service, owner);
       try {
-        return makeResponse(self->handleUserStorageList(
-          payloadOf(request), owner.toUri(ndn::name::UriFormat::ALTERNATE)));
+        return makeResponse(self->listUserStorage(
+          payloadOf(request), owner.toUri(ndn::name::UriFormat::ALTERNATE),
+          provider.getHandlerThreads() != 0));
       }
       catch (const std::exception& error) {
         return makeError(error.what());
@@ -3729,6 +3730,13 @@ std::vector<uint8_t>
 RepoNode::handleUserStorageList(const std::vector<uint8_t>& request,
                                 const std::string& authenticatedOwner) const
 {
+  return listUserStorage(request, authenticatedOwner, false);
+}
+
+std::vector<uint8_t>
+RepoNode::listUserStorage(const std::vector<uint8_t>& request,
+                          const std::string& authenticatedOwner, bool warmCache) const
+{
   if (!m_artifactMetadataStore) {
     throw std::runtime_error("repo-user-storage-unavailable");
   }
@@ -3764,6 +3772,14 @@ RepoNode::handleUserStorageList(const std::vector<uint8_t>& request,
       detail::traceManifestRoot(rootName, "repo-owner-index-start");
       m_core.validateReadPacketIndex(manifest);
       detail::traceManifestRoot(rootName, "repo-owner-index-finish");
+      if (warmCache) {
+        detail::traceManifestRoot(rootName, "repo-owner-cache-start");
+        m_core.warmCommittedPacketSet(manifest, [this] {
+          if (isStoppingOriginalPacketOperations())
+            throw std::runtime_error("repo-original-packet-read-stopped");
+        });
+        detail::traceManifestRoot(rootName, "repo-owner-cache-finish");
+      }
       manifest.packetNames.clear();
       manifest.packetOffsets.clear();
       responseText += '\n' + sha256Hex(toBytes(fullWire)) + '\n' + manifest.toJson();

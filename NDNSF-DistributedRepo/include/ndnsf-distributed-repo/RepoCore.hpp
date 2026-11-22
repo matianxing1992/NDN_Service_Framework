@@ -222,6 +222,8 @@ private:
   struct PacketIndexProof;
   RepoObjectManifest describeDataPacket(const std::string& name) const;
   void validateReadPacketIndex(const RepoObjectManifest& manifest) const;
+  void warmCommittedPacketSet(const RepoObjectManifest& manifest,
+                              const std::function<void()>& requireCurrent) const noexcept;
   std::shared_ptr<const PacketIndexProof> getPacketIndexProof(
     const RepoObjectManifest& manifest,
     const std::shared_ptr<const RepoObjectManifest>& owner = {}) const;
