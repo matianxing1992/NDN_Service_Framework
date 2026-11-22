@@ -3488,6 +3488,7 @@ BOOST_AUTO_TEST_CASE(SparsePacketSegmentsRetainExactWireAcrossRestart)
     .getDefaultKey().getDefaultCertificate();
   const auto prefix = ndn::Name("/provider/a/kv/sparse/version-1");
   const std::vector<uint8_t> wideZero{0, 0};
+  const std::vector<uint8_t> nonNumeric{0, 0, 0};
   const std::vector<ndn::Name> names = {
     ndn::Name(reference.objectName), ndn::Name(prefix).appendSegment(0),
     ndn::Name(prefix).appendSegment(7),
@@ -3495,7 +3496,9 @@ BOOST_AUTO_TEST_CASE(SparsePacketSegmentsRetainExactWireAcrossRestart)
     ndn::Name("/provider/a/kv/another/version-1").appendSegment(7),
     ndn::Name(prefix).append("unsegmented"),
     ndn::Name(prefix).append(ndn::name::Component(ndn::tlv::SegmentNameComponent,
-      ndn::span<const uint8_t>(wideZero)))};
+      ndn::span<const uint8_t>(wideZero))),
+    ndn::Name(prefix).append(ndn::name::Component(ndn::tlv::SegmentNameComponent,
+      ndn::span<const uint8_t>(nonNumeric)))};
   for (size_t i = 0; i < names.size(); ++i) {
     ndn::Data packet(names[i]);
     packet.setContent(toBytes("packet-" + std::to_string(i)));
@@ -3529,6 +3532,12 @@ BOOST_AUTO_TEST_CASE(SparsePacketSegmentsRetainExactWireAcrossRestart)
       const auto& wire = batch->at(i).wireEncode();
       BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) == fixture.packets[selected[i]]);
     }
+    interests.emplace_back(names[7]);
+    BOOST_CHECK(!fixture.node->core().tryGetDataPacketBatch(interests,
+      [](const RepoObjectManifest&) { return true; }, [] {}));
+    interests.back() = ndn::Interest(ndn::Name("/provider/a/other-batch").appendSegment(0));
+    BOOST_CHECK(!fixture.node->core().tryGetDataPacketBatch(interests,
+      [](const RepoObjectManifest&) { return true; }, [] {}));
     BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(names[3])) == fixture.packets[3]);
     for (size_t i = 0; i < names.size(); ++i) {
       BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(names[i])) == fixture.packets[i]);

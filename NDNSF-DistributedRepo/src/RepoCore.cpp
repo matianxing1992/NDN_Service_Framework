@@ -1320,6 +1320,7 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
   }
 
   std::shared_ptr<const RepoObjectManifest> manifest;
+  std::shared_ptr<const PacketIndexProof> packetProof;
   std::vector<std::size_t> indices;
   const auto requireSameManifest = [&] {
     requireActive();
@@ -1352,12 +1353,13 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
         return stored == *alternate;
       };
       std::optional<std::size_t> index;
-      const auto proof = getPacketIndexProof(*manifest, manifest);
-      if (proof && !name.empty() && name[-1].isSegment()) {
+      bool indexedSegment = false;
+      if (packetProof) {
         try {
           const auto segment = name[-1].toSegment();
-          const auto table = proof->segments.find(packetBaseName(canonical));
-          if (table != proof->segments.end() && !table->second.empty()) {
+          indexedSegment = true;
+          const auto table = packetProof->segments.find(packetBaseName(canonical));
+          if (table != packetProof->segments.end() && !table->second.empty()) {
             const auto& positions = table->second;
             const auto first = positions.front().segment;
             // Dense segments use one ordinal access; sparse or high values use
@@ -1383,7 +1385,9 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
           // Non-numeric segments fall back to the exact name comparison below.
         }
       }
-      if (!index) {
+      // A numeric name is fully covered by the proof. Only an absent proof or
+      // a non-numeric Segment component needs the linear exact-name fallback.
+      if (!index && !indexedSegment) {
         for (std::size_t candidate = 0; candidate < manifest->packetNames.size(); ++candidate) {
           if (matchesName(candidate)) {
             index = candidate;
@@ -1452,7 +1456,8 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
       if (manifest) (void)requireSameManifest();
       return std::nullopt;
     }
-    if (!manifest) manifest = record->first;
+    manifest = record->first;
+    packetProof = getPacketIndexProof(*manifest, manifest);
     indices.push_back(record->second);
   }
 
