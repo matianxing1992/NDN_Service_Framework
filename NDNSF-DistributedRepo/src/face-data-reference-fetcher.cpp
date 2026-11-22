@@ -1055,12 +1055,13 @@ FaceDataReferencePacketSpool::append(std::size_t packetIndex,
     throw std::runtime_error("repo-original-packet-spool-seek-failed");
   }
   m_nextReadOffset = -1;
-  const long offset = std::ftell(m_file.get());
-  if (offset < 0 || std::fwrite(wire.data(), 1, wire.size(), m_file.get()) != wire.size()) {
+  if (std::fwrite(wire.data(), 1, wire.size(), m_file.get()) != wire.size()) {
     throw std::runtime_error("repo-original-packet-spool-write-failed");
   }
   m_readSinceAppend = false;
-  m_packetOffsets[packetIndex] = offset;
+  // Appends are at EOF, and the spool budget fits in a long file offset.
+  static_assert(REPO_USER_STORAGE_OBJECT_MAX_BYTES <= std::numeric_limits<long>::max());
+  m_packetOffsets[packetIndex] = static_cast<long>(m_totalWireBytes);
   m_packetLengths[packetIndex] = static_cast<uint32_t>(wire.size());
   m_packetPresent[packetIndex] = true;
   m_totalWireBytes += wire.size();
