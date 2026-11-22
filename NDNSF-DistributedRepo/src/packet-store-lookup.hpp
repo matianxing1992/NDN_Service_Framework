@@ -3,7 +3,14 @@
 
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
+#include <functional>
+
 namespace ndnsf_distributed_repo::detail {
+
+/** Stage a complete checked source through the store's existing range authority. */
+void
+stageOriginalPacketSet(RepoStoreBackend& store, const RepoObjectManifest& manifest,
+  const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read);
 
 /** Pin current immutable metadata; generic backends retain their owned-value contract. */
 std::shared_ptr<const RepoObjectManifest>

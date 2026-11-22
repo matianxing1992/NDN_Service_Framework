@@ -2334,8 +2334,9 @@ RepoNode::insertWirePacketsImpl(
             storageBinding->ownerEpoch, nowMilliseconds());
         }
       };
-      auto storedManifest =
-        m_core.commitOriginalPacketReader(manifest, commitReadRange, requireCurrent);
+      auto storedManifest = storageBinding && sourceReadRange
+        ? m_core.commitOriginalPacketSpool(manifest, commitReadRange, requireCurrent)
+        : m_core.commitOriginalPacketReader(manifest, commitReadRange, requireCurrent);
 
       if (storageBinding) {
         requireCurrent();

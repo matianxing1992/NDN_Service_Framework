@@ -2784,6 +2784,41 @@ BOOST_AUTO_TEST_CASE(OriginalPacketReaderFailureAfterWindowRollsBackAndRestoresC
   BOOST_CHECK(core.getRange(source.manifest.objectName, {0, source.wire.size()}) == source.wire);
 }
 
+BOOST_AUTO_TEST_CASE(CompleteOriginalPacketStagingRollsBackAndSurvivesReopen)
+{
+  TempRoot temp;
+  OriginalPacketSource source(180);
+  const auto root = temp.path() / "objects";
+  {
+    FilesystemRepoStoreBackend backend(root.string());
+    std::size_t chunks = 0;
+    BOOST_CHECK_EXCEPTION(backend.stageOriginalPacketSet(source.manifest,
+      [&](uint64_t offset, std::size_t length) {
+        BOOST_CHECK_LE(length, 1U << 20);
+        if (++chunks == 2) {
+          throw std::runtime_error("fixture cancelled during staging");
+        }
+        return source.read(offset, length);
+      }), std::runtime_error, [](const auto& error) {
+        return std::string_view(error.what()) == "fixture cancelled during staging";
+      });
+    BOOST_REQUIRE_EQUAL(chunks, 2U);
+    BOOST_CHECK(!backend.has(source.manifest.objectName));
+    BOOST_CHECK(std::filesystem::is_empty(root / "staging"));
+    backend.stageOriginalPacketSet(source.manifest,
+      [&](uint64_t offset, std::size_t length) { return source.read(offset, length); });
+    BOOST_CHECK(!backend.has(source.manifest.objectName));
+    backend.commitRanges(source.manifest);
+  }
+  auto reopened = std::make_shared<FilesystemRepoStoreBackend>(root.string());
+  StorageCapability capability;
+  capability.repoNode = "/repo/a";
+  capability.freeBytes = 4U << 20;
+  RepoCore core(capability, reopened);
+  BOOST_CHECK(core.getManifest(source.manifest.objectName).hasSameMetadata(source.manifest));
+  BOOST_CHECK(core.getRange(source.manifest.objectName, {0, source.wire.size()}) == source.wire);
+}
+
 struct OwnedPacketFixture
 {
   TempRoot temp;

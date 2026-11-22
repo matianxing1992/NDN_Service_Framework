@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -60,6 +61,9 @@ public:
   void putRange(const RepoObjectManifest& manifest,
                 RepoByteRange range,
                 const std::vector<uint8_t>& bytes) override;
+  /** Stage all bytes from a checked original-packet source before publishing metadata. */
+  void stageOriginalPacketSet(const RepoObjectManifest& manifest,
+    const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read);
   void commitRanges(const RepoObjectManifest& manifest) override;
   std::vector<uint8_t> getRange(const std::string& objectName,
                                 RepoByteRange range) const override;
@@ -94,6 +98,8 @@ public:
   uint64_t vectorCompatibilityThreshold() const noexcept;
 
 private:
+  void stageRanges(const RepoObjectManifest& manifest,
+    const std::function<void(const ArtifactReference&, uint64_t, bool)>& write);
   RepoRangeReadFunction
   bindCurrentRangeReader(std::shared_ptr<const RepoObjectManifest> expected) const override;
 

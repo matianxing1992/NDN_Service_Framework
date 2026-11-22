@@ -766,6 +766,15 @@ FilesystemArtifactPayloadStore::markVerified(const ArtifactReference& artifact,
   atomicWrite(path, encodeRanges(merged));
 }
 
+void
+FilesystemArtifactPayloadStore::markComplete(const ArtifactReference& artifact, uint64_t generation)
+{
+  std::lock_guard<std::mutex> guard(m_mutex);
+  artifact.validate();
+  const auto path = rangePath(stagingPath(artifact, generation));
+  atomicWrite(path, encodeRanges({{0, artifact.sizeBytes}}));
+}
+
 std::vector<ArtifactByteRange>
 FilesystemArtifactPayloadStore::verifiedRanges(const ArtifactReference& artifact,
                                                uint64_t generation) const

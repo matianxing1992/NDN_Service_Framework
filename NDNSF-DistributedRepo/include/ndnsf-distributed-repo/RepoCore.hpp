@@ -222,9 +222,14 @@ private:
   std::shared_ptr<const PacketIndexProof> getPacketIndexProof(
     const RepoObjectManifest& manifest,
     const std::shared_ptr<const RepoObjectManifest>& owner = {}) const;
+  friend class RepoNode;
+  // The Repo-owned spool reader and its lifecycle checks do not re-enter the backend.
+  RepoObjectManifest commitOriginalPacketSpool(const RepoObjectManifest& manifest,
+    const OriginalPacketRangeReader& readRange, const std::function<void()>& requireActive);
   RepoObjectManifest commitOriginalPacketReaderImpl(
     const RepoObjectManifest& manifest, const OriginalPacketRangeReader& readRange,
-    const std::function<void()>& requireActive, const std::filesystem::path& sourceFile);
+    const std::function<void()>& requireActive, const std::filesystem::path& sourceFile,
+    bool stageTogether = false);
   std::optional<std::pair<RepoObjectManifest, size_t>> findPacketRecord(
     const ndn::Name& name,
     const std::function<bool(const RepoObjectManifest&)>& acceptObject = {}) const;
@@ -234,6 +239,8 @@ private:
   void putRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
   // Caller holds m_mutex and has checked immutable-packet admission.
   void putAdmittedRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
+  void writeAdmittedRangesLocked(const RepoObjectManifest&,
+    const std::function<void(const RepoObjectManifest&)>& write);
   RepoObjectManifest commitRangesLocked(const RepoObjectManifest&);
 
   void refreshCapabilityUsage();

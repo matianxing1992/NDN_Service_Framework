@@ -814,6 +814,60 @@ FilesystemRepoStoreBackend::putRange(const RepoObjectManifest& manifest,
   if (range.lengthBytes > m_maxRangeBytes) {
     throw std::invalid_argument("repo-file-range-too-large");
   }
+  stageRanges(manifest, [&](const auto& reference, auto generation, bool committed) {
+    const ArtifactByteRange part{range.offsetBytes, range.lengthBytes};
+    if (committed) {
+      if (m_payloadStore.readRange(reference, generation, part) != bytes) {
+        throw std::runtime_error("repo-file-immutable-digest-conflict");
+      }
+      return;
+    }
+    m_payloadStore.writeRange(reference, generation, part, bytes);
+    if (range.lengthBytes != 0) {
+      m_payloadStore.markVerified(reference, generation, part);
+    }
+  });
+}
+
+void
+FilesystemRepoStoreBackend::stageOriginalPacketSet(const RepoObjectManifest& manifest,
+  const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read)
+{
+  validateManifestForPayload(manifest);
+  if (manifest.objectType != "original-packet-set" || manifest.size == 0 || !read) {
+    throw std::invalid_argument("repo-file-original-packet-source-invalid");
+  }
+  stageRanges(manifest, [&](const auto& reference, auto generation, bool committed) {
+    constexpr uint64_t CHUNK_BYTES = 1U << 20;
+    const auto window = std::min(m_maxRangeBytes, CHUNK_BYTES);
+    for (uint64_t offset = 0; offset < manifest.size;) {
+      const auto length = static_cast<std::size_t>(std::min(window, manifest.size - offset));
+      const auto bytes = read(offset, length);
+      if (bytes.size() != length) {
+        throw std::runtime_error("repo-original-packet-input-truncated");
+      }
+      const ArtifactByteRange part{offset, length};
+      if (committed) {
+        if (m_payloadStore.readRange(reference, generation, part) != bytes) {
+          throw std::runtime_error("repo-file-immutable-digest-conflict");
+        }
+      }
+      else {
+        m_payloadStore.writeRange(reference, generation, part, bytes);
+      }
+      offset += length;
+    }
+    if (!committed) {
+      m_payloadStore.flush(reference, generation);
+      m_payloadStore.markComplete(reference, generation);
+    }
+  });
+}
+
+void
+FilesystemRepoStoreBackend::stageRanges(const RepoObjectManifest& manifest,
+  const std::function<void(const ArtifactReference&, uint64_t, bool)>& write)
+{
   std::lock_guard<std::mutex> lock(m_mutex);
   const auto reference = artifactReference(manifest);
   const auto generation = effectiveGeneration(manifest);
@@ -833,12 +887,7 @@ FilesystemRepoStoreBackend::putRange(const RepoObjectManifest& manifest,
     }
   }
   if (m_payloadStore.isCommitted(reference, generation)) {
-    const auto existing = m_payloadStore.readRange(
-      reference, generation,
-      ArtifactByteRange{range.offsetBytes, range.lengthBytes});
-    if (existing != bytes) {
-      throw std::runtime_error("repo-file-immutable-digest-conflict");
-    }
+    write(reference, generation, true);
     return;
   }
   const auto reservation = m_reservations.find(manifest.objectName);
@@ -855,14 +904,7 @@ FilesystemRepoStoreBackend::putRange(const RepoObjectManifest& manifest,
   reserveDiskUnlocked(canonicalManifest, canonicalIdentity);
   try {
     m_payloadStore.begin(reference, generation);
-    m_payloadStore.writeRange(
-      reference, generation,
-      ArtifactByteRange{range.offsetBytes, range.lengthBytes}, bytes);
-    if (range.lengthBytes != 0) {
-      m_payloadStore.markVerified(
-        reference, generation,
-        ArtifactByteRange{range.offsetBytes, range.lengthBytes});
-    }
+    write(reference, generation, false);
   }
   catch (...) {
     if (!canonicalManifest.operationId.empty()) {

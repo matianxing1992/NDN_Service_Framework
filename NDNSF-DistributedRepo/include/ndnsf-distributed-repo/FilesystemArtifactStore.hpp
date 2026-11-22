@@ -134,6 +134,11 @@ public:
                           uint64_t generation) const;
 
 private:
+  friend class FilesystemRepoStoreBackend;
+
+  // Called only after a complete object has been staged and flushed.
+  void markComplete(const ArtifactReference& artifact, uint64_t generation);
+
   std::vector<uint8_t> readRangeImpl(const ArtifactReference& artifact, uint64_t generation,
                                     ArtifactByteRange range, bool committedOnly) const;
   std::string m_rootPath;

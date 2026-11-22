@@ -524,12 +524,21 @@ void
 RepoCore::putAdmittedRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range,
                                 const std::vector<uint8_t>& bytes)
 {
-  rejectExternallySuppliedDataReceipt(manifest);
   if (range.lengthBytes != bytes.size() ||
       range.offsetBytes > manifest.size ||
       range.lengthBytes > manifest.size - range.offsetBytes) {
     throw std::out_of_range("repo-core-range-write-out-of-bounds");
   }
+  writeAdmittedRangesLocked(manifest, [&](const auto& normalized) {
+    m_store->putRange(normalized, range, bytes);
+  });
+}
+
+void
+RepoCore::writeAdmittedRangesLocked(const RepoObjectManifest& manifest,
+  const std::function<void(const RepoObjectManifest&)>& write)
+{
+  rejectExternallySuppliedDataReceipt(manifest);
   uint64_t generation = manifest.generation;
   uint64_t oldSize = 0;
   if (m_store->has(manifest.objectName)) {
@@ -577,7 +586,7 @@ RepoCore::putAdmittedRangeLocked(const RepoObjectManifest& manifest, RepoByteRan
     throw std::runtime_error("repo-generation-conflict: core range reservation identity mismatch");
   }
   try {
-    m_store->putRange(rangeManifest, range, bytes);
+    write(rangeManifest);
     found->second.lastActivity = std::chrono::steady_clock::now();
   }
   catch (...) {
@@ -1803,10 +1812,17 @@ RepoCore::commitOriginalPacketReader(const RepoObjectManifest& manifest,
 }
 
 RepoObjectManifest
+RepoCore::commitOriginalPacketSpool(const RepoObjectManifest& manifest,
+  const OriginalPacketRangeReader& readRange, const std::function<void()>& requireActive)
+{
+  return commitOriginalPacketReaderImpl(manifest, readRange, requireActive, {}, true);
+}
+
+RepoObjectManifest
 RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
                                          const OriginalPacketRangeReader& readRange,
                                          const std::function<void()>& requireActive,
-                                         const std::filesystem::path& sourceFile)
+                                         const std::filesystem::path& sourceFile, bool stageTogether)
 {
   auto stageStarted = std::chrono::steady_clock::now();
   const auto finishStage = [&](const char* stage) noexcept {
@@ -1983,16 +1999,26 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   if (indexedPacketNames.count(manifest.objectName))
     throw std::runtime_error("repo-original-packet-is-immutable");
   try {
-    constexpr uint64_t window = 1U << 20;
-    for (uint64_t offset = 0; offset < manifest.size;) {
-      if (requireActive) requireActive();
-      const auto length = static_cast<std::size_t>(std::min(window, manifest.size - offset));
-      const auto bytes = readRange(offset, length);
-      if (bytes.size() != length) {
-        throw std::runtime_error("repo-original-packet-input-truncated");
+    if (stageTogether) {
+      writeAdmittedRangesLocked(manifest, [&](const auto& normalized) {
+        detail::stageOriginalPacketSet(*m_store, normalized, [&](auto offset, auto length) {
+          if (requireActive) requireActive();
+          return readRange(offset, length);
+        });
+      });
+    }
+    else {
+      constexpr uint64_t window = 1U << 20;
+      for (uint64_t offset = 0; offset < manifest.size;) {
+        if (requireActive) requireActive();
+        const auto length = static_cast<std::size_t>(std::min(window, manifest.size - offset));
+        const auto bytes = readRange(offset, length);
+        if (bytes.size() != length) {
+          throw std::runtime_error("repo-original-packet-input-truncated");
+        }
+        putAdmittedRangeLocked(manifest, {offset, bytes.size()}, bytes);
+        offset += bytes.size();
       }
-      putAdmittedRangeLocked(manifest, {offset, bytes.size()}, bytes);
-      offset += bytes.size();
     }
     finishStage("range-write");
     requireCurrentCatalog();

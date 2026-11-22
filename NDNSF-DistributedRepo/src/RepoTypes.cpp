@@ -966,10 +966,23 @@ public:
   {
     std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
     m_authoritativeStore->putRange(manifest, range, bytes);
+    noteRangeWrite(manifest.objectName);
+  }
+
+  void stageOriginalPacketSet(const RepoObjectManifest& manifest,
+    const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read)
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    detail::stageOriginalPacketSet(*m_authoritativeStore, manifest, read);
+    noteRangeWrite(manifest.objectName);
+  }
+
+  void noteRangeWrite(const std::string& objectName)
+  {
     std::lock_guard<std::mutex> lock(m_mutex);
-    invalidate(manifest.objectName);
+    invalidate(objectName);
     try {
-      ++m_epochs[manifest.objectName];
+      ++m_epochs[objectName];
     }
     catch (...) {
       m_status.reconciliationRequired = true;
@@ -1531,6 +1544,30 @@ detail::matchesPacketLookup(const RepoObjectManifest& manifest, const std::strin
         (name.compare(0, canonical.size(), canonical) == 0 &&
          (name.size() == canonical.size() || name[canonical.size()] == '/'));
     });
+}
+
+void
+detail::stageOriginalPacketSet(RepoStoreBackend& store, const RepoObjectManifest& manifest,
+  const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read)
+{
+  if (auto* tiered = dynamic_cast<TieredRepoStore*>(&store)) {
+    tiered->stageOriginalPacketSet(manifest, read);
+    return;
+  }
+  if (auto* filesystem = dynamic_cast<FilesystemRepoStoreBackend*>(&store)) {
+    filesystem->stageOriginalPacketSet(manifest, read);
+    return;
+  }
+  constexpr uint64_t CHUNK_BYTES = 1U << 20;
+  for (uint64_t offset = 0; offset < manifest.size;) {
+    const auto length = static_cast<std::size_t>(std::min(CHUNK_BYTES, manifest.size - offset));
+    const auto bytes = read(offset, length);
+    if (bytes.size() != length) {
+      throw std::runtime_error("repo-original-packet-input-truncated");
+    }
+    store.putRange(manifest, {offset, length}, bytes);
+    offset += length;
+  }
 }
 
 std::shared_ptr<const RepoObjectManifest>
