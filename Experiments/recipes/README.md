@@ -79,6 +79,7 @@ PY
 
 Generate two configs with `ops.deployment_config.preparation_deployment`. Give them distinct
 `deployment_id` values and keep the same `storage.repo_root`, topology and credentials.
+Place the Repo on `provider1` so that its traffic to and from the Requester crosses the router.
 Use the same `--authentication` and, when choosing an explicit Producer certificate, the same
 `--signing-certificate` in both phases. Put the reference in the private work root.
 
@@ -96,6 +97,7 @@ source = Path(sys.argv[1]).resolve(strict=True)
 for phase in ("write", "read"):
     config = preparation_deployment(json.loads(source.read_bytes()))
     config["deployment_id"] += "-" + phase
+    next(actor for actor in config["actors"] if actor["kind"] == "repo")["node"] = "provider1"
     with source.with_name("repo-" + phase + ".json").open("x") as output:
         json.dump(config, output, sort_keys=True)
 PY
@@ -118,6 +120,25 @@ wire digest and the reconstructed file SHA-256. Record the installed binary and 
 topology and config digests, both Repo PIDs, complete native records, and nonforced cleanup.
 Use one write and read as a restart check. A throughput comparison additionally needs repeated
 matched trials and bare NFD replay of the same original wire in each applicable direction.
+
+Build and install the Waf target `ndnsf-nfd-wire-benchmark` from the same candidate. After
+stopping the Repo, replay a complete group from its filesystem store through the same topology.
+Run once per direction with the same CPU placement as the Repo samples. The default uses the host's
+unrestricted CPU placement, three 10 s steady samples and windows 16 and 32.
+
+```sh
+sudo -n /usr/bin/python3 -I Experiments/run-nfd-wire-benchmark.py \
+  --config "$write_config" --reference "$work_root/reference.json" \
+  --store "$repo_root/repo.sqlite.store" --direction write --output "$work_root/nfd-write"
+sudo -n /usr/bin/python3 -I Experiments/run-nfd-wire-benchmark.py \
+  --config "$read_config" --reference "$work_root/reference.json" \
+  --store "$repo_root/repo.sqlite.store" --direction read --output "$work_root/nfd-read"
+```
+
+The digest and size in the write reference identify the original-wire file. Replay checks each
+returned packet byte for byte with NFD caching disabled. The result includes all attempts and
+only reports a sustained median for windows whose entire sample set completed without errors.
+Use `--samples 1 --seconds 1 --windows 16` for a connectivity check.
 
 ## UAV multi-camera tracking assets
 

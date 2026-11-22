@@ -402,6 +402,13 @@ def build(bld):
                     use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
                     install_path='${BINDIR}')
 
+        bld.program(name='ndnsf-nfd-wire-benchmark',
+                    target='ndnsf-nfd-wire-benchmark',
+                    source=['nfd-wire-benchmark.cpp'],
+                    rpath=[runtime_libdir],
+                    use='NDN_CXX BOOST OPENSSL DL',
+                    install_path='${BINDIR}')
+
         bld.program(name='DI_NativeArtifactAuthority',
                     target='DI_NativeArtifactAuthority',
                     source=['DI_NativeArtifactAuthority.cpp'],
