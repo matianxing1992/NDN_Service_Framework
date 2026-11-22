@@ -272,3 +272,48 @@ Use the installed `ndnsf-di cluster check/up/status/down` entry points and retai
 the actual configuration, artifact ledger, outcomes and cleanup receipts.
 Prepare and run the private work root as the same user; MiniNDN requires root
 for network namespaces, and the launcher checks ownership of its operation files.
+
+For the final CPU workload, explicitly set the generated deployment's
+`requester.wan_generation.timeout_ms` to `259200000` before freezing its identity,
+and pass `--timeout 259200` to `cluster up`. The launcher retains its shorter
+default. This finite 72-hour total budget applies to MiniNDN inference runs;
+individual requests, grants and assembly keep their independent limits. The
+budget is not an estimate of qualified end-to-end performance.
+
+After the installed C++ oracle verifies the completed clip, a host FFmpeg can
+package its RGB24 frames as a playable MP4. Keep the raw frames and manifest as
+the numerical authority: H.264 with YUV420 conversion is a presentation copy.
+Set `wan_width`, `wan_height` and `wan_frames` from the manifest's `width`,
+`height` and `frames` fields. Calculate the shell variable
+`wan_fps = time_base[1] / (time_base[0] * ticks_per_frame)`. Do not infer them
+from the filename. The final workload requires 320×320, 361 frames and 24 fps;
+the tiny regression has its own geometry and rate.
+
+```sh
+"$wan_ffmpeg" -nostdin -hide_banner -n -f rawvideo -pixel_format rgb24 \
+  -video_size "${wan_width}x${wan_height}" -framerate "$wan_fps" \
+  -i "$wan_clip/frames.rgb24" -frames:v "$wan_frames" -an \
+  -c:v libx264 -threads 2 -preset fast -crf 18 -pix_fmt yuv420p \
+  -movflags +faststart "$wan_output.partial.mp4"
+"$wan_ffprobe" -v error -count_frames -show_streams -show_frames \
+  -select_streams v:0 -of json "$wan_output.partial.mp4"
+```
+
+Check the source length and SHA against the manifest before encoding. Require
+H.264/YUV420, the declared dimensions, exactly `wan_frames` decoded frames,
+`avg_frame_rate == wan_fps`, and
+`stream.duration_ts * stream.time_base == wan_frames / wan_fps`. Use rational
+arithmetic rather than the rounded decimal `duration` string. For every
+display frame `i`, require `best_effort_timestamp * stream.time_base == i / wan_fps`
+using rational arithmetic. Publish the final filename without replacing an
+existing file only after these checks. Preserve the command, tool identity,
+source/output hashes and probe result with the existing experiment receipt.
+
+The presentation path was checked with Ubuntu `ffmpeg`, `libavdevice58` and
+`libavresample4` version `7:4.2.7-0ubuntu0.1`, downloaded with `apt-get download`,
+verified against the package index SHA-256 and extracted with `dpkg-deb -x` to an
+isolated host tool directory. The other matching FFmpeg libraries were already
+installed. No system libraries or inference dependencies were changed. If using
+this isolated layout, set `LD_LIBRARY_PATH` to its `usr/lib/x86_64-linux-gnu` only
+for the FFmpeg/ffprobe children. A successful tiny packaging check does not
+qualify a real checkpoint run or a 15-second video.
