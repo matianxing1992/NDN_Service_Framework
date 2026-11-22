@@ -2821,6 +2821,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   capability.repoMode = "persistent";
   capability.freeBytes = 4 * 1024 * 1024;
   const auto originalInsertFetches = std::make_shared<std::atomic<unsigned>>(0);
+  const auto sourceWindow = std::make_shared<repo::detail::ManifestSourceWindow>(16);
   std::function<void(std::chrono::steady_clock::time_point)> afterManifestFetch;
   const auto openRepo = [&] {
     auto node = std::make_shared<repo::RepoNode>(servicePrefix, capability,
@@ -2837,7 +2838,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
         return fetch(value);
       });
     node->setManifestPacketFetcher(
-      [&environment, &afterManifestFetch](const repo::RepoDataReference& reference,
+      [&environment, &afterManifestFetch, sourceWindow](const repo::RepoDataReference& reference,
         const ndn_service_framework::SegmentManifestScope& scope,
         std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
         auto& actor = environment.provider(1);
@@ -2846,7 +2847,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
         auto admitted = fetch.fetchManifest(reference, scope, deadline,
           [&actor](const auto& wire, const auto& expected, auto expires) {
             return actor.validateManifestRootUntil(wire, expected, expires);
-          }, std::move(requireCurrent));
+          }, std::move(requireCurrent), repo::detail::MAX_NAMED_PACKET_COUNT, sourceWindow);
         if (afterManifestFetch) {
           afterManifestFetch(deadline);
         }
@@ -3357,6 +3358,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   }
   BOOST_CHECK(node->core().list().empty());
   const auto admittedManifest = commitManifest(manifestInsert);
+  BOOST_CHECK_EQUAL(sourceWindow->peak(), 16U);
   BOOST_REQUIRE(admittedManifest.packetSet);
   BOOST_REQUIRE_EQUAL(admittedManifest.packetSet->lifecycleState, "COMMITTED");
   BOOST_CHECK_EQUAL(admittedManifest.packetSet->packetNames.size(), manifestWires.size());

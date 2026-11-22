@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -28,6 +29,35 @@ void traceManifestRoot(const ndn::Name& name, const char* stage) noexcept;
 
 /** Sample manifest DATA across the Producer and fetching Face callbacks. */
 void traceManifestSource(const ndn::Name& name, const char* stage) noexcept;
+
+/** Shared admission for authenticated source Interests on one Repo Face. */
+class ManifestSourceWindow
+{
+public:
+  explicit ManifestSourceWindow(std::size_t capacity);
+
+  // A wake callback posts work to the waiting fetch's strand.
+  bool tryAcquire(const void* owner, const std::function<void()>& wake);
+  void release(std::size_t count, const void* cancelledOwner = nullptr);
+  std::size_t peak() const;
+  std::size_t capacity() const { return m_capacity; }
+
+private:
+  void wakeNext() noexcept;
+
+  struct Waiter
+  {
+    const void* owner;
+    std::function<void()> wake;
+    bool notified = false;
+  };
+
+  const std::size_t m_capacity;
+  mutable std::mutex m_mutex;
+  std::size_t m_pending = 0;
+  std::size_t m_peak = 0;
+  std::deque<Waiter> m_waiters;
+};
 
 /** Private, unlinked disk spool for an exact ordered set of original Data wires.
  *
@@ -136,7 +166,8 @@ public:
                 std::chrono::steady_clock::time_point deadline,
                 const ManifestRootValidator& validateRoot,
                 std::function<void()> requireCurrent = {},
-                std::size_t maxPacketCount = MAX_NAMED_PACKET_COUNT) const;
+                std::size_t maxPacketCount = MAX_NAMED_PACKET_COUNT,
+                std::shared_ptr<ManifestSourceWindow> sourceWindow = {}) const;
 
   using PacketAdmission = std::function<void(std::size_t, const ndn::Data&)>;
 
@@ -155,7 +186,7 @@ private:
         PacketName nameAt, bool exactSize, std::function<void()> requireCurrent,
         std::chrono::steady_clock::time_point deadline =
           std::chrono::steady_clock::time_point::max(),
-        PacketAdmission admit = {}) const;
+        PacketAdmission admit = {}, std::shared_ptr<ManifestSourceWindow> sourceWindow = {}) const;
 
   ndn::Face& m_face;
   std::chrono::milliseconds m_interestLifetime;

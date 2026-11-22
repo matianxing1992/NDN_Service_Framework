@@ -27,6 +27,11 @@ and digest fields. Repo derives names from the bounded count and object prefix, 
 the signed root and authenticated packets, and derives offsets from the original wires before storage.
 The native `DistributedRepoServer --manifest-fetch-window N` option caps outstanding Interests
 per active manifest fetch. Zero keeps the adaptive window uncapped by this option.
+The optional `--manifest-source-window N` caps outstanding source Interests across
+authenticated manifest INSERTs on the same Repo Face. Each fetch still applies its own
+window and retries. The aggregate cap covers source Interests, including retries, and
+leaves the root and index page fetches on their existing path. The default, zero, disables
+the aggregate cap.
 The native persistent Repo server uses the Provider's default two bounded handler
 threads; `NDNSF_HANDLER_THREADS` remains authoritative. Shutdown drains the same
 owned Provider pool.

@@ -105,6 +105,33 @@ makeSegmentedReference(const ndn::Name& prefix, unsigned count,
 
 BOOST_AUTO_TEST_SUITE(FaceDataReferenceFetcher)
 
+BOOST_AUTO_TEST_CASE(ManifestSourceWindowWakesInOrderAndReleasesCancelledSlots)
+{
+  detail::ManifestSourceWindow window(2);
+  const int a = 0, b = 1, c = 2;
+  int bWakes = 0, cWakes = 0;
+  const auto noWake = [] {};
+  const auto wakeB = [&] { ++bWakes; };
+  const auto wakeC = [&] { ++cWakes; };
+  BOOST_REQUIRE(window.tryAcquire(&a, noWake));
+  BOOST_REQUIRE(window.tryAcquire(&a, noWake));
+  BOOST_CHECK(!window.tryAcquire(&b, wakeB));
+  BOOST_CHECK(!window.tryAcquire(&b, wakeB));
+  BOOST_CHECK(!window.tryAcquire(&c, wakeC));
+  window.release(1);
+  BOOST_CHECK_EQUAL(bWakes, 1);
+  BOOST_CHECK(!window.tryAcquire(&a, noWake));
+  window.release(0, &b);
+  BOOST_CHECK_EQUAL(cWakes, 1);
+  BOOST_REQUIRE(window.tryAcquire(&c, wakeC));
+  BOOST_CHECK_EQUAL(window.peak(), 2U);
+  window.release(1, &a);
+  BOOST_REQUIRE(window.tryAcquire(&c, wakeC));
+  window.release(2, &c);
+  BOOST_CHECK(window.tryAcquire(&b, wakeB));
+  window.release(1, &b);
+}
+
 BOOST_AUTO_TEST_CASE(CompleteSegmentedObjectUsesStandardFetcherAndKeepsOriginalWire)
 {
   FacePump pump;

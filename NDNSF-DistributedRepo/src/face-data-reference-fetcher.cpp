@@ -30,6 +30,63 @@
 
 namespace ndnsf_distributed_repo::detail {
 
+ManifestSourceWindow::ManifestSourceWindow(std::size_t capacity)
+  : m_capacity(capacity)
+{
+  if (capacity == 0 || capacity > MAX_NAMED_PACKET_COUNT)
+    throw std::invalid_argument("repo-manifest-source-window-invalid");
+}
+
+bool
+ManifestSourceWindow::tryAcquire(const void* owner, const std::function<void()>& wake)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_pending == m_capacity || (!m_waiters.empty() && m_waiters.front().owner != owner)) {
+    if (std::none_of(m_waiters.begin(), m_waiters.end(),
+                     [&](const auto& waiter) { return waiter.owner == owner; })) {
+      m_waiters.push_back({owner, wake});
+    }
+    return false;
+  }
+  if (!m_waiters.empty()) m_waiters.pop_front();
+  m_peak = std::max(m_peak, ++m_pending);
+  wakeNext();
+  return true;
+}
+
+void
+ManifestSourceWindow::release(std::size_t count, const void* cancelledOwner)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  m_pending -= count;
+  if (cancelledOwner) {
+    m_waiters.erase(std::remove_if(m_waiters.begin(), m_waiters.end(),
+      [&](const auto& waiter) { return waiter.owner == cancelledOwner; }), m_waiters.end());
+  }
+  wakeNext();
+}
+
+std::size_t
+ManifestSourceWindow::peak() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_peak;
+}
+
+void
+ManifestSourceWindow::wakeNext() noexcept
+{
+  if (m_pending < m_capacity && !m_waiters.empty() && !m_waiters.front().notified) {
+    try {
+      m_waiters.front().wake();
+      m_waiters.front().notified = true;
+    }
+    catch (...) {
+      // A failed post leaves the waiter eligible for another wake or deadline cancellation.
+    }
+  }
+}
+
 void
 traceManifestRoot(const ndn::Name& name, const char* stage) noexcept
 {
@@ -354,6 +411,8 @@ struct FetchState : std::enable_shared_from_this<FetchState>
             ndn_service_framework::detail::ExactDataCongestionWindow::INITIAL_WINDOW,
             windowCapacity))},
           {"capacity", std::to_string(windowCapacity)},
+          {"shared_capacity", std::to_string(sourceWindow ? sourceWindow->capacity() : 0)},
+          {"shared_peak", std::to_string(sourceWindow ? sourceWindow->peak() : 0)},
           {"peak_cwnd", std::to_string(congestion.peakWindow())},
           {"final_cwnd", std::to_string(congestion.size())},
           {"peak_inflight", std::to_string(peakInFlight)},
@@ -533,11 +592,17 @@ struct FetchState : std::enable_shared_from_this<FetchState>
           return;
         }
         if (inFlight >= congestion.size()) {
+          if (waitingForCredit) sourceWindow->release(0, this);
+          waitingForCredit = false;
           return;
         }
         if (bootstrapPending && retryQueue.empty() && nextPacket >= std::min(
               windowCapacity, ndn_service_framework::detail::ExactDataCongestionWindow::INITIAL_WINDOW))
           return;
+        if (sourceWindow) {
+          waitingForCredit = !sourceWindow->tryAcquire(this, wakeForCredit);
+          if (waitingForCredit) return;
+        }
         if (!retryQueue.empty()) {
           index = retryQueue.front().index;
           attempt = retryQueue.front().attempt;
@@ -726,6 +791,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         if (inFlight > 0) {
           --inFlight;
         }
+        if (sourceWindow) sourceWindow->release(1);
         observeWindow();
         if (wire.size() > reference.expectedSize - receivedWireBytes) {
           failLocked("repo-original-packet-size-exceeds-reference");
@@ -782,6 +848,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       pendingInterests.erase(pending);
       if (inFlight > 0)
         --inFlight;
+      if (sourceWindow) sourceWindow->release(1);
       retryQueue.push_back({index, attempt + 1, minimumRto});
       observeWindow();
     }
@@ -820,6 +887,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       pending.handle.cancel();
     }
     pendingInterests.clear();
+    if (sourceWindow) sourceWindow->release(std::exchange(inFlight, 0), this);
     retryQueue.clear();
     spool.reset();
     condition.notify_all();
@@ -852,6 +920,9 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   std::function<ndn::Name(std::size_t)> nameAt;
   std::function<void()> requireCurrent;
   FaceDataReferenceFetcher::PacketAdmission admit;
+  std::shared_ptr<ManifestSourceWindow> sourceWindow;
+  std::function<void()> wakeForCredit;
+  bool waitingForCredit = false;
   ndn::Face& face;
   boost::asio::strand<boost::asio::io_context::executor_type> strand;
   const RepoDataReference reference;
@@ -1197,7 +1268,7 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   const ndn_service_framework::SegmentManifestScope& scope,
   std::chrono::steady_clock::time_point deadline,
   const ManifestRootValidator& validateRoot, std::function<void()> requireCurrent,
-  std::size_t maxPacketCount) const
+  std::size_t maxPacketCount, std::shared_ptr<ManifestSourceWindow> sourceWindow) const
 {
   using ndn_service_framework::SegmentManifestLimits;
   using ndn_service_framework::SegmentManifestVerifier;
@@ -1278,7 +1349,7 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
       if (!proof->matchesSource(static_cast<uint32_t>(i), data)) {
         throw std::runtime_error("repo-manifest-source-proof-rejected");
       }
-    }));
+    }, std::move(sourceWindow)));
   current();
   if (spools->totalWireBytes() != reference.expectedSize) {
     throw std::runtime_error("repo-manifest-wire-size-mismatch");
@@ -1317,7 +1388,8 @@ FaceDataReferenceFetcher::fetchNamed(const std::vector<ndn::Name>& names,
 std::shared_ptr<FaceDataReferencePacketSpool>
 FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t packetCount,
   PacketName nameAt, bool exactSize, std::function<void()> requireCurrent,
-  std::chrono::steady_clock::time_point deadline, PacketAdmission admit) const
+  std::chrono::steady_clock::time_point deadline, PacketAdmission admit,
+  std::shared_ptr<ManifestSourceWindow> sourceWindow) const
 {
   if (m_face.getIoContext().get_executor().running_in_this_thread())
     throw std::logic_error("repo-original-packet-fetch-on-face-thread");
@@ -1336,6 +1408,14 @@ FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t 
   state->nameAt = std::move(nameAt);
   state->requireCurrent = std::move(requireCurrent);
   state->admit = std::move(admit);
+  state->sourceWindow = std::move(sourceWindow);
+  if (state->sourceWindow) {
+    state->wakeForCredit = [weak = std::weak_ptr<FetchState>(state), executor = state->strand] {
+      boost::asio::post(executor, [weak] {
+        if (auto waiting = weak.lock()) waiting->launchWindow();
+      });
+    };
+  }
   if (!state->admit) {
     state->prepareSegmentedCandidate();
   }

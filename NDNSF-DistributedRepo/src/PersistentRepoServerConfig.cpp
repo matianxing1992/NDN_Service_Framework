@@ -126,6 +126,14 @@ PersistentRepoServerConfig::fromArguments(int argc, char* argv[])
     config.manifestFetchWindow = static_cast<uint32_t>(window);
     options.erase(it);
   }
+  if (const auto it = options.find("--manifest-source-window"); it != options.end()) {
+    const auto window = parseUnsigned(it->second, it->first);
+    if (window > detail::MAX_NAMED_PACKET_COUNT) {
+      throw std::invalid_argument("manifest-source-window exceeds the packet-set limit");
+    }
+    config.manifestSourceWindow = static_cast<uint32_t>(window);
+    options.erase(it);
+  }
   if (const auto it = options.find("--manifest-handler"); it != options.end()) {
     if (it->second != "shared" && it->second != "reserved") {
       throw std::invalid_argument("manifest-handler must be shared or reserved");
@@ -196,6 +204,9 @@ PersistentRepoServerConfig::validate() const
   }
   if (manifestFetchWindow > detail::MAX_NAMED_PACKET_COUNT) {
     throw std::invalid_argument("manifest-fetch-window exceeds the packet-set limit");
+  }
+  if (manifestSourceWindow > detail::MAX_NAMED_PACKET_COUNT) {
+    throw std::invalid_argument("manifest-source-window exceeds the packet-set limit");
   }
 }
 

@@ -38,7 +38,8 @@ printUsage(std::ostream& output)
             "[--cache-bytes N] [--large-object-threshold-bytes N] "
             "[--failure-domain NAME] [--ack-collection-ms N] "
             "[--request-timeout-ms N] [--availability-freshness-ms N] "
-            "[--manifest-fetch-window N] [--manifest-handler shared|reserved]\n";
+            "[--manifest-fetch-window N] [--manifest-source-window N] "
+            "[--manifest-handler shared|reserved]\n";
 }
 
 ndn::security::Certificate
@@ -133,9 +134,14 @@ main(int argc, char* argv[])
       authorityCert,
       config.trustSchemaPath.string());
 
+    using ndnsf_distributed_repo::detail::ManifestSourceWindow;
+    std::shared_ptr<ManifestSourceWindow> sourceWindow;
+    if (config.manifestSourceWindow != 0) {
+      sourceWindow = std::make_shared<ManifestSourceWindow>(config.manifestSourceWindow);
+    }
     repo->setManifestPacketFetcher(
       [&face, &provider, timeout = std::chrono::milliseconds(config.requestTimeoutMs),
-       window = config.manifestFetchWindow](
+       window = config.manifestFetchWindow, sourceWindow = std::move(sourceWindow)](
         const ndnsf_distributed_repo::RepoDataReference& reference,
         const ndn_service_framework::SegmentManifestScope& scope,
         std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
@@ -144,7 +150,8 @@ main(int argc, char* argv[])
         return fetcher.fetchManifest(reference, scope, deadline,
           [&provider](const auto& wire, const auto& expected, auto expires) {
             return provider.validateManifestRootUntil(wire, expected, expires);
-          }, std::move(requireCurrent));
+          }, std::move(requireCurrent),
+          ndnsf_distributed_repo::detail::MAX_NAMED_PACKET_COUNT, sourceWindow);
       });
 
     // Fence owned INSERT and validation before Provider teardown on every exit path.

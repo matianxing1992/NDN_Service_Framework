@@ -33,6 +33,7 @@ struct PersistentRepoServerConfig
   int ackCollectionTimeMs = 250;
   int requestTimeoutMs = 5000;
   uint32_t manifestFetchWindow = 0;
+  uint32_t manifestSourceWindow = 0;
   bool reserveManifestHandler = false;
   uint64_t availabilityFreshnessMs = 5000;
   std::string failureDomain;
