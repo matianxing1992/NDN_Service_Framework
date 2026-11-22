@@ -2253,17 +2253,22 @@ RepoNode::insertWirePacketsImpl(
     for (size_t i = 0; i < packetCount; ++i) {
       if (requireActive)
         requireActive();
-      const auto packetWire = readPacket(i);
-      if (packetWire.empty() || packetWire.size() > ndn::MAX_NDN_PACKET_SIZE ||
-          totalSize > std::numeric_limits<uint64_t>::max() - packetWire.size()) {
+      auto packetWire = readPacket(i);
+      const auto packetSize = packetWire.size();
+      if (packetSize == 0 || packetSize > ndn::MAX_NDN_PACKET_SIZE ||
+          totalSize > std::numeric_limits<uint64_t>::max() - packetSize) {
         throw std::invalid_argument("repo-packet-set-invalid: packet size");
       }
-      totalSize += packetWire.size();
-      ndn::Block block(ndn::span<const uint8_t>(packetWire.data(),
-                                                packetWire.size()));
+      totalSize += packetSize;
+      auto buffer = std::make_shared<ndn::Buffer>();
+      buffer->swap(packetWire);
+      auto [parsed, block] = ndn::Block::fromBuffer(std::move(buffer));
+      if (!parsed) {
+        throw ndn::tlv::Error("repo-packet-set-invalid: malformed packet");
+      }
       block.parse();
       const ndn::Data data(block);
-      if (data.wireEncode().size() != packetWire.size()) {
+      if (data.wireEncode().size() != packetSize) {
         throw std::invalid_argument("repo-packet-set-invalid: trailing bytes");
       }
       contentBytes += data.getContent().value_size();
@@ -2318,7 +2323,7 @@ RepoNode::insertWirePacketsImpl(
       }
       packetNames.push_back(std::move(dataName));
       packetOffsets.push_back(totalSize);
-      if (EVP_DigestUpdate(digest.get(), packetWire.data(), packetWire.size()) != 1) {
+      if (EVP_DigestUpdate(digest.get(), block.data(), packetSize) != 1) {
         throw std::runtime_error("repo-packet-digest-update-failed");
       }
     }
