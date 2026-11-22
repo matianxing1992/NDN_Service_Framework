@@ -1331,9 +1331,16 @@ RepoClientCompat::commitUserStorageOriginalPackets(
               buffer->swap(wire);
               const ndn::Data data{ndn::Block(buffer)};
               if (interest.matchesData(data)) {
-                if (state->proof)
-                  detail::traceManifestSource(interest.getName(), "producer-submit-data");
+                const bool sampled = state->proof &&
+                  detail::traceManifestSource(name, "producer-submit-data");
                 face.put(data);
+                if (sampled) {
+                  // This callback follows the queued put on the same I/O context.
+                  boost::asio::post(face.getIoContext(), [reply, name = std::move(name)] {
+                    detail::traceManifestSource(name, "producer-put-queue-marker");
+                  });
+                  return;
+                }
               }
               // Retain the admission/spool through the queued put callback.
               boost::asio::post(face.getIoContext(), [reply] {});

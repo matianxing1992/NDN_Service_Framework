@@ -102,7 +102,7 @@ traceManifestRoot(const ndn::Name& name, const char* stage) noexcept
   }
 }
 
-void
+bool
 traceManifestSource(const ndn::Name& name, const char* stage) noexcept
 {
   try {
@@ -110,19 +110,21 @@ traceManifestSource(const ndn::Name& name, const char* stage) noexcept
       const auto* value = std::getenv("NDNSF_REPO_SOURCE_TIMING");
       return value != nullptr && std::string_view(value) == "1";
     }();
-    if (!enabled || name.size() < 2) return;
+    if (!enabled || name.size() < 2) return false;
     static const ndn::name::Component sourceComponent("DATA");
     const bool full = name[-1].isImplicitSha256Digest();
     const size_t components = name.size() - full;
     constexpr size_t SAMPLE_EVERY = 128;
     if (components < 2 || name[components - 2] != sourceComponent ||
         !name[components - 1].isSegment() || name[components - 1].toSegment() % SAMPLE_EVERY != 0)
-      return;
+      return false;
     ndn_service_framework::logControlTiming("repo-manifest-source", stage,
       full ? name.getPrefix(-1) : name);
+    return true;
   }
   catch (...) {
     // Sample failures must not change the original Interest or Data path.
+    return false;
   }
 }
 
