@@ -5,6 +5,7 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 
 #include <ndn-cxx/face.hpp>
+#include <ndn-cxx/util/span.hpp>
 
 #include <array>
 #include <atomic>
@@ -86,7 +87,7 @@ public:
   finalize();
 
   void
-  append(std::size_t packetIndex, const std::vector<uint8_t>& wire);
+  append(std::size_t packetIndex, ndn::span<const uint8_t> wire);
 
   std::vector<uint8_t>
   readPacket(std::size_t packetIndex) const override;

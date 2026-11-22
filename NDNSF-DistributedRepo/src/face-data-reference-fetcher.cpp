@@ -249,8 +249,8 @@ struct SegmentedTransfer : std::enable_shared_from_this<SegmentedTransfer>
     try {
       current();
       const auto& block = data.wireEncode();
-      const std::vector<uint8_t> wire(block.begin(), block.end());
-      result.spool->append(static_cast<std::size_t>(data.getName()[-1].toSegment()), wire);
+      result.spool->append(static_cast<std::size_t>(data.getName()[-1].toSegment()),
+                           {block.data(), block.size()});
       result.wireBytes += block.size();
       ++result.packets;
       if (data.getCongestionMark() != 0) ++result.marks;
@@ -714,7 +714,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         return;
       }
     }
-    std::vector<uint8_t> wire;
+    ndn::span<const uint8_t> wire;
     try {
       // The expressed Interest is exact. Its implicit digest only participates
       // when the Interest adds one component to the ordinary Data name.
@@ -739,7 +739,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
           return;
         }
       }
-      wire.assign(block.begin(), block.end());
+      wire = {block.data(), block.size()};
     }
     catch (const std::exception&) {
       onFailure(index, attempt, "repo-original-packet-wire-encoding-failed");
@@ -1039,7 +1039,7 @@ FaceDataReferencePacketSpool::finalize()
 
 void
 FaceDataReferencePacketSpool::append(std::size_t packetIndex,
-                                     const std::vector<uint8_t>& wire)
+                                    ndn::span<const uint8_t> wire)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (packetIndex >= m_packetLengths.size() || m_packetPresent[packetIndex] ||
