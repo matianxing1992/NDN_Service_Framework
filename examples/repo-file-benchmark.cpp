@@ -360,6 +360,7 @@ run(int argc, char** argv)
                            : ndn::Name(group.prefix).appendSegment(0);
       };
       const auto commitSecured = [&](di::NativeStoredModelPacketIo::PacketWires wires,
+                                     repo::PacketSource packetSource,
                                      const Group& group, const std::function<void()>& active) {
         repo::RepoClient client = makePacketClient(user, target);
         const repo::RepoOperationOptions operation{deadline, active, {}};
@@ -376,16 +377,10 @@ run(int argc, char** argv)
         publication.ownerIdentity = grant.ownerIdentity;
         publication.grantId = grant.grantId;
         publication.ownerEpoch = grant.ownerEpoch;
-        publication.packets.emplace();
+        publication.packets.emplace(std::move(packetSource));
         auto& source = *publication.packets;
         source.expectedDigest = "sha256:" + group.wireDigest;
         source.expectedWireBytes = group.wireBytes;
-        source.packetOffsets = {0};
-        for (const auto& wire : wires) {
-          const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
-          source.packetNames.push_back(packet.getName().toUri(ndn::name::UriFormat::CANONICAL));
-          source.packetOffsets.push_back(source.packetOffsets.back() + wire.size());
-        }
         source.next = [&wires, index = size_t{0}](std::vector<uint8_t>& wire) mutable {
           if (index == wires.size()) return false;
           wire = std::move(wires[index++]);
@@ -473,6 +468,10 @@ run(int argc, char** argv)
         Group group;
         group.prefix = ndn::Name(publication).append(std::to_string(groupIndex));
         di::NativeStoredModelPacketIo::PacketWires wires;
+        repo::PacketSource packetSource;
+        if (useCertificate) {
+          packetSource.packetOffsets.push_back(0);
+        }
         ndn::util::Sha256 wireHash;
         const auto groupPackets = std::min<uint64_t>(maxSourcePackets,
           (FILE_BYTES - payloadBytes + contentBytes - 1) / contentBytes);
@@ -481,6 +480,11 @@ run(int argc, char** argv)
           wires.emplace_back(wire.begin(), wire.end());
           wireHash.update(ndn::span<const uint8_t>(wire.data(), wire.size()));
           group.wireBytes += wire.size();
+          if (useCertificate) {
+            packetSource.packetNames.push_back(packet.getName().toUri(
+              ndn::name::UriFormat::CANONICAL));
+            packetSource.packetOffsets.push_back(group.wireBytes);
+          }
           group.minimumWireBytes = std::min<uint64_t>(group.minimumWireBytes, wire.size());
           group.maximumWireBytes = std::max<uint64_t>(group.maximumWireBytes, wire.size());
         };
@@ -493,12 +497,14 @@ run(int argc, char** argv)
           std::array<uint8_t, LARGE_CONTENT_BYTES> buffer;
           const auto count = static_cast<size_t>(std::min<uint64_t>(
             contentBytes, FILE_BYTES - payloadBytes));
-          input.read(reinterpret_cast<char*>(buffer.data()), count);
+          auto manifestPayload = useManifest ? std::make_shared<ndn::Buffer>(count) : nullptr;
+          auto* bytes = manifestPayload ? manifestPayload->data() : buffer.data();
+          input.read(reinterpret_cast<char*>(bytes), count);
           require(static_cast<size_t>(input.gcount()) == count, "benchmark source truncated");
-          const ndn::span<const uint8_t> content(buffer.data(), count);
+          const ndn::span<const uint8_t> content(bytes, count);
           sourceHash.update(content);
           if (useManifest) {
-            manifestContent.push_back(std::make_shared<ndn::Buffer>(content.begin(), content.end()));
+            manifestContent.push_back(std::move(manifestPayload));
           }
           else {
             ndn::Data packet(ndn::Name(group.prefix).appendSegment(segment));
@@ -527,13 +533,14 @@ run(int argc, char** argv)
         auto prepared = std::make_shared<Group>(std::move(group));
         const auto index = groupIndex;
         pipeline.submit(prepared->wireBytes,
-          [&, commit = io.commitConcurrent, wires = std::move(wires), prepared, index,
+          [&, commit = io.commitConcurrent, wires = std::move(wires),
+           packetSource = std::move(packetSource), prepared, index,
            preparationEnd, groupTime](const di::NativeModelCommitPipeline::CurrentCheck& active)
             mutable {
             const Measurement commitTime;
             try {
               if (useCertificate) {
-                commitSecured(std::move(wires), *prepared, active);
+                commitSecured(std::move(wires), std::move(packetSource), *prepared, active);
               }
               else {
                 commit(std::move(wires), "sha256:" + prepared->wireDigest, active);
