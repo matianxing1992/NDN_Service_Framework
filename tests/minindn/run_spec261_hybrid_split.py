@@ -597,11 +597,13 @@ def check_tp_cancellation(run_root: Path, case: str) -> dict:
     return {"request": session, **counts}
 
 
-def check_wired_execution(run_root: Path, mode: str) -> dict:
+def check_wired_execution(run_root: Path, mode: str, manifest_dependency: str | None = None) -> dict:
     expected = ({"provider": {"Prefix"}, "provider2": {"Suffix"}} if mode == "component"
                 else {"provider": {"Prefix", "Rank0"}, "provider2": {"Rank1", "Suffix"}})
     placements = {}
     requests = set()
+    manifest_objects = []
+    admitted_fetches = {}
     for actor, roles in expected.items():
         path = run_root / (actor + "-statistics.jsonl")
         actor_requests = set()
@@ -619,6 +621,14 @@ def check_wired_execution(run_root: Path, mode: str) -> dict:
         executed = set()
         with (run_root / (actor + ".log")).open() as log:
             for line in log:
+                if "NDNSF_DI_TENSOR_ENVELOPE " in line:
+                    envelope = json.loads(line.split("NDNSF_DI_TENSOR_ENVELOPE ", 1)[1])
+                    if envelope.get("requestId") == request_id and envelope.get("segmentManifest"):
+                        manifest_objects.append(envelope)
+                if "NDNSF_DI_DEPENDENCY_OBJECT " in line and " direction=fetch-exact-ndn " in line:
+                    dependency = dict(field.split("=", 1) for field in line.split() if "=" in field)
+                    if dependency.get("status") == "ok":
+                        admitted_fetches[dependency["planned_name"]] = dependency["consumer"]
                 if "NDNSF_PHASE_TIMING " not in line or " phase=roleExecutionEnd " not in line:
                     continue
                 row = dict(field.split("=", 1) for field in line.split() if "=" in field)
@@ -629,8 +639,19 @@ def check_wired_execution(run_root: Path, mode: str) -> dict:
         placements[actor] = sorted(executed)
     if len(requests) != 1:
         raise ValueError("Provider receipts do not identify the same sealed request and attempt")
+    if manifest_dependency:
+        if len(manifest_objects) != 1 or manifest_objects[0]["certificateSignatures"] != 1:
+            raise ValueError("the real request did not publish exactly one signed manifest object")
+        if manifest_objects[0]["segments"] < 33:
+            raise ValueError("the manifest trial did not exercise a large tensor object")
+        consumer = admitted_fetches.get(manifest_objects[0]["dataName"])
+        if not consumer:
+            raise ValueError("the signed manifest object lacked an admitted consumer fetch")
+        manifest_objects[0]["consumer"] = consumer
+    elif manifest_objects:
+        raise ValueError("legacy control used manifest authentication")
     timing = json.loads((run_root / "request-timing.json").read_text())
-    return {"providerRoles": placements, "request": timing}
+    return {"providerRoles": placements, "request": timing, "manifestObjects": manifest_objects}
 
 
 def main() -> int:
@@ -640,6 +661,8 @@ def main() -> int:
     parser.add_argument("--prefix", type=Path, default=Path("/usr/local"))
     parser.add_argument("--variant", choices=("26n", "11n", "ffn", "attention-ffn", "wan"), default="26n")
     parser.add_argument("--mode", choices=("component", "hybrid"), default="hybrid")
+    parser.add_argument("--segment-manifest-dependency",
+                        help="try manifest authentication on this stateless hybrid dependency")
     parser.add_argument("--cache", type=Path, help="prepared assets for the selected YOLO variant")
     parser.add_argument("--initializer-sha256", help="explicit sha256: digest of prepared weights")
     parser.add_argument("--whole-model-tp", action="store_true",
@@ -664,6 +687,10 @@ def main() -> int:
         parser.error("--whole-model-tp requires --variant 26n")
     if args.mode == "component" and (args.whole_model_tp or args.variant not in ("26n", "11n")):
         parser.error("--mode component requires YOLO without --whole-model-tp")
+    if args.segment_manifest_dependency and (args.mode != "hybrid" or args.whole_model_tp or
+                                             args.variant not in ("26n", "11n") or
+                                             not args.wired_star):
+        parser.error("--segment-manifest-dependency requires a wired-star YOLO hybrid fixture")
     if args.matched_tp and (not args.whole_model_tp or len(args.case) != 1):
         parser.error("--matched-tp requires --whole-model-tp and one --case")
     if args.tp_cancel and (not args.whole_model_tp or len(args.case) != 1 or args.matched_tp):
@@ -715,6 +742,7 @@ def main() -> int:
         "status": "IN_PROGRESS",
         "mode": args.mode,
         "variant": args.variant,
+        "segmentManifestDependency": args.segment_manifest_dependency,
         "expectedInitializerSha256": args.initializer_sha256,
         "wholeModelTensorParallel": args.whole_model_tp,
         "matchedTensorParallel": args.matched_tp,
@@ -945,6 +973,8 @@ def main() -> int:
                 (["--frozen-fixtures"] if frozen_yolo else []) +
                 (["--cache", str(fixture_cache.resolve())] if fixture_cache else []) +
                 (["--initializer-sha256", args.initializer_sha256] if args.initializer_sha256 else []) +
+                (["--segment-manifest-dependency", args.segment_manifest_dependency]
+                 if args.segment_manifest_dependency else []) +
                 (["--wan-reference", str(args.wan_reference.resolve())] if wan else []) +
                 (["--ffn-cancel"] if args.ffn_cancel else []) +
                 (["--whole-model-tp"] if args.whole_model_tp else []) +
@@ -979,7 +1009,8 @@ def main() -> int:
         if passed and frozen_yolo and not args.whole_model_tp:
             if len(result.get("actorCleanup", [])) != len(role_node):
                 raise ValueError("incomplete native actor cleanup receipt")
-            result.update(check_wired_execution(run_root, args.mode))
+            result.update(check_wired_execution(run_root, args.mode,
+                                                args.segment_manifest_dependency))
         result["status"] = "PASS" if passed else "FAIL"
         if not passed:
             first = next((source.splitlines() for source in texts

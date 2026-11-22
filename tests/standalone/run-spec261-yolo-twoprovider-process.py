@@ -31,6 +31,8 @@ parser.add_argument('--initializer-sha256',
 parser.add_argument('--frozen-fixtures', action='store_true',
                     help='use the tracked fixed input and independent detection reference')
 parser.add_argument('--mode', choices=['component', 'hybrid'], default='hybrid')
+parser.add_argument('--segment-manifest-dependency',
+                    help='try manifest authentication on this stateless hybrid dependency')
 parser.add_argument('--variant', choices=['26n','11n','ffn','attention-ffn','wan'], default='26n')
 parser.add_argument('--whole-model-tp', action='store_true',
                     help='use the two-rank whole-model source plan for YOLO26n')
@@ -61,6 +63,9 @@ if args.tp_cancel and (not args.whole_model_tp or len(args.case) != 1 or args.ma
  parser.error('--tp-cancel requires --whole-model-tp and one --case without --matched-tp')
 if args.mode == 'component' and (args.whole_model_tp or args.variant not in ('26n', '11n')):
  parser.error('--mode component requires YOLO without --whole-model-tp')
+if args.segment_manifest_dependency and (args.mode != 'hybrid' or args.whole_model_tp or
+                                        args.variant not in ('26n', '11n')):
+ parser.error('--segment-manifest-dependency requires a stateless YOLO hybrid fixture')
 if args.variant not in ('26n', '11n') and (args.frozen_fixtures or args.initializer_sha256):
  parser.error('--frozen-fixtures and --initializer-sha256 require a YOLO variant')
 BUILD=args.build.resolve()
@@ -367,6 +372,8 @@ elif ffn:
 else:
  rc['oracle']={'tensor':subject['output'],'float32':oracle_values,'tolerance':1e-4,
   'row_width':6,'detections':True,'coordinate_tolerance':0.01,'score_tolerance':1e-4,'iou_floor':0.999}
+if args.segment_manifest_dependency:
+ rc['request']['segment_manifest_dependency_id'] = args.segment_manifest_dependency
 (run_root/'requester/config.json').write_text(json.dumps(rc))
 # launch env
 base=os.environ.copy(); base.update({'NDN_CLIENT_TRANSPORT':'unix://'+str(nfd_socket),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin','NDNSF_CONTROLLER_GENERATION_STATE':str(run_root/'shared/controller-generation.state'),'NDNSF_DI_RUNTIME_TIMING':'1'})
@@ -470,6 +477,8 @@ try:
   pm=[str(PROVIDER),'--plan',str(run_root/'provider/plan.json'),'--manifest',str(run_root/(tag+'/manifest.json')),'--service','/Inference/NativeUnary','--provider',identity,'--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(run_root/(tag+'/trust-schema.conf')),'--roles',roles,'--workers','4','--handler-threads','4','--serve','--run-for-ms',str(RUN_FOR_MS),'--artifact-cache-dir',str(run_root/(tag+'/cache')),'--selection-offer-key-file',str(run_root/(tag+'/offer-private.pem')),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
   if args.frozen_fixtures:
    pm += ['--statistics-file', str(run_root/(tag+'-statistics.jsonl'))]
+  if args.segment_manifest_dependency:
+   pm.append('--enable-segment-manifest')
   if wan:
    pm += ['--artifact-cache-max-mib',str(wan_cache_mib),'--repo-fetch-timeout-ms','120000',
           '--assembly-timeout-ms','480000']
