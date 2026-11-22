@@ -2317,6 +2317,7 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
         'recipient-key-map': 'recipients.json'}
     config['actors'][-1]['parameters'] = {'grant-authority-public-key': 'key.pem',
         'recipient-key-map': 'recipients.json', 'enable-admission-lease': False,
+        'enable-segment-manifest': timing,
         'allow-selection-generation-options': True, 'repo-fetch-timeout-ms': 900000,
         kv_option: True,
         'conversation-retention-ms': 3600000, 'assembly-timeout-ms': 900000,
@@ -2352,6 +2353,7 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     assert argv[argv.index('--assembly-timeout-ms') + 1] == '900000'
     assert argv[argv.index('--artifact-cache-max-mib') + 1] == '131072'
     assert '--enable-admission-lease' not in argv
+    assert ('--enable-segment-manifest' in argv) is timing
     assert '--recipient-key-map' not in argv
     assert '--grant-authority-public-key' not in argv
     assert '--core-work-timeout-ms' not in argv

@@ -634,6 +634,7 @@ def _translate_native(config, by_kind, resolve):
                 "artifact-cache-dir", "artifact-cache-max-mib", "statistics-file",
                 "cache-compatibility-source-dir",
                 "allow-selection-generation-options", "sample-kv-state-values",
+                "enable-segment-manifest",
                 "capture-complete-kv-state", "capture-logits-output",
                 "enable-admission-lease", "require-execution-lease", "execution-policy", "admission-lease-ttl-ms",
                 "grant-authority-public-key", "recipient-key-map", "repo-fetch-timeout-ms",
@@ -663,6 +664,7 @@ def _translate_native(config, by_kind, resolve):
                 selected = provider_recipient_map(parameters["recipient-key-map"], actor["identity"])
                 resolve(selected[actor["identity"]], "provider.recipient-private-key", exists=True)
             for key in ("offer-can-provision", "offer-has-model", "allow-selection-generation-options",
+                        "enable-segment-manifest",
                         "enable-admission-lease", "require-execution-lease", "sample-kv-state-values",
                         "capture-complete-kv-state"):
                 if key in parameters:
