@@ -132,7 +132,8 @@ readProviderTrace(const fs::path& path, const ndn::Name& producer, std::size_t b
 
 DeploymentEvidence
 readDeployment(const NativeJson& state, const NativeJson& configuration, const fs::path& root,
-               std::size_t logByteLimit = 64 * MIB)
+               std::size_t logByteLimit = 64 * MIB,
+               std::size_t statisticsByteLimit = 8 * MIB)
 {
   const auto boot = state.at("boot_id");
   const auto digest = state.at("configuration_sha256");
@@ -219,11 +220,12 @@ readDeployment(const NativeJson& state, const NativeJson& configuration, const f
             routed.count(provider + "/KEY"), "Provider identity, route or executable");
     const auto bootId = launch.at("native_boot_id");
     const auto path = root / (id + "-statistics.jsonl");
-    require(fs::file_size(path) <= 8 * MIB, "Provider statistics exceed fixture budget");
+    require(fs::file_size(path) <= statisticsByteLimit, "Provider statistics exceed fixture budget");
     std::ifstream stats(path);
     std::string line;
     std::size_t completed = 0;
     while (std::getline(stats, line)) {
+      require(line.size() <= 64 * MIB, "Provider statistics row exceeds fixture budget");
       const auto row = nativeParseJson(line);
       require(row.at("schema") == "ndnsf-di-native-request-statistics-v1" &&
               row.at("provider") == provider && row.at("providerBootId") == bootId,
@@ -233,7 +235,9 @@ readDeployment(const NativeJson& state, const NativeJson& configuration, const f
       require(!request.empty() && row.at("completionAdmitted") == true &&
               row.at("failureReason").is_null() && row.at("attemptEpoch") == 1 &&
               !row.at("admittedArtifactDigest").get<std::string>().empty() &&
-        result.requests[request].emplace(provider, row).second,
+              row.at("role").is_string() && row.at("planDigest").is_string() &&
+        result.requests[request].emplace(provider, NativeJson{
+          {"role", row.at("role")}, {"planDigest", row.at("planDigest")}}).second,
               "Provider completion or artifact binding");
       ++completed;
     }
@@ -458,7 +462,7 @@ validateCheckpoint(const fs::path& operation, const fs::path& referenceFile,
   const auto deployment = state.at("deployment_id").get<std::string>();
   require(deployment.compare(0, 10, "wan-video-") == 0 &&
           workload.at("mode") == deployment.substr(10), "checkpoint layout binding");
-  auto observed = readDeployment(state, config, root, 2ULL << 30);
+  auto observed = readDeployment(state, config, root, 2ULL << 30, 2ULL << 30);
   const auto& mode = workload.at("modes").at(deployment.substr(10));
   const auto& placement = requester.at("fixed_placement").at("role_providers");
   const fs::path clip = options.at("output_directory").get<std::string>();
