@@ -3741,6 +3741,13 @@ RepoNode::handleUserStorageList(const std::vector<uint8_t>& request,
         throw std::runtime_error("repo-user-storage-manifest-claim-mismatch");
       }
       const auto fullWire = manifest.toJson();
+      // Prepare the same bounded index used by packet reads before the client
+      // requests the root. Do not hold the write lock during index validation.
+      guard.unlock();
+      const ndn::Name rootName(manifest.objectName);
+      detail::traceManifestRoot(rootName, "repo-owner-index-start");
+      m_core.validateReadPacketIndex(manifest);
+      detail::traceManifestRoot(rootName, "repo-owner-index-finish");
       manifest.packetNames.clear();
       manifest.packetOffsets.clear();
       responseText += '\n' + sha256Hex(toBytes(fullWire)) + '\n' + manifest.toJson();
