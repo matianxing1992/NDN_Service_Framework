@@ -3444,6 +3444,12 @@ BOOST_AUTO_TEST_CASE(LargeOwnedPacketSetReadsOriginalWireAndRechecksDeletion)
   BOOST_CHECK_EQUAL(proof.first, 1U);
   BOOST_CHECK_LE(proof.second, 8U * 1024U * 1024U);
   const auto stored = fixture.node->getManifest(reference.objectName);
+  auto aliased = stored;
+  aliased.packetNames[2] = ndn::Name(aliased.packetNames[1])
+    .toUri(ndn::name::UriFormat::ALTERNATE);
+  BOOST_REQUIRE_NE(aliased.packetNames[1], aliased.packetNames[2]);
+  BOOST_CHECK_THROW(RepoCorePacketIndexTestAccess::validate(fixture.node->core(), aliased),
+                    std::invalid_argument);
   for (unsigned mutation = 0; mutation < 3; ++mutation) {
     auto changed = stored;
     if (mutation == 0) ++changed.size;

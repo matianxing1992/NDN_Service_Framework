@@ -27,7 +27,8 @@ NDN_LOG_INIT(ndnsf_distributed_repo.RepoCore);
 namespace {
 
 void
-validatePacketIndex(const RepoObjectManifest& manifest)
+validatePacketIndex(const RepoObjectManifest& manifest,
+  const std::function<void(size_t, const ndn::Name&, const std::string&)>& onName = {})
 {
   if (manifest.objectType != "original-packet-set" || manifest.packetNames.empty() ||
       manifest.packetOffsets.size() != manifest.packetNames.size() + 1 ||
@@ -36,19 +37,20 @@ validatePacketIndex(const RepoObjectManifest& manifest)
     throw std::invalid_argument("repo-invalid-original-packet-index");
   // A manifest and its DATA segments need not be immediate siblings. Preserve
   // the writer's URI spelling, but compare typed names to reject URI aliases.
-  std::set<ndn::Name> names;
+  std::set<std::string> names;
   for (size_t i = 0; i < manifest.packetNames.size(); ++i) {
     const auto& text = manifest.packetNames[i];
     if (text.empty() || text.front() != '/' || text.size() > 4096)
       throw std::invalid_argument("repo-invalid-original-packet-index");
     const ndn::Name name(text);
+    const auto canonical = name.toUri(ndn::name::UriFormat::CANONICAL);
     if (name.empty() ||
-        (text != name.toUri(ndn::name::UriFormat::CANONICAL) &&
-         text != name.toUri(ndn::name::UriFormat::ALTERNATE)) ||
-        !names.insert(name).second ||
+        (text != canonical && text != name.toUri(ndn::name::UriFormat::ALTERNATE)) ||
+        !names.insert(canonical).second ||
         manifest.packetOffsets[i + 1] <= manifest.packetOffsets[i] ||
         manifest.packetOffsets[i + 1] - manifest.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE)
       throw std::invalid_argument("repo-invalid-original-packet-index");
+    if (onName) onName(i, name, canonical);
   }
 }
 
@@ -1678,7 +1680,11 @@ RepoCore::getPacketIndexProof(const RepoObjectManifest& manifest,
       }
     }
   }
-  validatePacketIndex(manifest);
+  bool validated = false;
+  const auto withoutProof = [&] () -> std::shared_ptr<const PacketIndexProof> {
+    if (!validated) validatePacketIndex(manifest);
+    return {};
+  };
   try {
     size_t bytes = sizeof(PacketIndexProof) + sizeof(std::string) + 4 * sizeof(void*);
     const auto charge = [&bytes](size_t amount) {
@@ -1692,27 +1698,28 @@ RepoCore::getPacketIndexProof(const RepoObjectManifest& manifest,
         !charge(manifest.objectName.size() + 1) ||
         !charge(manifest.packetNames.size() * sizeof(std::string)) ||
         !charge(manifest.packetOffsets.size() * sizeof(uint64_t)))
-      return {};
+      return withoutProof();
     for (const auto& name : manifest.packetNames) {
       if (!charge(name.size() + 1))
-        return {};
+        return withoutProof();
     }
     auto proof = std::make_shared<PacketIndexProof>();
     proof->size = manifest.size;
-    proof->names = manifest.packetNames;
-    proof->offsets = manifest.packetOffsets;
-    for (size_t i = 0; i < manifest.packetNames.size(); ++i) {
-      const ndn::Name name(manifest.packetNames[i]);
-      if (name.empty() || !name[-1].isSegment()) continue;
+    validatePacketIndex(manifest, [&](size_t i, const ndn::Name& name,
+                                      const std::string& canonical) {
+      if (!name[-1].isSegment()) return;
       try {
         const auto segment = name[-1].toSegment();
-        const auto base = packetBaseName(name.toUri(ndn::name::UriFormat::CANONICAL));
+        const auto base = packetBaseName(canonical);
         proof->segments[base].push_back({segment, i});
       }
       catch (const ndn::tlv::Error&) {
         // Non-numeric segment encodings keep the exact-name fallback.
       }
-    }
+    });
+    validated = true;
+    proof->names = manifest.packetNames;
+    proof->offsets = manifest.packetOffsets;
     size_t hints = 0;
     for (auto& [base, positions] : proof->segments) {
       std::sort(positions.begin(), positions.end(), [](const auto& a, const auto& b) {
@@ -1760,8 +1767,8 @@ RepoCore::getPacketIndexProof(const RepoObjectManifest& manifest,
     return proof;
   }
   catch (const std::bad_alloc&) {
-    // The authoritative geometry is valid even when optional acceleration cannot fit.
-    return {};
+    // Optional acceleration cannot prevent validation of the authoritative geometry.
+    return withoutProof();
   }
 }
 
