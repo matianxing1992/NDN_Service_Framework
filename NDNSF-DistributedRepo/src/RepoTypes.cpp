@@ -6,9 +6,12 @@
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/detail/StrictJson.hpp"
+#include "ndn-service-framework/TimelineTrace.hpp"
 
 #include <ndn-cxx/name.hpp>
 #include <ndn-cxx/util/scope.hpp>
+#include <ndn-cxx/util/sha256.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
 
 #include <openssl/sha.h>
 #include <sqlite3.h>
@@ -17,6 +20,7 @@
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <limits>
@@ -1154,12 +1158,29 @@ public:
         m_rangeWarming.erase(objectName);
         m_rangeWarmingBytes -= manifest.size;
       });
-      auto bytes = loadRangeCachePayload(manifest, requireCurrent);
+      const bool trace = ndn_service_framework::controlTimingEnvEnabled();
+      RangeWarmTimings timing;
+      auto bytes = loadRangeCachePayload(manifest, requireCurrent, trace ? &timing : nullptr);
+      const auto admissionStart = trace ? Clock::now() : Clock::time_point{};
       requireCurrent();
-      std::lock_guard<std::mutex> lock(m_mutex);
-      const auto epoch = m_epochs.find(objectName);
-      if ((epoch == m_epochs.end() ? 0 : epoch->second) == observedEpoch)
-        admitNoThrow({manifest, std::move(bytes)});
+      {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto epoch = m_epochs.find(objectName);
+        if ((epoch == m_epochs.end() ? 0 : epoch->second) == observedEpoch)
+          admitNoThrow({manifest, std::move(bytes)});
+      }
+      if (trace) {
+        const auto ns = [](auto duration) {
+          return std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(duration)
+                                  .count());
+        };
+        ndn_service_framework::logControlTiming("repo-store", "warm-range-cache",
+          ndn::Name(objectName), {{"file_reads_ns", ns(timing.fileReads)},
+                                 {"copy_ns", ns(timing.copy)},
+                                 {"digest_ns", ns(timing.digest)},
+                                 {"identity_recheck_ns", ns(timing.identity)},
+                                 {"admission_ns", ns(Clock::now() - admissionStart)}});
+      }
     }
     catch (...) {
       // Cache admission is optional. Original packet reads check the current store.
@@ -1450,6 +1471,16 @@ private:
     }
   }
 
+  using Clock = std::chrono::steady_clock;
+
+  struct RangeWarmTimings
+  {
+    Clock::duration fileReads{};
+    Clock::duration copy{};
+    Clock::duration digest{};
+    Clock::duration identity{};
+  };
+
   struct CacheEntry
   {
     // Payload ownership is shared so a bounded batch can pin the bytes it is
@@ -1484,23 +1515,41 @@ private:
 
   std::vector<uint8_t>
   loadRangeCachePayload(const RepoObjectManifest& manifest,
-                        const std::function<void()>& requireCurrent = {}) const
+                        const std::function<void()>& requireCurrent = {},
+                        RangeWarmTimings* timing = nullptr) const
   {
     std::vector<uint8_t> bytes;
     bytes.reserve(manifest.size);
+    ndn::util::Sha256 digest;
     constexpr uint64_t PREFETCH_CHUNK_BYTES = 1ULL << 20;
     while (bytes.size() < manifest.size) {
       if (requireCurrent) requireCurrent();
       const auto length = std::min<uint64_t>(PREFETCH_CHUNK_BYTES, manifest.size - bytes.size());
+      const auto readStart = timing ? Clock::now() : Clock::time_point{};
       auto part = m_authoritativeStore->getRange(manifest.objectName, {bytes.size(), length});
+      const auto readFinish = timing ? Clock::now() : Clock::time_point{};
       if (part.size() != length)
         throw std::runtime_error("repo-range-prefetch-truncated");
+      digest.update(part);
+      const auto copyStart = timing ? Clock::now() : Clock::time_point{};
       bytes.insert(bytes.end(), part.begin(), part.end());
+      if (timing) {
+        timing->fileReads += readFinish - readStart;
+        timing->digest += copyStart - readFinish;
+        timing->copy += Clock::now() - copyStart;
+      }
     }
-    if (sha256Hex(bytes) != manifest.sha256 ||
-        !detail::readManifestSnapshot(*m_authoritativeStore, manifest.objectName)
-          ->hasSameMetadata(manifest) || !m_authoritativeStore->hasCommittedPayload(manifest))
+    const auto digestStart = timing ? Clock::now() : Clock::time_point{};
+    const bool digestMatches = ndn::toHex(*digest.computeDigest(), false) == manifest.sha256;
+    const auto digestFinish = timing ? Clock::now() : Clock::time_point{};
+    if (!digestMatches || !detail::readManifestSnapshot(*m_authoritativeStore, manifest.objectName)
+                            ->hasSameMetadata(manifest) ||
+        !m_authoritativeStore->hasCommittedPayload(manifest))
       throw std::runtime_error("repo-range-prefetch-identity-mismatch");
+    if (timing) {
+      timing->digest += digestFinish - digestStart;
+      timing->identity = Clock::now() - digestFinish;
+    }
     return bytes;
   }
 

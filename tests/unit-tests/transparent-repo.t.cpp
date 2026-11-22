@@ -365,13 +365,19 @@ BOOST_AUTO_TEST_CASE(CommittedRangeWarmupRejectsInvalidPayloadAndReleasesAdmissi
 {
   Fixture fixture;
   auto authority = std::make_shared<CountingStore>(fixture.store("range-warmup"));
-  auto tiered = makeTieredRepoStore(authority, 8192, "filesystem", 8192);
-  const std::vector<uint8_t> bytes(4096, 42);
+  constexpr std::size_t chunkBytes = 1U << 20;
+  auto tiered = makeTieredRepoStore(authority, 2 * chunkBytes, "filesystem", 2 * chunkBytes);
+  std::vector<uint8_t> bytes(chunkBytes + 4096, 42);
+  std::fill(bytes.begin() + chunkBytes, bytes.end(), 43);
   RepoObjectManifest manifest;
   manifest.objectName = "/producer/warm-packet-set";
   manifest.sha256 = sha256Hex(bytes);
   manifest.size = bytes.size();
-  authority->put(manifest, bytes);
+  manifest.generation = 1;
+  const auto boundary = bytes.begin() + chunkBytes;
+  authority->putRange(manifest, {0, chunkBytes}, {bytes.begin(), boundary});
+  authority->putRange(manifest, {chunkBytes, bytes.size() - chunkBytes}, {boundary, bytes.end()});
+  authority->commitRanges(manifest);
   const auto committed = authority->getManifest(manifest.objectName);
 
   auto stale = committed;
@@ -379,7 +385,9 @@ BOOST_AUTO_TEST_CASE(CommittedRangeWarmupRejectsInvalidPayloadAndReleasesAdmissi
   detail::warmCommittedRangeCache(*tiered, stale, [] {});
   BOOST_CHECK_EQUAL(authority->rangeReads, 0U);
 
-  authority->afterRangeRead = [](auto& range) { range[0] ^= 1; };
+  authority->afterRangeRead = [](auto& range) {
+    if (range.size() < chunkBytes) range.back() ^= 1;
+  };
   detail::warmCommittedRangeCache(*tiered, committed, [] {});
   BOOST_CHECK_EQUAL(tiered->cacheStatus().entryCount, 0U);
 
@@ -396,9 +404,10 @@ BOOST_AUTO_TEST_CASE(CommittedRangeWarmupRejectsInvalidPayloadAndReleasesAdmissi
   const auto warmedReads = authority->rangeReads;
   detail::warmCommittedRangeCache(*tiered, committed, [] {});
   BOOST_CHECK_EQUAL(tiered->cacheStatus().entryCount, 1U);
-  BOOST_CHECK_EQUAL(warmedReads, 3U);
-  BOOST_CHECK(tiered->getRange(manifest.objectName, {125, 16}) ==
-              std::vector<uint8_t>(16, 42));
+  BOOST_CHECK_EQUAL(warmedReads, 5U);
+  BOOST_CHECK(tiered->getRange(manifest.objectName, {chunkBytes - 8, 16}) ==
+              std::vector<uint8_t>(bytes.begin() + chunkBytes - 8,
+                                   bytes.begin() + chunkBytes + 8));
   BOOST_CHECK_EQUAL(authority->rangeReads, warmedReads);
 }
 
