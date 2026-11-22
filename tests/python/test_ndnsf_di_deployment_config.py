@@ -72,7 +72,8 @@ def test_repo_benchmark_sampling_keeps_identity_mismatch_failure(ops, monkeypatc
         cluster._sample_repo_benchmark(tmp_path, children, 'periodic')
 
 
-def test_repo_file_benchmark_delegates_to_owned_cluster(ops, monkeypatch):
+@pytest.mark.parametrize('authentication', (None, 'certificate', 'manifest'))
+def test_repo_file_benchmark_delegates_to_owned_cluster(ops, monkeypatch, authentication):
     _, cli = ops
     cluster = importlib.import_module('_spec217_ops.cluster')
     received = []
@@ -81,11 +82,18 @@ def test_repo_file_benchmark_delegates_to_owned_cluster(ops, monkeypatch):
         return dict(status='STOPPED', execution='REPO_BENCHMARK_COMPLETE', failure=None,
                     cleanup=[dict(status='ZERO', forced=False)])
     monkeypatch.setattr(cluster, 'run_cluster', launch)
+    arguments = ['cluster', 'benchmark-repo', '--config', '/deployment.json',
+                 '--source', '/input.bin', '--expected-sha256', 'a' * 64, '--timing']
+    expected = dict(source='/input.bin', sha256='a' * 64)
+    if authentication:
+        arguments += ['--authentication', authentication,
+                      '--signing-certificate', '/test/KEY/data/issuer/v=1']
+        expected['authentication'] = authentication
+        expected['signing_certificate'] = '/test/KEY/data/issuer/v=1'
     with contextlib.redirect_stdout(io.StringIO()):
-        status = cli.main(['cluster', 'benchmark-repo', '--config', '/deployment.json',
-                           '--source', '/input.bin', '--expected-sha256', 'a' * 64, '--timing'])
+        status = cli.main(arguments)
     assert status == 0
-    assert received[0][1]['repo_benchmark'] == dict(source='/input.bin', sha256='a' * 64)
+    assert received[0][1]['repo_benchmark'] == expected
     assert received[0][1]['timing']
 
 
@@ -1171,8 +1179,11 @@ def test_periodic_sync_setting_survives_file_benchmark_requester(ops, deployment
     monkeypatch.setenv('NDNSF_SVS_PERIODIC_SYNC_MS', '30000')
     argv, env = cluster._native_launch(frozen, actor, root,
         dict(boot_id='a' * 32, configuration_sha256='b' * 64),
-        repo_benchmark=dict(source='/input.bin', sha256='a' * 64))
+        repo_benchmark=dict(source='/input.bin', sha256='a' * 64, authentication='manifest',
+                            signing_certificate='/test/KEY/data/issuer/v=1'))
     assert Path(argv[0]).name == 'ndnsf-repo-file-benchmark'
+    assert argv[argv.index('--authentication') + 1] == 'manifest'
+    assert argv[argv.index('--signing-certificate') + 1] == '/test/KEY/data/issuer/v=1'
     assert env['NDNSF_SVS_PERIODIC_SYNC_MS'] == '1000'
     assert '--core-svs-periodic-sync-ms' not in argv
     assert frozen == before

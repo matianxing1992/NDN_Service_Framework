@@ -352,6 +352,10 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
             argv += ['--phase', binary_phase, '--reference', repo_benchmark['reference']]
         if binary_phase != 'read':
             argv += ['--source', repo_benchmark['source']]
+        if 'authentication' in repo_benchmark:
+            argv += ['--authentication', repo_benchmark['authentication']]
+        if 'signing_certificate' in repo_benchmark:
+            argv += ['--signing-certificate', repo_benchmark['signing_certificate']]
         if repo_benchmark.get('under_gdb'):
             argv = ['/usr/bin/gdb', '-batch', '-ex', 'set pagination off',
                     '-ex', 'run', '-ex', 'thread apply all bt full',
@@ -929,6 +933,8 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
                     expected.get('sha256') != hashlib.sha256(binary.read_bytes()).hexdigest() or
                     not os.access(binary, os.X_OK)):
                 raise ClusterError('Repo file benchmark must match the installed release manifest')
+        elif 'authentication' in repo_benchmark:
+            raise ClusterError('explicit Repo benchmark authentication requires local MiniNDN')
         elif config['platform']['kind'] != 'slurm-apptainer':
             raise ClusterError('Repo file benchmark requires MiniNDN or Slurm')
     if config['platform']['kind'] == 'slurm-apptainer':
@@ -1202,8 +1208,16 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_
     if actor_id is not None and action != 'down':
         raise ClusterError('actor selection only applies to down')
     if action == 'benchmark-repo':
-        if not isinstance(repo_benchmark, dict) or set(repo_benchmark) != {'source', 'sha256'}:
+        required = {'source', 'sha256'}
+        options = {'authentication', 'signing_certificate'}
+        if (not isinstance(repo_benchmark, dict) or not required <= repo_benchmark.keys() or
+                repo_benchmark.keys() - required - options):
             raise ClusterError('Repo benchmark needs source and SHA-256')
+        authentication = repo_benchmark.get('authentication', 'digest')
+        if authentication not in ('digest', 'certificate', 'manifest'):
+            raise ClusterError('unsupported Repo benchmark authentication')
+        if 'signing_certificate' in repo_benchmark and authentication == 'digest':
+            raise ClusterError('a signing certificate requires authenticated Repo benchmark mode')
         input_path = Path(repo_benchmark['source'])
         digest = repo_benchmark['sha256']
         if (not input_path.is_absolute() or input_path.is_symlink() or

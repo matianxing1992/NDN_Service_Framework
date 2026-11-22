@@ -46,6 +46,9 @@ def build_parser():
         if name == 'benchmark-repo':
             command.add_argument('--source', required=True, help='regular 500000000-byte file')
             command.add_argument('--expected-sha256', required=True)
+            command.add_argument('--authentication', choices=('digest', 'certificate', 'manifest'),
+                                 help='select the packet authentication mode in local MiniNDN')
+            command.add_argument('--signing-certificate', help='data signing certificate NDN name')
         if name == 'down':
             command.add_argument('--actor', help='stop one managed local Provider; does not save KV state')
     for name in ("validate","resolve","plan","apply","status","wait","rollback","drain","delete"):
@@ -97,6 +100,10 @@ def main(argv=None, *, deployment_factory=None, client_factory=None):
                 if args.cluster_command == 'benchmark-repo':
                     options['repo_benchmark'] = dict(source=args.source,
                                                    sha256=args.expected_sha256)
+                    if args.authentication is not None:
+                        options['repo_benchmark']['authentication'] = args.authentication
+                    if args.signing_certificate is not None:
+                        options['repo_benchmark']['signing_certificate'] = args.signing_certificate
                 if getattr(args, 'actor', None) is not None:
                     options['actor_id'] = args.actor
                 result = run_cluster(args.cluster_command, args.config, args.timeout,
