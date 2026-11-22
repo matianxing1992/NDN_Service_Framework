@@ -36,6 +36,7 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -314,10 +315,13 @@ run(int argc, char** argv)
       require(bool(io.commitConcurrent), "benchmark native concurrent commit unavailable");
       const repo::RepoTarget packetTarget{target.repoNode, target.providerIdentity,
                                           target.servicePrefix};
+      const auto verifyData = [certificate](const ndn::Data& packet) {
+        return ndn::security::verifySignature(packet, certificate);
+      };
       const auto verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
-        [certificate](const std::vector<uint8_t>& wire) {
+        [verifyData](const std::vector<uint8_t>& wire) {
           const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
-          return ndn::security::verifySignature(packet, certificate);
+          return verifyData(packet);
         });
       const auto rootName = [&](const Group& group) {
         return useManifest ? manifestScope(identity, group.prefix).rootName()
@@ -593,8 +597,8 @@ run(int argc, char** argv)
       const Measurement retrievalTime;
       ndn::util::Sha256 restored;
       uint64_t restoredBytes = 0;
-      using PacketWires = std::vector<std::vector<uint8_t>>;
-      std::array<std::future<PacketWires>, MAX_MANIFEST_READ_GROUPS> pending;
+      using OwnerPacketSet = repo::VerifiedRepoUserStoragePacketSetV1;
+      std::array<std::future<OwnerPacketSet>, MAX_MANIFEST_READ_GROUPS> pending;
       std::mutex readFailureMutex;
       std::exception_ptr readFailure;
       size_t failedReadIndex = 0;
@@ -603,31 +607,32 @@ run(int argc, char** argv)
         const auto& group = groups[index];
         try {
           current();
-          auto client = makePacketClient(user, target);
-          repo::RepoDataFetch retrieval;
-          retrieval.ownerClaim.emplace();
-          auto& claim = *retrieval.ownerClaim;
-          claim.target = packetTarget;
-          claim.objectName = rootName(group).toUri(ndn::name::UriFormat::ALTERNATE);
+          repo::RepoUserStoragePacketSetFetchLimits limits;
+          const repo::RepoOwnerClaimFetch defaults;
+          limits.ackCollectionTimeMs = defaults.ackCollectionTimeMs;
+          limits.maxPacketCount = defaults.maxPacketCount;
+          limits.maxPacketWireBytes = defaults.maxPacketWireBytes;
+          limits.maxManifestWireBytes = defaults.maxManifestWireBytes;
+          std::optional<ndn_service_framework::SegmentManifestScope> scope;
           if (useManifest) {
-            claim.segmentManifest = std::make_shared<ndn_service_framework::SegmentManifestScope>(
-              manifestScope(identity, group.prefix));
+            scope = manifestScope(identity, group.prefix);
             if (boundedRead) {
-              claim.manifestFetchWindow = readWindow;
-              claim.maxPacketWireBytes = group.wireBytes;
+              limits.manifestFetchWindow = readWindow;
+              limits.maxPacketWireBytes = group.wireBytes;
             }
           }
-          else {
-            retrieval.verifyWire = verifyWire;
-          }
-          auto result = client.fetchData(retrieval, {deadline, current, {}});
-          require(result.ownerPacketSet && result.digestVerified &&
-                  result.wireDigest == "sha256:" + group.wireDigest,
+          const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - Clock::now()).count();
+          // The typed Owner result owns the verified wires used by the file oracle.
+          auto result = repo::RepoClient::fetchOriginalDataPacketSetFromUserStorage(
+            *user, target, rootName(group).toUri(ndn::name::UriFormat::ALTERNATE),
+            verifyData, static_cast<int>(std::max<int64_t>(1, remaining)), limits, current, scope);
+          require(result.manifest().sha256 == group.wireDigest,
                   "benchmark signed retrieval did not verify the current Owner claim");
           auto row = fetchTime.result();
           row.update(Json{{"phase", "retrieval-fetch"}, {"group", index}});
           record(std::move(row));
-          return std::move(result.packets);
+          return result;
         }
         catch (...) {
           std::lock_guard lock(readFailureMutex);
@@ -670,8 +675,15 @@ run(int argc, char** argv)
           }
           ndn::util::Sha256 wireHash;
           current();
-          const auto packets = useCertificate ? pending[groupIndex % readGroups].get()
-                                             : io.fetch(names);
+          std::optional<OwnerPacketSet> ownerPackets;
+          std::vector<std::vector<uint8_t>> legacyPackets;
+          if (useCertificate) {
+            ownerPackets.emplace(pending[groupIndex % readGroups].get());
+          }
+          else {
+            legacyPackets = io.fetch(names);
+          }
+          const auto& packets = ownerPackets ? ownerPackets->packetWires() : legacyPackets;
           current();
           require(packets.size() == names.size(), "benchmark packet count changed");
           for (size_t index = 0; index < packets.size(); ++index) {
