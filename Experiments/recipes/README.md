@@ -257,7 +257,7 @@ python3 Experiments/prepare-wan22-video-workload.py \
 python3 tests/minindn/prepare-wan-video-run.py \
   --prefix "$prefix" --checkpoint-workload "$workload_json" \
   --namespace /spec271/wan22 --mode single --exact-packet-disk-mib 131072 \
-  --output "$run_root"
+  --tensor-segment-bytes 7600 --output "$run_root"
 ```
 
 The Spec271 CPU application workload is 25 frames at 24 fps, 320×320,
@@ -271,6 +271,8 @@ not qualify the final video. Prepare all components for the requested layout;
 the native Requester validates geometry and placement before execution.
 The launcher keeps shared graph/weight files read-only, writes secondary
 configs under the run root and supports its existing `--warm-from` flow.
+Distributed checkpoint configurations use the existing 16,384-segment
+request limit to admit large VAE edges.
 Its large cache limits are conservative accounting ceilings, not RAM allocation.
 Use the installed `ndnsf-di cluster check/up/status/down` entry points and retain
 the actual configuration, artifact ledger, outcomes and cleanup receipts.

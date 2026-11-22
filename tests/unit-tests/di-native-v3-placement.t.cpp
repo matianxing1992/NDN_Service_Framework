@@ -1003,6 +1003,9 @@ BOOST_AUTO_TEST_CASE(WanProductionGeometryUsesBoundedDynamicInvocation)
   std::ifstream stream(path);
   BOOST_REQUIRE(stream.good());
   const auto source = NativeJson::parse(stream);
+  const auto productionProfile = source.value("profile", std::string{});
+  BOOST_REQUIRE(productionProfile.empty() || productionProfile == "wan22-25");
+  const bool shortClip = productionProfile == "wan22-25";
   auto execution = nativeCanonicalOnnxStepPlanFromJson(source.at("steps"),
                                                        source.at("dependencies"));
   BOOST_REQUIRE_EQUAL(execution.roles.size(), 2);
@@ -1013,12 +1016,14 @@ BOOST_AUTO_TEST_CASE(WanProductionGeometryUsesBoundedDynamicInvocation)
     BOOST_REQUIRE_EQUAL(rgb.slotId, "rgb");
     BOOST_REQUIRE_EQUAL(rgb.dtype, "float32");
     BOOST_REQUIRE_EQUAL(rgb.shape.size(), 5);
-    const std::array<std::int64_t, 5> expected{1, 3, 81, 480, 832};
+    const std::array<std::int64_t, 5> expected = shortClip
+      ? std::array<std::int64_t, 5>{1, 3, 25, 320, 320}
+      : std::array<std::int64_t, 5>{1, 3, 81, 480, 832};
     for (std::size_t axis = 0; axis < expected.size(); ++axis)
       BOOST_REQUIRE_EQUAL(std::get<std::int64_t>(rgb.shape[axis]), expected[axis]);
   }
   else {
-    BOOST_REQUIRE_EQUAL(execution.dependencies.size(), 4709);
+    BOOST_REQUIRE_EQUAL(execution.dependencies.size(), shortClip ? 788 : 4709);
   }
   const auto f = oracle();
   const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
@@ -1304,7 +1309,8 @@ BOOST_AUTO_TEST_CASE(WanProductionGeometryUsesBoundedDynamicInvocation)
     };
     auto signedProbe = makeProbe(SEGMENT_BYTES, certificates.at(proposal.providerByRole.at(role)));
     const auto rank = std::to_string(projected.assemblyContract().tensorParallelRank);
-    const ndn::Name deployedProvider("/ndnsf-test/wan/provider-" + rank);
+    const ndn::Name deployedProvider(
+      std::string(shortClip ? "/spec271/wan22/provider-" : "/ndnsf-test/wan/provider-") + rank);
     const auto deployedCertificate = chain.createIdentity(deployedProvider, ndn::RsaKeyParams(2048))
       .getDefaultKey().getDefaultCertificate();
     auto deployedProbe = makeProbe(SEGMENT_BYTES, deployedCertificate);
@@ -1319,6 +1325,7 @@ BOOST_AUTO_TEST_CASE(WanProductionGeometryUsesBoundedDynamicInvocation)
     std::uint64_t deployedLargestObject = 0;
     std::uint64_t largerDiskUpperBound = 0;
     std::uint64_t largerLargestObject = 0;
+    std::uint64_t largestSegmentCount = 0;
     for (const auto& endpoint : projected.dataflow.mayPublish) {
       const auto& slot = *outputByDependency.at(endpoint.dependencyId);
       BOOST_REQUIRE_EQUAL(slot.dtype, "float32");
@@ -1340,7 +1347,9 @@ BOOST_AUTO_TEST_CASE(WanProductionGeometryUsesBoundedDynamicInvocation)
       auto deployedEndpoint = endpoint;
       deployedEndpoint.requestId = deployedRequest;
       deployedEndpoint.publicRequestId = publicId;
-      deployedEndpoint.producerRole = "/dit/split/rank-" + rank;
+      deployedEndpoint.producerRole = shortClip
+        ? std::string(vaePath ? "vae" : "dit") + "/rank-" + rank
+        : "/dit/split/rank-" + rank;
       deployedEndpoint.producerNamespace = deployedProvider.toUri();
       NativePlanProjectionBuilder::certifyEndpoint(deployedEndpoint);
       deployedProbe.setName(ndn::Name(tensorObjectSegmentName(deployedEndpoint, segments - 1)));
@@ -1361,6 +1370,7 @@ BOOST_AUTO_TEST_CASE(WanProductionGeometryUsesBoundedDynamicInvocation)
       }
       const auto largerCount = 1 + (payload - 1) / DEPLOYMENT_SEGMENT_BYTES;
       BOOST_REQUIRE_LE(largerCount, endpoint.segmentCount);
+      largestSegmentCount = std::max(largestSegmentCount, largerCount);
       largerProbe.setName(ndn::Name(tensorObjectSegmentName(deployedEndpoint, largerCount - 1)));
       const auto largerWire = largerProbe.wireEncode().size();
       BOOST_CHECK_LE(largerWire, ndn::MAX_NDN_PACKET_SIZE);
@@ -1380,8 +1390,11 @@ BOOST_AUTO_TEST_CASE(WanProductionGeometryUsesBoundedDynamicInvocation)
                        << " single-child disk lower=" << deployedDiskLowerBound
                        << " upper=" << deployedDiskUpperBound
                        << " 7600-byte segment object bound=" << largerLargestObject
+                       << " segments=" << largestSegmentCount
                        << " disk upper=" << largerDiskUpperBound);
-    if (vaePath) {
+    if (shortClip && vaePath)
+      BOOST_CHECK_GT(largestSegmentCount, 4096U);
+    if (shortClip || vaePath) {
       BOOST_CHECK_LE(largerDiskUpperBound, 128ULL << 30);
     }
     else {

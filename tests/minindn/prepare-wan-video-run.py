@@ -228,6 +228,9 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
                inline_limit_bytes=inline_limit)
     if checkpoint_workload:
         request['timeout_ms'] = 3600000
+        if mode != 'single':
+            # A real VAE edge can exceed the default 4096 segments.
+            request['max_segments'] = 16384
     for component, config_name in (('dit', 'denoiser_config_file'), ('vae', 'decoder_config_file')):
         base = workload / component if checkpoint_workload else catalogs[component][1]
         base.mkdir(mode=0o700, exist_ok=True)
