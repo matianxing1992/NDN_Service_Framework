@@ -1321,7 +1321,7 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   requireExactKeys(root,
     {"schema", "contract", "requester_identity", "protection_epoch", "input_layout_digest",
      "security", "budget", "state_mapping", "no_progress_ms", "max_segments"}, "runtime",
-    {"options_transport"});
+    {"options_transport", "segment_manifest_dependency_id"});
   if (!root.at("schema").is_string() ||
       root.at("schema").get<std::string>() != "ndnsf-di-native-request-runtime-v1")
     throw std::invalid_argument("unsupported native request runtime schema");
@@ -1428,6 +1428,14 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
     throw std::invalid_argument("native request runtime progress or segment limit is out of range");
   runtime.noProgressMs = noProgressMs;
   runtime.maxSegments = static_cast<std::size_t>(maxSegments);
+  if (root.contains("segment_manifest_dependency_id")) {
+    runtime.segmentManifestDependencyId = readString(root.at("segment_manifest_dependency_id"),
+      "runtime.segment_manifest_dependency_id");
+    if (runtime.segmentManifestDependencyId.size() > 256 ||
+        runtime.segmentManifestDependencyId.find('\0') != std::string::npos) {
+      throw std::invalid_argument("invalid runtime.segment_manifest_dependency_id");
+    }
+  }
   runtime.grants = std::move(grants);
   runtime.catalog = catalog.preparation;
   runtime.planningCache = catalog.planningCache;
@@ -1538,6 +1546,7 @@ NativePlannedRequest planNativeRequestImpl(
   logPlanPhase(control.requestId, "request_context_copy", contextCopyTiming);
   std::vector<NativeAdmittedOfferV3> offers;
   std::map<std::string, std::uint64_t> authenticatedTransportByProvider;
+  std::map<std::string, std::uint64_t> authenticatedManifestByProvider;
   const bool stateless = !options.generation || !options.generation->enabled;
   auto phaseStarted = planPhaseStarted();
   for (const auto& ack : closure.candidates) {
@@ -1552,9 +1561,16 @@ NativePlannedRequest planNativeRequestImpl(
       if (fields.hasField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD)) {
         const auto bytes = detail::nativeTensorTransportSegmentBytesV1(
           fields.getField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD), ndn::MAX_NDN_PACKET_SIZE);
-        if (bytes != 0)
-          authenticatedTransportByProvider.emplace(
-            offers.back().observation().provider, bytes);
+        if (bytes != 0) {
+          const auto& provider = offers.back().observation().provider;
+          authenticatedTransportByProvider.emplace(provider, bytes);
+          if (stateless && !runtime.segmentManifestDependencyId.empty() &&
+              fields.hasField(NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD) &&
+              fields.getField(NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD) ==
+                NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_VALUE) {
+            authenticatedManifestByProvider.emplace(provider, bytes);
+          }
+        }
       }
     }
   }
@@ -2149,6 +2165,8 @@ NativePlannedRequest planNativeRequestImpl(
     projection.inlineFirstSegment = true;
     if (grantLease) projection.layoutOwner = &grantLease->projectionLayout;
     projection.tensorSegmentBytesByProvider = std::move(authenticatedTransportByProvider);
+    projection.segmentManifestDependencyId = runtime.segmentManifestDependencyId;
+    projection.manifestSegmentBytesByProvider = std::move(authenticatedManifestByProvider);
     if (context.placementObservationSnapshot.is_object() &&
         context.placementObservationSnapshot.contains("provider_offers")) {
       for (const auto& offer : context.placementObservationSnapshot.at("provider_offers")) {

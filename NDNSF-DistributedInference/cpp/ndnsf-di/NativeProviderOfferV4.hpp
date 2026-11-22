@@ -26,6 +26,10 @@ inline constexpr char NATIVE_PROVIDER_OFFER_V4_FIELD[] =
 /** Optional transport declaration covered by the enclosing Core ACK signature. */
 inline constexpr char NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD[] =
   "ndnsf.di.tensor-transport.v1";
+inline constexpr char NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD[] =
+  "ndnsf.di.segment-manifest.v1";
+inline constexpr char NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_VALUE[] =
+  "manifest-wire-v1";
 
 /** Shared packet-train metadata for ACK and targeted response producers. */
 NativeJson nativeProbeTrainRateMetadataV4(
@@ -41,6 +45,7 @@ struct NativeProviderOfferV4Config
   std::uint64_t telemetryMaxAgeMs = 5000;
   // Observation freshness only; does not limit the base ACK execution lifetime.
   std::uint64_t offerTtlMs = 5000;
+  bool segmentManifestEnabled = false;
 };
 
 struct NativeProviderOfferV4Decision

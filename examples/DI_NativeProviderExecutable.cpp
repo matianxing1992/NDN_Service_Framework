@@ -250,6 +250,7 @@ struct Options
   bool allowPreassembledDiagnostic = false;
   bool enableAdmissionLease = false;
   bool allowSelectionGenerationOptions = false;
+  bool segmentManifestEnabled = false;
   bool requireExecutionLease = false;
   std::string executionPolicy;
   int admissionLeaseTtlMs = 60000;
@@ -928,6 +929,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--allow-selection-generation-options") {
       options.allowSelectionGenerationOptions = true;
     }
+    else if (arg == "--enable-segment-manifest") {
+      options.segmentManifestEnabled = true;
+    }
     else if (arg == "--enable-admission-lease") {
       options.enableAdmissionLease = true;
     }
@@ -1257,7 +1261,7 @@ printUsage(const char* program)
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
     << "[--permission-wait-ms <ms>] "
     << "[--kv-handoff-config <operator-json>] [--check-kv-handoff-config] "
-    << "[--tracer-deterministic-runner] [--enable-admission-lease] "
+    << "[--tracer-deterministic-runner] [--enable-admission-lease] [--enable-segment-manifest] "
     << "[--allow-preassembled-diagnostic] [--allow-selection-generation-options] "
     << "[--require-execution-lease] "
     << "[--execution-policy DATA_DRIVEN_V2|LEGACY_READY_SET_V1] "
@@ -1934,6 +1938,7 @@ main(int argc, char** argv)
         v4Config.provider = nativeOfferConfig->provider;
         v4Config.service = nativeOfferConfig->service;
         v4Config.bootEpoch = nativeOfferConfig->bootEpoch;
+        v4Config.segmentManifestEnabled = options.segmentManifestEnabled;
         v4Config.signerKeyId = nativeOfferConfig->signerKeyId;
         v4Config.signDigest = nativeOfferConfig->signDigest;
         nativeService.asyncAckHandler = makeNativeProviderObservationAckHandlerV4(
@@ -2197,6 +2202,7 @@ main(int argc, char** argv)
 
             NativeProviderHandlerConfig config;
             config.maxSegmentSize = tensorSegmentBytes;
+            config.segmentManifestEnabled = options.segmentManifestEnabled;
             config.allowSelectionGenerationOptions = options.allowSelectionGenerationOptions;
             config.plan = plan;
             config.assignment = defaultAssignment(plan, options.providerName, allowedRoles);

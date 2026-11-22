@@ -594,6 +594,13 @@ FrozenConfig freezeConfig(const std::filesystem::path& path,
   if (generationMode != "TOKEN_DIAGNOSTIC" && generationMode != "TOKEN_STREAMING")
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
                   "request generation_mode is unsupported");
+  if (!publishOnly && request.contains("segment_manifest_dependency_id")) {
+    const auto dependency = requiredString(request, "segment_manifest_dependency_id");
+    if (dependency.size() > 256 || dependency.find('\0') != std::string::npos) {
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
+                    "segment_manifest_dependency_id exceeds 256 bytes or contains NUL");
+    }
+  }
   if (request.contains("options_transport")) {
     const auto mode = requiredString(request, "options_transport");
     if ((mode != "INLINE" && mode != "SELECTION_GENERATION_V1") ||
@@ -1077,6 +1084,8 @@ NativeJson requestRuntimeConfiguration(const FrozenConfig& frozen,
   };
   if (request.value("options_transport", std::string("INLINE")) != "INLINE")
     result["options_transport"] = request.at("options_transport");
+  if (request.contains("segment_manifest_dependency_id"))
+    result["segment_manifest_dependency_id"] = request.at("segment_manifest_dependency_id");
   return result;
 }
 

@@ -234,6 +234,7 @@ struct NativeTensorSemanticFacts
   std::uint64_t segmentCount = 0;
   std::string bundleTensorNamesDigest;
   std::uint64_t inlineFirstSegment = 0;
+  std::optional<TensorSegmentManifestGeometry> segmentManifest;
   std::string namingCapabilityDigest;
   std::string publicRequestId;
 };
@@ -287,6 +288,7 @@ struct NativeTensorEndpointV3
   std::uint64_t prefetchSegmentBytes = 0;
   // Signed endpoint opt-in: dynamic manifest and segment0 share one Data.
   bool inlineFirstSegment = false;
+  std::optional<TensorSegmentManifestGeometry> segmentManifest;
   // Fixed, signed generation projection: zero for application input and
   // non-generation roles; otherwise the generation contract's operation stride.
   std::uint64_t namingOperationStride = 0;

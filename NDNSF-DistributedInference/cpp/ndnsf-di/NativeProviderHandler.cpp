@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
@@ -3084,6 +3085,27 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         return;
       }
       if (selectionProjection) {
+        const auto& flow = selectionProjection->dataflow;
+        const auto unsupportedManifest = [&] (const NativeTensorEndpointV3& endpoint) {
+          if (!endpoint.segmentManifest) {
+            return false;
+          }
+          using ndn_service_framework::DependencyRedundancy;
+          return !config.segmentManifestEnabled ||
+            ctx.assignment().dependencyTransport.redundancy != DependencyRedundancy::None ||
+            selectionProjection->generationContract.enabled ||
+            !request.hasRequestCapabilities() ||
+            !request.getRequestCapabilities().hasField(NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD) ||
+            request.getRequestCapabilities().getField(NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD) !=
+              "optional" ||
+            (ndn::Name(endpoint.producerNamespace) == ctx.localProvider() &&
+             endpoint.segmentManifest->segmentPayloadBytes != config.maxSegmentSize);
+        };
+        if (std::any_of(flow.mayPublish.begin(), flow.mayPublish.end(), unsupportedManifest) ||
+            std::any_of(flow.mustFetch.begin(), flow.mustFetch.end(), unsupportedManifest)) {
+          failInvocation("DI_SELECTION_SEGMENT_MANIFEST_UNSUPPORTED");
+          return;
+        }
         validateNativeAutomaticSelectionRequestBinding(requestPayloadText, *selectionProjection);
         if (selectionProjection->provider != ctx.localProvider().toUri()) {
           failInvocation("DI_SELECTION_PROVIDER_MISMATCH");

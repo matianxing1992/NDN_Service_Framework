@@ -37,6 +37,9 @@ struct NativeProjectionContext
   bool compactGenerationEndpoints = false;
   std::shared_ptr<NativeWorkStatistics> workStatistics;
   std::string publicRequestId;
+  std::string segmentManifestDependencyId;
+  // Both fields originate from the same authenticated ACK for this request.
+  std::map<std::string, std::uint64_t> manifestSegmentBytesByProvider;
 };
 
 class NativePlanProjectionBuilder final

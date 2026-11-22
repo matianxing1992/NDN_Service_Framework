@@ -1818,6 +1818,39 @@ BOOST_AUTO_TEST_CASE(NativeV3ProjectionSeparatesMultiplePipelineTensors)
   BOOST_CHECK_EQUAL(sinkSpec.inputs[1].transportScope, second.groupId);
 }
 
+BOOST_AUTO_TEST_CASE(SegmentManifestGeometryBindsTensorNameAndObject)
+{
+  auto legacy = endpoint("S0R0", "S1R0", digest('a'));
+  legacy.segmentCount = 1024;
+  certifyNamingEndpoint(legacy);
+  auto manifest = legacy;
+  manifest.segmentManifest = TensorSegmentManifestGeometry{937, 7000};
+  certifyNamingEndpoint(manifest);
+  BOOST_CHECK(!nativeEndpointJson(legacy).contains("segment_manifest_v1"));
+  const auto geometry = nativeEndpointJson(manifest).at("segment_manifest_v1");
+  BOOST_CHECK_EQUAL(geometry.at("source_segments").get<uint32_t>(), 937U);
+  BOOST_CHECK_EQUAL(geometry.at("segment_payload_bytes").get<uint32_t>(), 7000U);
+  BOOST_CHECK_NE(tensorObjectNamePrefix(manifest), tensorObjectNamePrefix(legacy));
+  BOOST_CHECK_NE(computeTensorExecutionObjectDigest(manifest),
+                 computeTensorExecutionObjectDigest(legacy));
+  BOOST_CHECK_NE(manifest.endpointDigest, legacy.endpointDigest);
+  auto differentlyChunked = manifest;
+  differentlyChunked.segmentManifest->segmentPayloadBytes = 6999;
+  certifyNamingEndpoint(differentlyChunked);
+  BOOST_CHECK_NE(tensorObjectNamePrefix(manifest), tensorObjectNamePrefix(differentlyChunked));
+  BOOST_CHECK_NE(computeTensorExecutionObjectDigest(manifest),
+                 computeTensorExecutionObjectDigest(differentlyChunked));
+  auto invalid = manifest;
+  invalid.inlineFirstSegment = true;
+  BOOST_CHECK_THROW(tensorObjectNamePrefix(invalid), std::invalid_argument);
+  invalid = manifest;
+  invalid.namingOperationStride = 56;
+  BOOST_CHECK_THROW(tensorObjectNamePrefix(invalid), std::invalid_argument);
+  invalid = manifest;
+  invalid.segmentCount = 936;
+  BOOST_CHECK_THROW(tensorObjectNamePrefix(invalid), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(NativeTensorEndpointUsesOneExactManifestAndSegmentGrammar)
 {
   auto value = endpoint("S0R0", "S1R0", digest('f'));
@@ -1866,11 +1899,13 @@ BOOST_AUTO_TEST_CASE(NativeTensorC04WireGoldensBindCompleteEndpointAndSignedStri
   ndn::Name expected("/provider/0/NDNSF-DI/tensor/REQUEST");
   expected.append(raw("name=/8=request/54=%00/50=%01%00"));
   expected.append("ATTEMPT").append("1").append("ROUND").append("2");
-  expected.append("POSITION").append(raw("name=" + std::string(64, 'r')));
+  expected.append("POSITION").append(raw("name=" + std::string(64, 'r') + "~85778127ccafaad8"));
   expected.append("OP").append("PIPELINE").append("INDEX").append("1");
   expected.append("RANK").append("2").append("BATCH").append("3");
-  expected.append(raw("name=" + std::string(64, 't')));
-  const std::string key = "4fa08da752faefe896fabc2e823efd6de25173f72894352bc074483e6c3952f5";
+  expected.append(raw("name=" + std::string(64, 't') + "~c89f1da59a276cac"));
+  // The legacy fixture now commits the segment bound, canonical bundle
+  // names and the non-inline rule in C01 fields 20 through 22.
+  const std::string key = "4f6281bd61cab2c9d031263b7390617eb20ce76b9651e9aae9bcf95582ea766f";
   std::vector<std::uint8_t> keyBytes;
   for (std::size_t i = 0; i < key.size(); i += 2)
     keyBytes.push_back(static_cast<std::uint8_t>(std::stoul(key.substr(i, 2), nullptr, 16)));

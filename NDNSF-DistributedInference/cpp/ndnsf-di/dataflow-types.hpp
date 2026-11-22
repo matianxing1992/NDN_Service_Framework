@@ -69,6 +69,19 @@ struct RedistributionSpec
   bool completeOutput = false;
 };
 
+/** Geometry sealed into the name and endpoint digest of a manifest-authenticated tensor. */
+struct TensorSegmentManifestGeometry
+{
+  uint32_t sourceSegments = 0;
+  uint32_t segmentPayloadBytes = 0;
+
+  bool operator==(const TensorSegmentManifestGeometry& other) const noexcept
+  {
+    return sourceSegments == other.sourceSegments &&
+           segmentPayloadBytes == other.segmentPayloadBytes;
+  }
+};
+
 struct DependencyEdge
 {
   DependencyEdge() = default;
@@ -120,6 +133,7 @@ struct DependencyEdge
   std::uint64_t prefetchBundleBytes = 0;
   std::uint64_t prefetchSegmentBytes = 0;
   bool inlineFirstSegment = false;
+  std::optional<TensorSegmentManifestGeometry> segmentManifest;
   std::string manifestDataName;
   std::size_t maxSegments = 0;
   std::string endpointDigest;

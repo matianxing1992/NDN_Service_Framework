@@ -247,6 +247,7 @@ struct NativeProviderHandlerConfig
   // request/plan/role/tensor bindings, so the signed wire packet needs room
   // beyond the plaintext segment payload.
   std::size_t maxSegmentSize = 7000;
+  bool segmentManifestEnabled = false;
   int freshnessMs = 60000;
   // Optional request-scoped cross-Provider data-plane coordinator.  When
   // absent, dependencies retain the ordinary COLLAB-LARGE path.

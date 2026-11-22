@@ -16,6 +16,7 @@
 #include <ndn-cxx/encoding/tlv.hpp>
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "ndn-service-framework/segment-manifest.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -275,6 +276,10 @@ NativeJson jsonValue(const NativeTensorEndpointV3& value, bool includeNamingBind
   }
   result["manifest_digest"] = value.manifestDigest;
   if (value.inlineFirstSegment) result["inline_first_segment"] = true;
+  if (value.segmentManifest) {
+    result["segment_manifest_v1"] = {{"source_segments", value.segmentManifest->sourceSegments},
+      {"segment_payload_bytes", value.segmentManifest->segmentPayloadBytes}};
+  }
   result["security_profile"] = value.securityProfile;
   if (includeNamingBinding && !value.namingCapabilityDigest.empty())
     result["naming_capability_digest"] = value.namingCapabilityDigest;
@@ -872,6 +877,17 @@ executionRoleFromV3Json(const boost::property_tree::ptree& node)
   return role;
 }
 
+TensorSegmentManifestGeometry
+makeSegmentManifestGeometry(uint64_t sourceSegments, uint64_t segmentPayloadBytes)
+{
+  using ndn_service_framework::SegmentManifestVerifier;
+  if (sourceSegments < 2 || sourceSegments > SegmentManifestVerifier::MAX_SOURCE_PACKETS ||
+      segmentPayloadBytes == 0 || segmentPayloadBytes > ndn::MAX_NDN_PACKET_SIZE) {
+    throw std::invalid_argument("invalid V3 manifest-authenticated tensor geometry");
+  }
+  return {static_cast<uint32_t>(sourceSegments), static_cast<uint32_t>(segmentPayloadBytes)};
+}
+
 void validateNativeTensorEndpointV3(const NativeTensorEndpointV3& endpoint)
 {
   if (!endpoint.publicRequestId.empty())
@@ -881,6 +897,15 @@ void validateNativeTensorEndpointV3(const NativeTensorEndpointV3& endpoint)
     throw std::invalid_argument("invalid tensor naming capability digest");
   if (endpoint.inlineFirstSegment && endpoint.sourceKind != "ROLE")
     throw std::invalid_argument("inline first segment requires a ROLE endpoint");
+  if (endpoint.segmentManifest) {
+    (void)makeSegmentManifestGeometry(endpoint.segmentManifest->sourceSegments,
+                                     endpoint.segmentManifest->segmentPayloadBytes);
+    if (endpoint.sourceKind != "ROLE" || endpoint.inlineFirstSegment ||
+        endpoint.consumerRoles.size() != 1 || endpoint.namingOperationStride != 0 ||
+        endpoint.segmentManifest->sourceSegments > endpoint.segmentCount) {
+      throw std::invalid_argument("invalid V3 manifest-authenticated tensor endpoint");
+    }
+  }
   if ((endpoint.prefetchBundleBytes == 0) != (endpoint.prefetchSegmentBytes == 0) ||
       endpoint.prefetchSegmentBytes > ndn::MAX_NDN_PACKET_SIZE ||
       (endpoint.prefetchBundleBytes != 0 &&
@@ -973,6 +998,16 @@ tensorEndpointFromV3Json(const boost::property_tree::ptree& node, const std::str
   endpoint.prefetchBundleBytes = node.get<std::uint64_t>("prefetch_bundle_bytes", 0);
   endpoint.prefetchSegmentBytes = node.get<std::uint64_t>("prefetch_segment_bytes", 0);
   endpoint.inlineFirstSegment = node.get<bool>("inline_first_segment", false);
+  if (const auto shape = node.get_child_optional("segment_manifest_v1")) {
+    if (node.count("segment_manifest_v1") != 1 || !shape->data().empty() || shape->size() != 2 ||
+        shape->count("source_segments") != 1 || shape->count("segment_payload_bytes") != 1 ||
+        !shape->get_child("source_segments").empty() ||
+        !shape->get_child("segment_payload_bytes").empty()) {
+      throw std::invalid_argument("invalid segment_manifest_v1 endpoint fields");
+    }
+    endpoint.segmentManifest = makeSegmentManifestGeometry(shape->get<uint64_t>("source_segments"),
+      shape->get<uint64_t>("segment_payload_bytes"));
+  }
   if (endpoint.sourceKind == "ROLE")
     endpoint.namingCapabilityDigest = namingCapability;
   endpoint.manifestDigest = node.get<std::string>("manifest_digest", "");
@@ -1257,6 +1292,7 @@ sameTensorEndpoint(const NativeTensorEndpointV3& left,
          left.prefetchBundleBytes == right.prefetchBundleBytes &&
          left.prefetchSegmentBytes == right.prefetchSegmentBytes &&
          left.inlineFirstSegment == right.inlineFirstSegment &&
+         left.segmentManifest == right.segmentManifest &&
          left.manifestDigest == right.manifestDigest &&
          left.securityProfile == right.securityProfile &&
          left.noProgressDeadlineMs == right.noProgressDeadlineMs &&
@@ -3103,6 +3139,10 @@ NativeJson endpointBindingsJson(const std::vector<NativeTensorEndpointV3>& endpo
       binding["prefetch_segment_bytes"] = endpoint.prefetchSegmentBytes;
     }
     if (endpoint.inlineFirstSegment) binding["inline_first_segment"] = true;
+    if (endpoint.segmentManifest) {
+      binding["segment_manifest_v1"] = {{"source_segments", endpoint.segmentManifest->sourceSegments},
+        {"segment_payload_bytes", endpoint.segmentManifest->segmentPayloadBytes}};
+    }
     result.push_back(std::move(binding));
   }
   return result;
@@ -3157,7 +3197,7 @@ NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
       requireOnlyBindingKeys(binding, {"producer_namespace", "requester", "group_id", "group_epoch", "microbatch",
         "segment_count", "manifest_digest", "endpoint_digest", "no_progress_deadline_ms", "hard_deadline_ms",
         "tensor_digest", "layout_digest", "target_layout_digest", "prefetch_bundle_bytes", "prefetch_segment_bytes",
-        "inline_first_segment"});
+        "inline_first_segment", "segment_manifest_v1"});
       const bool input = endpoint.sourceKind == "APPLICATION_INPUT";
       for (const auto* field : {"tensor_digest", "layout_digest", "target_layout_digest"})
         if (binding.contains(field) != input) throw std::invalid_argument("invocation input binding fields mismatch");
@@ -3180,6 +3220,16 @@ NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
       if (binding.contains("prefetch_bundle_bytes") != binding.contains("prefetch_segment_bytes"))
         throw std::invalid_argument("invocation prefetch binding is incomplete");
       endpoint.inlineFirstSegment = binding.value("inline_first_segment", false);
+      endpoint.segmentManifest.reset();
+      if (binding.contains("segment_manifest_v1")) {
+        const auto& shape = binding.at("segment_manifest_v1");
+        requireOnlyBindingKeys(shape, {"source_segments", "segment_payload_bytes"});
+        if (compact || !shape.is_object() || shape.size() != 2) {
+          throw std::invalid_argument("compact endpoint ranges do not support segment manifests");
+        }
+        endpoint.segmentManifest = makeSegmentManifestGeometry(
+          unsignedBinding(shape, "source_segments"), unsignedBinding(shape, "segment_payload_bytes"));
+      }
       if (!input) endpoint.namingCapabilityDigest = namingCapability;
       if (input) {
         endpoint.tensorDigest = binding.at("tensor_digest").get<std::string>();
@@ -4809,6 +4859,7 @@ roleSpecFromSelectionProjectionV3Impl(
     edge.prefetchBundleBytes = endpoint.prefetchBundleBytes;
     edge.prefetchSegmentBytes = endpoint.prefetchSegmentBytes;
     edge.inlineFirstSegment = endpoint.inlineFirstSegment;
+    edge.segmentManifest = endpoint.segmentManifest;
     edge.tensors = {endpoint.tensorId};
     edge.bundleTensorNames = endpoint.bundleTensorNames;
     edge.requestId = projection.requestId;

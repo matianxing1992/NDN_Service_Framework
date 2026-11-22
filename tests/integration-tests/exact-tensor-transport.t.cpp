@@ -297,6 +297,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
             std::size_t repeatedFetches = 0, std::size_t prefetchWorkerCount = 0,
             bool checkpointFinalize = false)
 {
+  const bool manifestAuthenticated = mode == "manifest-authenticated";
+  constexpr uint32_t manifestSourceSegments = 129;
   const bool sharedCancellation = mode == "shared-tp-cancel";
   const bool sharedFanout = mode == "shared-tp-partial" || sharedCancellation;
   const bool manifestLate = mode == "manifest-late";
@@ -381,9 +383,16 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
             (isExpectedManifest || (interest.getName().size() >= 2 && interest.getName().get(-2) == ndn::name::Component("DATA") && interest.getName().get(-1).isSegment()))) {
           earlyInterests.emplace(interest.getName(), interest);
         }
-        if ((interest.getName().size() >= 2 && interest.getName().get(-2) == ndn::name::Component("DATA") && interest.getName().get(-1).isSegment())) {
+        const auto sourceName = manifestAuthenticated && !interest.getName().empty() &&
+            interest.getName().at(-1).isImplicitSha256Digest()
+          ? interest.getName().getPrefix(-1) : interest.getName();
+        if (sourceName.size() >= 2 && sourceName.get(-2) == ndn::name::Component("DATA") &&
+            sourceName.get(-1).isSegment()) {
+          if (manifestAuthenticated) {
+            BOOST_CHECK(interest.getName().at(-1).isImplicitSha256Digest());
+          }
           ++segmentInterests;
-          requestedSegments.insert(interest.getName());
+          requestedSegments.insert(sourceName);
           if (segmentTimeout) return;
           if (observedSizing && holdObservedManifest) {
             if (mode == "inline-observed-cancel") {
@@ -642,6 +651,9 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   endpoint.noProgressDeadlineMs = capability.noProgressMs;
   endpoint.hardDeadlineMs = capability.hardDeadlineMs;
   endpoint.inlineFirstSegment = inlineDelivery;
+  if (manifestAuthenticated) {
+    endpoint.segmentManifest = TensorSegmentManifestGeometry{manifestSourceSegments, 7000};
+  }
   if (semanticFeedback) {
     endpoint.namingStepId = "token-feedback";
     endpoint.namingPortId = "input_ids";
@@ -692,6 +704,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   edge.noProgressDeadlineMs = capability.noProgressMs;
   edge.hardDeadlineMs = capability.hardDeadlineMs;
   edge.inlineFirstSegment = inlineDelivery;
+  edge.segmentManifest = endpoint.segmentManifest;
   {
     std::lock_guard<std::mutex> lock(manifestNameMutex);
     expectedManifestUri = edge.manifestDataName;
@@ -729,6 +742,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   original.name = endpoint.tensorId;
   original.payload.resize(mode == "inline-oversize" ? chunkSize + 17 :
     mode == "inline-single" ? 5994 :
+    manifestAuthenticated ? (manifestSourceSegments - 1) * chunkSize + 17 :
     adaptiveWindow ? 64 * 7000 + 17 :
     (windowCancellation || windowRefill || mode == "inline-window") ? 20 * 7000 + 17 :
     (prefetch || boundedWindow) ? 12 * 7000 + 17 :
@@ -1437,7 +1451,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     }
     return;
   }
-  if (!mode.empty() && !feedback && mode != "admission" && mode != "reuse" &&
+  if (!mode.empty() && !manifestAuthenticated && !feedback &&
+      mode != "admission" && mode != "reuse" &&
       mode != "quota" && mode != "legacy" && mode != "packed-bounds" &&
       !prefetch && (!inlineDelivery || mode == "inline-corrupt")) {
     const auto expected = (mode == "ciphertext" || mode == "inline-corrupt") ? "ciphertext commitment mismatch" :
@@ -1717,7 +1732,33 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     BOOST_CHECK_EQUAL(packets, beforeRejectedReplay);
   }
   const bool expectInline = inlineDelivery && mode != "inline-oversize";
-  BOOST_CHECK_EQUAL(uniquePackets.size(), expectedSegments + (expectInline ? 0U : 1U));
+  const auto indexPages = manifestAuthenticated
+    ? SegmentManifestVerifier::pageCountFor(manifestSourceSegments) : 0;
+  BOOST_CHECK_EQUAL(uniquePackets.size(), expectedSegments + indexPages + (expectInline ? 0U : 1U));
+  if (manifestAuthenticated) {
+    BOOST_CHECK_EQUAL(expectedSegments, manifestSourceSegments);
+    BOOST_CHECK_EQUAL(segmentNamesBeforeManifest, 0U);
+    BOOST_CHECK_EQUAL(requestedSegments.size(), manifestSourceSegments);
+    for (const auto& [name, wire] : uniquePackets) {
+      const ndn::Data packet(ndn::Block(std::make_shared<const ndn::Buffer>(wire)));
+      if (name == ndn::Name(edge.manifestDataName)) {
+        BOOST_CHECK(packet.getSignatureInfo().hasKeyLocator());
+      }
+      else {
+        BOOST_CHECK_EQUAL(packet.getSignatureType(), ndn::tlv::DigestSha256);
+        BOOST_CHECK(issuedSourceInterests.count(packet.getFullName()) != 0);
+      }
+    }
+    const auto originals = uniquePackets;
+    const auto before = packets;
+    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
+    auto reread = consumerIo.prefetchInput("session-v3", edge);
+    environment.pumpUntil([&] { return reread.wait_for(0ms) == std::future_status::ready; });
+    BOOST_REQUIRE(reread.wait_for(0ms) == std::future_status::ready);
+    BOOST_CHECK(reread.get().payload == original.payload);
+    BOOST_CHECK(uniquePackets == originals);
+    BOOST_CHECK_GT(packets, before);
+  }
   if (mode == "inline-oversize") {
     BOOST_CHECK_EQUAL(requestedSegments.count(ndn::Name(tensorObjectSegmentName(endpoint, 0))), 1U);
     const ndn::Data rawManifest(ndn::Block(std::make_shared<const ndn::Buffer>(
@@ -1796,6 +1837,10 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
 }
 
 BOOST_AUTO_TEST_CASE(LargeTensorUsesBoundedSignedPackets) { runTransfer(""); }
+BOOST_AUTO_TEST_CASE(ManifestTensorUsesProvenDigestNamesAndReplaysOriginals)
+{
+  runTransfer("manifest-authenticated");
+}
 BOOST_AUTO_TEST_CASE(RepeatedExactPrefetchThreadAndCpuProbe)
 {
   // Selected only by the explicit qualification profile: a missing opt-in is a named failure.

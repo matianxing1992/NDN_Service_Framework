@@ -58,6 +58,11 @@ computeTensorExecutionObjectDigest(const NativeTensorEndpointV3& endpoint)
     fields.push_back(uint64Field(10, endpoint.namingLayerEnd));
     fields.push_back(stringField(11, 2, endpoint.namingPortId));
   }
+  if (endpoint.segmentManifest) {
+    fields.push_back(stringField(12, 2, "segment-manifest-v1"));
+    fields.push_back(uint64Field(13, endpoint.segmentManifest->sourceSegments));
+    fields.push_back(uint64Field(14, endpoint.segmentManifest->segmentPayloadBytes));
+  }
   return ndn_service_framework::computeNamingDigest("ndnsf-naming/tensor-object", fields);
 }
 
@@ -95,6 +100,11 @@ computeTensorRepresentationCommitment(const NativeTensorSemanticFacts& facts)
     fields.push_back(text(23, facts.namingCapabilityDigest));
   if (!facts.publicRequestId.empty())
     fields.push_back(text(24, facts.publicRequestId));
+  if (facts.segmentManifest) {
+    fields.push_back(text(25, "segment-manifest-v1"));
+    fields.push_back(uint64Field(26, facts.segmentManifest->sourceSegments));
+    fields.push_back(uint64Field(27, facts.segmentManifest->segmentPayloadBytes));
+  }
   return ndn_service_framework::computeNamingDigest("ndnsf-naming/tensor-representation", fields);
 }
 
@@ -146,6 +156,7 @@ tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
     "ndnsf-naming/tensor-bundle",
     {{1, 5, std::vector<std::uint8_t>(bundle.begin(), bundle.end())}});
   facts.inlineFirstSegment = endpoint.inlineFirstSegment ? 1 : 0;
+  facts.segmentManifest = endpoint.segmentManifest;
   facts.namingCapabilityDigest = endpoint.namingCapabilityDigest;
   facts.publicRequestId = endpoint.publicRequestId;
   const auto key = computeTensorRepresentationCommitment(facts);

@@ -133,6 +133,9 @@ mergeTransferMetrics(CollaborationTransferMetrics& target,
   addTransferMetric(target.wireBytes, source.wireBytes);
   addTransferMetric(target.interestCount, source.interestCount);
   addTransferMetric(target.retryCount, source.retryCount);
+  target.manifestCertificateValidations += source.manifestCertificateValidations;
+  target.manifestVerifiedMembers += source.manifestVerifiedMembers;
+  target.manifestControlWireBytes += source.manifestControlWireBytes;
   if (source.localCopyBytes) {
     target.localCopyBytes = target.localCopyBytes.value_or(0) +
       *source.localCopyBytes;
@@ -277,6 +280,19 @@ exactTensorSegmentName(const DependencyEdge& edge, std::size_t segment)
   return makeTensorSegmentDataName(ndn::Name(edge.plannedDataName), segment);
 }
 
+ndn_service_framework::SegmentManifestScope
+tensorManifestScope(const DependencyEdge& edge, const ndn::Name& producer)
+{
+  using namespace ndn_service_framework;
+  SegmentManifestScope scope{producer, ndn::Name(edge.plannedDataName)};
+  const auto binding = makeNamingDigestComponent(edge.executionObjectDigest);
+  if (binding.value_size() != scope.bindingDigest.size()) {
+    throw std::invalid_argument("invalid tensor manifest binding");
+  }
+  std::copy(binding.value_begin(), binding.value_end(), scope.bindingDigest.begin());
+  return scope;
+}
+
 void
 validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member,
                         const GroupCapabilityV1& capability)
@@ -331,6 +347,7 @@ validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member,
     "ndnsf-naming/tensor-bundle",
     {{1, 5, std::vector<std::uint8_t>(bundle.begin(), bundle.end())}});
   facts.inlineFirstSegment = edge.inlineFirstSegment ? 1 : 0;
+  facts.segmentManifest = edge.segmentManifest;
   facts.namingCapabilityDigest = edge.namingCapabilityDigest;
   facts.publicRequestId = edge.publicRequestId;
   const auto key = computeTensorRepresentationCommitment(facts);
@@ -829,7 +846,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
         }
         const auto prefetchCount = prefetchBytes != 0 && prefetchSegmentBytes != 0
           ? 1 + (prefetchBytes - 1) / prefetchSegmentBytes : 0;
-        const bool speculativeWholeStarted = prefetchCount > (edge.inlineFirstSegment ? 1U : 0U) &&
+        const bool speculativeWholeStarted = !edge.segmentManifest && prefetchCount > (edge.inlineFirstSegment ? 1U : 0U) &&
           prefetchSegmentBytes <= ndn::MAX_NDN_PACKET_SIZE &&
           prefetchCount <= edge.maxSegments && prefetchCount <= operation.maxSegments &&
           prefetchBytes <= operation.maxBytes &&
@@ -869,7 +886,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             }, names.size(),
             detail::makeCollaborationWorkObserver(m_workStatistics, inferenceEpochForEdge(edge))));
         }
-        const bool speculativeFirstStarted = !edge.inlineFirstSegment && !speculativeWholeStarted && capability.maxInflightBytes >=
+        const bool speculativeFirstStarted = !edge.segmentManifest && !edge.inlineFirstSegment && !speculativeWholeStarted && capability.maxInflightBytes >=
           2 * static_cast<std::uint64_t>(ndn::MAX_NDN_PACKET_SIZE);
         bool speculativeFirstUsed = false;
         bool speculativeFirstFallback = false;
@@ -894,8 +911,45 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
         const auto expectedConsumers = edge.consumerRoles.empty()
           ? std::vector<std::string>{edge.consumerRole} : edge.consumerRoles;
         const auto manifestFetchTiming = detail::nativePhaseStarted();
-        auto manifestWire = fetchExact(
-          ndn::Name(edge.manifestDataName), true);
+        std::optional<ExactOperation> authenticatedBatch;
+        std::vector<std::uint8_t> manifestWire;
+        if (edge.segmentManifest) {
+          const auto& geometry = *edge.segmentManifest;
+          if (edge.inlineFirstSegment || geometry.sourceSegments > operation.maxSegments ||
+              geometry.sourceSegments > edge.maxSegments) {
+            throw std::invalid_argument("manifest-authenticated tensor exceeds sealed geometry");
+          }
+          const auto wireLimit = std::min<std::uint64_t>(capability.maxInflightBytes, 64U << 20);
+          const auto window = std::max<std::uint64_t>(1, wireLimit / ndn::MAX_NDN_PACKET_SIZE);
+          authenticatedBatch.emplace(m_ctx.startVerifiedManifestAuthenticatedExactData(
+            edge.transportScope.empty() ? edge.scope : edge.transportScope,
+            tensorManifestScope(edge, ndn::Name(producerMember->provider)),
+            {geometry.sourceSegments, wireLimit, geometry.sourceSegments}, hardDeadline,
+            [cancelled, batchCancelled, coordinator = m_groupCoordinator, speculativeExpired] {
+              return cancelled->load(std::memory_order_acquire) ||
+                batchCancelled->load(std::memory_order_acquire) || coordinator->terminal() ||
+                speculativeExpired();
+            }, reportFirstRead,
+            [coordinator = m_groupCoordinator, speculativeDeadline, hardDeadline,
+             noProgressMs = edge.noProgressDeadlineMs] {
+              if (!coordinator->recordProgress(nowEpochMs())) return false;
+              speculativeDeadline->store(std::min(hardDeadline, SteadyClock::now() +
+                std::chrono::milliseconds(noProgressMs)).time_since_epoch().count(),
+                std::memory_order_release);
+              return true;
+            }, static_cast<std::size_t>(window),
+            detail::makeCollaborationWorkObserver(m_workStatistics, inferenceEpochForEdge(edge))));
+          NativeWorkScope wait(m_workStatistics, "tensor-manifest-readiness-wait",
+                               NativeWorkKind::WAIT);
+          auto content = authenticatedBatch->getVerifiedManifest();
+          if (!content || !m_groupCoordinator->beginOperation(nowEpochMs())) {
+            throw std::runtime_error("failed to admit signed tensor manifest root");
+          }
+          manifestWire = std::move(*content);
+        }
+        else {
+          manifestWire = fetchExact(ndn::Name(edge.manifestDataName), true);
+        }
         std::vector<std::uint8_t> inlineFirstWire;
         if (edge.inlineFirstSegment) {
           auto object = decodeTensorManifestWithFirstSegment(
@@ -983,6 +1037,10 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
             manifest.unpackedBytes > operation.maxBytes ||
             manifest.unpackedBytes > capability.maxInflightBytes ||
             manifest.segmentSize > ndn::MAX_NDN_PACKET_SIZE ||
+            (edge.segmentManifest &&
+             (manifest.segmentCount != edge.segmentManifest->sourceSegments ||
+              manifest.segmentSize != edge.segmentManifest->segmentPayloadBytes ||
+              manifest.unpackedBytes != 0)) ||
             manifest.endpointDigest != edge.endpointDigest ||
             manifest.manifestContractDigest != edge.manifestContractDigest ||
             manifest.noProgressMs != edge.noProgressDeadlineMs ||
@@ -1112,7 +1170,23 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
         // Core owns the asynchronous handlers; this edge already has a worker.
         const auto firstBatchIndex = (speculativeFirstStarted ||
           (!speculativeWholeUsed && inlineFirstReceived)) ? 1U : 0U;
-        if (!speculativeWholeUsed && firstBatchIndex < manifest.segmentCount) {
+        if (authenticatedBatch) {
+          if (!authenticatedBatch->continueAfterManifest()) {
+            throw std::runtime_error("tensor manifest authority expired before member reads");
+          }
+          NativeWorkScope wait(m_workStatistics, "dependency-next-batch-wait", NativeWorkKind::WAIT);
+          auto result = authenticatedBatch->get();
+          if (!result || result->contents.size() != manifest.segmentCount) {
+            throw std::runtime_error("failed manifest-authenticated tensor batch");
+          }
+          mergeTransferMetrics(transportMetrics, result->metrics);
+          batchWires = std::move(result->contents);
+          maximumBatchSize = std::min<std::uint64_t>({manifest.segmentCount, 256,
+            std::max<std::uint64_t>(1, std::min<std::uint64_t>(capability.maxInflightBytes,
+              64U << 20) / ndn::MAX_NDN_PACKET_SIZE)});
+          ++batchCalls;
+        }
+        else if (!speculativeWholeUsed && firstBatchIndex < manifest.segmentCount) {
           fetchBatch(firstBatchIndex, speculativeFirstStarted || inlineFirstReceived);
         }
         for (std::size_t index = 0; index < manifest.segmentCount; ++index) {
@@ -1256,6 +1330,10 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
                  << " manifest_total_bytes=" << manifest.totalBytes
                  << " inline_first_received=" << inlineFirstReceived
                  << " manifest_segment_bytes=" << manifest.segmentSize
+                 << " segment_manifest=" << edge.segmentManifest.has_value()
+                 << " manifest_certificate_validations=" << transportMetrics.manifestCertificateValidations
+                 << " manifest_hash_verified_members=" << transportMetrics.manifestVerifiedMembers
+                 << " manifest_control_wire_bytes=" << transportMetrics.manifestControlWireBytes
                  << " manifest_fetch_us=" << std::chrono::duration_cast<
                       std::chrono::microseconds>(manifestFetchedAt - started).count()
                  << " segment_fetch_us=" << std::chrono::duration_cast<
@@ -1649,7 +1727,8 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       throw std::length_error("tensor publication exceeds signed raw byte budget");
     }
     NativeWorkScope packWork(m_workStatistics, "tensor-transport-pack", NativeWorkKind::LOCAL);
-    const auto packed = tryPackTensorBundleForTransport(bundleForWire.payload);
+    const auto packed = edge.segmentManifest ? std::nullopt :
+      tryPackTensorBundleForTransport(bundleForWire.payload);
     packWork.finish();
     const auto& packedPayload = packed ? *packed : bundleForWire.payload;
     const auto unpackedBytes = packed ? bundleForWire.payload.size() : 0;
@@ -1665,6 +1744,12 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       throw std::invalid_argument("NDNSF_DATA_V1 cannot publish an empty tensor bundle");
     }
     chunksWork.finish();
+    if (edge.segmentManifest &&
+        (edge.inlineFirstSegment || chunkSize != edge.segmentManifest->segmentPayloadBytes ||
+         chunks.size() != edge.segmentManifest->sourceSegments ||
+         chunks.size() > operation.maxSegments)) {
+      throw std::invalid_argument("tensor publication differs from its signed manifest geometry");
+    }
     if (edge.declaredByV3) {
       if (edge.manifestDataName.empty() || edge.maxSegments == 0 ||
           chunks.size() > edge.maxSegments || edge.endpointDigest.empty() ||
@@ -1718,10 +1803,14 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       if (cached != m_tensorPublications.end()) {
         if (cached->second.fingerprint != fingerprint)
           throw std::invalid_argument("immutable tensor publication conflict");
-        if (!cached->second.originals.empty()) {
+        if (cached->second.manifest || !cached->second.originals.empty()) {
           CollaborationTransferMetrics retryMetrics;
-          if (!m_ctx.replayOwnedExactData(edge.transportScope.empty() ? edge.scope : edge.transportScope,
-                                         cached->second.originals, &retryMetrics))
+          const auto& keyScope = edge.transportScope.empty() ? edge.scope : edge.transportScope;
+          const auto replayed = cached->second.manifest
+            ? m_ctx.replayManifestAuthenticatedExactData(
+                keyScope, *cached->second.manifest, &retryMetrics)
+            : m_ctx.replayOwnedExactData(keyScope, cached->second.originals, &retryMetrics);
+          if (!replayed)
             throw std::runtime_error("failed to replay signed tensor originals");
           attachTransferObservation(edge, bundle, "send", retryMetrics);
           observeNetworkTransfer(m_workStatistics, publicationInferenceEpochForEdge(edge),
@@ -1736,7 +1825,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
           throw std::length_error("tensor original cache entry capacity");
         if (m_tensorPublicationBytes >= MAX_ORIGINAL_BYTES)
           throw std::length_error("tensor original cache byte capacity");
-        cached = m_tensorPublications.emplace(objectName, CachedTensorPublication{fingerprint, {}, 0}).first;
+        cached = m_tensorPublications.emplace(objectName, CachedTensorPublication{fingerprint, {}, 0, {}}).first;
       }
       auto& cachedPublication = cached->second;
       const auto accountOriginals = [&] {
@@ -1747,7 +1836,9 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         }
       };
       const auto reservation = ndn::make_scope_exit([&] {
-        if (cachedPublication.originals.empty()) m_tensorPublications.erase(cached);
+        if (!cachedPublication.manifest && cachedPublication.originals.empty()) {
+          m_tensorPublications.erase(cached);
+        }
         else accountOriginals();
       });
       std::vector<std::string> exactNames;
@@ -1841,7 +1932,27 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       transportMetrics.localWorkObserver = detail::makeCollaborationWorkObserver(
         m_workStatistics, publicationInferenceEpochForEdge(edge));
       bool published = false;
-      if (edge.inlineFirstSegment) {
+      if (edge.segmentManifest) {
+        const auto count = edge.segmentManifest->sourceSegments;
+        std::vector<ndn::ConstBufferPtr> contents;
+        contents.reserve(count);
+        for (std::size_t i = 1; i < publications.size(); ++i) {
+          contents.push_back(std::make_shared<const ndn::Buffer>(std::move(publications[i].second)));
+        }
+        const auto limit = std::min<std::uint64_t>(capability.maxInflightBytes,
+          MAX_ORIGINAL_BYTES - m_tensorPublicationBytes);
+        cachedPublication.manifest = m_ctx.publishManifestAuthenticatedExactData(
+          edge.transportScope.empty() ? edge.scope : edge.transportScope,
+          tensorManifestScope(edge, m_ctx.localProvider()), {count, limit, count}, contents,
+          manifestWire, m_freshnessMs, &transportMetrics);
+        if (!cachedPublication.manifest) {
+          throw std::runtime_error("failed to publish manifest-authenticated tensor object");
+        }
+        cachedPublication.wireBytes = transportMetrics.wireBytes.value();
+        m_tensorPublicationBytes += cachedPublication.wireBytes;
+        published = true;
+      }
+      else if (edge.inlineFirstSegment) {
         try {
           auto inlineWire = encodeTensorManifestWithFirstSegment(
             manifestWire, encodedSegments.front(), ndn::MAX_NDN_PACKET_SIZE);
@@ -1887,7 +1998,11 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
             {"operation", edge.operationKind}, {"dataName", edge.plannedDataName},
             {"bundleBytes", bundleForWire.payload.size()}, {"cryptoSegmentBytes", cryptoBytes},
             {"manifestBytes", manifestWire.size()}, {"segments", encodedSegments.size()},
-            {"publishedDataPackets", cachedPublication.originals.size()},
+            {"publishedDataPackets", edge.segmentManifest ? 1 + encodedSegments.size() +
+              ndn_service_framework::SegmentManifestVerifier::pageCountFor(
+                edge.segmentManifest->sourceSegments) : cachedPublication.originals.size()},
+            {"segmentManifest", edge.segmentManifest.has_value()},
+            {"certificateSignatures", transportMetrics.manifestCertificateSignatures},
             {"inlineFirstSegment", cachedPublication.originals.size() == encodedSegments.size()}}));
         }
         catch (...) {

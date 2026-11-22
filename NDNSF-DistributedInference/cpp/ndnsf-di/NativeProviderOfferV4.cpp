@@ -985,6 +985,13 @@ makeNativeProviderObservationAckHandlerV4(
         "optional";
     if (transportRequested)
       decision.providerCapabilityFields.insert(transportFields.begin(), transportFields.end());
+    if (transportRequested && config.segmentManifestEnabled &&
+        request.getRequestCapabilities().hasField(NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD) &&
+        request.getRequestCapabilities().getField(NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD) ==
+          "optional") {
+      decision.providerCapabilityFields.emplace(NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD,
+        NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_VALUE);
+    }
     if (!decision.status || !request.hasRequestCapabilities() ||
         !request.getRequestCapabilities().hasField("DI_PLACEMENT_V4") ||
         request.getRequestCapabilities().getField("DI_PLACEMENT_V4") != "optional") {

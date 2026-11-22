@@ -84,6 +84,8 @@ private:
     std::string fingerprint;
     std::vector<std::shared_ptr<const ndn::Data>> originals;
     std::size_t wireBytes = 0;
+    std::shared_ptr<const ndn_service_framework::ServiceProvider::CollaborationContext::
+      ExactManifestPublication> manifest;
   };
   std::mutex m_tensorPublicationMutex;
   std::map<ndn::Name, CachedTensorPublication> m_tensorPublications;

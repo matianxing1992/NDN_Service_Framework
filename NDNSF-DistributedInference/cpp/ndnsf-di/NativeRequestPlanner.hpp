@@ -59,6 +59,7 @@ struct NativeRequestRuntime
   NativeStateTensorMapping stateMapping;
   std::uint64_t noProgressMs = 5000;
   std::size_t maxSegments = 4096;
+  std::string segmentManifestDependencyId;
   // Shared by this runtime's request operations; never an authorization lease.
   std::shared_ptr<NativeFixedRoleAssignmentCache> fixedRoleAssignments =
     std::make_shared<NativeFixedRoleAssignmentCache>();

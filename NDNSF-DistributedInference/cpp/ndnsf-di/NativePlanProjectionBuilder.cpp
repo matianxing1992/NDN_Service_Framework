@@ -4,6 +4,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
+#include "ndn-service-framework/segment-manifest.hpp"
+
 #include <ndn-cxx/encoding/tlv.hpp>
 #include <algorithm>
 #include <cctype>
@@ -578,12 +580,36 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
               declared->second <= ndn::MAX_NDN_PACKET_SIZE;
           })) {
         auto bytes = fixedBundleBytes(core.roleContracts().at(e.producerRole), e.bundleTensorNames);
+        // Proof geometry is frozen from the source contract and this request's ACKs.
+        // Runtime or placement estimates only feed the legacy prefetch hint.
+        if (bytes != 0 && !context.segmentManifestDependencyId.empty() &&
+            context.segmentManifestDependencyId == e.dependencyId &&
+            e.sourceKind == "ROLE" && !core.generationContract.enabled && !feedback &&
+            e.consumerRoles.size() == 1) {
+          const auto& consumer = core.assignment.providerByRole.at(e.consumerRoles.front());
+          const auto producerManifest = context.manifestSegmentBytesByProvider.find(provider);
+          const auto consumerManifest = context.manifestSegmentBytesByProvider.find(consumer);
+          if (ndn::Name(consumer) != ndn::Name(provider) &&
+              producerManifest != context.manifestSegmentBytesByProvider.end() &&
+              consumerManifest != context.manifestSegmentBytesByProvider.end() &&
+              producerManifest->second == chunk->second) {
+            constexpr auto minimumSourceSegments = 33U;
+            const auto count = 1 + (bytes - 1) / producerManifest->second;
+            if (count >= minimumSourceSegments && count <= e.segmentCount &&
+                count <= ndn_service_framework::SegmentManifestVerifier::MAX_SOURCE_PACKETS) {
+              e.segmentManifest = TensorSegmentManifestGeometry{
+                static_cast<uint32_t>(count), static_cast<uint32_t>(producerManifest->second)};
+              e.inlineFirstSegment = false;
+            }
+          }
+        }
         if (bytes == 0) {
           const auto estimate = context.tensorPrefetchByDependency.find(index);
           if (estimate != context.tensorPrefetchByDependency.end() && estimate->second.tensorNames == e.bundleTensorNames)
             bytes = estimate->second.bundleBytes;
         }
-        if (bytes != 0 && 1 + (bytes - 1) / chunk->second <= e.segmentCount) {
+        if (!e.segmentManifest && bytes != 0 &&
+            1 + (bytes - 1) / chunk->second <= e.segmentCount) {
           e.prefetchBundleBytes = bytes; e.prefetchSegmentBytes = chunk->second;
         }
       }

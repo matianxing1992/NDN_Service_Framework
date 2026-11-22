@@ -1328,6 +1328,40 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
           BOOST_CHECK_EQUAL(endpoint.prefetchBundleBytes, actualBundleBytes);
           BOOST_CHECK_EQUAL(endpoint.prefetchSegmentBytes, 7000U);
         }
+        // A small chunk makes this fixed tensor fixture cross the production
+        // selection threshold without requiring a large tensor allocation.
+        const auto chunk = std::max<std::size_t>(1, actualBundleBytes / 34);
+        auto manifestContext = prefetchContext;
+        manifestContext.inlineFirstSegment = true;
+        manifestContext.segmentManifestDependencyId =
+          prefetchGroups.at(execution.roles.front()).dataflow.mayPublish.front().dependencyId;
+        manifestContext.tensorSegmentBytesByProvider[sourceProvider] = chunk;
+        manifestContext.manifestSegmentBytesByProvider = {{sourceProvider, chunk},
+                                                         {targetProvider, 4000}};
+        const auto manifestGroups = NativeGroupProjectionBuilder::build(
+          prefetchSealed, input.split, keys, manifestContext, 2U << 20);
+        const auto& publishedManifest =
+          manifestGroups.at(execution.roles.front()).dataflow.mayPublish.front();
+        const auto& fetchedManifest =
+          manifestGroups.at(execution.roles.back()).dataflow.mustFetch.front();
+        BOOST_REQUIRE(publishedManifest.segmentManifest);
+        BOOST_REQUIRE(fetchedManifest.segmentManifest);
+        BOOST_CHECK(*publishedManifest.segmentManifest == *fetchedManifest.segmentManifest);
+        BOOST_CHECK_EQUAL(publishedManifest.segmentManifest->sourceSegments,
+                          1 + (actualBundleBytes - 1) / chunk);
+        BOOST_CHECK_EQUAL(publishedManifest.segmentManifest->segmentPayloadBytes, chunk);
+        BOOST_CHECK(!publishedManifest.inlineFirstSegment);
+        BOOST_CHECK_EQUAL(publishedManifest.prefetchBundleBytes, 0U);
+
+        // The legacy sizing declaration alone cannot opt a consumer into proof mode.
+        manifestContext.manifestSegmentBytesByProvider.erase(targetProvider);
+        const auto partialManifestGroups = NativeGroupProjectionBuilder::build(
+          prefetchSealed, input.split, keys, manifestContext, 2U << 20);
+        const auto& legacyEndpoint =
+          partialManifestGroups.at(execution.roles.front()).dataflow.mayPublish.front();
+        BOOST_CHECK(!legacyEndpoint.segmentManifest);
+        BOOST_CHECK(legacyEndpoint.inlineFirstSegment);
+
         auto legacyContext = prefetchContext;
         legacyContext.tensorSegmentBytesByProvider.erase(targetProvider);
         const auto legacyGroups = NativeGroupProjectionBuilder::build(
