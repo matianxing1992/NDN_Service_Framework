@@ -47,6 +47,8 @@ struct RepoUserStoragePacketSetFetchLimits
   int ackCollectionTimeMs = 200;
   // Per-operation exact Interest cap for segment-manifest retrieval. Zero is adaptive.
   uint32_t manifestFetchWindow = 0;
+  // Opt in only with a Repo deployment that supports targeted Owner queries.
+  bool targetedExactOwnerClaims = false;
 };
 
 /**

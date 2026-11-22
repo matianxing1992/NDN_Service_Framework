@@ -286,7 +286,8 @@ releaseRepoNodeServiceHandlersForRestart(
     "DATA_RECEIPT", "DATA_LOCATION",
     // The node registers these too, and each handler holds a strong self-reference,
     // so leaving them in place keeps the node (and its backend lease) alive.
-    "USER_STORAGE_GRANT", "USER_STORAGE_LIST", "USER_STORAGE_DELETE", "USER_STORAGE_USAGE",
+    // USER_STORAGE_LIST uses the Repo-owned scoped registration.
+    "USER_STORAGE_GRANT", "USER_STORAGE_DELETE", "USER_STORAGE_USAGE",
   };
   for (const auto& operation : operations) {
     provider.addService(repo::makeRepoServiceName(servicePrefix, operation),
@@ -3448,6 +3449,14 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_CHECK(reopened.ownerPacketSet->packetWires() == manifestWires);
   BOOST_CHECK_EQUAL(reopened.ownerPacketSet->manifest().toJson(),
                     node->core().getManifest(manifestObject).toJson());
+  const auto targetedRead = runWithFacePump(environment, [&] {
+    repo::RepoUserStoragePacketSetFetchLimits limits;
+    limits.targetedExactOwnerClaims = true;
+    return repo::RepoClient::fetchOriginalDataPacketSetFromUserStorage(environment.user(),
+      {manifestTarget.repoNode, manifestTarget.providerIdentity, manifestTarget.servicePrefix},
+      manifestObject, {}, 15000, limits, {}, manifestScope);
+  });
+  BOOST_CHECK(targetedRead.packetWires() == manifestWires);
   const repo::RepoUserStorageDeleteRequest manifestCleanup{1, "client-manifest-cleanup",
     manifestObject, manifestGrantReply.grant.ownerEpoch};
   // Advance the Owner's deletion fence after the original packets have passed

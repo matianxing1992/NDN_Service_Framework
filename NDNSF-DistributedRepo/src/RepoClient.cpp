@@ -159,6 +159,13 @@ struct OwnerClaimManifest
   std::string header;
 };
 
+std::vector<uint8_t>
+requestRepoProvider(ndn_service_framework::ServiceUser& user,
+  const ndn::Name& providerIdentity, const ndn::Name& serviceName,
+  const std::vector<uint8_t>& payload, int ackCollectionTimeMs, int timeoutMs,
+  std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted,
+  const std::function<void()>& requireCurrent, bool targeted);
+
 std::optional<RepoUserStorageClaim>
 findExactCurrentUserStorageClaim(ndn_service_framework::ServiceUser& owner,
   const RepoArtifactTarget& target, const std::string& objectName,
@@ -170,8 +177,9 @@ findExactCurrentUserStorageClaim(ndn_service_framework::ServiceUser& owner,
   const auto query = toBytes(detail::encodeExactOwnerClaimQuery(objectName, manifest != nullptr));
   std::vector<uint8_t> response;
   try {
-    response = RepoClientCompat::requestSelectedService(owner, ndn::Name(target.providerIdentity),
-      service, query, limits.ackCollectionTimeMs, timeoutMs, {}, requireCurrent);
+    response = requestRepoProvider(owner, ndn::Name(target.providerIdentity), service,
+      query, limits.ackCollectionTimeMs, timeoutMs, {}, requireCurrent,
+      limits.targetedExactOwnerClaims);
   }
   catch (const std::runtime_error& error) {
     // Older Providers reject the two-field selector before executing a list.
@@ -834,6 +842,7 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
       limits.maxListedObjectsPerScan > 1000000 || limits.maxListingWireBytes == 0 ||
       limits.maxListingWireBytes > (64ULL << 20) || limits.maxPacketCount == 0 ||
       (limits.manifestFetchWindow != 0 && !segmentManifest) ||
+      (limits.targetedExactOwnerClaims && !segmentManifest) ||
       limits.manifestFetchWindow > detail::MAX_NAMED_PACKET_COUNT ||
       limits.maxPacketCount > 65536 || limits.maxPacketWireBytes == 0 ||
       limits.maxPacketWireBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
@@ -2269,6 +2278,19 @@ RepoClientCompat::requestSelectedService(
   std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted,
   const std::function<void()>& requireCurrent)
 {
+  return requestRepoProvider(user, providerIdentity, serviceName, payload, ackCollectionTimeMs,
+    timeoutMs, std::move(requestMayHaveBeenEmitted), requireCurrent, false);
+}
+
+namespace {
+
+std::vector<uint8_t>
+requestRepoProvider(ndn_service_framework::ServiceUser& user,
+  const ndn::Name& providerIdentity, const ndn::Name& serviceName,
+  const std::vector<uint8_t>& payload, int ackCollectionTimeMs, int timeoutMs,
+  std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted,
+  const std::function<void()>& requireCurrent, bool targeted)
+{
   if (providerIdentity.empty() || serviceName.empty() || ackCollectionTimeMs <= 0 ||
       timeoutMs <= ackCollectionTimeMs) {
     throw std::invalid_argument("repo-selected-request-invalid: Provider, service, or deadline is invalid");
@@ -2305,7 +2327,7 @@ RepoClientCompat::requestSelectedService(
   auto startRequest = [&user, result, startState, providerIdentity, serviceName,
                        requestPayload, ackCollectionTimeMs, deadline,
                        timeoutError, requestMayHaveBeenEmitted,
-                       providers, cancelRequest] {
+                       providers, cancelRequest, targeted] {
     try {
       if (startState->abandoned.load(std::memory_order_acquire) ||
           std::chrono::steady_clock::now() >= deadline) {
@@ -2333,7 +2355,35 @@ RepoClientCompat::requestSelectedService(
         return;
       }
       const auto invocationTimeoutMs = static_cast<int>(remainingTimeoutMs);
-      const auto requestId = user.BeginCollaborationWithProviders(
+      auto onResponse = [result, startState, deadline, timeoutError]
+      (const ndn_service_framework::ResponseMessage& response) {
+        const auto responsePayload = response.getPayload();
+        {
+          std::lock_guard<std::mutex> guard(result->mutex);
+          if (result->done) return;
+          if (std::chrono::steady_clock::now() >= deadline) {
+            startState->abandoned.store(true, std::memory_order_release);
+            result->error = timeoutError;
+          }
+          else if (!response.getStatus()) {
+            result->error = response.getErrorInfo();
+          }
+          else {
+            result->payload.assign(responsePayload.begin(), responsePayload.end());
+          }
+          result->done = true;
+        }
+        result->condition.notify_all();
+      };
+      auto onTimeout = [result, startState, timeoutError] (const ndn::Name&) {
+        startState->abandoned.store(true, std::memory_order_release);
+        completeSelectedRequest(result, timeoutError);
+      };
+      const auto requestId = targeted
+        ? user.RequestServiceTargeted(providerIdentity, serviceName,
+            RepoClientCompat::makeRequest(*requestPayload), invocationTimeoutMs,
+            std::move(onTimeout), std::move(onResponse))
+        : user.BeginCollaborationWithProviders(
         serviceName, *requestPayload, ackCollectionTimeMs, invocationTimeoutMs,
         [&user, result, startState, providerIdentity, serviceName,
          ackCollectionTimeMs, invocationTimeoutMs, deadline, timeoutError,
@@ -2458,30 +2508,7 @@ RepoClientCompat::requestSelectedService(
             }
           }
         },
-        [result, startState, deadline, timeoutError]
-        (const ndn_service_framework::ResponseMessage& response) {
-          const auto responsePayload = response.getPayload();
-          {
-            std::lock_guard<std::mutex> guard(result->mutex);
-            if (result->done) return;
-            if (std::chrono::steady_clock::now() >= deadline) {
-              startState->abandoned.store(true, std::memory_order_release);
-              result->error = timeoutError;
-            }
-            else if (!response.getStatus()) {
-              result->error = response.getErrorInfo();
-            }
-            else {
-              result->payload.assign(responsePayload.begin(), responsePayload.end());
-            }
-            result->done = true;
-          }
-          result->condition.notify_all();
-        },
-        [result, startState, timeoutError] (const ndn::Name&) {
-          startState->abandoned.store(true, std::memory_order_release);
-          completeSelectedRequest(result, timeoutError);
-        },
+        std::move(onResponse), std::move(onTimeout),
         ndn::Name(),
         [providerIdentity, serviceName] (
           const std::vector<ndn_service_framework::AckCandidate>& candidates) {
@@ -2635,6 +2662,8 @@ RepoClientCompat::requestSelectedService(
   if (!error.empty()) throw std::runtime_error(error);
   return responsePayload;
 }
+
+} // namespace
 
 ndn::Name
 RepoClientCompat::requestAbortRanges(

@@ -283,6 +283,11 @@ matchesArtifactManifest(const RepoObjectManifest& manifest,
 
 } // namespace
 
+struct RepoNode::OwnerClaimRegistration
+{
+  ndn_service_framework::ServiceProvider::ServiceRegistration service;
+};
+
 RepoNode::RepoNode(ndn::Name servicePrefix,
                    StorageCapability capability,
                    std::shared_ptr<RepoStoreBackend> store,
@@ -1554,9 +1559,17 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
     decision.pendingStateTtlMs = REPO_PENDING_SELECTION_TTL_MS;
     return decision;
   };
+  const auto traceRequest = [](const std::string& service, const ndn::Name& requester) {
+    const char* traceSetting = std::getenv("NDNSF_SPEC192_REPO_OPERATION_TRACE");
+    if (traceSetting != nullptr && traceSetting[0] == '1' && traceSetting[1] == '\0') {
+      const auto identity = requester.toUri(ndn::name::UriFormat::ALTERNATE);
+      std::fprintf(stderr, "SPEC192_REPO_REQUEST service=%s requester=%s\n",
+                   service.c_str(), identity.c_str());
+    }
+  };
 
   const auto registerRepoService =
-    [&provider, &ack, self](
+    [&provider, &ack, self, traceRequest](
       const ndn::Name& serviceName,
       ndn_service_framework::ServiceProvider::RequestHandler handler,
       ndn_service_framework::ServiceProvider::AckStrategyHandler serviceAck = {}) {
@@ -1565,21 +1578,14 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
         serviceAck = ack;
       }
       ndn_service_framework::ServiceProvider::RequestHandler retainedHandler =
-        [self, traceServiceName, handler = std::move(handler)](
+        [self, traceServiceName, traceRequest, handler = std::move(handler)](
           const ndn::Name& requesterIdentity,
           const ndn::Name& providerName,
           const ndn::Name& resolvedServiceName,
           const ndn::Name& requestId,
           const ndn_service_framework::RequestMessage& request) {
           (void)self;
-          const char* traceSetting =
-            std::getenv("NDNSF_SPEC192_REPO_OPERATION_TRACE");
-          if (traceSetting != nullptr && traceSetting[0] == '1' &&
-              traceSetting[1] == '\0') {
-            const auto requester = requesterIdentity.toUri(ndn::name::UriFormat::ALTERNATE);
-            std::fprintf(stderr, "SPEC192_REPO_REQUEST service=%s requester=%s\n",
-                         traceServiceName.c_str(), requester.c_str());
-          }
+          traceRequest(traceServiceName, requesterIdentity);
           return handler(requesterIdentity, providerName, resolvedServiceName,
                          requestId, request);
         };
@@ -1619,18 +1625,26 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
         return makeError(error.what());
       }
     });
-  registerRepoService(
-    makeRepoServiceName(m_servicePrefix, "USER_STORAGE_LIST"),
-    [this](const ndn::Name& owner, const ndn::Name&, const ndn::Name&, const ndn::Name&,
-           const ndn_service_framework::RequestMessage& request) {
+  auto ownerClaimRegistration = std::make_unique<OwnerClaimRegistration>();
+  const auto ownerClaimService = makeRepoServiceName(m_servicePrefix, "USER_STORAGE_LIST");
+  ownerClaimRegistration->service = provider.addScopedService(
+    ownerClaimService, ack,
+    [node = weak_from_this(), traceRequest, service = ownerClaimService.toUri()](
+      const ndn::Name& owner, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+      const ndn_service_framework::RequestMessage& request) {
+      const auto self = node.lock();
+      if (!self || self->m_ownedInsertStopping.load(std::memory_order_acquire))
+        return makeError("repo-user-storage-unavailable");
+      traceRequest(service, owner);
       try {
-        return makeResponse(handleUserStorageList(
+        return makeResponse(self->handleUserStorageList(
           payloadOf(request), owner.toUri(ndn::name::UriFormat::ALTERNATE)));
       }
       catch (const std::exception& error) {
         return makeError(error.what());
       }
-    });
+    }, ndn_service_framework::ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
+  m_ownerClaimRegistration = std::move(ownerClaimRegistration);
 
   registerRepoService(
     makeRepoServiceName(m_servicePrefix, "USER_STORAGE_DELETE"),
@@ -2030,7 +2044,9 @@ RepoNode::setDataReferenceSpoolFetcher(DataReferenceSpoolFetcher fetcher)
 void
 RepoNode::stopOriginalPacketOperations() noexcept
 {
-  m_ownedInsertStopping.store(true, std::memory_order_release);
+  const bool wasStopping = m_ownedInsertStopping.exchange(true, std::memory_order_acq_rel);
+  if (!wasStopping && m_ownerClaimRegistration)
+    m_ownerClaimRegistration->service.close();
   requestStorageWriteWorkerStop();
   requestOriginalDataWorkerStop();
 }
@@ -3661,7 +3677,7 @@ RepoNode::handlePublishIntent(const std::vector<uint8_t>& request,
 }
 
 ndn_service_framework::ResponseMessage
-RepoNode::makeResponse(const std::vector<uint8_t>& payload) const
+RepoNode::makeResponse(const std::vector<uint8_t>& payload)
 {
   ndn::Buffer responsePayload(payload.data(), payload.size());
   ndn_service_framework::ResponseMessage response;
@@ -3672,7 +3688,7 @@ RepoNode::makeResponse(const std::vector<uint8_t>& payload) const
 }
 
 ndn_service_framework::ResponseMessage
-RepoNode::makeError(const std::string& error) const
+RepoNode::makeError(const std::string& error)
 {
   ndn_service_framework::ResponseMessage response;
   response.setStatus(false);

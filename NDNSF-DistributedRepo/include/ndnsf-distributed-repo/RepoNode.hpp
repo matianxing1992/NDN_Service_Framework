@@ -294,9 +294,9 @@ private:
   void runPublishOperationWorker();
   bool runPublishOperationPass(const std::string& operationId);
 
-  ndn_service_framework::ResponseMessage makeResponse(const std::vector<uint8_t>& payload) const;
+  static ndn_service_framework::ResponseMessage makeResponse(const std::vector<uint8_t>& payload);
 
-  ndn_service_framework::ResponseMessage makeError(const std::string& error) const;
+  static ndn_service_framework::ResponseMessage makeError(const std::string& error);
 
   std::string allocateOperationId();
 
@@ -332,6 +332,8 @@ private:
   DataReferenceFetcher m_dataReferenceFetcher;
   DataReferenceSpoolFetcher m_dataReferenceSpoolFetcher;
   ManifestPacketFetcher m_manifestPacketFetcher;
+  struct OwnerClaimRegistration;
+  std::unique_ptr<OwnerClaimRegistration> m_ownerClaimRegistration;
   std::atomic<bool> m_ownedInsertStopping{false};
   bool m_originalDataServingRegistered = false;
   std::atomic<bool> m_originalDataRouteReady{false};

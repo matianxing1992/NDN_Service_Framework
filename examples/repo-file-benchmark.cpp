@@ -142,6 +142,7 @@ run(int argc, char** argv)
     std::cout << "[--phase write|read|write-read] [--reference PATH] "
                  "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
                  "[--manifest-read-pipeline serial|paired|quad] "
+                 "[--manifest-owner-claims selected|targeted] "
                  "[--manifest-insert indexed|compact] "
                  "[--manifest-segment-bytes 7000|8400] "
                  "[--manifest-group-segments 2048|2560|3840] [--manifest-write-slots 3|5] ";
@@ -157,6 +158,7 @@ run(int argc, char** argv)
       std::string(argv[i]) == "--reference" || std::string(argv[i]) == "--authentication" ||
       std::string(argv[i]) == "--signing-certificate" ||
       std::string(argv[i]) == "--manifest-read-pipeline" ||
+      std::string(argv[i]) == "--manifest-owner-claims" ||
       std::string(argv[i]) == "--manifest-insert" ||
       std::string(argv[i]) == "--manifest-segment-bytes" ||
       std::string(argv[i]) == "--manifest-group-segments" ||
@@ -202,6 +204,11 @@ run(int argc, char** argv)
     if (mode == "quad") readGroups = MAX_MANIFEST_READ_GROUPS;
   }
   const auto readWindow = boundedRead ? MANIFEST_READ_WINDOW / readGroups : 0;
+  const auto claimMode = options.find("--manifest-owner-claims");
+  require(claimMode == options.end() || (useManifest && phaseOption != "write" &&
+          (claimMode->second == "selected" || claimMode->second == "targeted")),
+          "manifest Owner claim mode requires a manifest read");
+  const bool targetedOwnerClaims = claimMode != options.end() && claimMode->second == "targeted";
 
   const auto selectedCertificate = options.find("--signing-certificate");
   require(useCertificate || selectedCertificate == options.end(),
@@ -626,6 +633,7 @@ run(int argc, char** argv)
           std::optional<ndn_service_framework::SegmentManifestScope> scope;
           if (useManifest) {
             scope = manifestScope(identity, group.prefix);
+            limits.targetedExactOwnerClaims = targetedOwnerClaims;
             if (boundedRead) {
               limits.manifestFetchWindow = readWindow;
               limits.maxPacketWireBytes = group.wireBytes;
@@ -734,6 +742,7 @@ run(int argc, char** argv)
               "benchmark reconstructed file SHA-256/size mismatch");
       auto retrieved = retrievalTime.result();
       retrieved.update(Json{{"phase", "retrieval-total"}, {"payloadBytes", restoredBytes},
+        {"targetedOwnerClaims", targetedOwnerClaims},
         {"wireBytes", wireBytes}, {"sha256", expected}, {"readMaxGroups", readGroups},
         {"manifestReadWindowPerGroup", readWindow}});
       record(std::move(retrieved));
