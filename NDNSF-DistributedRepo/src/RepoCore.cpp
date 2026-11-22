@@ -32,7 +32,7 @@ namespace {
 
 void
 validatePacketIndex(const RepoObjectManifest& manifest,
-  const std::function<void(size_t, const ndn::Name&, const std::string&)>& onName = {})
+  const std::function<void(size_t, const ndn::name::Component&, const std::string&)>& onName = {})
 {
   if (manifest.objectType != "original-packet-set" || manifest.packetNames.empty() ||
       manifest.packetOffsets.size() != manifest.packetNames.size() + 1 ||
@@ -42,19 +42,39 @@ validatePacketIndex(const RepoObjectManifest& manifest,
   // A manifest and its DATA segments need not be immediate siblings. Preserve
   // the writer's URI spelling, but compare typed names to reject URI aliases.
   std::set<std::string> names;
+  std::optional<std::string_view> validatedPrefix;
+  const auto admit = [&](size_t i, const ndn::name::Component& last,
+                         const std::string& canonical) {
+    if (!names.insert(canonical).second ||
+        manifest.packetOffsets[i + 1] <= manifest.packetOffsets[i] ||
+        manifest.packetOffsets[i + 1] - manifest.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE)
+      throw std::invalid_argument("repo-invalid-original-packet-index");
+    if (onName) onName(i, last, canonical);
+  };
   for (size_t i = 0; i < manifest.packetNames.size(); ++i) {
     const auto& text = manifest.packetNames[i];
     if (text.empty() || text.front() != '/' || text.size() > 4096)
       throw std::invalid_argument("repo-invalid-original-packet-index");
+    const std::string_view uri(text);
+    const auto slash = uri.rfind('/');
+    const auto prefix = uri.substr(0, slash);
+    const auto suffix = uri.substr(slash + 1);
+    // A canonical round trip already checked this exact parent spelling.
+    // Any other spelling still goes through the complete typed name check.
+    if (validatedPrefix && prefix == *validatedPrefix && !suffix.empty()) {
+      const auto last = ndn::name::Component::fromUri(suffix);
+      if (last.toUri(ndn::name::UriFormat::CANONICAL) == suffix) {
+        admit(i, last, text);
+        continue;
+      }
+    }
     const ndn::Name name(text);
     const auto canonical = name.toUri(ndn::name::UriFormat::CANONICAL);
     if (name.empty() ||
-        (text != canonical && text != name.toUri(ndn::name::UriFormat::ALTERNATE)) ||
-        !names.insert(canonical).second ||
-        manifest.packetOffsets[i + 1] <= manifest.packetOffsets[i] ||
-        manifest.packetOffsets[i + 1] - manifest.packetOffsets[i] > ndn::MAX_NDN_PACKET_SIZE)
+        (text != canonical && text != name.toUri(ndn::name::UriFormat::ALTERNATE)))
       throw std::invalid_argument("repo-invalid-original-packet-index");
-    if (onName) onName(i, name, canonical);
+    if (text == canonical) validatedPrefix = prefix;
+    admit(i, name[-1], canonical);
   }
 }
 
@@ -1718,11 +1738,11 @@ RepoCore::getPacketIndexProof(const RepoObjectManifest& manifest,
     }
     auto proof = std::make_shared<PacketIndexProof>();
     proof->size = manifest.size;
-    validatePacketIndex(manifest, [&](size_t i, const ndn::Name& name,
+    validatePacketIndex(manifest, [&](size_t i, const ndn::name::Component& last,
                                       const std::string& canonical) {
-      if (!name[-1].isSegment()) return;
+      if (!last.isSegment()) return;
       try {
-        const auto segment = name[-1].toSegment();
+        const auto segment = last.toSegment();
         const auto base = packetBaseName(canonical);
         proof->segments[base].push_back({segment, i});
       }
