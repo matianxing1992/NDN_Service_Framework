@@ -775,14 +775,19 @@ BOOST_AUTO_TEST_CASE(PacketBatchPreservesOriginalWiresAndReopensWithSmallRangeLi
     interests[0].setName(first.getFullName());
     unsigned admissions = 0;
     store->rangeReads = 0;
+    std::vector<const uint8_t*> readBuffers;
+    store->afterRangeRead = [&](auto& wire) { readBuffers.push_back(wire.data()); };
     const auto result = repo.tryGetDataPacketBatch(interests,
       [&](const RepoObjectManifest&) { ++admissions; return true; }, [] {});
+    store->afterRangeRead = {};
     BOOST_REQUIRE(result);
     BOOST_REQUIRE_EQUAL(result->size(), interests.size());
     BOOST_CHECK_EQUAL(admissions, 2U);
     BOOST_CHECK_EQUAL(store->rangeReads, interests.size());
+    BOOST_REQUIRE_EQUAL(readBuffers.size(), result->size());
     for (std::size_t i = 0; i < result->size(); ++i) {
       const auto& wire = result->at(i).wireEncode();
+      BOOST_CHECK(wire.data() == readBuffers[i]);
       BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) == incoming.packets[i].second);
     }
     const std::vector<uint8_t> badDigest(32, 0);

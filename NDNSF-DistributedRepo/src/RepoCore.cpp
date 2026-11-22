@@ -30,6 +30,17 @@ NDN_LOG_INIT(ndnsf_distributed_repo.RepoCore);
 
 namespace {
 
+ndn::Data
+decodeOwnedPacketWire(std::vector<uint8_t>& wire)
+{
+  auto buffer = std::make_shared<ndn::Buffer>();
+  buffer->swap(wire);
+  auto [parsed, block] = ndn::Block::fromBuffer(std::move(buffer));
+  if (!parsed)
+    throw ndn::tlv::Error("repo-original-packet-wire-invalid");
+  return ndn::Data(block);
+}
+
 void
 validatePacketIndex(const RepoObjectManifest& manifest,
   const std::function<void(size_t, const ndn::name::Component&, const std::string&)>& onName = {})
@@ -1222,7 +1233,9 @@ RepoCore::readExactDataPacket(const ndn::Name& name,
       : m_store->getRange(manifest.objectName,
           {manifest.packetOffsets[index],
            manifest.packetOffsets[index + 1] - manifest.packetOffsets[index]});
-    ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+    auto data = originalWire
+      ? ndn::Data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())))
+      : decodeOwnedPacketWire(wire);
     if (data.getName() != name)
       throw std::runtime_error("repo-original-packet-name-mismatch");
     if (acceptObject && !acceptObject(manifest))
@@ -1527,11 +1540,11 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
     const auto index = indices[i];
     const auto offset = manifest->packetOffsets[index];
     const auto length = manifest->packetOffsets[index + 1] - offset;
-    const auto wire = batch->read({offset, length});
+    auto wire = batch->read({offset, length});
     if (wire.size() != length)
       throw std::runtime_error("repo-original-packet-batch-truncated");
-    ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
-    if (packet.wireEncode().size() != wire.size() || packet.getName() != names[i] ||
+    auto packet = decodeOwnedPacketWire(wire);
+    if (packet.wireEncode().size() != length || packet.getName() != names[i] ||
         !interests[i].matchesData(packet))
       throw std::runtime_error("repo-original-packet-interest-mismatch");
     packets.push_back(std::move(packet));
