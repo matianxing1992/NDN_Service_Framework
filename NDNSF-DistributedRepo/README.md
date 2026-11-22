@@ -55,7 +55,9 @@ service. They carry the operation, object/prefix, generation, payload size/diges
 binding, without resending the packet index. After durable INSERT completes, the Client withdraws
 its temporary Producer and confirms the persisted canonical manifest. A reconstructable segment-manifest
 index uses its canonical digest for confirmation. The query retains current grant, committed
-write/claim, physical payload verification and visibility checks.
+write/claim, physical payload verification and visibility checks. A backend that supports
+concurrent committed reads allows the full payload digest check to run outside the write fence.
+The Repo rechecks the physical commitment, grant and ledger under the fence before replying.
 
 For authenticated segment-manifest Owner reads, the initial exact claim response can include the manifest
 header and full-index digest. The client derives names from the authenticated Producer manifest,

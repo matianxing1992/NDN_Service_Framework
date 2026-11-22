@@ -3940,6 +3940,104 @@ BOOST_AUTO_TEST_CASE(CompactManifestConfirmationChecksPhysicalBytesRestartAndDel
   BOOST_CHECK_THROW(fixture.node->handleManifest(confirmation, "/provider/a"), std::exception);
 }
 
+BOOST_AUTO_TEST_CASE(OwnedManifestConfirmationRechecksDeleteAfterReadingCommittedBytes)
+{
+  class PausedRangeStore final : public RepoStoreBackend
+  {
+  public:
+    explicit PausedRangeStore(const std::filesystem::path& path)
+      : files(path.string(), 4U << 20, 1024, "owned-node",
+              FilesystemRecoveryPolicy::KEEP_UNCONFIRMED)
+    {
+    }
+
+    void put(const RepoObjectManifest& manifest, std::vector<uint8_t> bytes) override
+    { files.put(manifest, std::move(bytes)); }
+    void putManifest(const RepoObjectManifest& manifest) override { files.putManifest(manifest); }
+    StoredObject get(const std::string& name) const override { return files.get(name); }
+    bool has(const std::string& name) const override { return files.has(name); }
+    bool erase(const std::string& name) override { return files.erase(name); }
+    size_t size() const override { return files.size(); }
+    uint64_t usedBytes() const override { return files.usedBytes(); }
+    std::vector<RepoObjectManifest> listManifests() const override { return files.listManifests(); }
+    RepoObjectManifest getManifest(const std::string& name) const override
+    { return files.getManifest(name); }
+    RepoObjectMetadataProbe probeObjectMetadata(const std::string& name) const override
+    { return files.probeObjectMetadata(name); }
+    bool supportsRange() const noexcept override { return true; }
+    bool supportsManifestLookup() const noexcept override { return true; }
+    bool supportsConcurrentCommittedReads() const noexcept override { return true; }
+    bool supportsUserStorageRecovery() const noexcept override { return true; }
+    bool canRemoveUserStorageObject(const RepoUserStorageObject& expected) const override
+    { return files.canRemoveUserStorageObject(expected); }
+    bool confirmUserStorageRemoval(const RepoUserStorageObject& expected) override
+    { return files.confirmUserStorageRemoval(expected); }
+
+    std::vector<uint8_t> getRange(const std::string& name, RepoByteRange range) const override
+    {
+      auto bytes = files.getRange(name, range);
+      if (auto pause = std::exchange(afterRead, {}))
+        pause();
+      return bytes;
+    }
+
+    FilesystemRepoStoreBackend files;
+    mutable std::function<void()> afterRead;
+  };
+
+  OwnedPacketFixture fixture;
+  BOOST_REQUIRE_EQUAL(fixture.insert().state, "DONE");
+  detail::OwnedManifestQuery query(fixture.request);
+  query.manifestSha256 = sha256(fixture.node->handleManifest(
+    detail::encodeOwnedManifestQuery(query), "/provider/a"));
+  const auto confirmation = detail::encodeOwnedManifestQuery(query);
+  fixture.provider.reset();
+  fixture.node.reset();
+  auto store = std::make_shared<PausedRangeStore>(fixture.temp.path() / "objects");
+  StorageCapability capability;
+  capability.repoNode = "/repo/a";
+  capability.repoMode = "persistent";
+  capability.freeBytes = fixture.capacityBytes;
+  fixture.node = std::make_shared<RepoNode>(ndn::Name("/SERVICE/repo"), capability, store,
+    "/repo/a", "/repo/provider", (fixture.temp.path() / "metadata.sqlite3").string());
+  BOOST_REQUIRE_EQUAL(toString(fixture.node->handleManifest(confirmation, "/provider/a")),
+                      query.manifestSha256);
+
+  using namespace std::chrono_literals;
+  std::promise<void> rangeChecked;
+  auto reachedRead = rangeChecked.get_future();
+  std::promise<void> resume;
+  auto resumeRead = resume.get_future();
+  store->afterRead = [&] {
+    rangeChecked.set_value();
+    resumeRead.wait();
+  };
+  auto confirming = std::async(std::launch::async, [&] {
+    return fixture.node->handleManifest(confirmation, "/provider/a");
+  });
+  const auto readState = reachedRead.wait_for(3s);
+  if (readState != std::future_status::ready) {
+    resume.set_value();
+    confirming.wait();
+    BOOST_FAIL("confirmation did not reach the authoritative range read");
+    return;
+  }
+  auto deleting = std::async(std::launch::async, [&] {
+    const RepoUserStorageDeleteRequest cleanup{1, "overlapping-delete", query.objectName,
+                                              query.storageBinding.ownerEpoch};
+    return RepoUserStorageDeleteReply::fromJson(toString(
+      fixture.node->handleUserStorageDelete(toBytes(cleanup.toJson()), "/owner/a")));
+  });
+  const bool deletedWhileReading = deleting.wait_for(3s) == std::future_status::ready;
+  resume.set_value();
+  BOOST_CHECK(deletedWhileReading);
+  BOOST_CHECK_EQUAL(deleting.get().state, "DELETED");
+  BOOST_CHECK_EXCEPTION(confirming.get(), std::runtime_error, [](const auto& error) {
+    return std::string_view(error.what()) == "repo-user-storage-deleted";
+  });
+  BOOST_CHECK(!store->has(query.objectName));
+}
+
 BOOST_AUTO_TEST_CASE(OwnedInsertRejectsHashAndWrongGrantBeforePhysicalCommit)
 {
   OwnedPacketFixture fixture;

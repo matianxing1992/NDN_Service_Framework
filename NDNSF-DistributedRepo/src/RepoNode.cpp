@@ -3182,21 +3182,49 @@ RepoNode::handleManifest(const std::vector<uint8_t>& request,
       throw std::runtime_error("repo-owned-manifest-producer-prefix-unauthorized");
     const auto lockRequested = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> guard(m_storeWriteMutex);
-    const auto lockAcquired = std::chrono::steady_clock::now();
-    if (m_ownedInsertStopping.load())
-      throw std::runtime_error("repo-original-packet-insert-shutting-down");
+    auto lockAcquired = std::chrono::steady_clock::now();
+    auto lockWait = lockAcquired - lockRequested;
+    auto lockHeld = std::chrono::steady_clock::duration::zero();
     const auto ledgerName = objectName.toUri(ndn::name::UriFormat::ALTERNATE);
     const auto& binding = query.storageBinding;
-    (void)m_artifactMetadataStore->validateUserStorageGrant(authenticatedWriter, m_repoNode,
-      binding.ownerIdentity, binding.grantId, ledgerName, binding.ownerEpoch, nowMilliseconds());
+    const auto requireWriter = [&] {
+      if (m_ownedInsertStopping.load())
+        throw std::runtime_error("repo-original-packet-insert-shutting-down");
+      (void)m_artifactMetadataStore->validateUserStorageGrant(authenticatedWriter, m_repoNode,
+        binding.ownerIdentity, binding.grantId, ledgerName, binding.ownerEpoch, nowMilliseconds());
+    };
+    requireWriter();
+    const auto manifest = m_core.getManifest(query.objectName);
+    if (manifest.objectType != "original-packet-set" ||
+        manifest.lifecycleState != "COMMITTED" || manifest.operationId.empty() ||
+        manifest.generation != query.generation || manifest.size != query.expectedSize ||
+        manifest.sha256 != query.expectedSha256)
+      throw std::runtime_error("repo-owned-manifest-claim-mismatch");
+
+    const bool concurrent = m_core.supportsConcurrentCommittedReads();
+    if (concurrent) {
+      lockHeld = std::chrono::steady_clock::now() - lockAcquired;
+      guard.unlock();
+    }
+    const auto physicalStarted = std::chrono::steady_clock::now();
+    const auto physical = measurePersistentUserStorageObject(manifest, true);
+    const auto physicalFinished = std::chrono::steady_clock::now();
+    if (concurrent) {
+      guard.lock();
+      lockAcquired = std::chrono::steady_clock::now();
+      lockWait += lockAcquired - physicalFinished;
+      requireWriter();
+      // The byte digest was checked outside the fence. Confirm the same
+      // physical commitment and use the current Owner ledger under the fence.
+      const auto current = measurePersistentUserStorageObject(manifest, false);
+      if (current.payloadWireBytes != physical.payloadWireBytes ||
+          current.manifestBytes != physical.manifestBytes)
+        throw std::runtime_error("repo-owned-manifest-claim-mismatch");
+    }
     const auto claim = m_artifactMetadataStore->lookupCommittedUserStorageClaim(
       binding.ownerIdentity, m_repoNode, ledgerName, binding.ownerEpoch);
     const auto write = m_artifactMetadataStore->lookupUserStorageWrite(
       m_repoNode, binding.ownerIdentity, query.operationId);
-    const auto manifest = m_core.getManifest(query.objectName);
-    const auto physicalStarted = std::chrono::steady_clock::now();
-    const auto physical = measurePersistentUserStorageObject(manifest, true);
-    const auto physicalFinished = std::chrono::steady_clock::now();
     if (!claim || !write || write->state != RepoUserStorageWriteState::COMMITTED ||
         write->grant.grantId != binding.grantId ||
         write->grant.ownerEpoch != binding.ownerEpoch ||
@@ -3207,10 +3235,6 @@ RepoNode::handleManifest(const std::vector<uint8_t>& request,
         write->object.payloadWireBytes != physical.payloadWireBytes ||
         write->object.manifestBytes != physical.manifestBytes ||
         claim->state != RepoUserStorageClaimState::COMMITTED ||
-        manifest.objectType != "original-packet-set" ||
-        manifest.lifecycleState != "COMMITTED" || manifest.operationId.empty() ||
-        manifest.generation != query.generation || manifest.size != query.expectedSize ||
-        manifest.sha256 != query.expectedSha256 ||
         claim->object.objectName != physical.objectName ||
         claim->object.generation != physical.generation ||
         claim->object.wireSha256 != physical.wireSha256 ||
@@ -3234,19 +3258,19 @@ RepoNode::handleManifest(const std::vector<uint8_t>& request,
         throw std::runtime_error("repo-owned-manifest-changed");
       wire = toBytes(digest);
     }
-    const auto lockReleased = std::chrono::steady_clock::now();
+    lockHeld += std::chrono::steady_clock::now() - lockAcquired;
     guard.unlock();
     try {
       if (ndn_service_framework::controlTimingEnvEnabled()) {
-        const auto elapsed = [](auto start, auto end) {
+        const auto elapsed = [](auto duration) {
           return std::to_string(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+            std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count());
         };
         ndn_service_framework::logControlTiming("repo-node", "owned-manifest-confirmation",
           objectName, {{"operation_id", query.operationId},
-                       {"lock_wait_ns", elapsed(lockRequested, lockAcquired)},
-                       {"lock_held_ns", elapsed(lockAcquired, lockReleased)},
-                       {"physical_verification_ns", elapsed(physicalStarted, physicalFinished)},
+                       {"lock_wait_ns", elapsed(lockWait)},
+                       {"lock_held_ns", elapsed(lockHeld)},
+                       {"physical_verification_ns", elapsed(physicalFinished - physicalStarted)},
                        {"response_bytes", std::to_string(wire.size())}});
       }
     }
