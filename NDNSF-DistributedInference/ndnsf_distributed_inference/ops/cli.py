@@ -35,7 +35,7 @@ def build_parser():
         command.add_argument('--config', required=True)
         command.add_argument('--timeout', type=float, default=1800,
                              help=('bounded operation deadline in seconds (maximum 86400 for '
-                                   'Slurm up/prepare/benchmark-repo, otherwise 3600)'
+                                   'MiniNDN/Slurm up/prepare/benchmark-repo, otherwise 3600)'
                                    if name in ('up', 'prepare', 'benchmark-repo') else
                                    'bounded operation deadline in seconds (maximum 3600)'))
         if name in ('up', 'prepare', 'benchmark-repo'):

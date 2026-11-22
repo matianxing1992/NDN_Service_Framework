@@ -157,14 +157,33 @@ def test_slurm_up_preserves_long_finite_deadline(ops, tmp_path, monkeypatch, tim
     assert received == [timeout]
 
 
-@pytest.mark.parametrize('platform', ['host', 'minindn'])
-def test_long_deadline_rejects_local_launch_before_side_effects(ops, tmp_path, monkeypatch,
-                                                             platform):
+def test_long_deadline_rejects_local_launch_before_side_effects(ops, tmp_path, monkeypatch):
     cluster = importlib.import_module('_spec217_ops.cluster')
-    monkeypatch.setattr(cluster, 'load_deployment', lambda _: {'platform': {'kind': platform}})
+    monkeypatch.setattr(cluster, 'load_deployment', lambda _: {'platform': {'kind': 'host'}})
     root = tmp_path / 'must-not-create'
-    with pytest.raises(cluster.ClusterError, match='requires slurm-apptainer'):
+    with pytest.raises(cluster.ClusterError, match='requires MiniNDN or slurm-apptainer'):
         cluster._up(tmp_path / 'deployment.json', root, 21600)
+    assert not root.exists()
+
+
+@pytest.mark.parametrize('timeout', [21600, 86400])
+def test_minindn_long_finite_deadline_reaches_admission(ops, tmp_path, monkeypatch, timeout):
+    from contextlib import nullcontext
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    path, root = tmp_path / 'deployment.json', tmp_path / 'state'
+    monkeypatch.setattr(cluster, '_locator', lambda _: (path, root))
+    monkeypatch.setattr(cluster, 'load_deployment', lambda _: {'platform': {'kind': 'minindn'}})
+    monkeypatch.setattr(cluster, '_read_state', lambda _: None)
+    monkeypatch.setattr(cluster, '_private_directory', lambda _: None)
+    monkeypatch.setattr(cluster, '_lock', lambda _: nullcontext())
+    received = []
+    def stop_before_launch(config, budget):
+        received.append(budget)
+        raise RuntimeError('reached local trust admission before launch')
+    monkeypatch.setattr(cluster, '_inspect_trust_resources', stop_before_launch)
+    with pytest.raises(RuntimeError, match='reached local trust admission before launch'):
+        cluster.run_cluster('up', path, timeout=timeout)
+    assert received == [timeout]
     assert not root.exists()
 
 

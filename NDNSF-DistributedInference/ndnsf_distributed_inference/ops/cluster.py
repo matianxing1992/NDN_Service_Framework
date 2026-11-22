@@ -940,8 +940,8 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
     if config['platform']['kind'] == 'slurm-apptainer':
         from .slurm import up
         return up(config, source, root, timeout, debug, timing, repo_benchmark)
-    if timeout > 3600:
-        raise ClusterError('timeout above 3600 seconds requires slurm-apptainer')
+    if timeout > 3600 and config['platform']['kind'] != 'minindn':
+        raise ClusterError('timeout above 3600 seconds requires MiniNDN or slurm-apptainer')
     _private_directory(root)
     with _lock(root):
         old = _read_state(root)
