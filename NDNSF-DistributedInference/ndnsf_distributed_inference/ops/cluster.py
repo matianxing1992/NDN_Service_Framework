@@ -874,6 +874,14 @@ def _start_forwarder(config, node, state, root, directory, children, deadline, g
 
 def _sample_repo_benchmark(directory, children, boundary):
     """Observe only this owner's live native actors; counters include protocol traffic."""
+    def exited_during_sample(child):
+        # Procfs can lose exe and counters before waitpid reports the exit.
+        try:
+            child.wait(timeout=0.05)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
     sample = dict(monotonicNs=time.monotonic_ns(), boundary=boundary, actors={})
     for actor, child, row in children:
         if actor['kind'] not in ('repo', 'requester') or child.poll() is not None:
@@ -881,8 +889,14 @@ def _sample_repo_benchmark(directory, children, boundary):
         try:
             proof = row['proof']
             actual = process_identity(proof['pid'])
-            if not actual or any(actual[key] != proof[key]
-                                 for key in ('pid', 'uid', 'start_ticks', 'exe')):
+            if not actual:
+                if exited_during_sample(child):
+                    continue
+                raise ClusterError('benchmark actor identity changed')
+            same_process = all(actual[key] == proof[key] for key in ('pid', 'uid', 'start_ticks'))
+            if same_process and actual.get('state') == 'Z' and exited_during_sample(child):
+                continue
+            if not same_process or actual['exe'] != proof['exe']:
                 if child.poll() is not None:
                     continue
                 raise ClusterError('benchmark actor identity changed')
@@ -905,7 +919,7 @@ def _sample_repo_benchmark(directory, children, boundary):
         except (FileNotFoundError, ProcessLookupError):
             # Exit may race any procfs read, including identity capture. Only
             # the owned child's terminal status makes a missing sample normal.
-            if child.poll() is None:
+            if not exited_during_sample(child):
                 raise
     with (directory / 'repo-file-process-statistics.jsonl').open('a') as output:
         output.write(json.dumps(sample, sort_keys=True) + '\n')

@@ -27,21 +27,27 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize('boundary', ['identity', 'counters'])
+@pytest.mark.parametrize('boundary', ['identity', 'missing', 'zombie', 'counters'])
 @pytest.mark.parametrize('exited', [False, True])
 def test_repo_benchmark_sampling_handles_exit_race_only_after_child_exit(
         ops, monkeypatch, tmp_path, boundary, exited):
     cluster = importlib.import_module('_spec217_ops.cluster')
     proof = dict(pid=12345, uid=os.getuid(), start_ticks=7, exe='/native/requester')
-    polls = []
+    waits = []
 
-    def poll():
-        polls.append(True)
-        return 0 if exited and len(polls) > 1 else None
+    def wait(timeout):
+        waits.append(timeout)
+        if not exited:
+            raise subprocess.TimeoutExpired('/native/requester', timeout)
+        return 0
 
     def identity(pid):
         if boundary == 'identity':
             raise FileNotFoundError('process exited while reading identity')
+        if boundary == 'missing':
+            return None
+        if boundary == 'zombie':
+            return dict(proof, exe='', state='Z')
         return proof
 
     class VanishedProc:
@@ -53,14 +59,17 @@ def test_repo_benchmark_sampling_handles_exit_race_only_after_child_exit(
 
     monkeypatch.setattr(cluster, 'process_identity', identity)
     monkeypatch.setattr(cluster, 'Path', lambda unused: VanishedProc())
-    children = [(dict(kind='requester'), SimpleNamespace(poll=poll), dict(proof=proof))]
+    child = SimpleNamespace(poll=lambda: None, wait=wait)
+    children = [(dict(kind='requester'), child, dict(proof=proof))]
     if exited:
         cluster._sample_repo_benchmark(tmp_path, children, 'periodic')
         sample = json.loads((tmp_path / 'repo-file-process-statistics.jsonl').read_text())
         assert sample['actors'] == {}
     else:
-        with pytest.raises(FileNotFoundError):
+        error = cluster.ClusterError if boundary in ('missing', 'zombie') else FileNotFoundError
+        with pytest.raises(error):
             cluster._sample_repo_benchmark(tmp_path, children, 'periodic')
+    assert len(waits) == 1 and 0 < waits[0] <= 0.1
 
 
 def test_repo_benchmark_sampling_keeps_identity_mismatch_failure(ops, monkeypatch, tmp_path):
