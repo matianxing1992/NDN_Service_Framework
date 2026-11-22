@@ -51,6 +51,74 @@ This upstream ORT export contains fused operators outside the generic ONNX check
 including `SimplifiedLayerNormalization`. Native ORT CPU execution and independent numerical
 oracles qualify inference separately; the preparation receipt does not claim those results.
 
+## Wired Repo original-packet restart
+
+Use the installed `ndnsf-repo-file-benchmark` target and Ops wheel. Prepare a private
+`qwen06b-wired-star-tp-cpu` deployment with the installed preparation command. This provides
+the Requester, Repo and control identities and `Experiments/Topology/spec270-wired-star.conf`
+(1 Gbit/s and 0.25 ms per link). The Repo benchmark launches the preparation projection of the
+deployment and performs file I/O. Generate the input in the private work root:
+
+```sh
+python3 - "$work_root/repo-input.bin" <<'PY'
+import hashlib
+import sys
+
+total = 500_000_000
+block_size = 1 << 20
+digest = hashlib.sha256()
+with open(sys.argv[1], "xb") as file:
+    for index, offset in enumerate(range(0, total, block_size)):
+        block = hashlib.shake_256(b"NDNSF Spec 271 recovery fixture v1" +
+                                  index.to_bytes(8, "big")).digest(min(block_size, total - offset))
+        file.write(block)
+        digest.update(block)
+assert digest.hexdigest() == "78368e90250b5865c0e7ca1fa7d922bcea90ad0ae85a65f30d10610733abbb6d"
+PY
+```
+
+Generate two configs with `ops.deployment_config.preparation_deployment`. Give them distinct
+`deployment_id` values and keep the same `storage.repo_root`, topology and credentials.
+Use the same `--authentication` and, when choosing an explicit Producer certificate, the same
+`--signing-certificate` in both phases. Put the reference in the private work root.
+
+```sh
+/usr/bin/python3 -I - "$work_root/deployment.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+from ndnsf_di_launcher import _bind_package_root
+_bind_package_root()
+from ndnsf_distributed_inference.ops.deployment_config import preparation_deployment
+
+source = Path(sys.argv[1]).resolve(strict=True)
+for phase in ("write", "read"):
+    config = preparation_deployment(json.loads(source.read_bytes()))
+    config["deployment_id"] += "-" + phase
+    with source.with_name("repo-" + phase + ".json").open("x") as output:
+        json.dump(config, output, sort_keys=True)
+PY
+write_config="$work_root/repo-write.json"
+read_config="$work_root/repo-read.json"
+input_sha256=78368e90250b5865c0e7ca1fa7d922bcea90ad0ae85a65f30d10610733abbb6d
+```
+
+```sh
+sudo -n /usr/local/bin/ndnsf-di cluster benchmark-repo --config "$write_config" \
+  --authentication manifest --phase write --reference "$work_root/reference.json" \
+  --source "$work_root/repo-input.bin" --expected-sha256 "$input_sha256"
+sudo -n /usr/local/bin/ndnsf-di cluster benchmark-repo --config "$read_config" \
+  --authentication manifest --phase read --reference "$work_root/reference.json" \
+  --expected-sha256 "$input_sha256"
+```
+
+The write creates an exclusive reference. The independent read checks each group's original
+wire digest and the reconstructed file SHA-256. Record the installed binary and wheel identities,
+topology and config digests, both Repo PIDs, complete native records, and nonforced cleanup.
+Use one write and read as a restart check. A throughput comparison additionally needs repeated
+matched trials and bare NFD replay of the same original wire in each applicable direction.
+
 ## UAV multi-camera tracking assets
 
 `uav-multicam-tracking.json` declares the detector checkpoint and three view clips that

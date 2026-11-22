@@ -71,6 +71,19 @@ require(bool condition, const char* message)
   if (!condition) throw std::runtime_error(message);
 }
 
+void
+writeAndSync(int descriptor, const std::string& bytes, const char* error)
+{
+  size_t written = 0;
+  while (written < bytes.size()) {
+    const auto count = ::write(descriptor, bytes.data() + written, bytes.size() - written);
+    if (count < 0 && errno == EINTR) continue;
+    require(count > 0, error);
+    written += static_cast<size_t>(count);
+  }
+  require(::fsync(descriptor) == 0, error);
+}
+
 std::string
 digest(ndn::util::Sha256& hash)
 {
@@ -265,15 +278,7 @@ run(int argc, char** argv)
   std::mutex reportMutex;
   const auto record = [report, &reportMutex](Json value) {
     std::lock_guard<std::mutex> lock(reportMutex);
-    const auto line = di::nativeCanonicalJson(value) + "\n";
-    size_t written = 0;
-    while (written < line.size()) {
-      const auto count = ::write(report, line.data() + written, line.size() - written);
-      if (count < 0 && errno == EINTR) continue;
-      require(count > 0, "benchmark report write failed");
-      written += static_cast<size_t>(count);
-    }
-    require(::fsync(report) == 0, "benchmark report sync failed");
+    writeAndSync(report, di::nativeCanonicalJson(value) + "\n", "benchmark report write failed");
   };
   const Measurement total;
   const auto deadline = Clock::now() + std::chrono::seconds(1800);
@@ -595,16 +600,22 @@ run(int argc, char** argv)
           reference["signingCertificate"] = certificate.getName().toUri();
         }
         {
-          std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-          require(bool(output), "benchmark reference open failed");
-          output << di::nativeCanonicalJson(reference) << std::endl;
-          require(output.good(), "benchmark reference write failed");
+          const int descriptor = ::open(temporary.c_str(),
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+          require(descriptor >= 0, "cannot create exclusive benchmark reference staging file");
+          const auto removeTemporary = ndn::make_scope_exit([&] { ::unlink(temporary.c_str()); });
+          const auto closeReference = ndn::make_scope_exit([&] { ::close(descriptor); });
+          writeAndSync(descriptor, di::nativeCanonicalJson(reference) + "\n",
+                       "benchmark reference write failed");
+          require(::link(temporary.c_str(), referencePath.c_str()) == 0,
+                  "cannot publish new benchmark reference");
         }
-        const int descriptor = ::open(temporary.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-        require(descriptor >= 0 && ::fsync(descriptor) == 0, "benchmark reference sync failed");
-        ::close(descriptor);
-        require(::rename(temporary.c_str(), referencePath.c_str()) == 0,
-                "benchmark reference publish failed");
+        auto parent = std::filesystem::path(referencePath).parent_path();
+        if (parent.empty()) parent = ".";
+        const int directory = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        require(directory >= 0, "cannot open benchmark reference directory");
+        const auto closeDirectory = ndn::make_scope_exit([&] { ::close(directory); });
+        require(::fsync(directory) == 0, "benchmark reference directory sync failed");
         auto referenceRow = total.result();
         referenceRow.update(Json{{"phase", "reference"}, {"groups", groups.size()},
           {"orderedWireSha256", digest(orderedWire)},

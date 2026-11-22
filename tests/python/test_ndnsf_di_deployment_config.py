@@ -115,6 +115,49 @@ def test_repo_file_benchmark_rejects_small_input_before_launch(ops, tmp_path):
                             repo_benchmark=dict(source=str(source), sha256='a' * 64))
 
 
+@pytest.mark.parametrize('phase', ['write', 'read'])
+def test_repo_file_benchmark_forwards_independent_native_phase(ops, tmp_path, monkeypatch, phase):
+    _, cli = ops
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    config = tmp_path / 'deployment.json'
+    reference = tmp_path / 'reference.json'
+    received = []
+
+    def launch(*args, **kwargs):
+        received.append(kwargs['repo_benchmark'])
+        return dict(status='STOPPED', execution='REPO_BENCHMARK_COMPLETE', failure=None,
+                    cleanup=[dict(status='ZERO', forced=False)])
+
+    monkeypatch.setattr(cluster, '_locator', lambda path: (config, tmp_path / 'state'))
+    monkeypatch.setattr(cluster, '_up', launch)
+    arguments = ['cluster', 'benchmark-repo', '--config', str(config),
+                 '--expected-sha256', 'a' * 64, '--phase', phase, '--reference', str(reference)]
+    expected = dict(sha256='a' * 64, phase=phase, reference=str(reference))
+    if phase == 'write':
+        source = tmp_path / 'input.bin'
+        with source.open('wb') as output:
+            output.truncate(500000000)
+        arguments += ['--source', str(source)]
+        expected['source'] = str(source)
+    else:
+        reference.write_text('{}')
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert cli.main(arguments) == 0
+    assert received == [expected]
+
+
+@pytest.mark.parametrize(('options', 'message'), [
+    ({'phase': 'read'}, 'absolute reference'),
+    ({'phase': 'read', 'source': '/input.bin'}, 'uses a reference file'),
+    ({'phase': 'read', 'reference': '/missing/reference.json'}, 'existing reference'),
+])
+def test_repo_file_benchmark_rejects_invalid_independent_read(ops, tmp_path, options, message):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    with pytest.raises(cluster.ClusterError, match=message):
+        cluster.run_cluster('benchmark-repo', tmp_path / 'absent.json',
+                            repo_benchmark=dict(sha256='a' * 64, **options))
+
+
 @pytest.mark.parametrize('cleanup', [[], [dict(status='ZERO', forced=True)],
     [dict(status='UNKNOWN', forced=False)], [dict(status='ZERO')]])
 def test_repo_file_benchmark_rejects_unqualified_cleanup(ops, monkeypatch, cleanup):

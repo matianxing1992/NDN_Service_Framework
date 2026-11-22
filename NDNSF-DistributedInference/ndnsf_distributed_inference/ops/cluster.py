@@ -949,6 +949,8 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
                 raise ClusterError('Repo file benchmark must match the installed release manifest')
         elif 'authentication' in repo_benchmark:
             raise ClusterError('explicit Repo benchmark authentication requires local MiniNDN')
+        elif repo_benchmark.get('phase', 'write-read') != 'write-read':
+            raise ClusterError('independent Repo benchmark phases require local MiniNDN')
         elif config['platform']['kind'] != 'slurm-apptainer':
             raise ClusterError('Repo file benchmark requires MiniNDN or Slurm')
     if config['platform']['kind'] == 'slurm-apptainer':
@@ -1222,23 +1224,40 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_
     if actor_id is not None and action != 'down':
         raise ClusterError('actor selection only applies to down')
     if action == 'benchmark-repo':
-        required = {'source', 'sha256'}
-        options = {'authentication', 'signing_certificate'}
-        if (not isinstance(repo_benchmark, dict) or not required <= repo_benchmark.keys() or
-                repo_benchmark.keys() - required - options):
-            raise ClusterError('Repo benchmark needs source and SHA-256')
+        options = {'sha256', 'source', 'authentication', 'signing_certificate', 'phase', 'reference'}
+        if (not isinstance(repo_benchmark, dict) or 'sha256' not in repo_benchmark or
+                repo_benchmark.keys() - options):
+            raise ClusterError('Repo benchmark needs SHA-256 and supported options')
         authentication = repo_benchmark.get('authentication', 'digest')
         if authentication not in ('digest', 'certificate', 'manifest'):
             raise ClusterError('unsupported Repo benchmark authentication')
         if 'signing_certificate' in repo_benchmark and authentication == 'digest':
             raise ClusterError('a signing certificate requires authenticated Repo benchmark mode')
-        input_path = Path(repo_benchmark['source'])
         digest = repo_benchmark['sha256']
-        if (not input_path.is_absolute() or input_path.is_symlink() or
-                not input_path.is_file() or input_path.stat().st_size != 500000000 or
-                not isinstance(digest, str) or len(digest) != 64 or
+        if (not isinstance(digest, str) or len(digest) != 64 or
                 any(c not in '0123456789abcdef' for c in digest)):
-            raise ClusterError('Repo benchmark requires a regular 500000000-byte input and SHA-256')
+            raise ClusterError('Repo benchmark requires a lowercase SHA-256')
+        phase = repo_benchmark.get('phase', 'write-read')
+        if phase not in ('write-read', 'write', 'read'):
+            raise ClusterError('unsupported Repo benchmark phase')
+        if phase != 'read':
+            input_path = Path(repo_benchmark.get('source', ''))
+            if (not input_path.is_absolute() or input_path.is_symlink() or
+                    not input_path.is_file() or input_path.stat().st_size != 500000000):
+                raise ClusterError('Repo benchmark requires a regular 500000000-byte input')
+        elif 'source' in repo_benchmark:
+            raise ClusterError('independent Repo benchmark read uses a reference file')
+        if phase == 'write-read':
+            if 'reference' in repo_benchmark:
+                raise ClusterError('combined Repo benchmark does not use a reference file')
+        else:
+            reference = Path(repo_benchmark.get('reference', ''))
+            if not reference.is_absolute() or reference.is_symlink():
+                raise ClusterError('Repo benchmark needs an absolute reference file path')
+            if phase == 'read' and not reference.is_file():
+                raise ClusterError('Repo benchmark read needs an existing reference file')
+            if phase == 'write' and (reference.exists() or not reference.parent.is_dir()):
+                raise ClusterError('Repo benchmark write needs a new reference file')
     elif repo_benchmark is not None:
         raise ClusterError('Repo benchmark inputs apply only to benchmark-repo')
     source, root = _locator(path)

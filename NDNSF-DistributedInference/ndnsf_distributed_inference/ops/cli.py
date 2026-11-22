@@ -44,8 +44,11 @@ def build_parser():
             command.add_argument('--timing', action='store_true',
                                  help='enable native phase measurements for this boot')
         if name == 'benchmark-repo':
-            command.add_argument('--source', required=True, help='regular 500000000-byte file')
+            command.add_argument('--source', help='regular 500000000-byte file for publication')
             command.add_argument('--expected-sha256', required=True)
+            command.add_argument('--phase', choices=('write-read', 'write', 'read'),
+                                 help='run both phases or use independent local MiniNDN boots')
+            command.add_argument('--reference', help='write or read the native original-wire reference')
             command.add_argument('--authentication', choices=('digest', 'certificate', 'manifest'),
                                  help='select the packet authentication mode in local MiniNDN')
             command.add_argument('--signing-certificate', help='data signing certificate NDN name')
@@ -98,8 +101,10 @@ def main(argv=None, *, deployment_factory=None, client_factory=None):
                 from .cluster import run_cluster
                 options = {}
                 if args.cluster_command == 'benchmark-repo':
-                    options['repo_benchmark'] = dict(source=args.source,
-                                                   sha256=args.expected_sha256)
+                    options['repo_benchmark'] = dict(sha256=args.expected_sha256)
+                    for field in ('source', 'phase', 'reference'):
+                        if getattr(args, field) is not None:
+                            options['repo_benchmark'][field] = getattr(args, field)
                     if args.authentication is not None:
                         options['repo_benchmark']['authentication'] = args.authentication
                     if args.signing_certificate is not None:
