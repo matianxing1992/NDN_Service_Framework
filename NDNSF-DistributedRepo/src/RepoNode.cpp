@@ -557,6 +557,7 @@ bool
 RepoNode::enqueueOriginalDataInterest(const ndn::Interest& interest)
 {
   detail::traceManifestRoot(interest.getName(), "repo-arrival");
+  detail::traceManifestSource(interest.getName(), "repo-receive-interest");
   const auto interestBytes = interest.wireEncode().size();
   if (interestBytes > ndn::MAX_NDN_PACKET_SIZE)
     return false;
@@ -729,6 +730,7 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
           detail::traceManifestRoot(data.getName(), "repo-lookup-finish");
           replies.push_back({std::move(data), read.job.deadline, read.completion});
         }
+        detail::traceManifestSource(replies.back().data.getName(), "repo-data-ready");
       }
       catch (const std::exception& error) {
         // Unsupported batch shapes keep the established per-packet miss path.
@@ -751,6 +753,7 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
           }
           detail::traceManifestRoot(reply.data.getName(), "repo-face-put");
           face.put(reply.data);
+          detail::traceManifestSource(reply.data.getName(), "repo-submit-data");
           NDN_LOG_DEBUG("original packet put name=" << reply.data.getName());
           // Keep each lease through its own queued put, including when a later
           // reply fails. Only the foreign-thread dispatch is shared by a batch.
