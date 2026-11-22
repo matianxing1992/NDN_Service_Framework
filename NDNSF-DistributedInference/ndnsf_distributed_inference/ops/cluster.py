@@ -463,6 +463,9 @@ def _provider_stop_grace(row):
 
 
 def _stop_launch(row):
+    if row.get('kind') == 'repo':
+        # The native Repo allows ten seconds to drain owner tokens after shutdown starts.
+        return stop_owned(row.get('proof'), term_seconds=15)
     grace = _provider_stop_grace(row)
     if grace is not None:
         return stop_owned(row.get('proof'), term_seconds=grace)

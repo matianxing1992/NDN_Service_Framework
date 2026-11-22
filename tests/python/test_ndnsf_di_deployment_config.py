@@ -259,6 +259,38 @@ def test_provider_close_honors_native_drain_budget_above_old_process_cap(ops, tm
         child.stdout.close()
 
 
+def test_repo_close_leaves_time_for_native_owner_drain(ops):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID='repo', NDNSF_DEPLOYMENT_BOOT_ID='drain-boot',
+                    NDNSF_DEPLOYMENT_CONFIG_SHA256='a' * 64)
+    script = """
+import signal
+import sys
+import time
+
+def drain(signum, frame):
+    time.sleep(5.5)
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, drain)
+print("ready", flush=True)
+time.sleep(30)
+"""
+    child = subprocess.Popen([sys.executable, '-c', script], env=dict(os.environ, **bindings),
+                             start_new_session=True, stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == 'ready'
+        row = dict(kind='repo', proof=cluster.process_identity(child.pid))
+        result = cluster._stop_launch(row)
+        assert result['status'] == 'ZERO' and result['exitCode'] == 0, result
+        assert not result['forced']
+    finally:
+        if child.poll() is None:
+            os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=5)
+        child.stdout.close()
+
+
 @pytest.mark.parametrize('grace', [0, -1, True, 615001, '135000'])
 def test_provider_ready_rejects_invalid_native_stop_budget(ops, tmp_path, grace):
     cluster = importlib.import_module('_spec217_ops.cluster')
