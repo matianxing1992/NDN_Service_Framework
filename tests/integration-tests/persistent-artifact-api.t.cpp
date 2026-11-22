@@ -3368,6 +3368,21 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_REQUIRE(retry.packetSet);
   BOOST_CHECK_EQUAL(retry.packetSet->wireDigest, admittedManifest.packetSet->wireDigest);
   BOOST_CHECK_EQUAL(retry.packetSet->operationId, admittedManifest.packetSet->operationId);
+  repo::ArtifactReference storedReference;
+  storedReference.digestAlgorithm = "sha256";
+  storedReference.contentDigest = node->core().getManifest(manifestObject).sha256;
+  const auto storedPayload = committedPayloadPath(temporary.path() / "objects", storedReference);
+  const auto originalPayload = readFile(storedPayload);
+  BOOST_REQUIRE(!originalPayload.empty());
+  auto corruptedPayload = originalPayload;
+  corruptedPayload.back() ^= 0xff;
+  writeFile(storedPayload, corruptedPayload);
+  BOOST_CHECK_EXCEPTION(commitManifest(indexedRetry), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()) ==
+           "repo-original-publication-insert-not-confirmed: repo-data-wire-conflict";
+  });
+  BOOST_CHECK(readFile(storedPayload) == corruptedPayload);
+  writeFile(storedPayload, originalPayload);
   auto renewedManifestGrant = manifestGrant;
   renewedManifestGrant.grantId += "-renewed";
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {

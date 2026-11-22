@@ -1893,11 +1893,27 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   // are checked again before accepting reuse or publishing the new ranges.
   const std::unordered_set<std::string_view> incomingNames(manifest.packetNames.begin(),
                                                            manifest.packetNames.end());
+  bool verifyStoredSpool = stageTogether && existing.has_value();
+  std::unordered_set<std::string> replayNames;
+  if (verifyStoredSpool) {
+    for (const auto& packetName : manifest.packetNames) {
+      const ndn::Name name(packetName);
+      replayNames.insert(name.toUri(ndn::name::UriFormat::CANONICAL));
+      replayNames.insert(name.toUri(ndn::name::UriFormat::ALTERNATE));
+    }
+  }
   std::set<std::string> indexedPacketNames;
   std::map<std::string, std::shared_ptr<const RepoObjectManifest>> catalogMetadata;
   const auto catalog = detail::listManifestSnapshots(*m_store);
   for (const auto& stored : catalog) {
     catalogMetadata.emplace(stored->objectName, stored);
+    if (verifyStoredSpool && stored->objectName != existing->objectName &&
+        (replayNames.count(stored->objectName) ||
+         (stored->objectType == "original-packet-set" &&
+          std::any_of(stored->packetNames.begin(), stored->packetNames.end(),
+            [&](const auto& name) { return replayNames.count(name) != 0; })))) {
+      verifyStoredSpool = false;
+    }
     if (stored->objectType == "ndn-data-wire") {
       // Legacy rows may use ALTERNATE URI spelling for the same typed Name.
       const auto canonical = ndn::Name(stored->objectName).toUri(ndn::name::UriFormat::CANONICAL);
@@ -2006,6 +2022,13 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
     const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
     if (data.getName() != ndn::Name(manifest.packetNames[i]) || data.wireEncode().size() != wire.size())
       throw std::invalid_argument("repo-data-name-mismatch");
+    if (verifyStoredSpool) {
+      // With identical metadata and no competing holder, the existing index
+      // identifies the original wire range without another exact-name lookup.
+      if (m_store->getRange(existing->objectName, {manifest.packetOffsets[i], length}) != wire)
+        throw std::runtime_error("repo-data-wire-conflict");
+      continue;
+    }
     const auto stored = catalogMetadata.find(manifest.packetNames[i]);
     // A catalog miss is already known for this transaction. For a hit, retain
     // the physical check: metadata may outlive a missing committed payload.
