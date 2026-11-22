@@ -220,7 +220,15 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const std::string& modelDigest, const std::string& catalogId, const std::string& manifestId,
   const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
-  const std::function<void(const ndn::Name&)>& bindPrefix, bool importLegacyJournal = false,
+  const std::function<void(const ndn::Name&)>& bindPrefix);
+
+NativeStoredModelPublication
+nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
+  const ndn::Name& repository, const ndn::Name& publicationPrefix,
+  const std::string& modelDigest, const std::string& catalogId, const std::string& manifestId,
+  const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
+  const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
+  const std::function<void(const ndn::Name&)>& bindPrefix, bool importLegacyJournal,
   const NativeStoredModelHandleOutput* output = nullptr);
 
 /** Same journal-aware entry with the verified semantic facts. The journal allocates and persists the package
@@ -232,7 +240,16 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
   const std::function<void(const ndn::Name&)>& bindPrefix,
-  const NativeStoredModelSemanticContext& semantic, bool importLegacyJournal = false,
+  const NativeStoredModelSemanticContext& semantic);
+
+NativeStoredModelPublication
+nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
+  const ndn::Name& repository, const ndn::Name& publicationPrefix,
+  const std::string& modelDigest, const std::string& catalogId, const std::string& manifestId,
+  const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
+  const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
+  const std::function<void(const ndn::Name&)>& bindPrefix,
+  const NativeStoredModelSemanticContext& semantic, bool importLegacyJournal,
   const NativeStoredModelHandleOutput* output = nullptr);
 
 /** Read-only admission; no source loader or commit callback is invoked. */

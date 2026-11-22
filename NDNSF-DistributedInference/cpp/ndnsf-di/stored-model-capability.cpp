@@ -1603,6 +1603,31 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const std::string& modelDigest, const std::string& catalogId, const std::string& manifestId,
   const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
+  const std::function<void(const ndn::Name&)>& bindPrefix)
+{
+  return nativePublishStoredModel(keyChain, producer, repository, publicationPrefix, modelDigest,
+    catalogId, manifestId, nextObject, io, preparationState, bindPrefix, false, nullptr);
+}
+
+NativeStoredModelPublication
+nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
+  const ndn::Name& repository, const ndn::Name& publicationPrefix,
+  const std::string& modelDigest, const std::string& catalogId, const std::string& manifestId,
+  const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
+  const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
+  const std::function<void(const ndn::Name&)>& bindPrefix,
+  const NativeStoredModelSemanticContext& semantic)
+{
+  return nativePublishStoredModel(keyChain, producer, repository, publicationPrefix, modelDigest,
+    catalogId, manifestId, nextObject, io, preparationState, bindPrefix, semantic, false, nullptr);
+}
+
+NativeStoredModelPublication
+nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
+  const ndn::Name& repository, const ndn::Name& publicationPrefix,
+  const std::string& modelDigest, const std::string& catalogId, const std::string& manifestId,
+  const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
+  const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
   const std::function<void(const ndn::Name&)>& bindPrefix, bool importLegacyJournal,
   const NativeStoredModelHandleOutput* output)
 {
