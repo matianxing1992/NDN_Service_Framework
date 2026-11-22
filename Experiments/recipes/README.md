@@ -188,17 +188,17 @@ are conservative declared ceilings, not measured usage or proof of deployment ca
 ```sh
 python3 Experiments/prepare-wan22-checkpoint-request.py \
   --asset-root "$asset_root" --component vae --layout single \
-  --frames 361 --width 320 --height 320 \
-  --requester-prefix /experiment/wan22/requester --service /experiment/wan22/infer \
+  --frames 25 --width 320 --height 320 \
+  --requester-prefix /spec271/wan22/requester --service /spec271/wan22/infer \
   --output "$run_root/vae-request.json"
 "$prefix/bin/di-prepare-wan-checkpoint" \
   "$run_root/vae-request.json" "$run_root/vae-single"
 ```
 
-At 24 fps, 361 frames play for about 15 seconds. This example's resolution fits
-the existing complete FP32 Response bound. A 1280×704 clip at the same length
-exceeds that bound and is explicitly rejected before generation. Generation and
-MiniNDN qualification remain separate from successful preparation.
+At 24 fps, these 25 frames play for about 1.04 seconds. For the original
+15-second stress workload, prepare the DiT and VAE catalogs at 361 frames and
+pass the same geometry to the workload generator. At 361 frames, 320×320 fits
+the complete FP32 Response bound and 1280×704 exceeds it.
 
 For the short real-weight VAE diagnostic, prepare a separate nine-frame 32×32
 source using the same commands with `--frames 9 --width 32 --height 32` and fresh
@@ -252,6 +252,7 @@ namespace. The host generator does not recompute plans or candidate identities.
 python3 Experiments/prepare-wan22-video-workload.py \
   --asset-root "$asset_root" --umt5-catalog "$umt5_catalog" \
   --dit-catalog "$dit_catalog" --vae-catalog "$vae_catalog" \
+  --frames 25 --width 320 --height 320 --steps 50 \
   --namespace /spec271/wan22 --mode single --output "$workload_json"
 python3 tests/minindn/prepare-wan-video-run.py \
   --prefix "$prefix" --checkpoint-workload "$workload_json" \
@@ -259,8 +260,11 @@ python3 tests/minindn/prepare-wan-video-run.py \
   --output "$run_root"
 ```
 
-The default workload is 361 frames at 24 fps, 320×320, 50 UniPC steps,
-shift/guidance 5 and seed 0. Its prompt is `NDN distributed inference`.
+The Spec271 CPU application workload is 25 frames at 24 fps, 320×320,
+50 UniPC steps, shift/guidance 5 and seed 0. Its prompt is
+`NDN distributed inference`. Prepare DiT and VAE with the matching
+`--frames 25 --height 320 --width 320` options. The CLI's 361-frame default
+remains available for long-sequence stress experiments.
 Use separately prepared 9-frame 32×32 catalogs and explicit
 `--frames 9 --width 32 --height 32 --steps 1` for readiness. This short run does
 not qualify the final video. Prepare all components for the requested layout;
@@ -273,7 +277,7 @@ the actual configuration, artifact ledger, outcomes and cleanup receipts.
 Prepare and run the private work root as the same user; MiniNDN requires root
 for network namespaces, and the launcher checks ownership of its operation files.
 
-For the final CPU workload, explicitly set the generated deployment's
+For a multi-day CPU stress experiment, explicitly set the generated deployment's
 `requester.wan_generation.timeout_ms` to `259200000` before freezing its identity,
 and pass `--timeout 259200` to `cluster up`. The launcher retains its shorter
 default. This finite 72-hour total budget applies to MiniNDN inference runs;
@@ -286,7 +290,7 @@ the numerical authority: H.264 with YUV420 conversion is a presentation copy.
 Set `wan_width`, `wan_height` and `wan_frames` from the manifest's `width`,
 `height` and `frames` fields. Calculate the shell variable
 `wan_fps = time_base[1] / (time_base[0] * ticks_per_frame)`. Do not infer them
-from the filename. The final workload requires 320×320, 361 frames and 24 fps;
+from the filename. The CPU application workload requires 320×320, 25 frames and 24 fps;
 the tiny regression has its own geometry and rate.
 
 ```sh
@@ -316,4 +320,4 @@ isolated host tool directory. The other matching FFmpeg libraries were already
 installed. No system libraries or inference dependencies were changed. If using
 this isolated layout, set `LD_LIBRARY_PATH` to its `usr/lib/x86_64-linux-gnu` only
 for the FFmpeg/ffprobe children. A successful tiny packaging check does not
-qualify a real checkpoint run or a 15-second video.
+qualify a real checkpoint run.
