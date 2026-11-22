@@ -135,7 +135,7 @@ private:
   std::shared_ptr<const RepoObjectManifest>
   parseManifestCachedUnlocked(const std::string& key, std::string encoded,
                               const std::filesystem::path* source = nullptr) const;
-  void writeManifest(const RepoObjectManifest& manifest) const;
+  void writeManifest(const std::string& objectName, const std::string& encoded) const;
   bool isDigestReferencedUnlocked(const std::string& digest,
                                   const std::string& exceptObjectName) const;
   static bool isMetadataOnly(const RepoObjectManifest& manifest) noexcept;

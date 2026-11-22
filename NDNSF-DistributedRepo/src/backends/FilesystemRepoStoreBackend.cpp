@@ -451,7 +451,7 @@ FilesystemRepoStoreBackend::putManifest(const RepoObjectManifest& manifest)
       throw std::runtime_error("repo-generation-conflict: stale manifest update");
     }
   }
-  writeManifest(durable);
+  writeManifest(durable.objectName, durable.toJson());
   if (previous && previous->sha256 != durable.sha256 &&
       !previous->sha256.empty() && !isMetadataOnly(*previous)) {
     // Metadata publication is the commit point.  If old-payload cleanup is
@@ -944,9 +944,10 @@ FilesystemRepoStoreBackend::commitRanges(const RepoObjectManifest& manifest)
   const auto generation = effectiveGeneration(manifest);
   auto canonicalManifest = manifest;
   canonicalManifest.generation = generation;
+  const auto canonicalIdentity = canonicalManifest.toJson();
   const auto reservation = m_reservations.find(manifest.objectName);
   if (reservation != m_reservations.end() &&
-      reservation->second.canonicalIdentity != canonicalManifest.toJson()) {
+      reservation->second.canonicalIdentity != canonicalIdentity) {
     throw std::runtime_error("repo-generation-conflict: commit reservation identity mismatch");
   }
   const auto previous = [&]() -> std::optional<RepoObjectManifest> {
@@ -1005,25 +1006,21 @@ FilesystemRepoStoreBackend::commitRanges(const RepoObjectManifest& manifest)
   };
   try {
     if (!m_payloadStore.isCommitted(reference, generation)) {
-      m_payloadStore.flush(reference, generation);
+      // finalize synchronizes the staged payload before hash and publication.
       m_payloadStore.finalize(reference, generation);
     }
     const auto payload = m_payloadStore.inspectCommitted(reference);
     if (!payload.exists || !payload.regularFile || payload.sizeBytes != manifest.size)
       throw std::runtime_error("repo-file-committed-payload-invalid");
-    RepoObjectManifest durable = manifest;
-    if (durable.generation == 0) {
-      durable.generation = generation;
-    }
-    writeManifest(durable);
-    if (previous && previous->sha256 != durable.sha256 &&
+    writeManifest(canonicalManifest.objectName, canonicalIdentity);
+    if (previous && previous->sha256 != canonicalManifest.sha256 &&
         !previous->sha256.empty() && !isMetadataOnly(*previous)) {
       // The new manifest is already durable at this point.  Retaining an old
       // unreferenced payload on cleanup failure is safe and recoverable, while
       // reporting the commit as failed would split Core accounting from the
       // manifest that callers can already observe.
       try {
-        if (!isDigestReferencedUnlocked(previous->sha256, durable.objectName)) {
+        if (!isDigestReferencedUnlocked(previous->sha256, canonicalManifest.objectName)) {
           std::error_code error;
           fs::remove(m_payloadStore.committedPath(artifactReference(*previous)),
                      error);
@@ -1200,7 +1197,7 @@ FilesystemRepoStoreBackend::attachImportedDataReceipt(
       updated.dataReceiptCommittedAtMs == 0) {
     throw std::runtime_error("repo-data-import-manifest-conflict");
   }
-  writeManifest(updated);
+  writeManifest(updated.objectName, updated.toJson());
 }
 
 bool
@@ -1643,11 +1640,12 @@ FilesystemRepoStoreBackend::parseManifestCachedUnlocked(const std::string& key,
 }
 
 void
-FilesystemRepoStoreBackend::writeManifest(const RepoObjectManifest& manifest) const
+FilesystemRepoStoreBackend::writeManifest(const std::string& objectName,
+                                          const std::string& encoded) const
 {
-  const auto path = manifestPath(manifest.objectName);
+  const auto path = manifestPath(objectName);
   fs::create_directories(path.parent_path());
-  atomicWrite(path, manifest.toJson());
+  atomicWrite(path, encoded);
 }
 
 bool
