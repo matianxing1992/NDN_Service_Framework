@@ -22,6 +22,38 @@ using namespace std::chrono_literals;
 /** Test access to the guarded Context path, never the legacy Provider helper. */
 struct ExactPublicationOracle
 {
+  static auto
+  publishManifest(ServiceProvider::CollaborationContext& context, const SegmentManifestScope& scope,
+                  uint32_t count = 2, ndn::span<const uint8_t> app = {})
+  {
+    std::vector<ndn::ConstBufferPtr> contents;
+    contents.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      contents.push_back(std::make_shared<const ndn::Buffer>(ndn::Buffer{
+        static_cast<uint8_t>(2 * i + 1), static_cast<uint8_t>(2 * i + 2)}));
+    }
+    return context.publishManifestAuthenticatedExactData("manifest-authority", scope,
+      {4096, 65536, count}, contents, app, 60000, nullptr);
+  }
+
+  static ServiceProvider::ExactDataFetchOperation
+  readManifest(ServiceProvider::CollaborationContext& context, const SegmentManifestScope& scope,
+               uint32_t count, std::function<bool()> onValidatedData,
+               std::chrono::milliseconds timeout = 2s,
+               std::function<void(std::exception_ptr)> onFirstRead = {})
+  {
+    return context.startVerifiedManifestAuthenticatedExactData("manifest-authority", scope,
+      {4096, 65536, count}, std::chrono::steady_clock::now() + timeout, {},
+      std::move(onFirstRead), std::move(onValidatedData), 16);
+  }
+
+  static bool
+  replayManifest(ServiceProvider::CollaborationContext& context,
+                 const ServiceProvider::CollaborationContext::ExactManifestPublication& original)
+  {
+    return context.replayManifestAuthenticatedExactData("manifest-authority", original, nullptr);
+  }
+
   static bool
   publish(ServiceProvider::CollaborationContext& context, const ndn::Name& name,
           const ndn::Buffer& payload, CollaborationTransferMetrics* metrics,
@@ -39,6 +71,187 @@ struct ExactPublicationOracle
     return context.replayOwnedExactData("exact-authority", originals, metrics);
   }
 };
+
+BOOST_AUTO_TEST_CASE(ManifestOriginalsAnswerOrdinaryAndPendingDigestInterests)
+{
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+  auto& provider = environment.provider(0);
+  auto& face = environment.providerFace(0);
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "manifest-authority";
+  assignment.service = profile.serviceName;
+  assignment.workDeadline = std::chrono::steady_clock::now() + 90s;
+  assignment.workCurrent = [] { return true; };
+  const ndn::Name requestId("/fixture/manifest-publication");
+  ServiceProvider::CollaborationContext context(
+    provider, profile.userIdentity, requestId, RequestMessage(), assignment);
+  const SegmentManifestScope scope{provider.getName(),
+    ndn::Name(provider.getName()).append("NDNSF").append("TP").appendVersion(1)};
+
+  const auto handle = ExactPublicationOracle::publishManifest(context, scope);
+  BOOST_REQUIRE(handle);
+  std::vector<ndn::Data> received;
+  ndn::signal::ScopedConnection capture = face.onSendData.connect([&] (const ndn::Data& data) {
+    if (data.getName() == scope.sourceName(0)) {
+      received.push_back(data);
+    }
+  });
+  const auto request = [&] (const ndn::Name& name) {
+    ndn::Interest interest(name);
+    interest.setCanBePrefix(false).setInterestLifetime(ndn::time::milliseconds(10000));
+    face.receive(interest);
+  };
+  request(scope.sourceName(0));
+  environment.pumpUntil([&] { return !received.empty(); });
+  BOOST_REQUIRE_EQUAL(received.size(), 1U);
+  const auto original = received.front();
+  BOOST_REQUIRE_EQUAL(provider.evictImsPrefixForTest(scope.objectPrefix), 3U);
+
+  request(original.getFullName());
+  const auto pendingUntil = std::chrono::steady_clock::now() + 30ms;
+  environment.pumpUntil([&] { return std::chrono::steady_clock::now() >= pendingUntil; });
+  BOOST_CHECK_EQUAL(received.size(), 1U);
+  ServiceProvider::CollaborationContext wrongRequest(
+    provider, profile.userIdentity, ndn::Name(requestId).append("other"),
+    RequestMessage(), assignment);
+  BOOST_CHECK(!ExactPublicationOracle::replayManifest(wrongRequest, *handle));
+  BOOST_REQUIRE(ExactPublicationOracle::replayManifest(context, *handle));
+  environment.pumpUntil([&] { return received.size() == 2; });
+  BOOST_REQUIRE_EQUAL(received.size(), 2U);
+  BOOST_CHECK(received.back().wireEncode() == original.wireEncode());
+}
+
+BOOST_AUTO_TEST_CASE(ManifestReadAdmitsRootBeforeSchedulingProvenMembers)
+{
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+  // Route the peers explicitly so a held packet cannot arrive through the built-in bridge.
+  environment.disconnectProviderPeerTransportForTest();
+  auto& provider = environment.provider(0);
+  auto& receiver = environment.provider(1);
+  auto& tx = environment.providerFace(0);
+  auto& rx = environment.providerFace(1);
+  std::atomic<bool> current{true};
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "manifest-authority";
+  assignment.service = profile.serviceName;
+  assignment.workDeadline = std::chrono::steady_clock::now() + 90s;
+  assignment.workCurrent = [&] { return current.load(); };
+  const ndn::Name requestId("/fixture/manifest-read");
+  ServiceProvider::CollaborationContext producer(
+    provider, profile.userIdentity, requestId, RequestMessage(), assignment);
+  ServiceProvider::CollaborationContext consumer(
+    receiver, profile.userIdentity, requestId, RequestMessage(), assignment);
+  const SegmentManifestScope scope{provider.getName(),
+    ndn::Name(provider.getName()).append("NDNSF").append("TP").appendVersion(2)};
+  const ndn::Buffer metadata{0, 1, 2, 3};
+  constexpr uint32_t sourceCount = 129;
+  BOOST_REQUIRE(ExactPublicationOracle::publishManifest(producer, scope, sourceCount, metadata));
+
+  bool holdFirstPage = true;
+  bool holdRoot = false;
+  std::optional<ndn::Data> heldPage;
+  std::vector<ndn::Name> issued;
+  ndn::signal::ScopedConnection interests = rx.onSendInterest.connect(
+    [&] (const ndn::Interest& interest) {
+      if (scope.objectPrefix.isPrefixOf(interest.getName())) {
+        issued.push_back(interest.getName());
+      }
+      tx.receive(interest);
+    });
+  ndn::signal::ScopedConnection data = tx.onSendData.connect(
+    [&] (const ndn::Data& packet) {
+      if (packet.getName() == scope.rootName() && holdRoot) {
+        return;
+      }
+      if (packet.getName() == scope.pageName(0) && holdFirstPage) {
+        heldPage = packet;
+      }
+      else {
+        rx.receive(packet);
+      }
+    });
+
+  auto awaitRoot = [&] (ServiceProvider::ExactDataFetchOperation& read) {
+    auto future = std::async(std::launch::async, [&] { return read.getVerifiedManifest(); });
+    environment.pumpUntil([&] { return future.wait_for(0ms) == std::future_status::ready; });
+    return future.get();
+  };
+  std::size_t progress = 0;
+  std::size_t firstRead = 0;
+  auto operation = ExactPublicationOracle::readManifest(consumer, scope, sourceCount,
+    [&] { ++progress; return true; }, 2s, [&] (const std::exception_ptr& error) {
+      BOOST_CHECK(!error);
+      ++firstRead;
+    });
+  BOOST_CHECK(!operation.continueAfterManifest());
+  const auto root = awaitRoot(operation);
+  BOOST_REQUIRE(root);
+  BOOST_CHECK(*root == metadata);
+  BOOST_REQUIRE_EQUAL(issued.size(), 1U);
+  BOOST_CHECK(issued.front() == scope.rootName());
+  BOOST_CHECK_EQUAL(firstRead, 1U);
+  BOOST_CHECK_EQUAL(progress, 0U);
+  BOOST_REQUIRE(operation.continueAfterManifest());
+  BOOST_CHECK(!operation.continueAfterManifest());
+  environment.pumpUntil([&] { return heldPage.has_value() && progress == 1; });
+  BOOST_REQUIRE(heldPage);
+  BOOST_REQUIRE_EQUAL(progress, 1U);
+  BOOST_CHECK(operation.wait_for(0ms) != std::future_status::ready);
+  BOOST_CHECK(std::any_of(issued.cbegin(), issued.cend(), [&] (const ndn::Name& name) {
+    return name.size() == scope.sourceName(sourceCount - 1).size() + 1 &&
+      name.at(-1).isImplicitSha256Digest() && name.getPrefix(-1) == scope.sourceName(sourceCount - 1);
+  }));
+  holdFirstPage = false;
+  rx.receive(*heldPage);
+  environment.pumpUntil([&] { return operation.wait_for(0ms) == std::future_status::ready; });
+  const auto result = operation.get();
+  BOOST_REQUIRE(result);
+  BOOST_REQUIRE_EQUAL(result->contents.size(), sourceCount);
+  for (uint32_t i = 0; i < sourceCount; ++i) {
+    const ndn::Buffer expected{static_cast<uint8_t>(2 * i + 1), static_cast<uint8_t>(2 * i + 2)};
+    BOOST_CHECK(result->contents[i] == expected);
+  }
+  BOOST_CHECK_EQUAL(result->metrics.manifestCertificateValidations, 1U);
+  BOOST_CHECK_EQUAL(result->metrics.manifestVerifiedMembers, sourceCount + 2);
+  BOOST_CHECK_EQUAL(result->metrics.rootControlInterests, 3U);
+
+  auto wrongBinding = scope;
+  wrongBinding.bindingDigest[0] = 1;
+  issued.clear();
+  auto mismatched = ExactPublicationOracle::readManifest(consumer, wrongBinding, sourceCount, {});
+  BOOST_CHECK(!awaitRoot(mismatched));
+  BOOST_CHECK(!mismatched.get());
+  BOOST_REQUIRE_EQUAL(issued.size(), 1U);
+
+  issued.clear();
+  holdRoot = true;
+  auto expired = ExactPublicationOracle::readManifest(consumer, scope, sourceCount, {}, 100ms);
+  BOOST_CHECK(!awaitRoot(expired));
+  BOOST_CHECK(!expired.get());
+  BOOST_REQUIRE(!issued.empty());
+  BOOST_CHECK(std::all_of(issued.cbegin(), issued.cend(),
+    [&] (const ndn::Name& name) { return name == scope.rootName(); }));
+  holdRoot = false;
+
+  issued.clear();
+  auto revoked = ExactPublicationOracle::readManifest(consumer, scope, sourceCount, {});
+  BOOST_REQUIRE(awaitRoot(revoked));
+  current.store(false);
+  BOOST_CHECK(!revoked.continueAfterManifest());
+  environment.pumpUntil([&] { return revoked.wait_for(0ms) == std::future_status::ready; });
+  BOOST_CHECK(!revoked.get());
+  BOOST_REQUIRE_EQUAL(issued.size(), 1U);
+}
 
 namespace {
 

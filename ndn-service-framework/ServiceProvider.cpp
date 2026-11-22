@@ -7423,6 +7423,176 @@ namespace ndn_service_framework
             currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
     }
 
+    std::shared_ptr<const ServiceProvider::CollaborationContext::ExactManifestPublication>
+    ServiceProvider::CollaborationContext::publishManifestAuthenticatedExactData(
+        KeyScope keyScope, const SegmentManifestScope& scope, const SegmentManifestLimits& limits,
+        ndn::span<const ndn::ConstBufferPtr> contents,
+        ndn::span<const uint8_t> applicationManifest, int freshnessMs,
+        CollaborationTransferMetrics* metrics)
+    {
+        if (scope.producer != m_provider.identity ||
+            m_assignment.dependencyTransport.redundancy != DependencyRedundancy::None ||
+            !hasCurrentWorkAuthority()) {
+            return {};
+        }
+        const auto current = currentWorkPredicate(m_assignment.workDeadline);
+        if (!current()) {
+            return {};
+        }
+        auto& keyChain = m_provider.m_testSigningKeyChain
+            ? *m_provider.m_testSigningKeyChain : m_provider.m_keyChain;
+        auto original = [&] {
+            std::lock_guard<std::mutex> lock(m_provider._cache_mutex);
+            return ManifestPublication::prepare(keyChain, m_provider.m_signingInfo, scope,
+                limits, contents, applicationManifest,
+                ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+        }();
+        std::vector<std::shared_ptr<const ndn::Data>> packets;
+        packets.reserve(original.packets().size());
+        for (const auto& packet : original.packets()) {
+            packets.push_back(std::make_shared<const ndn::Data>(packet));
+        }
+        std::shared_ptr<const ExactManifestPublication> publication(new ExactManifestPublication(
+            m_provider.m_fetchStopping, m_requesterName, m_requestId, keyScope, std::move(packets)));
+        if (!replayManifestAuthenticatedExactData(keyScope, *publication, metrics)) {
+            return {};
+        }
+        if (metrics) {
+            metrics->manifestCertificateSignatures = 1;
+        }
+        return publication;
+    }
+
+    ServiceProvider::ExactDataFetchOperation
+    ServiceProvider::CollaborationContext::startVerifiedManifestAuthenticatedExactData(
+        const KeyScope& keyScope, const SegmentManifestScope& scope,
+        const SegmentManifestLimits& limits, std::chrono::steady_clock::time_point deadline,
+        std::function<bool()> shouldCancel,
+        std::function<void(std::exception_ptr)> onFirstReadStarted,
+        std::function<bool()> onValidatedData, std::size_t maxOutstanding,
+        CollaborationLocalWorkObserver observer)
+    {
+        const auto count = limits.expectedSourceSegments.value_or(0);
+        if (m_assignment.dependencyTransport.redundancy != DependencyRedundancy::None ||
+            scope.producer.empty() || !scope.producer.isPrefixOf(scope.objectPrefix) ||
+            scope.producer == scope.objectPrefix || count < 2 ||
+            count > std::min(limits.maxSourceSegments, SegmentManifestVerifier::MAX_SOURCE_PACKETS) ||
+            limits.maxWireBytes == 0) {
+            throw std::invalid_argument("invalid manifest exact read scope or geometry");
+        }
+        deadline = std::min(deadline, m_assignment.workDeadline);
+        const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        const auto timeout = static_cast<int>(std::clamp<int64_t>(
+            remaining, 0, std::numeric_limits<int>::max()));
+        const auto pages = SegmentManifestVerifier::pageCountFor(count);
+        std::vector<ndn::Name> names;
+        names.reserve(1 + pages + count);
+        names.push_back(scope.rootName());
+        for (uint32_t i = 0; i < pages; ++i) {
+            names.push_back(scope.pageName(i));
+        }
+        for (uint32_t i = 0; i < count; ++i) {
+            names.push_back(scope.sourceName(i));
+        }
+        return m_provider.startCollaborationSignedExactDataBatch(m_requestId, keyScope, names,
+            scope.producer, timeout, cancelWhenWorkNotCurrent(std::move(shouldCancel)),
+            std::move(onFirstReadStarted), ExactDataFetchPhase::AwaitPublication,
+            std::move(onValidatedData), std::move(observer), maxOutstanding, false, 0,
+            {}, {}, {}, {}, false, {}, {}, ExactManifestRead{scope, limits, deadline, pages});
+    }
+
+    bool
+    ServiceProvider::CollaborationContext::replayManifestAuthenticatedExactData(
+        const KeyScope& keyScope, const ExactManifestPublication& publication,
+        CollaborationTransferMetrics* metrics)
+    {
+        if (publication.m_owner.lock() != m_provider.m_fetchStopping ||
+            publication.m_requester != m_requesterName ||
+            publication.m_request != m_requestId || publication.m_scope != keyScope ||
+            m_assignment.dependencyTransport.redundancy != DependencyRedundancy::None ||
+            !hasCurrentWorkAuthority()) {
+            return false;
+        }
+        const auto current = currentWorkPredicate(m_assignment.workDeadline);
+        if (m_provider.m_fetchStopping->load() || !current()) {
+            return false;
+        }
+        const auto& root = *publication.m_packets.front();
+        if (!m_provider.validator ||
+            !m_provider.validator->isProducerSignerAuthorized(root, m_provider.identity)) {
+            return false;
+        }
+
+        std::unique_lock<std::mutex> cacheLock(m_provider._cache_mutex);
+        auto& ims = m_provider.m_IMS;
+        std::vector<const ndn::Data*> missing;
+        std::map<ndn::Name, const ndn::Data*> present;
+        size_t wireBytes = 0;
+        size_t contentBytes = 0;
+        size_t controlWireBytes = 0;
+        for (const auto& packet : publication.m_packets) {
+            wireBytes += packet->wireEncode().size();
+            if (packet->getFinalBlock()) {
+                contentBytes += packet->getContent().value_size();
+            }
+            else {
+                controlWireBytes += packet->wireEncode().size();
+            }
+            if (const auto existing = ims.find(packet->getName());
+                existing && existing->getName() == packet->getName()) {
+                present.emplace(packet->getName(), packet.get());
+            }
+            else {
+                missing.push_back(packet.get());
+            }
+        }
+        if (!present.empty()) {
+            for (const auto& existing : ims) {
+                const auto expected = present.find(existing.getName());
+                if (expected != present.end() &&
+                    existing.wireEncode() != expected->second->wireEncode()) {
+                    throw std::invalid_argument("immutable manifest Data wire conflict");
+                }
+            }
+        }
+        // A rejected batch must never evict previously published packets.
+        if (missing.size() > ims.getLimit() - ims.size()) {
+            return false;
+        }
+        std::unique_lock<std::mutex> authorityLock(*m_workAuthorityCommitMutex);
+        if (m_provider.m_fetchStopping->load() || !current()) {
+            return false;
+        }
+        try {
+            // Cache readers share the lock. Insert members before the root.
+            for (auto packet = missing.rbegin(); packet != missing.rend(); ++packet) {
+                ims.insert(**packet);
+            }
+        }
+        catch (...) {
+            for (const auto* packet : missing) {
+                ims.erase(packet->getFullName(), false);
+            }
+            throw;
+        }
+        authorityLock.unlock();
+        for (const auto& packet : publication.m_packets) {
+            m_provider.satisfyPendingImsInterestsLocked(*packet, false, true);
+        }
+        if (metrics) {
+            metrics->actualDataName = root.getName().toUri();
+            metrics->transportPayloadBytes = contentBytes;
+            metrics->wireBytes = wireBytes;
+            metrics->metadataBytes = wireBytes - contentBytes;
+            metrics->interestCount = metrics->retryCount = 0;
+            metrics->localCopyBytes = 0;
+            metrics->manifestCertificateSignatures = 0;
+            metrics->manifestControlWireBytes = controlWireBytes;
+        }
+        return true;
+    }
+
     bool
     ServiceProvider::CollaborationContext::replayOwnedExactData(
         KeyScope keyScope,
@@ -13141,6 +13311,10 @@ namespace ndn_service_framework
     {
         using Retry = std::function<void(const char*, std::size_t, bool)>;
         std::future<std::optional<ExactDataBatchResult>> result;
+        std::future<std::optional<ndn::Buffer>> verifiedManifest;
+        std::function<bool()> manifestCurrent;
+        std::function<bool()> continueManifest;
+        bool manifestTaken = false;
         CollaborationTransferMetrics metrics;
         std::vector<std::shared_ptr<std::function<void()>>> expressions;
         std::vector<std::shared_ptr<Retry>> retries;
@@ -13186,7 +13360,37 @@ namespace ndn_service_framework
             std::future_status::ready && m_impl->abort) {
             m_impl->abort("hard wait deadline for exact Data batch");
         }
-        return m_impl->result.get();
+        auto result = m_impl->result.get();
+        if (result && m_impl->manifestCurrent && !m_impl->manifestCurrent()) {
+            return std::nullopt;
+        }
+        return result;
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::ExactDataFetchOperation::getVerifiedManifest()
+    {
+        if (!m_impl || !m_impl->verifiedManifest.valid()) {
+            return std::nullopt;
+        }
+        if (m_impl->verifiedManifest.wait_until(m_impl->deadline) != std::future_status::ready) {
+            cancel();
+            return std::nullopt;
+        }
+        auto content = m_impl->verifiedManifest.get();
+        if (!content || !m_impl->manifestCurrent()) {
+            cancel();
+            return std::nullopt;
+        }
+        m_impl->manifestTaken = true;
+        return content;
+    }
+
+    bool
+    ServiceProvider::ExactDataFetchOperation::continueAfterManifest()
+    {
+        return m_impl && m_impl->manifestTaken && m_impl->continueManifest &&
+               m_impl->continueManifest();
     }
 
     CollaborationTransferMetrics
@@ -13328,11 +13532,14 @@ namespace ndn_service_framework
         std::function<void()> onReady, std::shared_ptr<std::atomic<bool>> signatureRejected,
         std::vector<ndn::Name> authorizedLocations, ExactDataWireRecovery recoverMissing,
         bool hybridKeyBootstrap, std::vector<std::size_t> optionalSlots,
-        ExactDataRecoveryReady recoveryReady)
+        ExactDataRecoveryReady recoveryReady, std::optional<ExactManifestRead> manifestRead)
     {
         auto operation = std::make_shared<ExactDataFetchOperation::Impl>();
         operation->deadline = std::chrono::steady_clock::now() +
             std::chrono::milliseconds(std::max(0, timeoutMs));
+        if (manifestRead) {
+            operation->deadline = std::min(operation->deadline, manifestRead->deadline);
+        }
         const auto rejected = [&operation, onReady] {
             std::promise<std::optional<ExactDataBatchResult>> result;
             operation->result = result.get_future();
@@ -13395,6 +13602,30 @@ namespace ndn_service_framework
         // per-slot closure (which makes setup quadratic in the batch size).
         auto ownedDataNames = std::make_shared<const std::vector<ndn::Name>>(dataNames);
 
+        struct ManifestProgress
+        {
+            explicit ManifestProgress(ExactManifestRead params)
+              : read(std::move(params))
+            {
+            }
+
+            ExactManifestRead read;
+            std::optional<SegmentManifestVerifier> verifier;
+            std::promise<std::optional<ndn::Buffer>> root;
+            std::deque<std::size_t> ready;
+            bool resumed = false;
+            bool rootSettled = false;
+
+            std::size_t firstSource() const { return 1 + read.pageCount; }
+
+            void allowSources(std::size_t start, std::size_t end)
+            {
+                for (auto i = start; i < end; ++i) {
+                    ready.push_back(firstSource() + i);
+                }
+            }
+        };
+
         using ExactClock = std::chrono::steady_clock;
         struct ExactFetchSlot
         {
@@ -13441,6 +13672,7 @@ namespace ndn_service_framework
             std::mutex mutex;
             std::promise<std::optional<ExactDataBatchResult>> result;
             std::vector<ExactFetchSlot> slots;
+            std::unique_ptr<ManifestProgress> manifest;
             std::vector<ndn::Buffer> content;
             std::size_t remaining;
             std::size_t networkRemaining;
@@ -13471,15 +13703,25 @@ namespace ndn_service_framework
                 target.originalRetries = 0;
                 target.repairInterests = 0;
                 target.repairRetries = 0;
-                for (const auto& slot : slots) {
+                if (manifest) {
+                    target.rootControlInterests = 0;
+                    target.rootControlRetries = 0;
+                }
+                for (std::size_t i = 0; i < slots.size(); ++i) {
+                    const auto& slot = slots[i];
                     const auto sent = slot.sentInterests.load(std::memory_order_relaxed);
-                    auto& interests = slot.optional ? target.repairInterests : target.originalInterests;
-                    auto& retries = slot.optional ? target.repairRetries : target.originalRetries;
+                    const bool control = manifest && i < manifest->firstSource();
+                    auto& interests = control ? target.rootControlInterests :
+                        slot.optional ? target.repairInterests : target.originalInterests;
+                    auto& retries = control ? target.rootControlRetries :
+                        slot.optional ? target.repairRetries : target.originalRetries;
                     interests += sent;
                     retries += sent == 0 ? 0 : sent - 1;
                 }
-                target.interestCount = target.originalInterests + target.repairInterests;
-                target.retryCount = target.originalRetries + target.repairRetries;
+                target.interestCount = target.originalInterests + target.repairInterests +
+                    (manifest ? target.rootControlInterests : 0);
+                target.retryCount = target.originalRetries + target.repairRetries +
+                    (manifest ? target.rootControlRetries : 0);
             }
             bool hasRequiredData() const
             {
@@ -13511,7 +13753,19 @@ namespace ndn_service_framework
         state->maxRetainedWireBytes = maxRetainedWireBytes;
         state->strict = retainOriginalWire;
         state->authorizedLocations = std::move(authorizedLocations);
-        state->initialWindowSize = state->congestion.size();
+        if (manifestRead) {
+            state->manifest = std::make_unique<ManifestProgress>(std::move(*manifestRead));
+            operation->verifiedManifest = state->manifest->root.get_future();
+            operation->manifestCurrent = [state, shouldCancel] {
+                if (ExactClock::now() >= state->deadline || (shouldCancel && shouldCancel())) {
+                    return false;
+                }
+                std::lock_guard<std::mutex> lock(state->mutex);
+                return state->error.empty() && state->manifest->verifier &&
+                       state->manifest->verifier->isCurrent();
+            };
+        }
+        state->initialWindowSize = state->manifest ? 1 : state->congestion.size();
         state->activeSlots = state->initialWindowSize;
         for (std::size_t i = 0; i < state->initialWindowSize; ++i)
             state->slots[i].creditHeld = true;
@@ -13568,6 +13822,12 @@ namespace ndn_service_framework
                         if (state->slots[index].completed.load() ||
                             state->slots[index].networkCompleted.load()) continue;
                     }
+                    else if (state->manifest) {
+                        auto& names = state->manifest->ready;
+                        if (names.empty()) break;
+                        index = names.front();
+                        names.pop_front();
+                    }
                     else if (state->nextToIssue < state->slots.size()) {
                         index = state->nextToIssue++;
                     }
@@ -13590,6 +13850,32 @@ namespace ndn_service_framework
                     owner->abort("exact Data refill dispatch failed");
             }
         };
+        if (state->manifest) {
+            operation->continueManifest = [state, shouldCancel, refill] {
+                if (ExactClock::now() >= state->deadline || (shouldCancel && shouldCancel())) {
+                    return false;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    auto& manifest = *state->manifest;
+                    if (state->completed.load() || !manifest.rootSettled || manifest.resumed ||
+                        !manifest.verifier || !manifest.verifier->isCurrent()) {
+                        return false;
+                    }
+                    manifest.resumed = true;
+                    if (manifest.read.pageCount == 0) {
+                        manifest.allowSources(0, manifest.verifier->sourceCount());
+                    }
+                    else {
+                        for (std::size_t i = 1; i < manifest.firstSource(); ++i) {
+                            manifest.ready.push_back(i);
+                        }
+                    }
+                }
+                (*refill)();
+                return true;
+            };
+        }
         auto advanceRecovery = std::make_shared<std::function<void()>>();
         std::weak_ptr<std::function<void()>> weakAdvanceRecovery = advanceRecovery;
         auto finishSlot = [this, state, reportFirstRead, cancelPending, weakOperation,
@@ -13597,6 +13883,10 @@ namespace ndn_service_framework
                            ownedDataNames, recoverMissing, recoveryReady, shouldCancel,
                            firstName = dataNames.front(), onReady, refill, capacity]
                       (std::size_t index, ndn::Buffer content, std::string error) {
+            if (state->manifest && error.empty() &&
+                (ExactClock::now() >= state->deadline || (shouldCancel && shouldCancel()))) {
+                error = "manifest exact read authority expired before completion";
+            }
             std::exception_ptr firstReadError;
             if (!error.empty()) {
                 firstReadError = std::make_exception_ptr(
@@ -13735,7 +14025,22 @@ namespace ndn_service_framework
                     }
                     if (slot.creditHeld) --state->activeSlots;
                     slot.creditHeld = false;
-                    state->content[index] = std::move(content);
+                    if (auto* manifest = state->manifest.get();
+                        manifest && index < manifest->firstSource()) {
+                        if (index == 0) {
+                            manifest->rootSettled = true;
+                            manifest->root.set_value(std::move(content));
+                        }
+                        else {
+                            constexpr auto perPage = SegmentManifestVerifier::SOURCE_PACKETS_PER_PAGE;
+                            const auto start = (index - 1) * perPage;
+                            manifest->allowSources(start, std::min<std::size_t>(
+                                start + perPage, manifest->verifier->sourceCount()));
+                        }
+                    }
+                    else {
+                        state->content[index] = std::move(content);
+                    }
                     slot.completed.store(true);
                     if (slot.recoveryFailurePending.exchange(false)) {
                         if (slot.recovered.load()) {
@@ -13796,11 +14101,19 @@ namespace ndn_service_framework
                         (state->networkRemaining == 0 || !state->readyRecoverySlots.empty());
                 }
                 if (completed) {
-                    if (state->error.empty() && state->hasRequiredData()) {
+                    const auto* manifest = state->manifest.get();
+                    const bool allVerified = manifest
+                        ? manifest->verifier && manifest->verifier->isCurrent()
+                        : state->hasRequiredData();
+                    if (manifest && !allVerified && state->error.empty()) {
+                        state->error = "manifest root trust expired before batch completion";
+                    }
+                    if (state->error.empty() && allVerified) {
                         result.emplace();
                         std::size_t payloadBytes = 0;
-                        result->contents.reserve(state->content.size());
-                        for (std::size_t i = 0; i < state->content.size(); ++i) {
+                        const auto first = manifest ? manifest->firstSource() : 0;
+                        result->contents.reserve(state->content.size() - first);
+                        for (std::size_t i = first; i < state->content.size(); ++i) {
                             if (state->slots[i].optional) continue;
                             payloadBytes += state->content[i].size();
                             result->contents.push_back(std::move(state->content[i]));
@@ -13816,7 +14129,7 @@ namespace ndn_service_framework
                         metrics.metadataBytes = sourceWire >= payloadBytes ? sourceWire - payloadBytes : 0;
                         state->fillInterestMetrics(metrics);
                         metrics.localCopyBytes = payloadBytes;
-                        metrics.validatedOriginalWireBytes = payloadBytes;
+                        if (!manifest) metrics.validatedOriginalWireBytes = payloadBytes;
                         metrics.peakRetainedBytes = state->peakRetainedWireBytes.load(
                             std::memory_order_relaxed);
                         result->metrics = metrics;
@@ -13828,7 +14141,7 @@ namespace ndn_service_framework
                         state->metrics.transportPayloadBytes = validatedBytes;
                         state->metrics.wireBytes = state->wireBytes.load(std::memory_order_relaxed);
                         state->fillInterestMetrics(state->metrics);
-                        state->metrics.validatedOriginalWireBytes = validatedBytes;
+                        if (!manifest) state->metrics.validatedOriginalWireBytes = validatedBytes;
                         state->metrics.peakRetainedBytes = state->peakRetainedWireBytes.load(
                             std::memory_order_relaxed);
                         if (state->error.find("deadline") != std::string::npos ||
@@ -13843,6 +14156,13 @@ namespace ndn_service_framework
                                       << " dataName=" << firstName.toUri()
                                       << " attempts=" << state->totalInterests()
                                       << " error=" << (state->error.empty() ? "empty Data" : state->error));
+                    }
+                    if (state->manifest) {
+                        state->manifest->ready.clear();
+                        if (!state->manifest->rootSettled) {
+                            state->manifest->rootSettled = true;
+                            state->manifest->root.set_value(std::nullopt);
+                        }
                     }
                     pending.reserve(state->slots.size());
                     state->retryQueue.clear();
@@ -14159,6 +14479,8 @@ namespace ndn_service_framework
         operation->retries.reserve(dataNames.size());
         for (std::size_t index = 0; index < dataNames.size(); ++index) {
             const auto dataName = dataNames[index];
+            const auto slotPhase = state->manifest && index != 0
+                ? ExactDataFetchPhase::Published : phase;
             auto* slot = &state->slots[index];
             const bool inBandRecovery = static_cast<bool>(recoveryReady);
             const auto finishRecovered = [finishSlot, index](ndn::Buffer content, std::string error) {
@@ -14344,7 +14666,7 @@ namespace ndn_service_framework
             std::weak_ptr<std::function<void(const char*, std::size_t)>> weakRetry = retry;
             const bool recoveryEnabled = static_cast<bool>(recoverMissing) && !slot->optional;
             *retry = [this, state, slot, finish, weakExpress, dataName, requestId, keyScope,
-                      shouldCancel, recoveryEnabled, inBandRecovery, index, refill, phase](const char* reason,
+                      shouldCancel, recoveryEnabled, inBandRecovery, index, refill, slotPhase](const char* reason,
                                                      std::size_t expectedAttempt) {
                 if (state->completed.load() || slot->completed.load() ||
                     slot->networkExhausted.load(std::memory_order_acquire) ||
@@ -14382,7 +14704,7 @@ namespace ndn_service_framework
                 // Readiness renewals precede publication and use the operation's
                 // original deadline. The six-attempt repair budget is for Data
                 // that has already been published.
-                if (state->strict && phase == ExactDataFetchPhase::Published && expectedAttempt >= 6) {
+                if (state->strict && slotPhase == ExactDataFetchPhase::Published && expectedAttempt >= 6) {
                     if (std::string_view(reason) != "publication-refresh")
                         finish({}, "strict exact Data attempt budget exhausted for " + dataName.toUri());
                     return;
@@ -14442,7 +14764,7 @@ namespace ndn_service_framework
             };
             *express = [this, state, slot, finish, retry, dataName, expectedProducer,
                         requestId, keyScope, interestLifetimeMs, shouldCancel,
-                        reportFirstRead, cancelPending, phase, weakRetry, onValidatedData,
+                        reportFirstRead, cancelPending, slotPhase, weakRetry, onValidatedData,
                         localWorkObserver, retainOriginalWire, signatureRejected,
                         recoverMissing, hybridKeyBootstrap, inBandRecovery, index] {
                 if (state->completed.load() || slot->completed.load()) {
@@ -14456,7 +14778,7 @@ namespace ndn_service_framework
                     finish({}, "hard deadline for " + dataName.toUri());
                     return;
                 }
-                if (state->strict && phase == ExactDataFetchPhase::Published &&
+                if (state->strict && slotPhase == ExactDataFetchPhase::Published &&
                     slot->attempts.load(std::memory_order_relaxed) >= 6) return;
                 const auto attempt = slot->attempts.load(std::memory_order_relaxed) + 1;
                 if (attempt > 1 && state->strict && slot->recoveryAttempted.load() &&
@@ -14471,7 +14793,23 @@ namespace ndn_service_framework
                     if (record != state->metrics.recovery.end())
                         record->terminalState = "arq-fallback";
                 }
-                ndn::Interest interest(dataName);
+                ndn::Name requestedName = dataName;
+                if (state->manifest && index != 0) {
+                    try {
+                        std::lock_guard<std::mutex> lock(state->mutex);
+                        if (state->completed.load()) return;
+                        const auto& manifest = *state->manifest;
+                        requestedName = index < manifest.firstSource()
+                            ? manifest.verifier->pageFullName(static_cast<uint32_t>(index - 1))
+                            : manifest.verifier->sourceFullName(
+                                static_cast<uint32_t>(index - manifest.firstSource()));
+                    }
+                    catch (const std::exception& error) {
+                        finish({}, error.what());
+                        return;
+                    }
+                }
+                ndn::Interest interest(requestedName);
                 interest.setCanBePrefix(hybridKeyBootstrap);
                 interest.setMustBeFresh(true);
                 if (!state->authorizedLocations.empty())
@@ -14486,7 +14824,7 @@ namespace ndn_service_framework
                 const auto retryIntervalMs = state->strict ?
                     static_cast<int>(std::max<std::int64_t>(1,
                         std::min<std::int64_t>(1000, estimatedRtoMs))) : interestLifetimeMs;
-                int issuedLifetimeMs = phase == ExactDataFetchPhase::AwaitPublication
+                int issuedLifetimeMs = slotPhase == ExactDataFetchPhase::AwaitPublication
                     ? static_cast<int>(std::max<std::int64_t>(1,
                         std::chrono::duration_cast<std::chrono::milliseconds>(
                             state->deadline - std::chrono::steady_clock::now()).count()))
@@ -14526,8 +14864,8 @@ namespace ndn_service_framework
                     interest,
                     [this, state, slot, finish, dataName, expectedProducer, requestId,
                      keyScope, onValidatedData, localWorkObserver, retainOriginalWire, signatureRejected,
-                     hybridKeyBootstrap, inBandRecovery, shouldCancel]
-                    (const ndn::Interest&, const ndn::Data& data) {
+                     hybridKeyBootstrap, inBandRecovery, shouldCancel, index]
+                    (const ndn::Interest& interest, const ndn::Data& data) {
                         if (state->completed.load() || slot->completed.load() ||
                             (inBandRecovery && slot->recoveryFailurePending.load())) {
                             return;
@@ -14544,7 +14882,8 @@ namespace ndn_service_framework
                                       << " returnedName=" << data.getName().toUri()
                                       << " attempt="
                                       << slot->attempts.load(std::memory_order_relaxed));
-                        if (!matchesReadName(dataName, data, hybridKeyBootstrap)) {
+                        if (state->manifest ? !interest.matchesData(data) :
+                            !matchesReadName(dataName, data, hybridKeyBootstrap)) {
                             finish({}, "exact Data name mismatch for " +
                                        dataName.toUri());
                             return;
@@ -14561,6 +14900,82 @@ namespace ndn_service_framework
                         if (slot->optional) {
                             std::lock_guard<std::mutex> lock(state->mutex);
                             state->metrics.repairWireBytes += data.wireEncode().size();
+                        }
+                        if (state->manifest) {
+                            const auto wireSize = data.wireEncode().size();
+                            if (index == 0) {
+                                try {
+                                    validator->validateManifestRoot(data, state->manifest->read.scope,
+                                        [state, finish, wireSize](std::optional<ValidatedManifestRoot> root) {
+                                            if (!root) {
+                                                finish({}, "manifest root certificate rejected");
+                                                return;
+                                            }
+                                            ndn::Buffer app;
+                                            try {
+                                                std::lock_guard<std::mutex> lock(state->mutex);
+                                                if (state->completed.load()) return;
+                                                auto& manifest = *state->manifest;
+                                                manifest.verifier.emplace(
+                                                    std::move(*root), manifest.read.scope,
+                                                    manifest.read.limits);
+                                                const auto content = manifest.verifier->applicationManifest();
+                                                app.assign(content.begin(), content.end());
+                                                ++state->metrics.manifestCertificateValidations;
+                                                state->metrics.manifestControlWireBytes += wireSize;
+                                                state->metrics.validatedOriginalWireBytes += wireSize;
+                                            }
+                                            catch (const std::exception& error) {
+                                                finish({}, error.what());
+                                                return;
+                                            }
+                                            finish(std::move(app), {});
+                                        });
+                                }
+                                catch (const std::exception& error) {
+                                    finish({}, error.what());
+                                }
+                                return;
+                            }
+                            ndn::Buffer payload;
+                            try {
+                                if (ExactClock::now() >= state->deadline ||
+                                    (shouldCancel && shouldCancel())) {
+                                    throw std::runtime_error("manifest member authority expired");
+                                }
+                                const bool source = index >= state->manifest->firstSource();
+                                {
+                                    std::lock_guard<std::mutex> lock(state->mutex);
+                                    if (state->completed.load()) return;
+                                    auto& manifest = *state->manifest;
+                                    constexpr auto error = "manifest member digest or geometry rejected";
+                                    if (source) {
+                                        const auto ordinal = static_cast<uint32_t>(
+                                            index - manifest.firstSource());
+                                        if (!manifest.verifier->matchesSource(ordinal, data)) {
+                                            throw std::invalid_argument(error);
+                                        }
+                                        const auto& content = data.getContent();
+                                        payload.assign(content.value_begin(), content.value_end());
+                                    }
+                                    else {
+                                        manifest.verifier->acceptPage(
+                                            static_cast<uint32_t>(index - 1), data);
+                                        state->metrics.manifestControlWireBytes += wireSize;
+                                    }
+                                    ++state->metrics.manifestVerifiedMembers;
+                                    state->metrics.validatedOriginalWireBytes += wireSize;
+                                }
+                                if (source && onValidatedData && !onValidatedData()) {
+                                    throw std::runtime_error("exact Data progress rejected");
+                                }
+                            }
+                            catch (const std::exception& error) {
+                                finish({}, error.what());
+                                return;
+                            }
+                            finish(std::move(payload), {});
+                            return;
                         }
                         struct ValidationCompletion
                         {
@@ -14827,7 +15242,7 @@ namespace ndn_service_framework
                 cancelPending(std::move(previous));
 
                 try {
-                    if (phase == ExactDataFetchPhase::AwaitPublication &&
+                    if (slotPhase == ExactDataFetchPhase::AwaitPublication &&
                         issuedLifetimeMs > retryIntervalMs && (!state->strict || attempt < 6)) {
                         // Keep the producer's pending Interest alive while retaining
                         // normal same-name recovery if an Interest or Data is lost.
@@ -14912,8 +15327,14 @@ namespace ndn_service_framework
         auto cancelPoll = std::make_shared<std::function<void()>>();
         std::weak_ptr<std::function<void()>> weakCancelPoll = cancelPoll;
         *cancelPoll = [this, state, finishSlot, shouldCancel, weakCancelPoll, weakOperation] {
-            if (state->completed.load() || !shouldCancel) return;
-            if (shouldCancel()) {
+            if (state->completed.load() || (!shouldCancel && !state->manifest)) return;
+            bool trustExpired = false;
+            if (state->manifest) {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                const auto& proof = state->manifest->verifier;
+                trustExpired = proof && !proof->isCurrent();
+            }
+            if (trustExpired || (shouldCancel && shouldCancel())) {
                 finishSlot(state->slots.size(), {}, "cancelled while fetching exact Data batch");
                 return;
             }
@@ -19817,7 +20238,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     }
 
     void ServiceProvider::satisfyPendingImsInterestsLocked(const ndn::Data& insertedData,
-                                                              bool ownedStreamEvent)
+                                                              bool ownedStreamEvent,
+                                                              bool matchFullName)
     {
         std::vector<std::shared_ptr<const ndn::Data>> toSend;
         const auto now = ndn::time::steady_clock::now();
@@ -19857,27 +20279,33 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return true;
         };
 
-        auto bucketIt = m_pendingImsInterestsByName.find(insertedData.getName());
-        if (bucketIt != m_pendingImsInterestsByName.end()) {
-            auto& bucket = bucketIt->second;
-            std::deque<PendingImsInterest> pending;
-            for (const auto& item : bucket) {
-                if (satisfyItem(item)) {
-                    --m_pendingImsInterestCount;
+        const auto satisfyExact = [&](const ndn::Name& name) {
+            auto bucketIt = m_pendingImsInterestsByName.find(name);
+            if (bucketIt != m_pendingImsInterestsByName.end()) {
+                auto& bucket = bucketIt->second;
+                std::deque<PendingImsInterest> pending;
+                for (const auto& item : bucket) {
+                    if (satisfyItem(item)) {
+                        --m_pendingImsInterestCount;
+                    }
+                    else if (item.expiresAt > now) {
+                        pending.push_back(item);
+                    }
+                    else {
+                        --m_pendingImsInterestCount;
+                    }
                 }
-                else if (item.expiresAt > now) {
-                    pending.push_back(item);
+                if (pending.empty()) {
+                    m_pendingImsInterestsByName.erase(bucketIt);
                 }
                 else {
-                    --m_pendingImsInterestCount;
+                    bucket = std::move(pending);
                 }
             }
-            if (pending.empty()) {
-                m_pendingImsInterestsByName.erase(bucketIt);
-            }
-            else {
-                bucket = std::move(pending);
-            }
+        };
+        satisfyExact(insertedData.getName());
+        if (matchFullName) {
+            satisfyExact(insertedData.getFullName());
         }
 
         std::vector<PendingImsInterest> pendingPrefix;

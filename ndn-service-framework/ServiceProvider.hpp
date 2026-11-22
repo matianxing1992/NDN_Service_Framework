@@ -157,6 +157,10 @@ namespace ndn_service_framework{
         std::size_t originalRetries = 0;
         std::size_t rootControlInterests = 0;
         std::size_t rootControlRetries = 0;
+        std::size_t manifestCertificateSignatures = 0;
+        std::size_t manifestCertificateValidations = 0;
+        std::size_t manifestVerifiedMembers = 0;
+        std::size_t manifestControlWireBytes = 0;
         /** Repair Interest expression attempts, including later canceled reads. */
         std::size_t repairInterests = 0;
         std::size_t repairRetries = 0;
@@ -211,6 +215,13 @@ namespace ndn_service_framework{
                 std::optional<std::pair<std::size_t, std::size_t>>(
                 std::size_t, const std::vector<ndn::Buffer>&,
                 std::vector<std::size_t>&)>;
+            struct ExactManifestRead
+            {
+                SegmentManifestScope scope;
+                SegmentManifestLimits limits;
+                std::chrono::steady_clock::time_point deadline;
+                std::size_t pageCount;
+            };
         public:
             enum class ExactDataFetchPhase { Published, AwaitPublication };
             struct ExactDataBatchResult
@@ -230,6 +241,10 @@ namespace ndn_service_framework{
                 std::future_status wait_for(std::chrono::milliseconds duration) const;
                 std::optional<ExactDataBatchResult> get();
                 CollaborationTransferMetrics metricsSnapshot() const;
+                /** Await the authenticated application's root Content on the handler worker. */
+                std::optional<ndn::Buffer> getVerifiedManifest();
+                /** Release proven member reads after the handler admits the root. */
+                bool continueAfterManifest();
                 void cancel();
               private:
                 friend class ServiceProvider;
@@ -1111,6 +1126,56 @@ namespace ndn_service_framework{
                 bool replayOwnedExactData(KeyScope keyScope,
                     const std::vector<std::shared_ptr<const ndn::Data>>& originals,
                     CollaborationTransferMetrics* metrics);
+
+                class ExactManifestPublication
+                {
+                public:
+                    ExactManifestPublication(const ExactManifestPublication&) = delete;
+                    ExactManifestPublication& operator=(const ExactManifestPublication&) = delete;
+
+                private:
+                    friend class CollaborationContext;
+                    ExactManifestPublication(std::weak_ptr<const std::atomic<bool>> owner,
+                        ndn::Name requester,
+                        ndn::Name request, KeyScope scope,
+                        std::vector<std::shared_ptr<const ndn::Data>> packets)
+                      : m_owner(std::move(owner))
+                      , m_requester(std::move(requester))
+                      , m_request(std::move(request))
+                      , m_scope(std::move(scope))
+                      , m_packets(std::move(packets))
+                    {
+                    }
+
+                    std::weak_ptr<const std::atomic<bool>> m_owner;
+                    ndn::Name m_requester;
+                    ndn::Name m_request;
+                    KeyScope m_scope;
+                    std::vector<std::shared_ptr<const ndn::Data>> m_packets;
+                };
+
+                std::shared_ptr<const ExactManifestPublication>
+                publishManifestAuthenticatedExactData(
+                    KeyScope keyScope, const SegmentManifestScope& scope,
+                    const SegmentManifestLimits& limits,
+                    ndn::span<const ndn::ConstBufferPtr> contents,
+                    ndn::span<const uint8_t> applicationManifest, int freshnessMs,
+                    CollaborationTransferMetrics* metrics);
+
+                ExactDataFetchOperation
+                startVerifiedManifestAuthenticatedExactData(
+                    const KeyScope& keyScope, const SegmentManifestScope& scope,
+                    const SegmentManifestLimits& limits,
+                    std::chrono::steady_clock::time_point deadline,
+                    std::function<bool()> shouldCancel,
+                    std::function<void(std::exception_ptr)> onFirstReadStarted,
+                    std::function<bool()> onValidatedData, std::size_t maxOutstanding,
+                    CollaborationLocalWorkObserver observer = {});
+
+                bool
+                replayManifestAuthenticatedExactData(
+                    const KeyScope& keyScope, const ExactManifestPublication& publication,
+                    CollaborationTransferMetrics* metrics);
                 std::shared_ptr<StreamEventPublisher> streamPublisher() const;
                 ServiceProvider& m_provider;
                 ndn::Name m_requesterName;
@@ -1884,7 +1949,8 @@ namespace ndn_service_framework{
             void insertDataIntoIMS(const ndn::Data& data,
                                    const ndn::time::milliseconds& freshness);
             void satisfyPendingImsInterestsLocked(const ndn::Data& insertedData,
-                                                     bool ownedStreamEvent = false);
+                                                     bool ownedStreamEvent = false,
+                                                     bool matchFullName = false);
             void satisfyPendingImsInterestsLocked();
             void pruneExpiredPendingImsInterestsLocked();
 
@@ -2841,7 +2907,8 @@ namespace ndn_service_framework{
                 ExactDataWireRecovery recoverMissing = {},
                 bool hybridKeyBootstrap = false,
                 std::vector<std::size_t> optionalSlots = {},
-                ExactDataRecoveryReady recoveryReady = {});
+                ExactDataRecoveryReady recoveryReady = {},
+                std::optional<ExactManifestRead> manifestRead = std::nullopt);
             void publishCollaborationFinalResponse(
                 const ndn::Name& requesterName,
                 const ndn::Name& serviceName,

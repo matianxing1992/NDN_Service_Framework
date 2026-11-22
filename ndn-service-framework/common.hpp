@@ -4,6 +4,7 @@
 #define BOOST_BIND_NO_PLACEHOLDERS
 
 #include "ProducerSignerPolicy.hpp"
+#include "segment-manifest.hpp"
 #include "trust-schema-resources.hpp"
 
 #include <iostream>
@@ -562,6 +563,11 @@ namespace ndn_service_framework{
         bool
         validateProducerPacketWireUntil(const std::vector<uint8_t>& wire,
           const ndn::Name& producer, std::chrono::steady_clock::time_point deadline);
+
+        /** Validate a manifest root against the normal scheme and capture its live trust fence. */
+        void
+        validateManifestRoot(const ndn::Data& data, const SegmentManifestScope& scope,
+          std::function<void(std::optional<ValidatedManifestRoot>)> completed);
 
         void
         stopProducerPacketValidation() noexcept;

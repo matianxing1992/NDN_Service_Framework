@@ -9,6 +9,7 @@
 #include <ndn-cxx/security/validity-period.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
 #include <ndn-cxx/util/io.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 #include <ndn-cxx/util/time-custom-clock.hpp>
 #include <ndn-cxx/util/time-unit-test-clock.hpp>
 
@@ -395,6 +396,114 @@ BOOST_AUTO_TEST_CASE(ValidChainAndRepeatedDataUseTheConfiguredRoot)
     BOOST_CHECK_EQUAL(result.success, 1U);
     BOOST_CHECK_EQUAL(result.failure, 0U);
   }
+}
+
+BOOST_AUTO_TEST_CASE(ManifestProofBindsOriginalPacketsAndCurrentTrust)
+{
+  ScopedSystemClock testClock;
+  Fixture fixture;
+  const auto now = ndn::time::system_clock::now();
+  const ndn::security::ValidityPeriod caPeriod(now - ndn::time::hours(1),
+                                              now + ndn::time::hours(1));
+  const auto chain = makeChain(fixture.keys, std::nullopt, caPeriod);
+  const auto schema = writeSchema(fixture.isolation, chain.root);
+  auto validator = std::make_shared<MessageValidator>(schema.string(), std::nullopt, &fixture.face);
+  const SegmentManifestScope baseScope{
+    ndn::Name(ACTOR), ndn::Name(ACTOR).append("NDNSF").append("TP").appendVersion(1)};
+  const ndn::Buffer app{9, 8, 7};
+  const auto signer = ndn::security::signingByCertificate(chain.actor);
+
+  auto validateRoot = [&] (const ndn::Data& packet, const SegmentManifestScope& expected) {
+    using Result = std::optional<ValidatedManifestRoot>;
+    auto result = std::make_shared<std::optional<Result>>();
+    validator->validateManifestRoot(packet, expected,
+      [result] (Result root) { result->emplace(std::move(root)); });
+    for (int i = 0; i < 100 && !result->has_value(); ++i) {
+      fixture.face.processEvents(ndn::time::milliseconds(2));
+    }
+    BOOST_REQUIRE_MESSAGE(result->has_value(), "manifest validation did not terminate");
+    return std::move(result->value());
+  };
+
+  std::vector<SegmentManifestVerifier> proofs;
+  for (const uint32_t count : {2U, 128U, 129U}) {
+    auto scope = baseScope;
+    scope.objectPrefix.appendNumber(count);
+    const SegmentManifestLimits limits{4096, 1024 * 1024, count};
+    std::vector<ndn::ConstBufferPtr> sources;
+    for (uint32_t i = 0; i < count; ++i) {
+      sources.push_back(std::make_shared<const ndn::Buffer>(ndn::Buffer{static_cast<uint8_t>(i)}));
+    }
+    const auto publication = ManifestPublication::prepare(
+      fixture.keys, signer, scope, limits, sources, app, ndn::time::milliseconds(4000));
+    const auto& packets = publication.packets();
+    const auto root = validateRoot(packets.front(), scope);
+    BOOST_REQUIRE(root);
+    auto wrongProducer = scope;
+    wrongProducer.producer.append("NDNSF");
+    BOOST_CHECK(!validateRoot(packets.front(), wrongProducer));
+    auto differentBinding = scope;
+    differentBinding.bindingDigest[0] = 1;
+    BOOST_CHECK_THROW(SegmentManifestVerifier(*root, differentBinding, limits),
+                      std::invalid_argument);
+    auto extraByte = packets.front();
+    const auto originalContent = extraByte.getContent().value_bytes();
+    ndn::Buffer modified(originalContent.begin(), originalContent.end());
+    modified.push_back(0);
+    extraByte.setContent(modified);
+    fixture.keys.sign(extraByte, signer);
+    const auto malformed = validateRoot(extraByte, scope);
+    BOOST_REQUIRE(malformed);
+    BOOST_CHECK_THROW(SegmentManifestVerifier(*malformed, scope, limits), std::invalid_argument);
+
+    auto& proof = proofs.emplace_back(*root, scope, limits);
+    BOOST_CHECK_EQUAL(proof.sourceCount(), count);
+    BOOST_CHECK_EQUAL(proof.pageCount(), count <= 128 ? 0U : 2U);
+    BOOST_CHECK_EQUAL_COLLECTIONS(proof.applicationManifest().begin(),
+                                  proof.applicationManifest().end(), app.begin(), app.end());
+    const auto& first = packets[1 + proof.pageCount()];
+    if (proof.pageCount() != 0) {
+      BOOST_CHECK(!proof.matchesSource(0, first));
+      proof.acceptPage(1, packets[2]);
+      BOOST_CHECK(!proof.matchesSource(0, first));
+      BOOST_CHECK(proof.matchesSource(count - 1, packets.back()));
+      BOOST_CHECK_THROW(proof.acceptPage(0, packets[2]), std::invalid_argument);
+      proof.acceptPage(0, packets[1]);
+      BOOST_CHECK_THROW(proof.acceptPage(0, packets[1]), std::invalid_argument);
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto& packet = packets[1 + proof.pageCount() + i];
+      const auto digest = ndn::util::Sha256::computeDigest(
+        ndn::span<const uint8_t>(packet.wireEncode().begin(), packet.wireEncode().size()));
+      const auto explicitName = ndn::Name(scope.sourceName(i)).appendImplicitSha256Digest(digest);
+      BOOST_CHECK(proof.sourceFullName(i) == explicitName);
+      BOOST_CHECK(proof.matchesSource(i, packet));
+    }
+    auto changed = first;
+    changed.setFreshnessPeriod(ndn::time::milliseconds(4001));
+    fixture.keys.sign(changed, ndn::security::signingWithSha256());
+    BOOST_CHECK(!proof.matchesSource(0, changed));
+    auto digestRoot = packets.front();
+    fixture.keys.sign(digestRoot, ndn::security::signingWithSha256());
+    BOOST_CHECK(!validateRoot(digestRoot, scope));
+    const SegmentManifestLimits tooSmall{4096, 2, count};
+    BOOST_CHECK_THROW(SegmentManifestVerifier(*root, scope, tooSmall), std::invalid_argument);
+  }
+
+  validator->getConfiguredValidatorForSegmentFetcher().load(schema.string());
+  BOOST_CHECK(!proofs.front().isCurrent());
+  const SegmentManifestLimits limits{4096, 8192, 2};
+  const std::vector<ndn::ConstBufferPtr> sources(2, std::make_shared<const ndn::Buffer>(ndn::Buffer{0}));
+  const auto publication = ManifestPublication::prepare(
+    fixture.keys, signer, baseScope, limits, sources, app, ndn::time::milliseconds(4000));
+  const auto refreshed = validateRoot(publication.packets().front(), baseScope);
+  BOOST_REQUIRE(refreshed);
+  SegmentManifestVerifier proof(*refreshed, baseScope, limits);
+  BOOST_CHECK(proof.matchesSource(0, publication.packets()[1]));
+  testClock.clock->setNow(ndn::time::duration_cast<ndn::time::nanoseconds>(
+    (now + ndn::time::hours(2)).time_since_epoch()));
+  BOOST_CHECK(!proof.isCurrent());
+  BOOST_CHECK(!proof.matchesSource(0, publication.packets()[1]));
 }
 
 BOOST_AUTO_TEST_CASE(FaceOwnedCachedValidationRetainsSecurityAndGeneralDeferral)

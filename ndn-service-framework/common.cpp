@@ -180,6 +180,13 @@ struct ChainLifetime
   uint64_t generation;
 };
 using ChainLifetimeTag = ndn::SimpleTag<ChainLifetime, 0x4e534654>;
+struct ManifestRootValidation
+{
+  std::function<bool()> isCurrent;
+};
+using ManifestRootValidationTag =
+  ndn::SimpleTag<std::shared_ptr<ManifestRootValidation>, 0x4e534655>;
+
 
 // Keep ndn-cxx's schema and chain verification; add lifetime bounds that its
 // trusted-certificate cache does not inherit from a certificate's ancestors.
@@ -190,7 +197,7 @@ public:
   loadFixed(std::istream& input, const std::string& filename)
   {
     m_rootValidityPeriods.clear();
-    ++m_generation;
+    m_generation->fetch_add(1, std::memory_order_release);
     m_verifiedUntil = TimePoint::max();
     m_validator->resetAnchors();
     m_validator->resetVerifiedCertificates();
@@ -303,10 +310,10 @@ private:
     auto tag = state->getTag<ChainLifetimeTag>();
     if (!tag) {
       tag = std::make_shared<ChainLifetimeTag>(
-        ChainLifetime{std::min(rootExpiry, m_verifiedUntil), m_generation});
+        ChainLifetime{std::min(rootExpiry, m_verifiedUntil), m_generation->load()});
       state->setTag(tag);
     }
-    if (tag->get().generation != m_generation || now >= tag->get().expires) {
+    if (tag->get().generation != m_generation->load() || now >= tag->get().expires) {
       state->fail({ValidationError::EXPIRED_CERT, "validation chain expired or trust was reloaded"});
       return false;
     }
@@ -326,12 +333,27 @@ private:
                      "NDNSF requires certificate-backed signature validation"});
         return;
       }
+      if (const auto* dataState =
+            dynamic_cast<const ndn::security::DataValidationState*>(state.get())) {
+        if (const auto tag = dataState->getOriginalData().getTag<ManifestRootValidationTag>()) {
+          const auto lifetime = state->getTag<ChainLifetimeTag>()->get();
+          const auto expires = std::min(lifetime.expires, m_verifiedUntil);
+          const auto started = ndn::time::system_clock::now();
+          std::weak_ptr<const std::atomic<uint64_t>> generation = m_generation;
+          tag->get()->isCurrent = [generation, epoch = lifetime.generation, started, expires] {
+            const auto live = generation.lock();
+            const auto now = ndn::time::system_clock::now();
+            return live && live->load(std::memory_order_acquire) == epoch &&
+                   now >= started && now < expires;
+          };
+        }
+      }
       continuation(request, state);
       if (state->getOutcome()) {
         const auto lifetime = state->getTag<ChainLifetimeTag>()->get();
         // ndn-cxx caches the chain after calling the consumer. A consumer may
         // reload trust synchronously; do not retain the old chain afterward.
-        if (lifetime.generation != m_generation) {
+        if (lifetime.generation != m_generation->load()) {
           m_validator->resetVerifiedCertificates();
         }
         else {
@@ -343,7 +365,8 @@ private:
 
   std::vector<ndn::security::ValidityPeriod> m_rootValidityPeriods;
   TimePoint m_verifiedUntil = TimePoint::max();
-  uint64_t m_generation = 0;
+  std::shared_ptr<std::atomic<uint64_t>> m_generation =
+    std::make_shared<std::atomic<uint64_t>>(0);
 };
 
 std::optional<Certificate>
@@ -455,6 +478,41 @@ readPositiveMillisecondsEnvironment(const char* name,
 }
 
 } // namespace
+
+void
+MessageValidator::validateManifestRoot(
+  const ndn::Data& data, const SegmentManifestScope& scope,
+  std::function<void(std::optional<ValidatedManifestRoot>)> completed)
+{
+  const auto owner = weak_from_this().lock();
+  const auto type = data.getSignatureType();
+  if (!owner || scope.producer.empty() || !scope.producer.isPrefixOf(scope.objectPrefix) ||
+      scope.producer == scope.objectPrefix || data.getName() != scope.rootName() ||
+      data.getFinalBlock() || data.wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE ||
+      (type != ndn::tlv::SignatureSha256WithRsa && type != ndn::tlv::SignatureSha256WithEcdsa) ||
+      !data.getSignatureInfo().hasKeyLocator()) {
+    dispatchValidationCallback("invalid manifest root", completed, std::nullopt);
+    return;
+  }
+
+  auto tagged = data;
+  const auto validation = std::make_shared<ManifestRootValidation>();
+  tagged.setTag(std::make_shared<ManifestRootValidationTag>(validation));
+  validateWithConfiguredTrustSchema(tagged,
+    [owner, validation, producer = scope.producer, completed] (const ndn::Data& validated) {
+      if (!validation->isCurrent || !validation->isCurrent() ||
+          !owner->isProducerSignerAuthorized(validated, producer)) {
+        completed(std::nullopt);
+        return;
+      }
+      auto original = validated;
+      original.removeTag<ManifestRootValidationTag>();
+      completed(ValidatedManifestRoot(std::move(original), producer, validation->isCurrent));
+    },
+    [completed] (const ndn::Data&, const ndn::security::ValidationError&) {
+      completed(std::nullopt);
+    });
+}
 
 TrustSchemaValidator::TrustSchemaValidator(
   std::unique_ptr<ndn::security::CertificateFetcher> fetcher,
