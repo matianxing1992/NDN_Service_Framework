@@ -381,7 +381,15 @@ RepoNode::reconcilePersistentUserStorage()
       return entry.object.objectName == pending.object.objectName;
     });
     if (physical == inventory.end()) {
-      continue; // Unknown staging remains charged.
+      auto expected = pending.object;
+      expected.objectName = ndn::Name(expected.objectName).toUri(ndn::name::UriFormat::CANONICAL);
+      // A missing catalog row alone cannot prove rollback. The existing Core
+      // confirmation also rejects unknown staging and preserves shared payloads.
+      if (m_core.confirmUserStorageRemoval(expected)) {
+        (void)m_artifactMetadataStore->cancelUserStorage(m_repoNode,
+          pending.grant.ownerIdentity, pending.operationId, nowMilliseconds());
+      }
+      continue;
     }
     if (physical->legacyMetadata) {
       continue; // Incomplete metadata cannot prove publication.

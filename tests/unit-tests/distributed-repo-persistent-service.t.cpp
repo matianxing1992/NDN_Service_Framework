@@ -4126,6 +4126,94 @@ BOOST_AUTO_TEST_CASE(OwnedInsertRespectsFundedQuotaBeforePublishingOriginalPacke
   BOOST_CHECK(fixture.node->core().list().empty());
 }
 
+BOOST_AUTO_TEST_CASE(OwnedInsertRestartCancelsOnlyPhysicallyConfirmedAbsentReservation)
+{
+  OwnedPacketFixture fixture;
+  const auto operation = fixture.request.operationId;
+  const auto& reference = fixture.request.reference;
+  {
+    SqliteArtifactMetadataStore journal((fixture.temp.path() / "metadata.sqlite3").string());
+    BOOST_REQUIRE(journal.reconcileUserStorageInventory("/repo/a", {}, fixture.now()).ready);
+    const RepoUserStorageObject reserved{reference.objectName, reference.expectedSha256,
+      fixture.request.generation, reference.expectedSize, 64};
+    journal.reserveUserStorage("/provider/a", "/repo/a", "/owner/a",
+      fixture.request.storageBinding.grantId, operation, reserved, fixture.now());
+    BOOST_CHECK_GT(fixture.usage().reservedBytes, 0U);
+  }
+  fixture.provider.reset();
+  fixture.node.reset();
+  {
+    DirectoryFsyncFailureScope failure;
+    BOOST_CHECK_THROW(fixture.open(), std::exception);
+  }
+  {
+    SqliteArtifactMetadataStore journal((fixture.temp.path() / "metadata.sqlite3").string());
+    const auto pending = journal.lookupUserStorageWrite("/repo/a", "/owner/a", operation);
+    BOOST_REQUIRE(pending);
+    BOOST_CHECK(pending->state == RepoUserStorageWriteState::RESERVED);
+    BOOST_CHECK_GT(pending->reservedBytes, 0U);
+  }
+  fixture.open();
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+  {
+    SqliteArtifactMetadataStore journal((fixture.temp.path() / "metadata.sqlite3").string());
+    const auto previous = journal.lookupUserStorageWrite("/repo/a", "/owner/a", operation);
+    BOOST_REQUIRE(previous);
+    BOOST_CHECK(previous->state == RepoUserStorageWriteState::CANCELLED);
+    BOOST_CHECK(journal.pendingUserStorageWrites("/repo/a").empty());
+  }
+  // The cancelled operation remains terminal; the next attempt has its own ID.
+  const auto replay = fixture.node->insertWirePackets(fixture.request, fixture.packets, "/provider/a");
+  BOOST_CHECK_EQUAL(replay.state, "FAILED");
+  fixture.request.operationId = "owned-original-retry";
+  const auto retried = fixture.node->insertWirePackets(fixture.request, fixture.packets, "/provider/a");
+  BOOST_REQUIRE_MESSAGE(retried.state == "DONE", retried.message);
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+  BOOST_CHECK_GT(fixture.usage().committedBytes, 0U);
+  fixture.node.reset();
+  fixture.open();
+  for (std::size_t i = 0; i < fixture.packets.size(); ++i) {
+    const auto name = reference.packetSetMetadata->packetNames.at(i);
+    BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(ndn::Name(name))) == fixture.packets[i]);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(OwnedInsertRestartRetainsReservationWhenUnknownStagingRemains)
+{
+  OwnedPacketFixture fixture;
+  const auto& reference = fixture.request.reference;
+  {
+    SqliteArtifactMetadataStore journal((fixture.temp.path() / "metadata.sqlite3").string());
+    BOOST_REQUIRE(journal.reconcileUserStorageInventory("/repo/a", {}, fixture.now()).ready);
+    const RepoUserStorageObject reserved{reference.objectName, reference.expectedSha256,
+      fixture.request.generation, reference.expectedSize, 64};
+    journal.reserveUserStorage("/provider/a", "/repo/a", "/owner/a",
+      fixture.request.storageBinding.grantId, fixture.request.operationId, reserved, fixture.now());
+  }
+  const auto charged = fixture.usage().reservedBytes;
+  const auto stage = fixture.temp.path() / "objects/staging" /
+    (reference.expectedSha256 + ".99.part");
+  {
+    std::ofstream output(stage);
+    output << "unknown restart staging";
+    BOOST_REQUIRE(output.good());
+  }
+  fixture.provider.reset();
+  fixture.node.reset();
+  fixture.open();
+  BOOST_CHECK(std::filesystem::exists(stage));
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, charged);
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+  fixture.request.operationId = "owned-original-blocked-retry";
+  const auto blocked = fixture.node->insertWirePackets(fixture.request, fixture.packets, "/provider/a");
+  BOOST_CHECK_EQUAL(blocked.state, "FAILED");
+  BOOST_CHECK_EQUAL(blocked.message, "repo-user-storage-reconciliation-required");
+  BOOST_CHECK(fixture.node->core().list().empty());
+  BOOST_CHECK(std::filesystem::exists(stage));
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, charged);
+}
+
 BOOST_AUTO_TEST_CASE(OwnedInsertRestartRecoversPhysicalCommitBeforeClaimPublication)
 {
   OwnedPacketFixture fixture;
