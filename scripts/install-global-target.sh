@@ -106,15 +106,13 @@ storage=(/usr/bin/python3 "$STORAGE" run --build-dir "$BUILD_DIR"
 "${storage[@]}" --profile target-build
 
 install_targets="$TARGET"
-waf_test_mode="$(/usr/bin/python3 - "$BUILD_DIR" <<'PY'
-import ast
+waf_test_mode="$(/usr/bin/python3 - "$BUILD_DIR" "$STORAGE" <<'PY'
+import runpy
 from pathlib import Path
 import sys
 cache = Path(sys.argv[1]) / "c4che/_cache.py"
-values = {node.targets[0].id: ast.literal_eval(node.value)
-          for node in ast.parse(cache.read_text()).body
-          if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
-          and node.targets[0].id in ("PREFIX", "LIBDIR", "WITH_TESTS", "sanitize_di")}
+read_cache = runpy.run_path(sys.argv[2])["waf_cache_values"]
+values = read_cache(cache, {"PREFIX", "LIBDIR", "WITH_TESTS", "sanitize_di"})
 if values.get("PREFIX") != "/usr/local" or values.get("LIBDIR") != "/usr/local/lib":
     sys.exit("Global install requires Waf configured for /usr/local and /usr/local/lib")
 if values.get("sanitize_di"):
