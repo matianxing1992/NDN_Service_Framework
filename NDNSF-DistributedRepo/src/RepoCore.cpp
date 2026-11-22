@@ -1169,19 +1169,29 @@ std::vector<uint8_t>
 RepoCore::getDataPacket(const std::string& dataName,
   const std::function<bool(const RepoObjectManifest&)>& acceptObject) const
 {
-  const ndn::Name name(dataName);
+  std::vector<uint8_t> wire;
+  readExactDataPacket(ndn::Name(dataName), acceptObject, &wire);
+  return wire;
+}
+
+ndn::Data
+RepoCore::readExactDataPacket(const ndn::Name& name,
+  const std::function<bool(const RepoObjectManifest&)>& acceptObject,
+  std::vector<uint8_t>* originalWire) const
+{
   const auto readPacket = [&](const RepoObjectManifest& manifest, size_t index) {
     auto wire = manifest.objectType == "ndn-data-wire"
       ? m_store->get(manifest.objectName).payload
       : m_store->getRange(manifest.objectName,
           {manifest.packetOffsets[index],
            manifest.packetOffsets[index + 1] - manifest.packetOffsets[index]});
-    const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+    ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
     if (data.getName() != name)
       throw std::runtime_error("repo-original-packet-name-mismatch");
     if (acceptObject && !acceptObject(manifest))
       throw std::runtime_error("repo-original-packet-admission-changed");
-    return wire;
+    if (originalWire) *originalWire = std::move(wire);
+    return data;
   };
   if (acceptObject) {
     const auto key = name.toUri(ndn::name::UriFormat::CANONICAL);
@@ -1219,7 +1229,7 @@ RepoCore::getDataPacket(const std::string& dataName,
   }
   const auto record = findPacketRecord(name, acceptObject);
   if (!record) {
-    throw std::runtime_error("repo object is not an exact NDN Data packet: " + dataName);
+    throw std::runtime_error("repo object is not an exact NDN Data packet: " + name.toUri());
   }
   return readPacket(record->first, record->second);
 }
@@ -1245,8 +1255,7 @@ RepoCore::getDataPacketObject(
     indexedName = indexedName.getPrefix(-1);
   }
   if (!interest.getCanBePrefix() || implicitDigest) {
-    auto wire = getDataPacket(indexedName.toUri(ndn::name::UriFormat::CANONICAL), acceptObject);
-    ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+    auto data = readExactDataPacket(indexedName, acceptObject);
     if (interest.matchesData(data)) {
       return data;
     }

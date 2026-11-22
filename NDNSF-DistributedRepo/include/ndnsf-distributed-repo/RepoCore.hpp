@@ -234,6 +234,9 @@ private:
   std::optional<std::pair<RepoObjectManifest, size_t>> findPacketRecord(
     const ndn::Name& name,
     const std::function<bool(const RepoObjectManifest&)>& acceptObject = {}) const;
+  ndn::Data readExactDataPacket(const ndn::Name& name,
+    const std::function<bool(const RepoObjectManifest&)>& acceptObject,
+    std::vector<uint8_t>* originalWire = nullptr) const;
   std::string resolveObjectKey(const std::string& objectName) const;
   std::vector<uint8_t> deleteLocked(const std::string& objectName);
   bool canRemoveUserStorageObjectLocked(const RepoUserStorageObject& expected) const;
