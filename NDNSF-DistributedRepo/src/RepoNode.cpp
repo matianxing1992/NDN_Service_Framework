@@ -58,6 +58,21 @@ namespace {
 // Selection can reach its Provider after collection closes.
 constexpr uint64_t REPO_PENDING_SELECTION_TTL_MS = 60'000;
 
+void
+traceManifestInsertStorage(const std::string& objectName, const std::string& operationId,
+                           const char* stage) noexcept
+{
+  try {
+    if (ndn_service_framework::controlTimingEnvEnabled()) {
+      ndn_service_framework::logControlTiming("repo-node", "manifest-insert-storage",
+        ndn::Name(objectName), {{"operation_id", operationId}, {"stage", stage}});
+    }
+  }
+  catch (...) {
+    // Diagnostic failures cannot change storage admission or completion.
+  }
+}
+
 bool
 isOwnedInsertRequest(const std::vector<uint8_t>& request, bool allowManifest = false)
 {
@@ -2319,7 +2334,14 @@ RepoNode::insertWirePacketsImpl(
       return status;
     }
 
+    const auto traceStorage = [&](const char* stage) noexcept {
+      if (committedManifestOperationId != nullptr) {
+        traceManifestInsertStorage(reference.objectName, status.operationId, stage);
+      }
+    };
+    traceStorage("wait-start");
     executeStorageWrite(totalSize, [&] {
+      traceStorage("worker-start");
       // Legacy mutations share the transaction fence with the single INSERT writer.
       std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
       if (requireActive)
@@ -2439,7 +2461,9 @@ RepoNode::insertWirePacketsImpl(
       status.completedSegments = packetCount;
       status.totalSegments = packetCount;
       rememberStatus(status);
+      traceStorage("worker-finish");
     }, requireActive);
+    traceStorage("wait-finish");
     return status;
   }
   catch (const std::exception& e) {
@@ -3014,6 +3038,7 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
       if (!m_manifestPacketFetcher || dataPrefix == writerPrefix) {
         throw std::runtime_error("repo-manifest-insert-proof-unavailable");
       }
+      traceManifestInsertStorage(owned.reference.objectName, owned.operationId, "handler-start");
       const ndn_service_framework::SegmentManifestScope scope{
         writerPrefix, dataPrefix, *owned.segmentManifestBinding};
       const auto fetchCurrent = [weak = weak_from_this(), validationDeadline] {
