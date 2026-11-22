@@ -30,10 +30,12 @@ def build(bld):
         'RepoNode.hpp',
         'RepoPacketServer.hpp',
         'RepoProtocol.hpp',
-        'RepoSourceProvider.hpp',
         'RepoStoreBackend.hpp',
         'RepoTypes.hpp',
     ]
+    # The bridge implements DI interfaces whose headers are installed by the DI profile.
+    if 'di' in bld.env.NDNSF_COMPONENTS:
+        public_headers.append('RepoSourceProvider.hpp')
     bld.install_files('${INCLUDEDIR}/ndnsf-distributed-repo',
                       [bld.path.find_node('include/ndnsf-distributed-repo/' + name)
                        for name in public_headers])
