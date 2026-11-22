@@ -121,6 +121,31 @@ topology and config digests, both Repo PIDs, complete native records, and nonfor
 Use one write and read as a restart check. A throughput comparison additionally needs repeated
 matched trials and bare NFD replay of the same original wire in each applicable direction.
 
+For the 8,400 B tuned comparison, set the Repo actor's `resources.cpus` to at least five
+and give its `parameters` the following native settings. This applies to the new write
+and the independent read.
+
+```json
+{
+  "handler-threads": 5,
+  "manifest-fetch-window": 28,
+  "manifest-source-window": 40,
+  "manifest-handler": "reserved",
+  "manifest-fetch-face": "dedicated"
+}
+```
+
+Use `--manifest-segment-bytes 8400` on both invocations. Add
+`--manifest-group-segments 3840 --manifest-insert compact --manifest-write-slots 5` to the
+write and `--manifest-read-pipeline quad --manifest-read-total-window 64
+--manifest-owner-claims targeted` to the read. These settings apply only when explicitly
+selected. For the split-core comparison, pass
+`--cpu-placement Experiments/profiles/repo-wired-star-split.json` to both Repo and NFD
+commands. The launcher checks the actual native process affinities against this map.
+The bare replay uses the first CPU of each endpoint's list for its corresponding thread.
+Run `--timing` separately from
+the throughput samples to capture source fetch, spooling and durable confirmation events.
+
 Build and install the Waf target `ndnsf-nfd-wire-benchmark` from the same candidate. After
 stopping the Repo, replay a complete group from its filesystem store through the same topology.
 Run once per direction with the same CPU placement as the Repo samples. The default uses the host's

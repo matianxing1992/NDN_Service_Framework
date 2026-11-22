@@ -116,7 +116,9 @@ def test_repo_file_benchmark_rejects_small_input_before_launch(ops, tmp_path):
 
 
 @pytest.mark.parametrize('phase', ['write', 'read'])
-def test_repo_file_benchmark_forwards_independent_native_phase(ops, tmp_path, monkeypatch, phase):
+@pytest.mark.parametrize('tuned', [False, True])
+def test_repo_file_benchmark_forwards_independent_native_phase(ops, tmp_path, monkeypatch, phase,
+                                                              tuned):
     _, cli = ops
     cluster = importlib.import_module('_spec217_ops.cluster')
     config = tmp_path / 'deployment.json'
@@ -141,6 +143,23 @@ def test_repo_file_benchmark_forwards_independent_native_phase(ops, tmp_path, mo
         expected['source'] = str(source)
     else:
         reference.write_text('{}')
+    if tuned:
+        arguments += ['--authentication', 'manifest']
+        expected['authentication'] = 'manifest'
+        tuning = {'manifest-segment-bytes': '8400'}
+        if phase == 'write':
+            tuning.update({'manifest-group-segments': '3840', 'manifest-insert': 'compact',
+                           'manifest-write-slots': '5'})
+        else:
+            tuning.update({'manifest-read-pipeline': 'quad', 'manifest-read-total-window': '64',
+                           'manifest-owner-claims': 'targeted'})
+        for flag, value in tuning.items():
+            arguments += ['--' + flag, value]
+        expected.update(tuning)
+        cpu_file = tmp_path / 'placement.json'
+        cpu_file.write_text('{"repo": [4, 5], "nfd.router": [12]}')
+        arguments += ['--cpu-placement', str(cpu_file)]
+        expected['cpu_placement'] = {'repo': [4, 5], 'nfd.router': [12]}
     with contextlib.redirect_stdout(io.StringIO()):
         assert cli.main(arguments) == 0
     assert received == [expected]
@@ -150,12 +169,31 @@ def test_repo_file_benchmark_forwards_independent_native_phase(ops, tmp_path, mo
     ({'phase': 'read'}, 'absolute reference'),
     ({'phase': 'read', 'source': '/input.bin'}, 'uses a reference file'),
     ({'phase': 'read', 'reference': '/missing/reference.json'}, 'existing reference'),
+    ({'phase': 'read', 'manifest-segment-bytes': '8400'}, 'invalid manifest benchmark option'),
+    ({'phase': 'read', 'authentication': 'manifest', 'manifest-insert': 'compact'},
+     'invalid manifest benchmark option'),
+    ({'phase': 'read', 'authentication': 'manifest', 'manifest-read-total-window': '64'},
+     'requires manifest-read-pipeline'),
 ])
 def test_repo_file_benchmark_rejects_invalid_independent_read(ops, tmp_path, options, message):
     cluster = importlib.import_module('_spec217_ops.cluster')
     with pytest.raises(cluster.ClusterError, match=message):
         cluster.run_cluster('benchmark-repo', tmp_path / 'absent.json',
                             repo_benchmark=dict(sha256='a' * 64, **options))
+
+
+def test_repo_benchmark_placement_checks_available_cpu_and_owned_process(ops, monkeypatch):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    monkeypatch.setattr(cluster.os, 'sched_getaffinity', lambda pid: {0, 4, 5, 12})
+    config = {'actors': [{'id': 'repo', 'external': False},
+                         {'id': 'external-repo', 'external': True}],
+              'nodes': [{'id': 'router', 'nfd': {'mode': 'managed'}}]}
+    assert cluster._benchmark_cpu_placement(config, {'repo': [5, 4], 'nfd.router': [12]}) == {
+        'repo': [4, 5], 'nfd.router': [12]}
+    for placement in ({'repo': [5, 5]}, {'repo': [999]}, {'repo': []}, {'repo': [True]},
+                      {'unknown': [0]}, {'external-repo': [0]}):
+        with pytest.raises(cluster.ClusterError, match='invalid benchmark CPU placement'):
+            cluster._benchmark_cpu_placement(config, placement)
 
 
 @pytest.mark.parametrize('cleanup', [[], [dict(status='ZERO', forced=True)],
@@ -1254,12 +1292,20 @@ def test_repo_cache_limits_reach_installed_native_actor(ops, deployment):
     cluster = importlib.import_module('_spec217_ops.cluster')
     root, config = _stored_deployment(deployment, prepare=True)
     repo = next(actor for actor in config['actors'] if actor['kind'] == 'repo')
-    repo['parameters'] = {'cache-bytes': 1 << 30, 'large-object-threshold-bytes': 32 << 20}
+    repo['parameters'] = {'cache-bytes': 1 << 30, 'large-object-threshold-bytes': 32 << 20,
+                          'manifest-fetch-window': 28, 'manifest-source-window': 40,
+                          'manifest-handler': 'reserved', 'manifest-fetch-face': 'dedicated',
+                          'handler-threads': 1}
     frozen = module.load_deployment(write_config(root, config))
     actor = next(actor for actor in frozen['actors'] if actor['kind'] == 'repo')
-    argv, _ = cluster._native_launch(frozen, actor, root,
-        dict(boot_id='a' * 32, configuration_sha256='b' * 64))
+    argv, env = cluster._native_launch(frozen, actor, root,
+        dict(boot_id='a' * 32, configuration_sha256='b' * 64, runtime_timing=True),
+        repo_benchmark={})
+    assert env['NDNSF_HANDLER_THREADS'] == '1'
+    assert env['NDNSF_REPO_SOURCE_TIMING'] == '1'
     for key, value in repo['parameters'].items():
+        if key == 'handler-threads':
+            continue
         assert argv.count('--' + key) == 1
         assert argv[argv.index('--' + key) + 1] == str(value)
 
@@ -1272,6 +1318,25 @@ def test_repo_cache_limits_reject_invalid_before_launch(ops, deployment, option,
     repo = next(actor for actor in config['actors'] if actor['kind'] == 'repo')
     repo['parameters'] = {option: value}
     with pytest.raises(ValueError, match='repo.parameters'):
+        module.load_deployment(write_config(root, config))
+    assert not (root / 'state_root').exists()
+
+
+@pytest.mark.parametrize(('option', 'value'), [
+    ('manifest-fetch-window', -1),
+    ('manifest-source-window', 4097),
+    ('manifest-fetch-face', 'other'),
+    ('manifest-handler', 'other'),
+    ('handler-threads', 0),
+    ('handler-threads', 2),
+])
+def test_repo_manifest_tuning_rejects_invalid_before_launch(ops, deployment, option, value):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = _stored_deployment(deployment, prepare=True)
+    repo = next(actor for actor in config['actors'] if actor['kind'] == 'repo')
+    repo['resources']['cpus'] = 1
+    repo['parameters'] = {option: value}
+    with pytest.raises(ValueError, match='repo.parameters.' + option):
         module.load_deployment(write_config(root, config))
     assert not (root / 'state_root').exists()
 

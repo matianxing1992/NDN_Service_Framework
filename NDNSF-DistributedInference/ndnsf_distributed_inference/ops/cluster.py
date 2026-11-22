@@ -15,7 +15,8 @@ import subprocess
 import time
 import uuid
 
-from .deployment_config import (_identifier, _object, _read_json, _string, _name,
+from .deployment_config import (REPO_MANIFEST_BENCHMARK_OPTIONS, REPO_MANIFEST_SERVER_OPTIONS,
+                                _identifier, _object, _read_json, _string, _name,
                                 load_deployment, provider_cache_path, provider_recipient_map)
 from .processes import process_identity, owned_state, stop_owned, write_json
 
@@ -299,9 +300,13 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
                 '--service-prefix', network['repo_service']]
         if 'request-timeout-ms' in actor.get('parameters', {}):
             argv += ['--request-timeout-ms', str(actor['parameters']['request-timeout-ms'])]
-        for option in ('cache-bytes', 'large-object-threshold-bytes'):
-            if option in actor.get('parameters', {}):
-                argv += ['--' + option, str(actor['parameters'][option])]
+        for option in ('cache-bytes', 'large-object-threshold-bytes', *REPO_MANIFEST_SERVER_OPTIONS):
+            if option in params:
+                argv += ['--' + option, str(params[option])]
+        if 'handler-threads' in params:
+            env['NDNSF_HANDLER_THREADS'] = str(params['handler-threads'])
+        if repo_benchmark is not None and state.get('runtime_timing'):
+            env['NDNSF_REPO_SOURCE_TIMING'] = '1'
     else:
         if 'core-work-timeout-ms' in params:
             env['NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS'] = str(params.pop('core-work-timeout-ms'))
@@ -356,6 +361,9 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
             argv += ['--authentication', repo_benchmark['authentication']]
         if 'signing_certificate' in repo_benchmark:
             argv += ['--signing-certificate', repo_benchmark['signing_certificate']]
+        for option in REPO_MANIFEST_BENCHMARK_OPTIONS:
+            if option in repo_benchmark:
+                argv += ['--' + option, repo_benchmark[option]]
         if repo_benchmark.get('under_gdb'):
             argv = ['/usr/bin/gdb', '-batch', '-ex', 'set pagination off',
                     '-ex', 'run', '-ex', 'thread apply all bt full',
@@ -364,7 +372,7 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
 
 
 def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
-           network_namespace=None):
+           network_namespace=None, cpu_affinity=None):
     row = {'id': actor_id, 'kind': kind, 'argv': argv, 'expected_exe': str(Path(argv[0]).resolve()),
            'bindings': {key: env[key] for key in (
                'NDNSF_DEPLOYMENT_ACTOR_ID', 'NDNSF_DEPLOYMENT_BOOT_ID',
@@ -381,7 +389,9 @@ def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
             write_json(root / 'state.json', state)
             raise
         try:
-            child = (launcher or subprocess.Popen)(argv, stdin=subprocess.DEVNULL, stdout=log,
+            command = argv if cpu_affinity is None else [
+                '/usr/bin/taskset', '-c', ','.join(map(str, cpu_affinity)), *argv]
+            child = (launcher or subprocess.Popen)(command, stdin=subprocess.DEVNULL, stdout=log,
                                      stderr=subprocess.STDOUT, env=env, start_new_session=True)
         except OSError:
             row['spawn_failed'] = True
@@ -417,6 +427,11 @@ def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
                     if actual != network_namespace:
                         raise ClusterError('native process network namespace mismatch: ' + actor_id)
                     row['network_namespace'] = actual
+                if cpu_affinity is not None:
+                    actual_cpus = sorted(os.sched_getaffinity(child.pid))
+                    if actual_cpus != cpu_affinity:
+                        raise ClusterError('native process CPU placement mismatch: ' + actor_id)
+                    row['cpu_affinity'] = actual_cpus
                 write_json(root / 'state.json', state)
                 return child, row
             if time.monotonic() >= capture_deadline:
@@ -925,12 +940,31 @@ def _sample_repo_benchmark(directory, children, boundary):
         output.write(json.dumps(sample, sort_keys=True) + '\n')
 
 
+def _benchmark_cpu_placement(config, placement):
+    if not isinstance(placement, dict) or not placement:
+        raise ClusterError('benchmark CPU placement requires an actor-to-CPU mapping')
+    known = {a['id'] for a in config['actors'] if not a['external']}
+    known.update('nfd.' + n['id'] for n in config['nodes'] if n['nfd']['mode'] == 'managed')
+    available = os.sched_getaffinity(0)
+    for actor, cpus in placement.items():
+        if (actor not in known or not isinstance(cpus, list) or not cpus or
+                any(type(cpu) != int or cpu not in available for cpu in cpus) or
+                len(set(cpus)) != len(cpus)):
+            raise ClusterError('invalid benchmark CPU placement for ' + str(actor))
+    return {actor: sorted(cpus) for actor, cpus in placement.items()}
+
+
 def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, repo_benchmark=None):
     # The repo benchmark loads its own frozen operation; the inference prepare
     # projection would rewrite it to operation=prepare and drop its fields.
     config = (load_deployment(source) if repo_benchmark is not None else
               load_deployment(source, prepare_only=True) if prepare_only
               else load_deployment(source))
+    cpu_placement = {}
+    if repo_benchmark is not None and 'cpu_placement' in repo_benchmark:
+        if config['platform']['kind'] != 'minindn':
+            raise ClusterError('benchmark CPU placement requires local MiniNDN')
+        cpu_placement = _benchmark_cpu_placement(config, repo_benchmark['cpu_placement'])
     prepare_only = config.get('operation') == 'prepare'
     if repo_benchmark is not None:
         if config['platform']['kind'] == 'minindn':
@@ -1022,9 +1056,11 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
             def spawn(actor_id, kind, argv, env, node_id):
                 if facility is None:
                     return _spawn(state, root, actor_id, kind, argv, env, guard)
-                return _spawn(state, root, actor_id, kind, argv, env, guard,
-                              launcher=facility.launcher(node_id),
-                              network_namespace=facility.namespace(node_id))
+                settings = dict(launcher=facility.launcher(node_id),
+                                network_namespace=facility.namespace(node_id))
+                if actor_id in cpu_placement:
+                    settings['cpu_affinity'] = cpu_placement[actor_id]
+                return _spawn(state, root, actor_id, kind, argv, env, guard, **settings)
 
             launches = []
             for actor in config['actors']:
@@ -1224,7 +1260,9 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_
     if actor_id is not None and action != 'down':
         raise ClusterError('actor selection only applies to down')
     if action == 'benchmark-repo':
-        options = {'sha256', 'source', 'authentication', 'signing_certificate', 'phase', 'reference'}
+        options = {'sha256', 'source', 'authentication', 'signing_certificate', 'phase', 'reference',
+                   'cpu_placement',
+                   *REPO_MANIFEST_BENCHMARK_OPTIONS}
         if (not isinstance(repo_benchmark, dict) or 'sha256' not in repo_benchmark or
                 repo_benchmark.keys() - options):
             raise ClusterError('Repo benchmark needs SHA-256 and supported options')
@@ -1240,6 +1278,14 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_
         phase = repo_benchmark.get('phase', 'write-read')
         if phase not in ('write-read', 'write', 'read'):
             raise ClusterError('unsupported Repo benchmark phase')
+        for option, (choices, phase_limit) in REPO_MANIFEST_BENCHMARK_OPTIONS.items():
+            if option in repo_benchmark and (authentication != 'manifest' or
+                    repo_benchmark[option] not in choices or
+                    (phase_limit is not None and phase not in (phase_limit, 'write-read'))):
+                raise ClusterError('invalid manifest benchmark option for this phase: ' + option)
+        if ('manifest-read-total-window' in repo_benchmark and
+                'manifest-read-pipeline' not in repo_benchmark):
+            raise ClusterError('manifest-read-total-window requires manifest-read-pipeline')
         if phase != 'read':
             input_path = Path(repo_benchmark.get('source', ''))
             if (not input_path.is_absolute() or input_path.is_symlink() or

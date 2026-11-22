@@ -18,6 +18,23 @@ from pathlib import Path
 
 from .allocation_topology import DIGEST, PROCESS_ID
 
+REPO_MANIFEST_BENCHMARK_OPTIONS = {
+    'manifest-segment-bytes': (('7000', '8400'), None),
+    'manifest-group-segments': (('2048', '2560', '3840'), 'write'),
+    'manifest-write-slots': (('3', '5'), 'write'),
+    'manifest-insert': (('indexed', 'compact'), 'write'),
+    'manifest-read-pipeline': (('serial', 'paired', 'quad'), 'read'),
+    'manifest-read-total-window': (('32', '48', '64'), 'read'),
+    'manifest-owner-claims': (('selected', 'targeted'), 'read'),
+}
+
+REPO_MANIFEST_SERVER_OPTIONS = {
+    'manifest-fetch-window': 4096,
+    'manifest-source-window': 4096,
+    'manifest-handler': ('shared', 'reserved'),
+    'manifest-fetch-face': ('shared', 'dedicated'),
+}
+
 
 class DeploymentConfigError(ValueError):
     pass
@@ -705,7 +722,23 @@ def _translate_native(config, by_kind, resolve):
         elif actor['kind'] == 'repo':
             _object(parameters, 'repo.parameters', {'request-timeout-ms', 'repo-node',
                                                  'cache-bytes', 'large-object-threshold-bytes',
-                                                 'core-svs-periodic-sync-ms'})
+                                                 'core-svs-periodic-sync-ms', 'handler-threads',
+                                                 *REPO_MANIFEST_SERVER_OPTIONS})
+            if not local and parameters.keys() & {'handler-threads', *REPO_MANIFEST_SERVER_OPTIONS}:
+                _fail('repo.parameters', 'manifest tuning requires a local deployment')
+            for option, limit in REPO_MANIFEST_SERVER_OPTIONS.items():
+                if option not in parameters:
+                    continue
+                field = 'repo.parameters.' + option
+                if isinstance(limit, int):
+                    if _integer(parameters[option], field, 0) > limit:
+                        _fail(field, 'exceeds the native packet-set limit')
+                elif parameters[option] not in limit:
+                    _fail(field, 'unsupported native option')
+            if 'handler-threads' in parameters:
+                field = 'repo.parameters.handler-threads'
+                if _integer(parameters['handler-threads'], field) > actor['resources']['cpus']:
+                    _fail(field, 'exceeds the declared Repo CPU budget')
             for option in ('cache-bytes', 'large-object-threshold-bytes'):
                 if option in parameters:
                     value = _integer(parameters[option], 'repo.parameters.' + option, 1)

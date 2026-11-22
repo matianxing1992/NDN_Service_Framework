@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import sys
 
+from .deployment_config import REPO_MANIFEST_BENCHMARK_OPTIONS
+
 def definition_from_json(path):
     from ..app_sdk.contracts import ArtifactReference, DeploymentDefinition
 
@@ -52,6 +54,10 @@ def build_parser():
             command.add_argument('--authentication', choices=('digest', 'certificate', 'manifest'),
                                  help='select the packet authentication mode in local MiniNDN')
             command.add_argument('--signing-certificate', help='data signing certificate NDN name')
+            command.add_argument('--cpu-placement', type=Path,
+                                 help='local benchmark JSON with actor IDs and CPU lists')
+            for flag, (choices, _) in REPO_MANIFEST_BENCHMARK_OPTIONS.items():
+                command.add_argument('--' + flag, choices=choices)
         if name == 'down':
             command.add_argument('--actor', help='stop one managed local Provider; does not save KV state')
     for name in ("validate","resolve","plan","apply","status","wait","rollback","drain","delete"):
@@ -109,6 +115,13 @@ def main(argv=None, *, deployment_factory=None, client_factory=None):
                         options['repo_benchmark']['authentication'] = args.authentication
                     if args.signing_certificate is not None:
                         options['repo_benchmark']['signing_certificate'] = args.signing_certificate
+                    for flag in REPO_MANIFEST_BENCHMARK_OPTIONS:
+                        value = getattr(args, flag.replace('-', '_'))
+                        if value is not None:
+                            options['repo_benchmark'][flag] = value
+                    if args.cpu_placement is not None:
+                        from .deployment_config import _read_json
+                        options['repo_benchmark']['cpu_placement'] = _read_json(args.cpu_placement)
                 if getattr(args, 'actor', None) is not None:
                     options['actor_id'] = args.actor
                 result = run_cluster(args.cluster_command, args.config, args.timeout,

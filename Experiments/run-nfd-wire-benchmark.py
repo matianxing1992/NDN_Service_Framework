@@ -42,14 +42,20 @@ def run(args):
     config = load_deployment(args.config)
     if config["platform"]["kind"] != "minindn":
         raise RuntimeError("bare NFD replay requires the MiniNDN deployment topology")
-    actor_nodes = {actor["kind"]: actor["node"] for actor in config["actors"]
-                   if actor["kind"] in ("requester", "repo") and not actor["external"]}
-    sender, receiver = actor_nodes["requester"], actor_nodes["repo"]
+    actors = {actor["kind"]: actor for actor in config["actors"]
+              if actor["kind"] in ("requester", "repo") and not actor["external"]}
+    sender_actor, receiver_actor = actors["requester"], actors["repo"]
     if args.direction == "read":
-        sender, receiver = receiver, sender
+        sender_actor, receiver_actor = receiver_actor, sender_actor
+    sender, receiver = sender_actor["node"], receiver_actor["node"]
     nodes = {node["id"]: node for node in config["nodes"]}
     if sender == receiver or args.router not in nodes or args.router in (sender, receiver):
         raise RuntimeError("replay needs two distinct endpoints and a router")
+    placement = {}
+    if args.cpu_placement is not None:
+        placement = cluster._benchmark_cpu_placement(config, json.loads(args.cpu_placement.read_bytes()))
+    producer_cpu = placement.get(sender_actor["id"], [-1])[0]
+    consumer_cpu = placement.get(receiver_actor["id"], [-1])[0]
     reference = json.loads(args.reference.read_bytes())
     if (reference["schema"] != "ndnsf-repo-file-benchmark-reference-v1" or
             reference["authentication"] != "manifest"):
@@ -102,9 +108,10 @@ def run(args):
             raise RuntimeError("replay exceeded its deadline")
 
     def spawn(actor_id, kind, argv, env, node_id):
-        return cluster._spawn(state, root, actor_id, kind, argv, env, guard,
-                              launcher=facility.launcher(node_id),
-                              network_namespace=facility.namespace(node_id))
+        settings = dict(launcher=facility.launcher(node_id), network_namespace=facility.namespace(node_id))
+        if actor_id in placement:
+            settings["cpu_affinity"] = placement[actor_id]
+        return cluster._spawn(state, root, actor_id, kind, argv, env, guard, **settings)
 
     def interrupted(signum, unused_frame):
         raise KeyboardInterrupt("signal " + str(signum))
@@ -130,7 +137,8 @@ def run(args):
             for trial in range(args.samples):
                 guard()
                 cmd = [str(binary), nodes[receiver]["nfd"]["socket"], str(payload), str(window),
-                       str(trial + 1), "4096", "-1", "-1", "digest", str(args.seconds),
+                       str(trial + 1), "4096", str(producer_cpu), str(consumer_cpu),
+                       "digest", str(args.seconds),
                        nodes[sender]["nfd"]["socket"], str(router_pid), group["prefix"], str(wire)]
                 row = dict(command=cmd, window=window, trial=trial + 1)
                 measurements.append(row)
@@ -161,6 +169,9 @@ def run(args):
                 rates[window] = statistics.median(samples)
         result = dict(direction=args.direction, endpoints=dict(sender=sender, receiver=receiver),
                       cpuAffinity=sorted(os.sched_getaffinity(0)),
+                      nfdAffinity={row["id"]: row["cpu_affinity"] for row in state["launches"]
+                                   if "cpu_affinity" in row},
+                      replayEndpointCpus=dict(producer=producer_cpu, consumer=consumer_cpu),
                       group=group, topology=config["platform"]["topology_sha256"],
                       configuration=config_digest, binarySha256=binary_digest, referenceSha256=digest(args.reference),
                       harnessSha256=digest(Path(__file__)), measurements=measurements, sustainedMedianGbps=rates,
@@ -176,6 +187,7 @@ def main():
     for name in ("config", "reference", "store", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--direction", choices=("write", "read"), required=True)
+    parser.add_argument("--cpu-placement", type=Path)
     parser.add_argument("--router", default="router")
     parser.add_argument("--group", type=int, default=0)
     parser.add_argument("--windows", type=int, nargs="+", default=(16, 32))

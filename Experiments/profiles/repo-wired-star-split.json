@@ -1,0 +1,7 @@
+{
+  "requester": [0, 1, 2, 3],
+  "repo": [4, 5, 6, 7],
+  "nfd.requester": [8],
+  "nfd.provider1": [10],
+  "nfd.router": [12]
+}
