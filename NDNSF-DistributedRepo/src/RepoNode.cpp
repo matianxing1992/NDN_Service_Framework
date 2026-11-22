@@ -1691,15 +1691,34 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
 
   registerRepoService(
     makeRepoServiceName(m_servicePrefix, "MANIFEST"),
-    [this] (const ndn::Name& requester, const ndn::Name&, const ndn::Name&, const ndn::Name&,
-            const ndn_service_framework::RequestMessage& request) {
+    [this] (const ndn::Name& requester, const ndn::Name&, const ndn::Name& serviceName,
+            const ndn::Name& requestId, const ndn_service_framework::RequestMessage& request) {
+      const auto started = std::chrono::steady_clock::now();
+      auto response = [&] {
+        try {
+          return makeResponse(handleManifest(payloadOf(request),
+            requester.toUri(ndn::name::UriFormat::ALTERNATE)));
+        }
+        catch (const std::exception& e) {
+          return makeError(e.what());
+        }
+      }();
       try {
-        return makeResponse(handleManifest(payloadOf(request),
-          requester.toUri(ndn::name::UriFormat::ALTERNATE)));
+        if (ndn_service_framework::controlTimingEnvEnabled()) {
+          const auto startedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            started.time_since_epoch()).count();
+          const auto finishedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+          ndn_service_framework::logControlTiming("repo-node", "manifest-handler", requestId,
+            {{"serviceName", serviceName.toUri()},
+             {"handler_start_us", std::to_string(startedUs)},
+             {"handler_finish_us", std::to_string(finishedUs)}});
+        }
       }
-      catch (const std::exception& e) {
-        return makeError(e.what());
+      catch (...) {
+        // Optional timing cannot change a handled response.
       }
+      return response;
     });
 
   registerRepoService(
@@ -3072,7 +3091,9 @@ RepoNode::handleManifest(const std::vector<uint8_t>& request,
     const ndn::Name objectName(query.objectName);
     if (writer.empty() || !writer.isPrefixOf(prefix) || !prefix.isPrefixOf(objectName))
       throw std::runtime_error("repo-owned-manifest-producer-prefix-unauthorized");
-    std::lock_guard<std::mutex> guard(m_storeWriteMutex);
+    const auto lockRequested = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> guard(m_storeWriteMutex);
+    const auto lockAcquired = std::chrono::steady_clock::now();
     if (m_ownedInsertStopping.load())
       throw std::runtime_error("repo-original-packet-insert-shutting-down");
     const auto ledgerName = objectName.toUri(ndn::name::UriFormat::ALTERNATE);
@@ -3084,7 +3105,9 @@ RepoNode::handleManifest(const std::vector<uint8_t>& request,
     const auto write = m_artifactMetadataStore->lookupUserStorageWrite(
       m_repoNode, binding.ownerIdentity, query.operationId);
     const auto manifest = m_core.getManifest(query.objectName);
+    const auto physicalStarted = std::chrono::steady_clock::now();
     const auto physical = measurePersistentUserStorageObject(manifest, true);
+    const auto physicalFinished = std::chrono::steady_clock::now();
     if (!claim || !write || write->state != RepoUserStorageWriteState::COMMITTED ||
         write->grant.grantId != binding.grantId ||
         write->grant.ownerEpoch != binding.ownerEpoch ||
@@ -3115,12 +3138,31 @@ RepoNode::handleManifest(const std::vector<uint8_t>& request,
       }
     }
     requirePersistentArtifactVisible(manifest);
-    const auto wire = toBytes(manifest.toJson());
+    auto wire = toBytes(manifest.toJson());
     if (!query.manifestSha256.empty()) {
       const auto digest = sha256Hex(wire);
       if (digest != query.manifestSha256)
         throw std::runtime_error("repo-owned-manifest-changed");
-      return toBytes(digest);
+      wire = toBytes(digest);
+    }
+    const auto lockReleased = std::chrono::steady_clock::now();
+    guard.unlock();
+    try {
+      if (ndn_service_framework::controlTimingEnvEnabled()) {
+        const auto elapsed = [](auto start, auto end) {
+          return std::to_string(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+        };
+        ndn_service_framework::logControlTiming("repo-node", "owned-manifest-confirmation",
+          objectName, {{"operation_id", query.operationId},
+                       {"lock_wait_ns", elapsed(lockRequested, lockAcquired)},
+                       {"lock_held_ns", elapsed(lockAcquired, lockReleased)},
+                       {"physical_verification_ns", elapsed(physicalStarted, physicalFinished)},
+                       {"response_bytes", std::to_string(wire.size())}});
+      }
+    }
+    catch (...) {
+      // Optional timing cannot change a confirmed response.
     }
     return wire;
   }
