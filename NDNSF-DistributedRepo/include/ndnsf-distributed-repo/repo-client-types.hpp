@@ -379,6 +379,8 @@ struct RepoOwnerClaimFetch
   uint64_t maxManifestWireBytes = 4ULL * 1024 * 1024;
   /** Expected Producer, object prefix and binding for the owner's root validator. */
   std::shared_ptr<const ndn_service_framework::SegmentManifestScope> segmentManifest;
+  /** Per-operation exact Interest cap. Zero preserves the adaptive default. */
+  uint32_t manifestFetchWindow = 0;
 };
 
 /** Requested original-Data retrieval. */

@@ -53,6 +53,7 @@ using Json = di::NativeJson;
 constexpr uint64_t FILE_BYTES = 500000000;
 constexpr size_t CONTENT_BYTES = 7000;
 constexpr uint32_t CERTIFICATE_GROUP_SEGMENTS = 2048;
+constexpr uint32_t MANIFEST_READ_WINDOW = 32;
 
 void
 require(bool condition, const char* message)
@@ -128,7 +129,8 @@ run(int argc, char** argv)
     std::cout << "ndnsf-repo-file-benchmark: native 500000000-byte original-packet file I/O\n";
     for (const auto& option : required) std::cout << option << " VALUE ";
     std::cout << "[--phase write|read|write-read] [--reference PATH] "
-                 "[--authentication digest|certificate|manifest] [--signing-certificate NAME] ";
+                 "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
+                 "[--manifest-read-pipeline serial|paired] ";
     std::cout << "\nUses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
                  "whole-group reads and at most "
               << di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS
@@ -139,7 +141,8 @@ run(int argc, char** argv)
   for (int i = 1; i < argc; i += 2) {
     const bool known = required.count(argv[i]) || std::string(argv[i]) == "--phase" ||
       std::string(argv[i]) == "--reference" || std::string(argv[i]) == "--authentication" ||
-      std::string(argv[i]) == "--signing-certificate";
+      std::string(argv[i]) == "--signing-certificate" ||
+      std::string(argv[i]) == "--manifest-read-pipeline";
     require(i + 1 < argc && known && options.emplace(argv[i], argv[i + 1]).second,
             "invalid benchmark option");
   }
@@ -150,6 +153,14 @@ run(int argc, char** argv)
           authentication == "manifest", "unsupported benchmark authentication");
   const bool useCertificate = authentication != "digest";
   const bool useManifest = authentication == "manifest";
+  const auto readPipeline = options.find("--manifest-read-pipeline");
+  const bool boundedRead = readPipeline != options.end();
+  require(!boundedRead || (useManifest && phaseOption != "write" &&
+          (readPipeline->second == "serial" || readPipeline->second == "paired")),
+          "a bounded read pipeline requires a manifest read and serial or paired mode");
+  const size_t readGroups = boundedRead && readPipeline->second == "paired" ? 2 : 1;
+  const auto readWindow = boundedRead ? MANIFEST_READ_WINDOW / readGroups : 0;
+
   const auto selectedCertificate = options.find("--signing-certificate");
   require(useCertificate || selectedCertificate == options.end(),
           "a signing certificate requires authenticated benchmark mode");
@@ -538,38 +549,29 @@ run(int argc, char** argv)
       const Measurement retrievalTime;
       ndn::util::Sha256 restored;
       uint64_t restoredBytes = 0;
-      for (groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
-        const Measurement groupTime;
-        const auto& group = groups[groupIndex];
-        std::vector<ndn::Name> names;
-        const auto scope = manifestScope(identity, group.prefix);
-        if (useManifest) {
-          names.push_back(scope.rootName());
-          const auto pages = ndn_service_framework::SegmentManifestVerifier::pageCountFor(
-            static_cast<uint32_t>(group.packetCount));
-          for (uint32_t page = 0; page < pages; ++page) {
-            names.push_back(scope.pageName(page));
-          }
-        }
-        const auto firstSource = names.size();
-        for (size_t segment = 0; segment < group.packetCount; ++segment) {
-          names.push_back(useManifest ? scope.sourceName(static_cast<uint32_t>(segment)) :
-            ndn::Name(group.prefix).appendSegment(segment));
-        }
-        ndn::util::Sha256 wireHash;
-        current();
-        const auto packets = [&] {
-          if (!useCertificate) {
-            return io.fetch(names);
-          }
+      using PacketWires = std::vector<std::vector<uint8_t>>;
+      std::array<std::future<PacketWires>, 2> pending;
+      std::mutex readFailureMutex;
+      std::exception_ptr readFailure;
+      size_t failedReadIndex = 0;
+      const auto fetchGroup = [&](size_t index) {
+        const Measurement fetchTime;
+        const auto& group = groups[index];
+        try {
+          current();
           auto client = makePacketClient(user, target);
           repo::RepoDataFetch retrieval;
           retrieval.ownerClaim.emplace();
-          retrieval.ownerClaim->target = packetTarget;
-          retrieval.ownerClaim->objectName = names.front().toUri(ndn::name::UriFormat::ALTERNATE);
+          auto& claim = *retrieval.ownerClaim;
+          claim.target = packetTarget;
+          claim.objectName = rootName(group).toUri(ndn::name::UriFormat::ALTERNATE);
           if (useManifest) {
-            retrieval.ownerClaim->segmentManifest =
-              std::make_shared<ndn_service_framework::SegmentManifestScope>(scope);
+            claim.segmentManifest = std::make_shared<ndn_service_framework::SegmentManifestScope>(
+              manifestScope(identity, group.prefix));
+            if (boundedRead) {
+              claim.manifestFetchWindow = readWindow;
+              claim.maxPacketWireBytes = group.wireBytes;
+            }
           }
           else {
             retrieval.verifyWire = verifyWire;
@@ -578,34 +580,96 @@ run(int argc, char** argv)
           require(result.ownerPacketSet && result.digestVerified &&
                   result.wireDigest == "sha256:" + group.wireDigest,
                   "benchmark signed retrieval did not verify the current Owner claim");
+          auto row = fetchTime.result();
+          row.update(Json{{"phase", "retrieval-fetch"}, {"group", index}});
+          record(std::move(row));
           return std::move(result.packets);
-        }();
-        require(packets.size() == names.size(), "benchmark packet count changed");
-        for (size_t index = 0; index < packets.size(); ++index) {
-          const auto& wire = packets[index];
-          wireHash.update(ndn::span<const uint8_t>(wire.data(), wire.size()));
-          const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
-          require(packet.getName() == names[index], "benchmark packet name changed");
-          if (index < firstSource) {
-            continue;
-          }
-          const auto& content = packet.getContent();
-          restored.update(ndn::span<const uint8_t>(content.value(), content.value_size()));
-          restoredBytes += content.value_size();
         }
-        require(digest(wireHash) == group.wireDigest, "benchmark original wire changed");
-        auto row = groupTime.result();
-        row.update(Json{{"phase", phase}, {"group", groupIndex},
-          {"payloadBytes", group.payloadBytes}, {"wireBytes", group.wireBytes},
-          {"authentication", authentication}, {"manifestControlPackets", firstSource},
-          {"status", "VERIFIED"}});
-        record(std::move(row));
+        catch (...) {
+          std::lock_guard lock(readFailureMutex);
+          if (!readFailure) {
+            readFailure = std::current_exception();
+            failedReadIndex = index;
+          }
+          cancelled.store(true);
+          throw;
+        }
+      };
+      const auto submitRead = [&](size_t index) {
+        current();
+        const auto policy = readGroups == 2 ? std::launch::async : std::launch::deferred;
+        pending[index % readGroups] = std::async(policy, fetchGroup, index);
+      };
+      try {
+        if (useCertificate) {
+          for (size_t index = 0; index < std::min(readGroups, groups.size()); ++index) {
+            submitRead(index);
+          }
+        }
+        for (groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+          const Measurement groupTime;
+          const auto& group = groups[groupIndex];
+          std::vector<ndn::Name> names;
+          const auto scope = manifestScope(identity, group.prefix);
+          if (useManifest) {
+            names.push_back(scope.rootName());
+            const auto pages = ndn_service_framework::SegmentManifestVerifier::pageCountFor(
+              static_cast<uint32_t>(group.packetCount));
+            for (uint32_t page = 0; page < pages; ++page) {
+              names.push_back(scope.pageName(page));
+            }
+          }
+          const auto firstSource = names.size();
+          for (size_t segment = 0; segment < group.packetCount; ++segment) {
+            names.push_back(useManifest ? scope.sourceName(static_cast<uint32_t>(segment)) :
+              ndn::Name(group.prefix).appendSegment(segment));
+          }
+          ndn::util::Sha256 wireHash;
+          current();
+          const auto packets = useCertificate ? pending[groupIndex % readGroups].get()
+                                             : io.fetch(names);
+          current();
+          require(packets.size() == names.size(), "benchmark packet count changed");
+          for (size_t index = 0; index < packets.size(); ++index) {
+            const auto& wire = packets[index];
+            wireHash.update(ndn::span<const uint8_t>(wire.data(), wire.size()));
+            const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+            require(packet.getName() == names[index], "benchmark packet name changed");
+            if (index < firstSource) {
+              continue;
+            }
+            const auto& content = packet.getContent();
+            restored.update(ndn::span<const uint8_t>(content.value(), content.value_size()));
+            restoredBytes += content.value_size();
+          }
+          require(digest(wireHash) == group.wireDigest, "benchmark original wire changed");
+          auto row = groupTime.result();
+          row.update(Json{{"phase", phase}, {"group", groupIndex},
+            {"payloadBytes", group.payloadBytes}, {"wireBytes", group.wireBytes},
+            {"authentication", authentication}, {"manifestControlPackets", firstSource},
+            {"status", "VERIFIED"}});
+          record(std::move(row));
+          const auto next = groupIndex + readGroups;
+          if (useCertificate && next < groups.size()) submitRead(next);
+        }
+      }
+      catch (...) {
+        cancelled.store(true);
+        for (auto& job : pending) {
+          if (job.valid()) job.wait();
+        }
+        if (readFailure) {
+          groupIndex = failedReadIndex;
+          std::rethrow_exception(readFailure);
+        }
+        throw;
       }
       require(restoredBytes == FILE_BYTES && digest(restored) == expected,
               "benchmark reconstructed file SHA-256/size mismatch");
       auto retrieved = retrievalTime.result();
       retrieved.update(Json{{"phase", "retrieval-total"}, {"payloadBytes", restoredBytes},
-        {"wireBytes", wireBytes}, {"sha256", expected}});
+        {"wireBytes", wireBytes}, {"sha256", expected}, {"readMaxGroups", readGroups},
+        {"manifestReadWindowPerGroup", readWindow}});
       record(std::move(retrieved));
       auto result = total.result();
       result.update(Json{{"phase", "complete"}, {"pass", true}, {"fileBytes", FILE_BYTES},
@@ -637,12 +701,12 @@ run(int argc, char** argv)
     try { face.processEvents(ndn::time::milliseconds(10)); }
     catch (...) { cancelled.store(true); }
   }
-  const auto result = work.get();
   // The user owns the face callbacks and the SVS timers. Drain queued events
   // while it is still alive, then release it; pumping the face after the user
   // is destroyed would dispatch callbacks against freed framework state.
   face.processEvents(ndn::time::milliseconds(10));
   user.reset();
+  const auto result = work.get();
   std::cout << di::nativeCanonicalJson(result) << std::endl;
   return 0;
 }

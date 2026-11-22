@@ -674,6 +674,8 @@ RepoClientCompat::fetchOriginalDataPacketSet(
   reference.validateExactPacketSet();
   const auto* metadata = reference.packetSetMetadata ? &*reference.packetSetMetadata : nullptr;
   if ((!segmentManifest && (!verifyProducerSignature || !metadata)) || timeoutMs <= 0 ||
+      (limits.manifestFetchWindow != 0 && !segmentManifest) ||
+      limits.manifestFetchWindow > detail::MAX_NAMED_PACKET_COUNT ||
       limits.maxPacketCount == 0 || limits.maxPacketCount > 65536 ||
       limits.maxPacketWireBytes == 0 || limits.maxPacketWireBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
       reference.expectedSize > limits.maxPacketWireBytes ||
@@ -696,14 +698,14 @@ RepoClientCompat::fetchOriginalDataPacketSet(
       throw std::runtime_error("repo-original-packet-set-deadline");
   };
   current();
-  auto binding = bindUserFace(user, deadline);
+  auto binding = bindUserFace(user, deadline, {}, {}, requireCurrent);
   current();
   const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
     deadline - std::chrono::steady_clock::now());
   if (remaining <= std::chrono::milliseconds::zero())
     throw std::runtime_error("repo-original-packet-set-deadline");
-  detail::FaceDataReferenceFetcher fetcher(*binding.face, remaining, remaining, 0,
-                                           std::move(binding.lease));
+  detail::FaceDataReferenceFetcher fetcher(*binding.face, remaining, remaining,
+                                           limits.manifestFetchWindow, std::move(binding.lease));
   std::shared_ptr<detail::DataReferencePacketSource> spool;
   std::shared_ptr<const ndn_service_framework::SegmentManifestVerifier> manifestProof;
   if (segmentManifest) {
@@ -831,6 +833,8 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
       limits.maxListingPagesPerScan > 4096 || limits.maxListedObjectsPerScan == 0 ||
       limits.maxListedObjectsPerScan > 1000000 || limits.maxListingWireBytes == 0 ||
       limits.maxListingWireBytes > (64ULL << 20) || limits.maxPacketCount == 0 ||
+      (limits.manifestFetchWindow != 0 && !segmentManifest) ||
+      limits.manifestFetchWindow > detail::MAX_NAMED_PACKET_COUNT ||
       limits.maxPacketCount > 65536 || limits.maxPacketWireBytes == 0 ||
       limits.maxPacketWireBytes > REPO_USER_STORAGE_OBJECT_MAX_BYTES ||
       limits.maxManifestWireBytes == 0 || limits.maxManifestWireBytes > (16ULL << 20) ||
@@ -3627,6 +3631,7 @@ RepoClient::fetchData(const RepoDataFetch& input,
     limits.maxPacketCount = claim.maxPacketCount;
     limits.maxPacketWireBytes = claim.maxPacketWireBytes;
     limits.maxManifestWireBytes = claim.maxManifestWireBytes;
+    limits.manifestFetchWindow = claim.manifestFetchWindow;
     const auto verifier = input.verifyWire;
     const auto verifyPacket = [verifier](const ndn::Data& packet) {
       const auto& wire = packet.wireEncode();

@@ -3378,11 +3378,12 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_REQUIRE(node->isOriginalDataServingReady());
   auto ownerHandle = std::shared_ptr<ServiceUser>(&environment.user(), [](ServiceUser*) {});
   auto manifestReader = repo::RepoClient::makePersistent(ownerHandle, clientConfig());
-  const auto readManifest = [&](const SegmentManifestScope& scope) {
+  const auto readManifest = [&](const SegmentManifestScope& scope, uint32_t window = 8) {
     repo::RepoDataFetch input;
     input.ownerClaim.emplace();
     input.ownerClaim->objectName = manifestObject;
     input.ownerClaim->target = manifestTarget;
+    input.ownerClaim->manifestFetchWindow = window;
     input.ownerClaim->segmentManifest = std::make_shared<const SegmentManifestScope>(scope);
     return runWithFacePump(environment, [&] {
       repo::RepoOperationOptions options;
@@ -3393,6 +3394,10 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   auto wrongScope = manifestScope;
   wrongScope.bindingDigest.front() ^= 1;
   BOOST_CHECK_EXCEPTION(readManifest(wrongScope), std::invalid_argument, wrongBinding);
+  BOOST_CHECK_EXCEPTION(readManifest(manifestScope, 4097), std::invalid_argument,
+    [](const auto& error) {
+      return std::string_view(error.what()) == "repo-user-storage-packet-set-request-invalid";
+    });
   const auto reopened = readManifest(manifestScope);
   BOOST_REQUIRE(reopened.ownerPacketSet);
   BOOST_CHECK(reopened.ownerPacketSet->packetWires() == manifestWires);

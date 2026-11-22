@@ -45,6 +45,8 @@ struct RepoUserStoragePacketSetFetchLimits
   uint64_t maxPacketWireBytes = 64ULL << 20;
   uint64_t maxManifestWireBytes = 4ULL << 20;
   int ackCollectionTimeMs = 200;
+  // Per-operation exact Interest cap for segment-manifest retrieval. Zero is adaptive.
+  uint32_t manifestFetchWindow = 0;
 };
 
 /**
