@@ -1324,9 +1324,11 @@ RepoClientCompat::commitUserStorageOriginalPackets(
               reply = std::make_shared<PacketReplyLease>();
               reply->owner = state;
               reply->bytes = packetBytes;
-              const auto wire = state->spool->readPacket(packetIndex);
+              auto wire = state->spool->readPacket(packetIndex);
               if (state->stopped.load() || std::chrono::steady_clock::now() >= deadline) return;
-              const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+              auto buffer = std::make_shared<ndn::Buffer>();
+              buffer->swap(wire);
+              const ndn::Data data{ndn::Block(buffer)};
               if (interest.matchesData(data)) {
                 if (state->proof)
                   detail::traceManifestSource(interest.getName(), "producer-submit-data");
