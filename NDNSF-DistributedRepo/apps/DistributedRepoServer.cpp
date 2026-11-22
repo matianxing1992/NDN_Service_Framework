@@ -37,7 +37,8 @@ printUsage(std::ostream& output)
             "[--repo-mode persistent] [--service-prefix NAME] "
             "[--cache-bytes N] [--large-object-threshold-bytes N] "
             "[--failure-domain NAME] [--ack-collection-ms N] "
-            "[--request-timeout-ms N] [--availability-freshness-ms N]\n";
+            "[--request-timeout-ms N] [--availability-freshness-ms N] "
+            "[--manifest-fetch-window N]\n";
 }
 
 ndn::security::Certificate
@@ -133,11 +134,13 @@ main(int argc, char* argv[])
       config.trustSchemaPath.string());
 
     repo->setManifestPacketFetcher(
-      [&face, &provider, timeout = std::chrono::milliseconds(config.requestTimeoutMs)](
+      [&face, &provider, timeout = std::chrono::milliseconds(config.requestTimeoutMs),
+       window = config.manifestFetchWindow](
         const ndnsf_distributed_repo::RepoDataReference& reference,
         const ndn_service_framework::SegmentManifestScope& scope,
         std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
-        ndnsf_distributed_repo::detail::FaceDataReferenceFetcher fetcher(face, timeout, timeout);
+        ndnsf_distributed_repo::detail::FaceDataReferenceFetcher fetcher(face, timeout, timeout,
+                                                                       window);
         return fetcher.fetchManifest(reference, scope, deadline,
           [&provider](const auto& wire, const auto& expected, auto expires) {
             return provider.validateManifestRootUntil(wire, expected, expires);

@@ -1,4 +1,5 @@
 #include "ndnsf-distributed-repo/PersistentRepoServerConfig.hpp"
+#include "face-data-reference-fetcher.hpp"
 
 #include <ndn-cxx/security/certificate-fetcher-offline.hpp>
 #include <ndn-cxx/security/validator-config.hpp>
@@ -117,6 +118,14 @@ PersistentRepoServerConfig::fromArguments(int argc, char* argv[])
     config.requestTimeoutMs = parsePositiveInt(it->second, it->first);
     options.erase(it);
   }
+  if (const auto it = options.find("--manifest-fetch-window"); it != options.end()) {
+    const auto window = parseUnsigned(it->second, it->first);
+    if (window > detail::MAX_NAMED_PACKET_COUNT) {
+      throw std::invalid_argument("manifest-fetch-window exceeds the packet-set limit");
+    }
+    config.manifestFetchWindow = static_cast<uint32_t>(window);
+    options.erase(it);
+  }
   if (const auto it = options.find("--availability-freshness-ms"); it != options.end()) {
     config.availabilityFreshnessMs = parseUnsigned(it->second, it->first);
     options.erase(it);
@@ -177,6 +186,9 @@ PersistentRepoServerConfig::validate() const
   if (ackCollectionTimeMs <= 0 || requestTimeoutMs <= ackCollectionTimeMs) {
     throw std::invalid_argument(
       "ACK collection time must be positive and less than the request timeout");
+  }
+  if (manifestFetchWindow > detail::MAX_NAMED_PACKET_COUNT) {
+    throw std::invalid_argument("manifest-fetch-window exceeds the packet-set limit");
   }
 }
 

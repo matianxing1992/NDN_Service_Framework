@@ -32,6 +32,7 @@ struct PersistentRepoServerConfig
   uint64_t largeObjectThresholdBytes = 32ULL << 20;
   int ackCollectionTimeMs = 250;
   int requestTimeoutMs = 5000;
+  uint32_t manifestFetchWindow = 0;
   uint64_t availabilityFreshnessMs = 5000;
   std::string failureDomain;
 

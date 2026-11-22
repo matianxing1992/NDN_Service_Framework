@@ -19,6 +19,10 @@ signatures are opaque storage bytes: consumers validate their original signature
 application context independently. NDNSF control-message authentication and authorization remain
 required. Repo stores and serves the original Data unchanged. Independent requests fetch and hash
 concurrently; shared storage admission and commit retain transaction synchronization.
+Opt-in schema 3 (`RPOI3`) additionally authenticates the Producer's signed segment-manifest root
+and verifies each original packet against its committed wire digest before inserting the set.
+The native `DistributedRepoServer --manifest-fetch-window N` option caps outstanding Interests
+per active manifest fetch. Zero keeps the adaptive window uncapped by this option.
 The native persistent Repo server uses the Provider's default two bounded handler
 threads; `NDNSF_HANDLER_THREADS` remains authoritative. Shutdown drains the same
 owned Provider pool.
@@ -35,13 +39,15 @@ retain their existing read synchronization until they implement this explicit ca
 Native complete publication uses compact `RPOM1` selectors on the same authenticated MANIFEST
 service. They carry the operation, object/prefix, generation, payload size/digest and Owner grant
 binding, without resending the packet index. After durable INSERT completes, the Client withdraws
-its temporary Producer and checks one complete canonical manifest against the exact packet names,
-offsets, digest, size and generation. This query retains current grant, committed write/claim,
-physical payload verification and visibility checks. Full original-wire retrieval is a separate
-operation, used by the file benchmark as its independent byte oracle. The optional compact
-manifest-digest query and legacy `RPOI1/2` MANIFEST queries remain supported. Install the
-updated Server and all embedded RepoClient consumers together; an older Server cannot interpret
-`RPOM1`, and the Client does not downgrade to a less-checked query after rejection.
+its temporary Producer and confirms the persisted canonical manifest. A reconstructable RPOI3
+index uses its canonical digest for confirmation. The query retains current grant, committed
+write/claim, physical payload verification and visibility checks.
+
+For authenticated RPOI3 Owner reads, the initial exact claim response can include the manifest
+header and full-index digest. The client derives names from the authenticated Producer manifest,
+rebuilds offsets from the original wires, and checks the complete stored manifest digest before
+revalidating the current Owner claim. Other modes retain the full index transfer. The file
+benchmark independently verifies the complete restored original wire and reconstructed file.
 
 NDNSF-DistributedRepo is an experimental C++ subproject for a distributed,
 NDN-native, policy-controlled artifact and intermediate-data storage layer for
