@@ -135,6 +135,7 @@ namespace {
 
 constexpr std::size_t MAX_ORIGINAL_DATA_PACKET_COUNT = 1000000;
 constexpr std::size_t INITIAL_SLOW_START_THRESHOLD = 64;
+constexpr uint64_t MAX_MATERIALIZED_WIRE_BYTES = 32ULL << 20;
 
 std::size_t
 checkedPacketCount(std::size_t count, uint64_t bytes)
@@ -361,7 +362,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
              std::chrono::milliseconds interestLifetimeArg,
              std::chrono::steady_clock::time_point deadlineArg,
              std::shared_ptr<FetchAdmission> admissionArg,
-             const std::vector<uint32_t>& plannedWireLengths)
+             const std::vector<uint32_t>& plannedWireLengths, bool materializeWires)
     : face(faceArg)
     , strand(boost::asio::make_strand(faceArg.getIoContext()))
     , reference(referenceArg)
@@ -375,7 +376,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     , deadline(deadlineArg)
     , admission(std::move(admissionArg))
     , spool(std::make_shared<FaceDataReferencePacketSpool>(
-        packetCountArg, referenceArg.expectedSize, plannedWireLengths))
+        packetCountArg, referenceArg.expectedSize, plannedWireLengths, materializeWires))
   {}
 
   ~FetchState()
@@ -997,19 +998,25 @@ struct FetchState : std::enable_shared_from_this<FetchState>
 } // namespace
 
 FaceDataReferencePacketSpool::FaceDataReferencePacketSpool(
-  std::size_t packetCount, uint64_t maxWireBytes, const std::vector<uint32_t>& plannedWireLengths)
-  : m_file(std::tmpfile(), &std::fclose)
+  std::size_t packetCount, uint64_t maxWireBytes, const std::vector<uint32_t>& plannedWireLengths,
+  bool materializeWires)
+  : m_file(materializeWires ? nullptr : std::tmpfile(), &std::fclose)
   , m_packetOffsets(checkedPacketCount(packetCount, maxWireBytes), -1)
   , m_packetLengths(packetCount, 0)
   , m_packetPresent(packetCount, false)
   , m_maxWireBytes(maxWireBytes)
   , m_positioned(!plannedWireLengths.empty())
 {
-  if (!m_file || packetCount == 0 || maxWireBytes == 0) {
+  if (!m_file && !materializeWires) {
     throw std::runtime_error("repo-original-packet-spool-initialization-failed");
   }
-  if (std::setvbuf(m_file.get(), m_ioBuffer.data(), _IOFBF, m_ioBuffer.size()) != 0) {
+  if (m_file && std::setvbuf(m_file.get(), m_ioBuffer.data(), _IOFBF, m_ioBuffer.size()) != 0) {
     throw std::runtime_error("repo-original-packet-spool-buffer-initialization-failed");
+  }
+  if (materializeWires) {
+    if (!m_positioned || maxWireBytes > MAX_MATERIALIZED_WIRE_BYTES)
+      throw std::invalid_argument("repo-original-packet-materialization-budget-invalid");
+    m_materializedWires.resize(packetCount);
   }
   if (m_positioned) {
     if (plannedWireLengths.size() != packetCount)
@@ -1051,7 +1058,7 @@ FaceDataReferencePacketSpool::finalize()
   if (m_logicalOffsets.back() != m_totalWireBytes) {
     throw std::runtime_error("repo-original-packet-spool-length-mismatch");
   }
-  if (std::fflush(m_file.get()) != 0) {
+  if (m_file && std::fflush(m_file.get()) != 0) {
     throw std::runtime_error("repo-original-packet-spool-flush-failed");
   }
   m_finalized = true;
@@ -1072,6 +1079,12 @@ FaceDataReferencePacketSpool::append(std::size_t packetIndex,
   if (m_positioned) {
     if (m_packetLengths[packetIndex] != wire.size())
       throw std::runtime_error("repo-original-packet-spool-packet-invalid");
+    if (!m_file) {
+      m_materializedWires[packetIndex].assign(wire.begin(), wire.end());
+      m_packetPresent[packetIndex] = true;
+      m_totalWireBytes += wire.size();
+      return;
+    }
     // Position-independent writes leave stdio's sequential read offset intact.
     // Positioned spools are readable only after finalization has rejected holes.
     const auto offset = m_packetOffsets[packetIndex];
@@ -1117,9 +1130,27 @@ FaceDataReferencePacketSpool::readPacket(std::size_t packetIndex) const
     throw std::out_of_range("repo-original-packet-spool-packet-unavailable");
   }
   const auto length = m_packetLengths[packetIndex];
+  if (!m_file) {
+    const auto& wire = m_materializedWires[packetIndex];
+    if (wire.size() != length)
+      throw std::out_of_range("repo-original-packet-spool-packet-unavailable");
+    return wire;
+  }
   std::vector<uint8_t> wire(length);
   readAt(m_packetOffsets[packetIndex], wire.data(), wire.size());
   return wire;
+}
+
+std::vector<uint8_t>
+FaceDataReferencePacketSpool::takePacket(std::size_t packetIndex)
+{
+  if (m_file)
+    return readPacket(packetIndex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_finalized || packetIndex >= m_materializedWires.size() ||
+      m_materializedWires[packetIndex].empty())
+    throw std::out_of_range("repo-original-packet-spool-packet-unavailable");
+  return std::exchange(m_materializedWires[packetIndex], {});
 }
 
 void
@@ -1164,6 +1195,15 @@ FaceDataReferencePacketSpool::readRange(uint64_t offset, std::size_t length) con
     const auto available = static_cast<uint64_t>(m_packetLengths[index]) - withinPacket;
     const auto remaining = length - copied;
     auto chunk = static_cast<std::size_t>(std::min<uint64_t>(available, remaining));
+    if (!m_file) {
+      const auto& wire = m_materializedWires[index++];
+      if (wire.empty())
+        throw std::out_of_range("repo-original-packet-spool-packet-unavailable");
+      std::copy_n(wire.data() + withinPacket, chunk, result.data() + copied);
+      copied += chunk;
+      cursor += chunk;
+      continue;
+    }
     const auto physicalOffset = m_packetOffsets[index] + static_cast<long>(withinPacket);
     ++index;
     // A run is contiguous only if logical neighbors are also adjacent in the
@@ -1280,6 +1320,16 @@ public:
     throw std::out_of_range("repo-manifest-packet-index");
   }
 
+  std::vector<uint8_t> takePacket(std::size_t index)
+  {
+    for (const auto& spool : m_spools) {
+      if (index < spool->packetCount())
+        return spool->takePacket(index);
+      index -= spool->packetCount();
+    }
+    throw std::out_of_range("repo-manifest-packet-index");
+  }
+
   std::vector<uint8_t> readRange(uint64_t offset, std::size_t length) const override
   {
     const auto total = totalWireBytes();
@@ -1312,12 +1362,21 @@ private:
 
 } // namespace
 
+std::vector<uint8_t>
+takeFetchedPacket(DataReferencePacketSource& source, std::size_t index)
+{
+  if (auto* manifest = dynamic_cast<OrderedPacketSpools*>(&source))
+    return manifest->takePacket(index);
+  return source.readPacket(index);
+}
+
 AuthenticatedManifestPackets
 FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   const ndn_service_framework::SegmentManifestScope& scope,
   std::chrono::steady_clock::time_point deadline,
   const ManifestRootValidator& validateRoot, std::function<void()> requireCurrent,
-  std::size_t maxPacketCount, std::shared_ptr<ManifestSourceWindow> sourceWindow) const
+  std::size_t maxPacketCount, std::shared_ptr<ManifestSourceWindow> sourceWindow,
+  bool materializeWires) const
 {
   using ndn_service_framework::SegmentManifestLimits;
   using ndn_service_framework::SegmentManifestVerifier;
@@ -1412,7 +1471,8 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
       if (!proof->matchesSource(static_cast<uint32_t>(i), data)) {
         throw std::runtime_error("repo-manifest-source-proof-rejected");
       }
-    }, std::move(sourceWindow), plannedWireLengths));
+    }, std::move(sourceWindow), plannedWireLengths,
+    materializeWires && reference.expectedSize <= MAX_MATERIALIZED_WIRE_BYTES));
   current();
   if (spools->totalWireBytes() != reference.expectedSize) {
     throw std::runtime_error("repo-manifest-wire-size-mismatch");
@@ -1453,7 +1513,7 @@ FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t 
   PacketName nameAt, bool exactSize, std::function<void()> requireCurrent,
   std::chrono::steady_clock::time_point deadline, PacketAdmission admit,
   std::shared_ptr<ManifestSourceWindow> sourceWindow,
-  const std::vector<uint32_t>& plannedWireLengths) const
+  const std::vector<uint32_t>& plannedWireLengths, bool materializeWires) const
 {
   if (m_face.getIoContext().get_executor().running_in_this_thread())
     throw std::logic_error("repo-original-packet-fetch-on-face-thread");
@@ -1468,7 +1528,7 @@ FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t 
   auto admission = std::make_shared<FetchAdmission>(m_fetchActive, m_lifetime);
   auto state = std::make_shared<FetchState>(m_face, reference,
     static_cast<std::size_t>(packetCount), m_windowSize, m_interestLifetime, deadline, admission,
-    plannedWireLengths);
+    plannedWireLengths, materializeWires);
   state->exactSize = exactSize;
   state->nameAt = std::move(nameAt);
   state->requireCurrent = std::move(requireCurrent);

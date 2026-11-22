@@ -60,17 +60,18 @@ private:
   std::deque<Waiter> m_waiters;
 };
 
-/** Private, unlinked disk spool for an exact ordered set of original Data wires.
+/** Bounded temporary storage for an exact ordered set of original Data wires.
  *
- * The fetch window bounds transient packet buffers. This object keeps only
- * per-packet offsets/lengths and one 64 KiB stdio buffer in memory, storing
- * original wires in tmpfile-backed storage until Node validates and commits.
+ * The default keeps offsets/lengths and a 64 KiB stdio buffer in memory.
+ * Manifest readers returning owned wires can keep a small authenticated set
+ * in memory and transfer each slot after finalization.
  */
 class FaceDataReferencePacketSpool final : public DataReferencePacketSource
 {
 public:
   FaceDataReferencePacketSpool(std::size_t packetCount, uint64_t maxWireBytes,
-                             const std::vector<uint32_t>& plannedWireLengths = {});
+                             const std::vector<uint32_t>& plannedWireLengths = {},
+                             bool materializeWires = false);
 
   FaceDataReferencePacketSpool(const FaceDataReferencePacketSpool&) = delete;
   FaceDataReferencePacketSpool& operator=(const FaceDataReferencePacketSpool&) = delete;
@@ -93,6 +94,10 @@ public:
   std::vector<uint8_t>
   readPacket(std::size_t packetIndex) const override;
 
+  /** Transfer an owned wire when the fetch was bounded for a materialized result. */
+  std::vector<uint8_t>
+  takePacket(std::size_t packetIndex);
+
   std::vector<uint8_t>
   readRange(uint64_t offset, std::size_t length) const override;
 
@@ -109,6 +114,7 @@ private:
   std::vector<uint64_t> m_logicalOffsets;
   std::vector<uint32_t> m_packetLengths;
   std::vector<bool> m_packetPresent;
+  std::vector<std::vector<uint8_t>> m_materializedWires;
   uint64_t m_maxWireBytes = 0;
   uint64_t m_totalWireBytes = 0;
   bool m_finalized = false;
@@ -116,6 +122,10 @@ private:
   mutable bool m_readSinceAppend = false;
   mutable long m_nextReadOffset = -1;
 };
+
+/** Move materialized manifest wires, or read from file-backed sources. */
+std::vector<uint8_t>
+takeFetchedPacket(DataReferencePacketSource& source, std::size_t index);
 
 /** Fetch the exact original Data packet set through a shared Face.
  *
@@ -170,7 +180,8 @@ public:
                 const ManifestRootValidator& validateRoot,
                 std::function<void()> requireCurrent = {},
                 std::size_t maxPacketCount = MAX_NAMED_PACKET_COUNT,
-                std::shared_ptr<ManifestSourceWindow> sourceWindow = {}) const;
+                std::shared_ptr<ManifestSourceWindow> sourceWindow = {},
+                bool materializeWires = false) const;
 
   using PacketAdmission = std::function<void(std::size_t, const ndn::Data&)>;
 
@@ -190,7 +201,8 @@ private:
         std::chrono::steady_clock::time_point deadline =
           std::chrono::steady_clock::time_point::max(),
         PacketAdmission admit = {}, std::shared_ptr<ManifestSourceWindow> sourceWindow = {},
-        const std::vector<uint32_t>& plannedWireLengths = {}) const;
+        const std::vector<uint32_t>& plannedWireLengths = {},
+        bool materializeWires = false) const;
 
   ndn::Face& m_face;
   std::chrono::milliseconds m_interestLifetime;

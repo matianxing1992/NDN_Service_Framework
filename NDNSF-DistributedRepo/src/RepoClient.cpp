@@ -732,7 +732,7 @@ RepoClientCompat::fetchOriginalDataPacketSet(
     auto admitted = fetcher.fetchManifest(reference, *segmentManifest, deadline,
       [&user](const auto& wire, const auto& scope, auto expires) {
         return user.validateManifestRootUntil(wire, scope, expires);
-      }, current, limits.maxPacketCount);
+      }, current, limits.maxPacketCount, {}, true);
     spool = std::move(admitted.packets);
     manifestProof = std::move(admitted.proof);
   }
@@ -748,7 +748,7 @@ RepoClientCompat::fetchOriginalDataPacketSet(
   ndn::util::Sha256 digest;
   for (size_t i = 0; i < spool->packetCount(); ++i) {
     current();
-    auto wire = spool->readPacket(i);
+    auto wire = detail::takeFetchedPacket(*spool, i);
     if (metadata && wire.size() != metadata->packetOffsets[i + 1] - metadata->packetOffsets[i])
       throw std::runtime_error("repo-original-packet-set-packet-size-mismatch");
     digest.update(ndn::span<const uint8_t>(wire.data(), wire.size()));

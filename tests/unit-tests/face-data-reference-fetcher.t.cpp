@@ -1131,6 +1131,23 @@ BOOST_AUTO_TEST_CASE(PositionedSpoolRequiresExactLengthsAndCompleteCoverage)
   BOOST_CHECK(spool.readPacket(2) == std::vector<uint8_t>({9, 10}));
 }
 
+BOOST_AUTO_TEST_CASE(MaterializedSpoolTransfersOnlyCompleteVerifiedWireSlots)
+{
+  BOOST_CHECK_THROW((detail::FaceDataReferencePacketSpool(2, (32ULL << 20) + 1, {2, 3}, true)),
+                    std::invalid_argument);
+  detail::FaceDataReferencePacketSpool spool(2, 5, {2, 3}, true);
+  spool.append(1, {3, 4, 5});
+  BOOST_CHECK_THROW(spool.takePacket(1), std::out_of_range);
+  BOOST_CHECK_THROW(spool.finalize(), std::runtime_error);
+  spool.append(0, {1, 2});
+  spool.finalize();
+  BOOST_CHECK(spool.readRange(1, 3) == std::vector<uint8_t>({2, 3, 4}));
+  BOOST_CHECK(spool.takePacket(0) == std::vector<uint8_t>({1, 2}));
+  BOOST_CHECK_THROW(spool.takePacket(0), std::out_of_range);
+  BOOST_CHECK_THROW(spool.readRange(1, 3), std::out_of_range);
+  BOOST_CHECK(spool.takePacket(1) == std::vector<uint8_t>({3, 4, 5}));
+}
+
 BOOST_AUTO_TEST_CASE(SpoolReadAppendTransitionsPreservePhysicalAndLogicalOrder)
 {
   constexpr std::size_t count = 64;
