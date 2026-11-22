@@ -24,6 +24,7 @@ struct RepoUserStorageInsertRequest
    * exact hash manifest and storage grant. Repo treats their signatures as opaque;
    * consumers independently validate original signatures, trust and context.
    * Version 3 adds a Producer-authenticated segment manifest and execution binding.
+   * Version 4 omits the derived names and offsets on the wire.
    */
   uint32_t schemaVersion = 1;
   std::string operationId;

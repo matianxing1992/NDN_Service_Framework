@@ -125,6 +125,30 @@ BOOST_AUTO_TEST_CASE(ManifestInsertBindsBinaryScopeAndCanonicalPacketOrder)
     auto& names = wrongOrder.reference.packetSetMetadata->packetNames;
     std::iter_swap(names.end() - 2, names.end() - 1);
     BOOST_CHECK_THROW(encodeUserStorageInsertRequest(wrongOrder), std::invalid_argument);
+    auto compact = request;
+    compact.schemaVersion = 4;
+    auto& compactMetadata = *compact.reference.packetSetMetadata;
+    compactMetadata.packetOffsets = {0, compact.reference.expectedSize};
+    const auto compactWire = encodeUserStorageInsertRequest(compact);
+    BOOST_CHECK_EQUAL(compactWire.at(4), '4');
+    const auto expanded = decodeUserStorageInsertRequest(compactWire);
+    BOOST_CHECK(expanded.segmentManifestBinding == request.segmentManifestBinding);
+    BOOST_REQUIRE(expanded.reference.packetSetMetadata);
+    const auto& derived = *expanded.reference.packetSetMetadata;
+    BOOST_CHECK_EQUAL(derived.segmentCount, metadata.packetNames.size());
+    BOOST_CHECK(derived.packetOffsets.empty());
+    BOOST_REQUIRE_EQUAL(derived.packetNames.size(), metadata.packetNames.size());
+    for (size_t i = 0; i < metadata.packetNames.size(); ++i) {
+      BOOST_CHECK(ndn::Name(derived.packetNames[i]) == ndn::Name(metadata.packetNames[i]));
+    }
+    BOOST_CHECK_LT(compactWire.size(), wire.size());
+    BOOST_CHECK(encodeUserStorageInsertRequest(expanded) == compactWire);
+    wrongOrder.schemaVersion = 4;
+    BOOST_CHECK_THROW(encodeUserStorageInsertRequest(wrongOrder), std::invalid_argument);
+    auto invalidCompact = wire;
+    invalidCompact[4] = '4';
+    BOOST_CHECK_THROW(decodeUserStorageInsertRequest(invalidCompact), std::invalid_argument);
+
     auto truncated = wire;
     truncated.pop_back();
     BOOST_CHECK_THROW(decodeUserStorageInsertRequest(truncated), std::invalid_argument);

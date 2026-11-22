@@ -63,7 +63,7 @@ isOwnedInsertRequest(const std::vector<uint8_t>& request, bool allowManifest = f
 {
   static constexpr uint8_t PREFIX[] = {'R', 'P', 'O', 'I'};
   return request.size() >= 6 && std::equal(std::begin(PREFIX), std::end(PREFIX), request.begin()) &&
-    (request[4] == '1' || request[4] == '2' || (allowManifest && request[4] == '3')) &&
+    (request[4] == '1' || request[4] == '2' || (allowManifest && (request[4] == '3' || request[4] == '4'))) &&
     request[5] == '\n';
 }
 
@@ -2072,7 +2072,7 @@ RepoNode::insertWirePackets(const RepoUserStorageInsertRequest& request,
                             const std::vector<std::vector<uint8_t>>& wirePackets,
                             const std::string& authenticatedWriter)
 {
-  if (request.schemaVersion == 3 || request.segmentManifestBinding) {
+  if (request.schemaVersion >= 3 || request.segmentManifestBinding) {
     throw std::invalid_argument("repo-manifest-insert-requires-network-proof");
   }
   return insertWirePacketsImpl(request.reference, wirePackets.size(),

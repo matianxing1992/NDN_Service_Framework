@@ -21,6 +21,10 @@ required. Repo stores and serves the original Data unchanged. Independent reques
 concurrently; shared storage admission and commit retain transaction synchronization.
 Opt-in schema 3 (`RPOI3`) additionally authenticates the Producer's signed segment-manifest root
 and verifies each original packet against its committed wire digest before inserting the set.
+For a Repo with schema 4 support, the caller can set `RepoDataPublication::compactSegmentManifestInsert`
+on a segment-manifest publication. `RPOI4` sends the source count and existing object, binding, grant,
+and digest fields. Repo derives names from the bounded count and object prefix, confirms them against
+the signed root and authenticated packets, and derives offsets from the original wires before storage.
 The native `DistributedRepoServer --manifest-fetch-window N` option caps outstanding Interests
 per active manifest fetch. Zero keeps the adaptive window uncapped by this option.
 The native persistent Repo server uses the Provider's default two bounded handler
@@ -39,11 +43,11 @@ retain their existing read synchronization until they implement this explicit ca
 Native complete publication uses compact `RPOM1` selectors on the same authenticated MANIFEST
 service. They carry the operation, object/prefix, generation, payload size/digest and Owner grant
 binding, without resending the packet index. After durable INSERT completes, the Client withdraws
-its temporary Producer and confirms the persisted canonical manifest. A reconstructable RPOI3
+its temporary Producer and confirms the persisted canonical manifest. A reconstructable segment-manifest
 index uses its canonical digest for confirmation. The query retains current grant, committed
 write/claim, physical payload verification and visibility checks.
 
-For authenticated RPOI3 Owner reads, the initial exact claim response can include the manifest
+For authenticated segment-manifest Owner reads, the initial exact claim response can include the manifest
 header and full-index digest. The client derives names from the authenticated Producer manifest,
 rebuilds offsets from the original wires, and checks the complete stored manifest digest before
 revalidating the current Owner claim. Other modes retain the full index transfer. The file

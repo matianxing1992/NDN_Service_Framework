@@ -3245,9 +3245,10 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   const auto manifestGrantReply = repo::RepoUserStorageGrantReply::fromJson(responseString(response));
-  const auto manifestInsert = repo::makeManifestInsertRequest(manifestPublication, sourceIdentity,
+  auto manifestInsert = repo::makeManifestInsertRequest(manifestPublication, sourceIdentity,
     "client-manifest-original", 1, {1, owner, manifestGrant.grantId,
       manifestGrantReply.grant.ownerEpoch});
+  manifestInsert.schemaVersion = 4;
   std::vector<std::vector<uint8_t>> manifestWires;
   for (const auto& packet : manifestPublication.packets()) {
     const auto& wire = packet.wireEncode();
@@ -3287,6 +3288,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     auto scope = manifestScope;
     scope.bindingDigest = *request.segmentManifestBinding;
     input.segmentManifest = std::make_shared<const SegmentManifestScope>(std::move(scope));
+    input.compactSegmentManifestInsert = request.schemaVersion == 4;
     repo::RepoOperationOptions options;
     options.deadline = std::chrono::steady_clock::now() + 15s;
     return manifestWriter.publishData(input, options);
@@ -3300,6 +3302,12 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     return std::string(error.what()) == "segment-manifest-binding";
   };
   BOOST_CHECK_EXCEPTION(commitManifest(wrongManifest), std::invalid_argument, wrongBinding);
+  auto wrongOffsets = manifestInsert;
+  ++wrongOffsets.reference.packetSetMetadata->packetOffsets.at(1);
+  BOOST_CHECK_EXCEPTION(commitManifest(wrongOffsets), std::invalid_argument, [](const auto& error) {
+    return std::string_view(error.what()) == "repo-original-publication-packet-offsets-mismatch";
+  });
+  BOOST_CHECK(node->core().list().empty());
   auto wrongGrant = manifestInsert;
   wrongGrant.storageBinding.grantId += "-unknown";
   BOOST_CHECK_EXCEPTION(commitManifest(wrongGrant), std::runtime_error, [](const auto& error) {
@@ -3338,7 +3346,9 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_REQUIRE(admittedManifest.packetSet);
   BOOST_REQUIRE_EQUAL(admittedManifest.packetSet->lifecycleState, "COMMITTED");
   BOOST_CHECK_EQUAL(admittedManifest.packetSet->packetNames.size(), manifestWires.size());
-  const auto retry = commitManifest(manifestInsert);
+  auto indexedRetry = manifestInsert;
+  indexedRetry.schemaVersion = 3;
+  const auto retry = commitManifest(indexedRetry);
   BOOST_REQUIRE(retry.packetSet);
   BOOST_CHECK_EQUAL(retry.packetSet->wireDigest, admittedManifest.packetSet->wireDigest);
   BOOST_CHECK_EQUAL(retry.packetSet->operationId, admittedManifest.packetSet->operationId);

@@ -345,6 +345,8 @@ struct RepoDataPublication
   std::shared_ptr<const std::function<bool(const std::vector<uint8_t>&)>> verifyWire;
   /** Selects the authenticated manifest path with the writer's configured trust. */
   std::shared_ptr<const ndn_service_framework::SegmentManifestScope> segmentManifest;
+  /** Explicitly select compact INSERT for a Repo that supports version 4. */
+  bool compactSegmentManifestInsert = false;
 };
 
 

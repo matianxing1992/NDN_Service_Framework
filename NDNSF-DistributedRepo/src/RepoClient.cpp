@@ -1094,6 +1094,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   };
   current();
   auto stageStarted = std::chrono::steady_clock::now();
+  std::size_t insertBytes = 0;
   const auto noteStage = [&](const char* stage) noexcept {
     try {
       if (!ndn_service_framework::controlTimingEnvEnabled()) return;
@@ -1104,6 +1105,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
       ndn_service_framework::logControlTiming("repo-client", "original-publication",
         ndn::Name(request.reference.objectName), {
           {"operation_id", request.operationId}, {"stage", stage},
+          {"insert_request_bytes", std::to_string(insertBytes)},
+          {"insert_schema", std::to_string(request.schemaVersion)},
           {"elapsed_ns", std::to_string(elapsed)}});
     }
     catch (...) {
@@ -1122,6 +1125,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     nameBytes += name.size();
   }
   const auto encoded = encodeUserStorageInsertRequest(request);
+  insertBytes = encoded.size();
   const auto producer = writer.getName();
   const ndn::Name prefix(request.reference.dataPrefix);
   if (producer.empty() || !producer.isPrefixOf(prefix))
@@ -1248,6 +1252,10 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   if (nextOriginalPacket())
     throw std::invalid_argument("repo-original-publication-extra-packet");
   current();
+  if (request.schemaVersion == 4 && !request.reference.packetSetMetadata->packetOffsets.empty() &&
+      request.reference.packetSetMetadata->packetOffsets != offsets) {
+    throw std::invalid_argument("repo-original-publication-packet-offsets-mismatch");
+  }
   publication->spool->finalize();
   if (publication->spool->totalWireBytes() != request.reference.expectedSize ||
       toLowerHex(digest.toString()) != request.reference.expectedSha256)
@@ -3384,6 +3392,9 @@ RepoClient::publishData(const RepoDataPublication& input,
   // the final packet lives under the Producer key name, not under the payload's
   // parent, and a multi-object stream shares the Producer prefix, not a parent.
   request.reference.dataPrefix = input.producerIdentity;
+  if (input.compactSegmentManifestInsert && !input.segmentManifest) {
+    throw std::invalid_argument("compact INSERT requires a segment manifest");
+  }
   if (input.segmentManifest) {
     const auto& scope = *input.segmentManifest;
     if (scope.producer != m_impl->user->getName() ||
@@ -3393,7 +3404,7 @@ RepoClient::publishData(const RepoDataPublication& input,
         scope.producer == scope.objectPrefix) {
       throw std::invalid_argument("publishData received a mismatched segment manifest scope");
     }
-    request.schemaVersion = 3;
+    request.schemaVersion = input.compactSegmentManifestInsert ? 4 : 3;
     request.segmentManifestBinding = scope.bindingDigest;
     request.reference.dataPrefix = scope.objectPrefix.toUri(ndn::name::UriFormat::CANONICAL);
     request.reference.forwardingHint = scope.producer.toUri(ndn::name::UriFormat::CANONICAL);

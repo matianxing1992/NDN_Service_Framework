@@ -130,7 +130,7 @@ run(int argc, char** argv)
     for (const auto& option : required) std::cout << option << " VALUE ";
     std::cout << "[--phase write|read|write-read] [--reference PATH] "
                  "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
-                 "[--manifest-read-pipeline serial|paired] ";
+                 "[--manifest-read-pipeline serial|paired] [--manifest-insert indexed|compact] ";
     std::cout << "\nUses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
                  "whole-group reads and at most "
               << di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS
@@ -142,7 +142,8 @@ run(int argc, char** argv)
     const bool known = required.count(argv[i]) || std::string(argv[i]) == "--phase" ||
       std::string(argv[i]) == "--reference" || std::string(argv[i]) == "--authentication" ||
       std::string(argv[i]) == "--signing-certificate" ||
-      std::string(argv[i]) == "--manifest-read-pipeline";
+      std::string(argv[i]) == "--manifest-read-pipeline" ||
+      std::string(argv[i]) == "--manifest-insert";
     require(i + 1 < argc && known && options.emplace(argv[i], argv[i + 1]).second,
             "invalid benchmark option");
   }
@@ -153,6 +154,11 @@ run(int argc, char** argv)
           authentication == "manifest", "unsupported benchmark authentication");
   const bool useCertificate = authentication != "digest";
   const bool useManifest = authentication == "manifest";
+  const auto insertMode = options.find("--manifest-insert");
+  require(insertMode == options.end() || (useManifest && phaseOption != "read" &&
+          (insertMode->second == "indexed" || insertMode->second == "compact")),
+          "manifest INSERT mode requires manifest publication");
+  const bool compactInsert = insertMode != options.end() && insertMode->second == "compact";
   const auto readPipeline = options.find("--manifest-read-pipeline");
   const bool boundedRead = readPipeline != options.end();
   require(!boundedRead || (useManifest && phaseOption != "write" &&
@@ -286,6 +292,7 @@ run(int argc, char** argv)
         repo::RepoClient client = makePacketClient(user, target);
         const repo::RepoOperationOptions operation{deadline, active, {}};
         repo::RepoDataPublication publication;
+        publication.compactSegmentManifestInsert = compactInsert;
         publication.target = packetTarget;
         publication.producerIdentity = identity.toUri(ndn::name::UriFormat::ALTERNATE);
         publication.generation = 1;
