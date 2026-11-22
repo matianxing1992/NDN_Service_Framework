@@ -678,7 +678,7 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
             if (!isOriginalDataServingReady())
               throw std::runtime_error("repo-original-packet-read-stopped");
           });
-        if (!batch) return false;
+        if (!batch) return;
         for (std::size_t i = 0; i < positions.size(); ++i) {
           reads[positions[i]].batchData = std::move(batch->at(i));
         }
@@ -688,31 +688,25 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
         for (const auto position : positions) reads[position].rejected = true;
         NDN_LOG_DEBUG("original packet batch rejected reason=" << error.what());
       }
-      return true;
     };
     try {
-      if (reads.size() > 1) {
-        std::vector<std::size_t> positions;
-        positions.reserve(reads.size());
-        for (std::size_t i = 0; i < reads.size(); ++i) positions.push_back(i);
-        if (!prepareBatch(positions)) {
-          // Exact segmented Interests sharing a prefix are candidates for one
-          // holder. Core still resolves the actual holder and checks the batch.
-          std::map<ndn::Name, std::vector<std::size_t>> groups;
-          for (const auto position : positions) {
-            const auto& interest = reads[position].job.interest;
-            const auto& name = interest.getName();
-            const auto size = name.size();
-            const auto digest = size != 0 && name[-1].isImplicitSha256Digest();
-            const auto components = size - digest;
-            if (!interest.getCanBePrefix() && components != 0 &&
-                name[components - 1].isSegment()) {
-              groups[name.getPrefix(components - 1)].push_back(position);
-            }
+      if (reads.size() > 1 && m_core.supportsConcurrentCommittedReads()) {
+        // Group exact segmented Interests before storage lookup. Core resolves
+        // the actual holder and checks every Interest in each candidate group.
+        std::map<ndn::Name, std::vector<std::size_t>> groups;
+        for (std::size_t position = 0; position < reads.size(); ++position) {
+          const auto& interest = reads[position].job.interest;
+          const auto& name = interest.getName();
+          const auto size = name.size();
+          const auto digest = size != 0 && name[-1].isImplicitSha256Digest();
+          const auto components = size - digest;
+          if (!interest.getCanBePrefix() && components != 0 &&
+              name[components - 1].isSegment()) {
+            groups[name.getPrefix(components - 1)].push_back(position);
           }
-          for (const auto& [prefix, group] : groups) {
-            if (group.size() > 1 && group.size() < positions.size()) prepareBatch(group);
-          }
+        }
+        for (const auto& [prefix, group] : groups) {
+          if (group.size() > 1) prepareBatch(group);
         }
       }
     }
