@@ -988,17 +988,27 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
     verifyProducerSignature, remainingTimeoutMs(), limits, current, segmentManifest, &manifestProof);
 
   if (rebuildIndex) {
-    if (packetWires.size() != manifest.segmentCount) {
+    if (!manifestProof || packetWires.size() != manifest.segmentCount ||
+        packetWires.size() != 1U + manifestProof->pageCount() + manifestProof->sourceCount()) {
       throwManifestClaimMismatch("compact-index-count");
     }
     manifest.packetNames.reserve(packetWires.size());
     manifest.packetOffsets.reserve(packetWires.size() + 1);
     manifest.packetOffsets.push_back(0);
-    for (const auto& wire : packetWires) {
+    // fetchManifest has verified names and full wires in root/page/source order.
+    // Use that geometry to rebuild the index without parsing the wires again.
+    const auto append = [&](const ndn::Name& name) {
       current();
-      const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
-      manifest.packetNames.push_back(data.getName().toUri(ndn::name::UriFormat::CANONICAL));
-      manifest.packetOffsets.push_back(manifest.packetOffsets.back() + wire.size());
+      const auto wireBytes = packetWires[manifest.packetNames.size()].size();
+      manifest.packetNames.push_back(name.toUri(ndn::name::UriFormat::CANONICAL));
+      manifest.packetOffsets.push_back(manifest.packetOffsets.back() + wireBytes);
+    };
+    append(segmentManifest->rootName());
+    for (uint32_t page = 0; page < manifestProof->pageCount(); ++page) {
+      append(segmentManifest->pageName(page));
+    }
+    for (uint32_t segment = 0; segment < manifestProof->sourceCount(); ++segment) {
+      append(segmentManifest->sourceName(segment));
     }
     const auto reconstructed = manifest.toJson();
     if (reconstructed.size() != initialClaim.object.manifestBytes ||
