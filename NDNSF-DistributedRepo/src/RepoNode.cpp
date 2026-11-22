@@ -2353,13 +2353,16 @@ RepoNode::insertWirePacketsImpl(
             storageBinding->ownerEpoch, nowMilliseconds());
         }
       };
-      auto storedManifest = storageBinding && sourceReadRange
-        ? m_core.commitOriginalPacketSpool(manifest, commitReadRange, requireCurrent)
+      const bool useOwnedSpool = storageBinding && sourceReadRange;
+      auto storedManifest = useOwnedSpool
+        ? m_core.commitOwnedOriginalPacketSpool(manifest, commitReadRange, requireCurrent)
         : m_core.commitOriginalPacketReader(manifest, commitReadRange, requireCurrent);
 
       if (storageBinding) {
         requireCurrent();
-        storedManifest = m_core.confirmDurablePublicationIfCurrent(storedManifest);
+        if (!useOwnedSpool) {
+          storedManifest = m_core.confirmDurablePublicationIfCurrent(storedManifest);
+        }
         const auto measured = measurePersistentUserStorageObject(storedManifest);
         auto admitted = m_artifactMetadataStore->lookupUserStorageWrite(
           m_repoNode, storageBinding->ownerIdentity, status.operationId);

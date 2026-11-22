@@ -1812,7 +1812,7 @@ RepoCore::commitOriginalPacketReader(const RepoObjectManifest& manifest,
 }
 
 RepoObjectManifest
-RepoCore::commitOriginalPacketSpool(const RepoObjectManifest& manifest,
+RepoCore::commitOwnedOriginalPacketSpool(const RepoObjectManifest& manifest,
   const OriginalPacketRangeReader& readRange, const std::function<void()>& requireActive)
 {
   return commitOriginalPacketReaderImpl(manifest, readRange, requireActive, {}, true);
@@ -1991,6 +1991,11 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   if (existing) {
     requireCurrentCatalog();
     finishStage("catalog-recheck-reuse");
+    if (stageTogether) {
+      if (requireActive) requireActive();
+      // A sidecar left by an earlier attempt can be visible before its directory sync.
+      return commitRangesLocked(*existing);
+    }
     return *existing;
   }
   // objectName is the first incoming packet name. The transaction snapshot

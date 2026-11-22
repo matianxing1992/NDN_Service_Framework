@@ -183,6 +183,48 @@ struct DirectoryFsyncFailureScope
   ~DirectoryFsyncFailureScope() { detail::installFilesystemRepoStoreIoHooks(previous); }
 };
 
+class ManifestDirectorySyncProbe
+{
+public:
+  explicit ManifestDirectorySyncProbe(const std::filesystem::path& directory,
+                                      unsigned failures = 0)
+    : m_failures(failures)
+  {
+    if (::stat(directory.c_str(), &m_directory) != 0 || s_active != nullptr)
+      throw std::runtime_error("cannot install the manifest directory sync probe");
+    s_active = this;
+    m_previous = detail::installFilesystemRepoStoreIoHooks({sync, nullptr, nullptr});
+  }
+
+  ~ManifestDirectorySyncProbe()
+  {
+    detail::installFilesystemRepoStoreIoHooks(m_previous);
+    s_active = nullptr;
+  }
+
+  unsigned count() const { return m_count; }
+
+private:
+  static int
+  sync(int fd)
+  {
+    auto& probe = *s_active;
+    struct stat actual{};
+    if (::fstat(fd, &actual) == 0 && actual.st_dev == probe.m_directory.st_dev &&
+        actual.st_ino == probe.m_directory.st_ino && ++probe.m_count <= probe.m_failures) {
+      errno = EIO;
+      return -1;
+    }
+    return ::fsync(fd);
+  }
+
+  inline static ManifestDirectorySyncProbe* s_active = nullptr;
+  struct stat m_directory{};
+  detail::FilesystemRepoStoreIoHooks m_previous;
+  const unsigned m_failures;
+  unsigned m_count = 0;
+};
+
 class TempRoot
 {
 public:
@@ -2940,6 +2982,21 @@ struct OwnedPacketFixture
     reference.expectedSha256 = reference.packetSetMetadata->sha256 = sha256(original);
   }
 
+  void
+  usePacketSpool()
+  {
+    node->setDataReferenceSpoolFetcher([this](const RepoDataReference&) {
+      ++fetches;
+      auto spool = std::make_shared<detail::FaceDataReferencePacketSpool>(
+        packets.size(), original.size());
+      for (std::size_t i = packets.size(); i > 0; --i) {
+        spool->append(i - 1, packets[i - 1]);
+      }
+      spool->finalize();
+      return spool;
+    });
+  }
+
   RepoUserStorageUsage
   usage()
   {
@@ -2965,16 +3022,7 @@ struct OwnedPacketFixture
 BOOST_AUTO_TEST_CASE(OwnedInsertValidatesPacketsCommitsClaimAndReopensOriginalWire)
 {
   OwnedPacketFixture fixture;
-  fixture.node->setDataReferenceSpoolFetcher([&](const RepoDataReference&) {
-    ++fixture.fetches;
-    auto spool = std::make_shared<detail::FaceDataReferencePacketSpool>(
-      fixture.packets.size(), fixture.original.size());
-    for (std::size_t i = fixture.packets.size(); i > 0; --i) {
-      spool->append(i - 1, fixture.packets[i - 1]);
-    }
-    spool->finalize();
-    return spool;
-  });
+  fixture.usePacketSpool();
   const std::vector<uint8_t> modelBytes{7, 8, 9};
   fixture.node->core().put("/provider/a/model/weights", modelBytes, "artifact-v2-bytes");
   const auto result = fixture.insert();
@@ -3003,6 +3051,46 @@ BOOST_AUTO_TEST_CASE(OwnedInsertValidatesPacketsCommitsClaimAndReopensOriginalWi
     fixture.node->handleUserStorageList(toBytes(RepoUserStorageListRequest{}.toJson()), "/owner/a")));
   BOOST_REQUIRE_EQUAL(listed.objects.size(), 1U);
   BOOST_CHECK(listed.objects.front().state == RepoUserStorageClaimState::COMMITTED);
+}
+
+BOOST_AUTO_TEST_CASE(OwnedSpoolPublishesOnceAndConfirmsAmbiguousCommitBeforeClaim)
+{
+  for (unsigned syncFailures : {0U, 1U, 2U}) {
+    BOOST_TEST_CONTEXT("initial directory sync failures=" << syncFailures) {
+      OwnedPacketFixture fixture;
+      fixture.usePacketSpool();
+      const auto directory = fixture.temp.path() / "objects" / "manifests";
+      {
+        ManifestDirectorySyncProbe probe(directory, syncFailures);
+        const auto result = fixture.insert();
+        if (syncFailures == 2) {
+          BOOST_CHECK_EQUAL(result.state, "FAILED");
+          BOOST_CHECK(result.message.find("repo-file-ambiguous-commit") != std::string::npos);
+          BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+          BOOST_CHECK_THROW(fixture.node->getManifest(fixture.request.reference.objectName),
+                            std::out_of_range);
+        }
+        else {
+          BOOST_REQUIRE_MESSAGE(result.state == "DONE", result.message);
+        }
+        BOOST_CHECK_EQUAL(probe.count(), syncFailures == 0 ? 1U : 2U);
+      }
+      {
+        ManifestDirectorySyncProbe probe(directory);
+        const auto repeated = fixture.insert();
+        BOOST_REQUIRE_MESSAGE(repeated.state == "DONE", repeated.message);
+        BOOST_CHECK_EQUAL(probe.count(), 1U);
+      }
+      const auto name = fixture.request.reference.objectName;
+      const auto stored = fixture.node->getManifest(name);
+      BOOST_CHECK_EQUAL(stored.operationId, fixture.request.operationId);
+      BOOST_CHECK_EQUAL(fixture.usage().committedBytes, stored.size + stored.toJson().size());
+      fixture.provider.reset();
+      fixture.node.reset();
+      fixture.open();
+      BOOST_CHECK(fixture.node->getRange(name, {0, stored.size}) == fixture.original);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(LargeDigestOwnedUploadPreservesOriginalWireAndRecoveryManifest)

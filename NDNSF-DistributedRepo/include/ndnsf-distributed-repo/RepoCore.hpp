@@ -223,8 +223,9 @@ private:
     const RepoObjectManifest& manifest,
     const std::shared_ptr<const RepoObjectManifest>& owner = {}) const;
   friend class RepoNode;
-  // The Repo-owned spool reader and its lifecycle checks do not re-enter the backend.
-  RepoObjectManifest commitOriginalPacketSpool(const RepoObjectManifest& manifest,
+  // Establish durability for an owned spool, including when reusing an existing set.
+  // Its reader and lifecycle checks do not re-enter the backend.
+  RepoObjectManifest commitOwnedOriginalPacketSpool(const RepoObjectManifest& manifest,
     const OriginalPacketRangeReader& readRange, const std::function<void()>& requireActive);
   RepoObjectManifest commitOriginalPacketReaderImpl(
     const RepoObjectManifest& manifest, const OriginalPacketRangeReader& readRange,
