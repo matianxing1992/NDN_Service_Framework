@@ -25,6 +25,11 @@ For a Repo with schema 4 support, the caller can set `RepoDataPublication::compa
 on a segment-manifest publication. `RPOI4` sends the source count and existing object, binding, grant,
 and digest fields. Repo derives names from the bounded count and object prefix, confirms them against
 the signed root and authenticated packets, and derives offsets from the original wires before storage.
+Owner metadata schema 17 records the admission mode and the manifest binding. An RPOI3 or RPOI4
+claim becomes visible after the current grant and Producer proof pass the final transaction check.
+After restart, unfinished manifest writes and unclassified older writes stay hidden and charged.
+Use authenticated Owner cleanup for the reserved object and epoch before starting a fresh write.
+Existing committed objects retain their original wire and claims.
 The native `DistributedRepoServer --manifest-fetch-window N` option caps outstanding Interests
 per active manifest fetch. Zero keeps the adaptive window uncapped by this option.
 The optional `--manifest-source-window N` caps outstanding source Interests across
@@ -224,10 +229,10 @@ It only stores opaque Data wire packets and reports operation status:
 /NDNSF/DistributedRepo/STATUS
 ```
 
-`STATUS` returns a `RepoOperationStatus` with states such as `FETCHING`,
-`STORING`, `DONE`, and `FAILED`. If a standalone repo node has not configured a
-SegmentFetcher adapter yet, `INSERT` fails visibly instead of
-pretending that remote Data was fetched.
+The legacy operation-ID `STATUS` returns a `RepoOperationStatus` for writes without an Owner
+binding. An authenticated Owner-bound `INSERT` returns its status to the caller. If the grant
+or proof becomes stale after the claim commits, the reply reports `UNKNOWN`. The authenticated
+Owner query resolves the durable outcome. Remote `INSERT` requires a configured packet fetcher.
 
 ## In-App and Persistent Repo Modes
 

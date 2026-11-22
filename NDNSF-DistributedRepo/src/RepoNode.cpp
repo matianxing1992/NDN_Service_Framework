@@ -397,8 +397,10 @@ RepoNode::reconcilePersistentUserStorage()
     physical->object = measurePersistentUserStorageObject(durable);
     (void)m_artifactMetadataStore->settleUserStorageReservation(m_repoNode,
       pending.grant.ownerIdentity, pending.operationId, measured.manifestBytes, nowMilliseconds());
-    (void)m_artifactMetadataStore->commitRecoveredUserStorage(m_repoNode,
-      pending.grant.ownerIdentity, pending.operationId, nowMilliseconds());
+    if (pending.admission.mode == RepoUserStorageAdmissionMode::LEGACY) {
+      (void)m_artifactMetadataStore->commitRecoveredUserStorage(m_repoNode,
+        pending.grant.ownerIdentity, pending.operationId, nowMilliseconds());
+    }
   }
   (void)m_artifactMetadataStore->reconcileUserStorageInventory(m_repoNode, inventory, nowMilliseconds());
 }
@@ -406,7 +408,8 @@ RepoNode::reconcilePersistentUserStorage()
 RepoUserStorageWrite
 RepoNode::reservePersistentOriginalPacketStorage(
   const RepoObjectManifest& manifest, const std::string& operationId,
-  const std::string& authenticatedWriter, const RepoUserStorageBinding& binding)
+  const std::string& authenticatedWriter, const RepoUserStorageBinding& binding,
+  const RepoUserStorageAdmission& admission)
 {
   if (!m_artifactMetadataStore || manifest.objectType != "original-packet-set" ||
       manifest.operationId != operationId || manifest.generation == 0 ||
@@ -460,7 +463,7 @@ RepoNode::reservePersistentOriginalPacketStorage(
   }
   auto result = m_artifactMetadataStore->reserveUserStorage(
     authenticatedWriter, m_repoNode, binding.ownerIdentity, binding.grantId,
-    operationId, object, nowMilliseconds());
+    operationId, object, nowMilliseconds(), admission);
   if (result.state == RepoUserStorageWriteState::CANCELLED) {
     throw std::runtime_error("repo-user-storage-operation-conflict: cancelled write cannot restart");
   }
@@ -2179,7 +2182,8 @@ RepoNode::insertWirePacketsImpl(
   const std::string& operationId, uint64_t generation,
   const std::string& authenticatedWriter,
   const std::optional<RepoUserStorageBinding>& storageBinding,
-  const std::function<void()>& requireActive, std::string* committedManifestOperationId)
+  const std::function<void()>& requireActive, std::string* committedManifestOperationId,
+  const RepoUserStorageAdmission& admission)
 {
   if (reference.objectName.empty()) {
     throw std::invalid_argument("repo data reference objectName must not be empty");
@@ -2198,7 +2202,13 @@ RepoNode::insertWirePacketsImpl(
   status.objectName = reference.objectName;
   status.totalSegments = packetCount;
   status.message = "storing opaque Data wire packets";
-  rememberStatus(status);
+  const auto rememberUnownedStatus = [&] {
+    // The legacy STATUS request has no Owner or epoch. Owned INSERT returns
+    // status to its caller; the Owner query observes the durable claim.
+    if (!storageBinding)
+      rememberStatus(status);
+  };
+  rememberUnownedStatus();
 
   try {
     if (!m_core.supportsOriginalPacketTransactions() || packetCount == 0 || !readPacket) {
@@ -2340,14 +2350,14 @@ RepoNode::insertWirePacketsImpl(
     if (reference.expectedSize != 0 && totalSize != reference.expectedSize) {
       status.state = "FAILED";
       status.message = "fetched wire packet size mismatch";
-      rememberStatus(status);
+      rememberUnownedStatus();
       return status;
     }
     if (!reference.expectedSha256.empty() &&
         hashText.str() != reference.expectedSha256) {
       status.state = "FAILED";
       status.message = "fetched wire packet sha256 mismatch";
-      rememberStatus(status);
+      rememberUnownedStatus();
       return status;
     }
 
@@ -2402,7 +2412,7 @@ RepoNode::insertWirePacketsImpl(
     }
     const auto grantObjectName = storageBinding
       ? ndn::Name(manifest.objectName).toUri(ndn::name::UriFormat::ALTERNATE) : std::string{};
-    const auto requireCurrent = [&] {
+    const auto requireCurrent = [&](uint64_t* grantExpiry = nullptr) {
       if (requireActive) {
         requireActive();
       }
@@ -2410,15 +2420,18 @@ RepoNode::insertWirePacketsImpl(
         if (m_ownedInsertStopping.load(std::memory_order_acquire)) {
           throw std::runtime_error("repo-original-packet-insert-shutting-down");
         }
-        (void)m_artifactMetadataStore->validateUserStorageGrant(
+        const auto grant = m_artifactMetadataStore->validateUserStorageGrant(
           authenticatedWriter, m_repoNode, storageBinding->ownerIdentity,
           storageBinding->grantId,
           grantObjectName,
           storageBinding->ownerEpoch, nowMilliseconds());
+        if (grantExpiry != nullptr)
+          *grantExpiry = grant.expiresAtMs;
       }
     };
     const bool useOwnedSpool = storageBinding && sourceReadRange;
     const bool verifyOutsideWorker = useOwnedSpool && m_core.supportsConcurrentCommittedReads();
+    bool ownerCommitted = false;
     const auto commitOwner = [&](const RepoUserStorageObject& measured) {
       auto admitted = m_artifactMetadataStore->lookupUserStorageWrite(
         m_repoNode, storageBinding->ownerIdentity, status.operationId);
@@ -2438,10 +2451,18 @@ RepoNode::insertWirePacketsImpl(
         throw std::runtime_error(
           "repo-user-storage-inventory-conflict: committed original packet set changed");
       }
-      requireCurrent();
+      uint64_t grantExpiry = 0;
+      requireCurrent(&grantExpiry);
+      const auto requireAdmission = [&] {
+        requireActive();
+        if (nowMilliseconds() >= grantExpiry)
+          throw std::runtime_error("repo-user-storage-grant-expired");
+      };
       (void)m_artifactMetadataStore->commitUserStorage(
-        m_repoNode, storageBinding->ownerIdentity, status.operationId, nowMilliseconds());
-      requireCurrent();
+        m_repoNode, storageBinding->ownerIdentity, status.operationId, nowMilliseconds(),
+        admission.mode == RepoUserStorageAdmissionMode::MANIFEST_V1
+          ? std::function<void()>(requireAdmission) : std::function<void()>{});
+      ownerCommitted = true;
     };
 
     RepoObjectManifest storedManifest;
@@ -2454,7 +2475,7 @@ RepoNode::insertWirePacketsImpl(
         requireActive();
       if (storageBinding) {
         (void)reservePersistentOriginalPacketStorage(
-          manifest, status.operationId, authenticatedWriter, *storageBinding);
+          manifest, status.operationId, authenticatedWriter, *storageBinding, admission);
       }
       storedManifest = useOwnedSpool
         ? m_core.commitOwnedOriginalPacketSpool(manifest, commitReadRange, requireCurrent)
@@ -2486,6 +2507,16 @@ RepoNode::insertWirePacketsImpl(
       commitOwner(measured);
     }
 
+    if (ownerCommitted) {
+      try {
+        requireCurrent();
+      }
+      catch (const std::exception&) {
+        status.state = "UNKNOWN";
+        status.message = "repo-user-storage-commit-receipt-no-longer-current";
+        return status;
+      }
+    }
     if (committedManifestOperationId != nullptr) {
       // Reuse may retain the operation that first committed the immutable object.
       manifest.operationId = storedManifest.operationId;
@@ -2497,13 +2528,13 @@ RepoNode::insertWirePacketsImpl(
     status.message = "stored app-owned segmented Data wire packets";
     status.completedSegments = packetCount;
     status.totalSegments = packetCount;
-    rememberStatus(status);
+    rememberUnownedStatus();
     return status;
   }
   catch (const std::exception& e) {
     status.state = "FAILED";
     status.message = e.what();
-    rememberStatus(status);
+    rememberUnownedStatus();
     return status;
   }
 }
@@ -3100,7 +3131,8 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
         [&](std::size_t index) { return packets->readPacket(index); },
         [&](uint64_t offset, std::size_t length) { return packets->readRange(offset, length); },
         owned.operationId, owned.generation, requesterIdentity,
-        owned.storageBinding, requireProof, &committedManifestOperationId);
+        owned.storageBinding, requireProof, &committedManifestOperationId,
+        {RepoUserStorageAdmissionMode::MANIFEST_V1, owned.segmentManifestBinding});
       return toBytes(detail::encodeManifestInsertStatus(status, committedManifestOperationId));
     }
     if (m_dataReferenceSpoolFetcher) {
@@ -3139,7 +3171,6 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
       ? owned.reference.packetSetMetadata->packetNames.size()
       : owned.reference.finalSegment - owned.reference.firstSegment + 1;
     status.message = e.what();
-    rememberStatus(status);
     return toBytes(status.toJson());
   }
 }

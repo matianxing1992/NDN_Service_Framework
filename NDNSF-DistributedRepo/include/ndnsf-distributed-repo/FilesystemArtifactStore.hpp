@@ -4,6 +4,8 @@
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
+#include <array>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -11,9 +13,16 @@
 
 namespace ndnsf_distributed_repo {
 
-inline constexpr uint64_t REPO_ARTIFACT_SCHEMA_GENERATION = 16;
+inline constexpr uint64_t REPO_ARTIFACT_SCHEMA_GENERATION = 17;
 
 enum class RepoUserStorageWriteState { RESERVED, COMMITTED, CANCELLED };
+enum class RepoUserStorageAdmissionMode { UNCLASSIFIED, LEGACY, MANIFEST_V1 };
+
+struct RepoUserStorageAdmission
+{
+  RepoUserStorageAdmissionMode mode = RepoUserStorageAdmissionMode::LEGACY;
+  std::optional<std::array<uint8_t, 32>> manifestBinding;
+};
 
 struct RepoUserStorageWrite
 {
@@ -24,6 +33,7 @@ struct RepoUserStorageWrite
   uint64_t reservedBytes = 0;
   uint64_t createdAtMs = 0;
   uint64_t updatedAtMs = 0;
+  RepoUserStorageAdmission admission;
 };
 
 struct RepoUserStorageCleanupPeers
@@ -264,6 +274,12 @@ public:
     const std::string& ownerIdentity, const std::string& grantId,
     const std::string& operationId, const RepoUserStorageObject& object,
     uint64_t nowMs);
+  /** Reserve bytes under the admission mode already verified by the Repo. */
+  RepoUserStorageWrite reserveUserStorage(
+    const std::string& authenticatedWriterIdentity, const std::string& repoNode,
+    const std::string& ownerIdentity, const std::string& grantId,
+    const std::string& operationId, const RepoUserStorageObject& object,
+    uint64_t nowMs, const RepoUserStorageAdmission& admission);
 
   /** Adjust only a Reserved operation to independently measured final manifest
    * bytes, before publication. Trusted recovery may settle before node Ready;
@@ -283,6 +299,11 @@ public:
   RepoUserStorageWrite commitUserStorage(
     const std::string& repoNode, const std::string& ownerIdentity,
     const std::string& operationId, uint64_t nowMs);
+  /** The proof check must be local and must not reenter the metadata store. */
+  RepoUserStorageWrite commitUserStorage(
+    const std::string& repoNode, const std::string& ownerIdentity,
+    const std::string& operationId, uint64_t nowMs,
+    const std::function<void()>& requireProof);
 
    /** Finish startup accounting for an operation whose payload was already
     * durably committed and verified before a process interruption. This trusted
@@ -380,7 +401,8 @@ public:
 private:
   RepoUserStorageWrite commitUserStorageImpl(
     const std::string& repoNode, const std::string& ownerIdentity,
-    const std::string& operationId, uint64_t nowMs, bool isRecovery);
+    const std::string& operationId, uint64_t nowMs, bool isRecovery,
+    const std::function<void()>& requireProof = {});
 
   struct Impl;
   std::unique_ptr<Impl> m_impl;

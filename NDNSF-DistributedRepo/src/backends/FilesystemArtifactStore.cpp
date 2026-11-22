@@ -4,6 +4,7 @@
 #include <openssl/evp.h>
 #include <sqlite3.h>
 #include <ndn-cxx/name.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
 
 #include <algorithm>
 #include <array>
@@ -959,6 +960,7 @@ struct SqliteArtifactMetadataStore::Impl
     bool hasLocalCommitCatalog = false;
     bool hasPersistentCatalog = false;
     bool hasUserStorageCatalog = false;
+    bool hasUserStorageAdmission = false;
   };
 
   explicit Impl(std::string path, bool requestedWrites,
@@ -1002,6 +1004,7 @@ struct SqliteArtifactMetadataStore::Impl
     migration.databaseSchemaGeneration = observed.generation;
     catalogAvailable = observed.hasLocalCommitCatalog;
     userStorageCatalogAvailable = observed.hasUserStorageCatalog;
+    userStorageAdmissionAvailable = observed.hasUserStorageAdmission;
 
     const bool futureReadOnly = observed.generation > RUNTIME_SCHEMA_GENERATION;
     const bool belowWriteCeiling =
@@ -1018,10 +1021,10 @@ struct SqliteArtifactMetadataStore::Impl
     const bool schema15 = observed.generation == 15 &&
                           observed.hasLocalCommitCatalog &&
                           observed.hasPersistentCatalog;
-    const bool schema16 = observed.generation == 16 &&
-                          observed.hasLocalCommitCatalog &&
-                          observed.hasPersistentCatalog &&
-                          observed.hasUserStorageCatalog;
+    const bool userStorageSchema = (observed.generation == 16 || observed.generation == 17) &&
+                                   observed.hasLocalCommitCatalog &&
+                                   observed.hasPersistentCatalog &&
+                                   observed.hasUserStorageCatalog;
     const bool markerOnlyNine = observed.generation == 9 &&
                                 observed.hasLocalCommitCatalog;
 
@@ -1049,7 +1052,8 @@ struct SqliteArtifactMetadataStore::Impl
       return;
     }
 
-    if (!schema12 && !schema13 && !schema14 && !schema15 && !schema16 && !markerOnlyNine) {
+    if (!schema12 && !schema13 && !schema14 && !schema15 && !userStorageSchema &&
+        !markerOnlyNine) {
       throw std::runtime_error(
         "repo-schema-unsupported-profile: generation marker and table shape do not match");
     }
@@ -1097,8 +1101,13 @@ struct SqliteArtifactMetadataStore::Impl
       }
       if (!rechecked.hasUserStorageCatalog) {
         createUserStorageCatalog(database);
-        setGeneration(database, RUNTIME_SCHEMA_GENERATION);
+        setGeneration(database, 16);
         migration.action += "+schema-16";
+      }
+      if (rechecked.generation < 17) {
+        migrateUserStorageAdmission(database);
+        setGeneration(database, 17);
+        migration.action += "+schema-17";
       }
       sqlExec(database, "COMMIT");
     }
@@ -1126,6 +1135,7 @@ struct SqliteArtifactMetadataStore::Impl
     migration.writesEnabled = true;
     catalogAvailable = true;
     userStorageCatalogAvailable = true;
+    userStorageAdmissionAvailable = true;
   }
 
   static sqlite3*
@@ -1556,17 +1566,24 @@ struct SqliteArtifactMetadataStore::Impl
       int columnStatus = SQLITE_DONE;
       while ((columnStatus = sqlite3_step(columns.get())) == SQLITE_ROW) {
         const auto name = columnText(columns.get(), 0);
-        if (entry.second.count(name) == 0) continue;
+        const bool admission = entry.first == "repo_user_storage_writes" &&
+                               name == "admission_binding";
+        if (!admission && entry.second.count(name) == 0) continue;
         const auto expected = integerColumns.count(name) ? "INTEGER" : "TEXT";
         if (columnText(columns.get(), 1) != expected || sqlite3_column_int(columns.get(), 2) != 1)
           throw std::runtime_error("repo-schema-unsupported-profile: user storage column types differ");
+        if (admission) profile.hasUserStorageAdmission = true;
       }
       if (columnStatus != SQLITE_DONE)
         throw std::runtime_error("repo-metadata-sql-failed: inspect user storage columns");
     }
     profile.hasUserStorageCatalog = presentUserTables == userTables.size();
+    if ((profile.generation == 17 && !profile.hasUserStorageAdmission) ||
+        (profile.generation < 17 && profile.hasUserStorageAdmission))
+      throw std::runtime_error("repo-schema-unsupported-profile: user storage admission differs");
     if ((presentUserTables != 0 && !profile.hasUserStorageCatalog) ||
-        (profile.generation == 16 && !profile.hasUserStorageCatalog) ||
+        ((profile.generation == 16 || profile.generation == 17) &&
+         !profile.hasUserStorageCatalog) ||
         (profile.generation < 16 && presentUserTables != 0))
       throw std::runtime_error("repo-schema-unsupported-profile: incomplete user storage catalog");
     if (profile.hasUserStorageCatalog &&
@@ -1615,6 +1632,9 @@ struct SqliteArtifactMetadataStore::Impl
         // Inert CHECK text in a comment must never establish a constraint.
         if (sql.find("/*") != std::string::npos || sql.find("--") != std::string::npos)
           throw std::runtime_error("repo-schema-unsupported-profile: commented user storage definition");
+        if (profile.hasUserStorageAdmission && table.first == "repo_user_storage_writes" &&
+            sql.find(USER_STORAGE_ADMISSION_COLUMN) == std::string::npos)
+          throw std::runtime_error("repo-schema-unsupported-profile: user storage admission checks differ");
         for (const auto& check : table.second) {
           if (sql.find(check) == std::string::npos)
             throw std::runtime_error("repo-schema-unsupported-profile: user storage checks differ");
@@ -1970,6 +1990,19 @@ struct SqliteArtifactMetadataStore::Impl
     }
   }
 
+  static constexpr const char* USER_STORAGE_ADMISSION_COLUMN =
+    "admission_binding TEXT NOT NULL DEFAULT '' CHECK(admission_binding IN ('','legacy') OR "
+    "(length(admission_binding)=64 AND admission_binding NOT GLOB '*[^0-9a-f]*'))";
+
+  static void
+  migrateUserStorageAdmission(sqlite3* db)
+  {
+    // Empty marks a v16 row with no recorded admission mode.
+    const auto sql = std::string("ALTER TABLE repo_user_storage_writes ADD COLUMN ") +
+                     USER_STORAGE_ADMISSION_COLUMN;
+    sqlExec(db, sql.c_str());
+  }
+
   void
   initializeNewDatabase()
   {
@@ -1980,12 +2013,13 @@ struct SqliteArtifactMetadataStore::Impl
       sqlExec(database,
         "CREATE TABLE repo_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)");
       sqlExec(database,
-        "INSERT INTO repo_meta(key,value) VALUES('schema_generation','16')");
+        "INSERT INTO repo_meta(key,value) VALUES('schema_generation','17')");
       createLifecycleJournal(database);
       createLocalCommitCatalog(database);
       createPersistentCatalog(database);
       createPublishOperationTables(database);
       createUserStorageCatalog(database);
+      migrateUserStorageAdmission(database);
       sqlExec(database, "COMMIT");
     }
     catch (...) {
@@ -2004,6 +2038,7 @@ struct SqliteArtifactMetadataStore::Impl
     migration.action = "initialized";
     catalogAvailable = true;
     userStorageCatalogAvailable = true;
+    userStorageAdmissionAvailable = true;
   }
 
   std::string databasePath;
@@ -2020,6 +2055,7 @@ struct SqliteArtifactMetadataStore::Impl
   ArtifactBackendMigrationDiagnostics migration;
   bool catalogAvailable = false;
   bool userStorageCatalogAvailable = false;
+  bool userStorageAdmissionAvailable = false;
   std::set<std::string> userStorageReconciledNodes;
 };
 
@@ -3477,13 +3513,18 @@ loadUserStorageCleanup(sqlite3* db, const std::string& node,
   return userStorageClaimFromColumns(s.get());
 }
 
-constexpr const char* USER_STORAGE_WRITE_SELECT =
-  "SELECT w.operation_id,w.object_name,w.wire_sha256,w.generation,w.payload_wire_bytes,"
-  "w.manifest_bytes,w.state,w.reserved_bytes,w.created_at_ms,w.updated_at_ms,"
-  "g.grant_id,g.repo_node,g.owner_identity,g.writer_identity,g.object_name,g.owner_epoch,"
-  "g.expires_at_ms,g.created_at_ms FROM repo_user_storage_writes w "
-  "JOIN repo_user_storage_grants g ON g.repo_node=w.repo_node "
-  "AND g.owner_identity=w.owner_identity AND g.grant_id=w.grant_id ";
+std::string
+userStorageWriteSelect(bool hasAdmission = true)
+{
+  return std::string(
+    "SELECT w.operation_id,w.object_name,w.wire_sha256,w.generation,w.payload_wire_bytes,"
+    "w.manifest_bytes,w.state,w.reserved_bytes,w.created_at_ms,w.updated_at_ms,"
+    "g.grant_id,g.repo_node,g.owner_identity,g.writer_identity,g.object_name,g.owner_epoch,"
+    "g.expires_at_ms,g.created_at_ms,") + (hasAdmission ? "w.admission_binding" : "''") +
+    " FROM repo_user_storage_writes w "
+    "JOIN repo_user_storage_grants g ON g.repo_node=w.repo_node "
+    "AND g.owner_identity=w.owner_identity AND g.grant_id=w.grant_id ";
+}
 
 RepoUserStorageWrite
 userStorageWriteFromColumns(sqlite3_stmt* s)
@@ -3500,14 +3541,27 @@ userStorageWriteFromColumns(sqlite3_stmt* s)
   write.createdAtMs = userStorageInteger(s, 8);
   write.updatedAtMs = userStorageInteger(s, 9);
   write.grant = userStorageGrantFromColumns(s, 10);
+  const auto binding = columnText(s, 18);
+  if (binding.empty()) {
+    write.admission.mode = RepoUserStorageAdmissionMode::UNCLASSIFIED;
+  }
+  else if (binding != "legacy") {
+    const auto bytes = ndn::fromHex(binding);
+    std::array<uint8_t, 32> value{};
+    if (bytes->size() != value.size())
+      throw std::runtime_error("repo-user-storage-inventory-conflict: write admission binding");
+    std::copy(bytes->begin(), bytes->end(), value.begin());
+    write.admission = {RepoUserStorageAdmissionMode::MANIFEST_V1, value};
+  }
   return write;
 }
 
 std::optional<RepoUserStorageWrite>
 loadUserStorageWrite(sqlite3* db, const std::string& node,
-                     const std::string& owner, const std::string& operationId)
+                     const std::string& owner, const std::string& operationId,
+                     bool hasAdmission = true)
 {
-  const auto sql = std::string(USER_STORAGE_WRITE_SELECT) +
+  const auto sql = userStorageWriteSelect(hasAdmission) +
     "WHERE w.repo_node=? AND w.owner_identity=? AND w.operation_id=?";
   Statement s(db, sql.c_str());
   bindUserStorageAccount(db, s.get(), node, owner);
@@ -3652,7 +3706,8 @@ SqliteArtifactMetadataStore::lookupUserStorageWrite(
   validateUserStorageId(operationId);
   std::lock_guard<std::mutex> guard(m_impl->mutex);
   requireUserStorageProfile(m_impl->userStorageCatalogAvailable, false, m_impl->migration.writesEnabled);
-  return loadUserStorageWrite(m_impl->database, node, owner, operationId);
+  return loadUserStorageWrite(m_impl->database, node, owner, operationId,
+                              m_impl->userStorageAdmissionAvailable);
 }
 
 RepoUserStorageWrite
@@ -3661,6 +3716,19 @@ SqliteArtifactMetadataStore::reserveUserStorage(
   const std::string& grantId, const std::string& operationId,
   const RepoUserStorageObject& object, uint64_t nowMs)
 {
+  return reserveUserStorage(writer, node, owner, grantId, operationId, object, nowMs, {});
+}
+
+RepoUserStorageWrite
+SqliteArtifactMetadataStore::reserveUserStorage(
+  const std::string& writer, const std::string& node, const std::string& owner,
+  const std::string& grantId, const std::string& operationId,
+  const RepoUserStorageObject& object, uint64_t nowMs, const RepoUserStorageAdmission& admission)
+{
+  const bool manifest = admission.mode == RepoUserStorageAdmissionMode::MANIFEST_V1;
+  if (manifest != admission.manifestBinding.has_value() ||
+      (!manifest && admission.mode != RepoUserStorageAdmissionMode::LEGACY))
+    throw std::invalid_argument("repo-user-storage-invalid: write admission");
   validateUserStorageName(writer); validateUserStorageName(node); validateUserStorageName(owner);
   validateUserStorageId(grantId); validateUserStorageId(operationId);
   const auto charge = userStorageCharge(object);
@@ -3678,7 +3746,11 @@ SqliteArtifactMetadataStore::reserveUserStorage(
     throw std::runtime_error("repo-user-storage-unauthorized");
   const auto oldWrite = loadUserStorageWrite(m_impl->database, node, owner, operationId);
   if (oldWrite && (oldWrite->grant.grantId != grantId ||
-                  !sameUserStorageObject(oldWrite->object, object)))
+                  !sameUserStorageObject(oldWrite->object, object) ||
+                  (oldWrite->admission.mode == RepoUserStorageAdmissionMode::UNCLASSIFIED
+                     ? oldWrite->state == RepoUserStorageWriteState::RESERVED
+                     : oldWrite->admission.mode != admission.mode ||
+                       oldWrite->admission.manifestBinding != admission.manifestBinding)))
     throw std::runtime_error("repo-user-storage-operation-conflict");
   if (oldWrite && oldWrite->state == RepoUserStorageWriteState::CANCELLED) {
     transaction.commit(); return *oldWrite;
@@ -3716,7 +3788,8 @@ SqliteArtifactMetadataStore::reserveUserStorage(
   Statement s(m_impl->database,
     "INSERT INTO repo_user_storage_writes(repo_node,owner_identity,operation_id,grant_id,"
     "object_name,owner_epoch,wire_sha256,generation,payload_wire_bytes,manifest_bytes,"
-    "reserved_bytes,state,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+      "reserved_bytes,state,created_at_ms,updated_at_ms,admission_binding) "
+      "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
   bindUserStorageAccount(m_impl->database, s.get(), node, owner);
   bindText(m_impl->database, s.get(), 3, operationId);
   bindText(m_impl->database, s.get(), 4, grantId);
@@ -3730,6 +3803,8 @@ SqliteArtifactMetadataStore::reserveUserStorage(
   bindText(m_impl->database, s.get(), 12, claim ? "Committed" : "Reserved");
   bindUserStorageInteger(m_impl->database, s.get(), 13, nowMs);
   bindUserStorageInteger(m_impl->database, s.get(), 14, nowMs);
+  bindText(m_impl->database, s.get(), 15, manifest ? ndn::toHex(*admission.manifestBinding, false)
+                                                : "legacy");
   userStorageExecute(m_impl->database, s.get());
   auto result = *loadUserStorageWrite(m_impl->database, node, owner, operationId);
   transaction.commit();
@@ -3797,6 +3872,14 @@ SqliteArtifactMetadataStore::commitUserStorage(const std::string& node,
 }
 
 RepoUserStorageWrite
+SqliteArtifactMetadataStore::commitUserStorage(const std::string& node,
+  const std::string& owner, const std::string& operationId, uint64_t nowMs,
+  const std::function<void()>& requireProof)
+{
+  return commitUserStorageImpl(node, owner, operationId, nowMs, false, requireProof);
+}
+
+RepoUserStorageWrite
 SqliteArtifactMetadataStore::commitRecoveredUserStorage(const std::string& node,
   const std::string& owner, const std::string& operationId, uint64_t nowMs)
 {
@@ -3806,7 +3889,7 @@ SqliteArtifactMetadataStore::commitRecoveredUserStorage(const std::string& node,
 RepoUserStorageWrite
 SqliteArtifactMetadataStore::commitUserStorageImpl(const std::string& node,
   const std::string& owner, const std::string& operationId, uint64_t nowMs,
-  bool isRecovery)
+  bool isRecovery, const std::function<void()>& requireProof)
 {
   validateUserStorageName(node); validateUserStorageName(owner); validateUserStorageId(operationId);
   checkedUserStorageInteger(nowMs, true);
@@ -3822,8 +3905,13 @@ SqliteArtifactMetadataStore::commitUserStorageImpl(const std::string& node,
                       nowMs >= write->grant.expiresAtMs))
     throw std::runtime_error("repo-user-storage-grant-expired");
   if (write->state == RepoUserStorageWriteState::COMMITTED) {
+    if (requireProof) requireProof();
     transaction.commit(); return *write;
   }
+  const auto mode = write->admission.mode;
+  if (mode == RepoUserStorageAdmissionMode::UNCLASSIFIED ||
+      (mode == RepoUserStorageAdmissionMode::MANIFEST_V1 && (isRecovery || !requireProof)))
+    throw std::runtime_error("repo-user-storage-current-manifest-proof-required");
   const auto claim = loadUserStorageClaim(m_impl->database, node, owner,
                                          write->object.objectName, write->grant.ownerEpoch);
   if (claim && !sameUserStorageObject(claim->object, write->object))
@@ -3853,6 +3941,7 @@ SqliteArtifactMetadataStore::commitUserStorageImpl(const std::string& node,
   userStorageExecute(m_impl->database, s.get());
   write->state = RepoUserStorageWriteState::COMMITTED;
   write->reservedBytes = 0; write->updatedAtMs = nowMs;
+  if (requireProof) requireProof();
   transaction.commit();
   return *write;
 }
@@ -3966,7 +4055,7 @@ SqliteArtifactMetadataStore::prepareUserStorageCleanup(const std::string& owner,
   }
   auto claim = loadUserStorageClaim(m_impl->database, node, owner, objectName, ownerEpoch);
   if (!claim) {
-    const auto sql = std::string(USER_STORAGE_WRITE_SELECT) +
+    const auto sql = userStorageWriteSelect() +
       "WHERE w.repo_node=? AND w.owner_identity=? AND w.object_name=? "
       "AND w.owner_epoch=? AND w.state='Reserved'";
     Statement pending(m_impl->database, sql.c_str());
@@ -4135,7 +4224,7 @@ SqliteArtifactMetadataStore::userStorageCleanupPeers(const std::string& node,
   bindUserStorageInteger(m_impl->database, claims.get(), 6, cleanup->ownerEpoch);
   while (userStorageRow(m_impl->database, claims.get()))
     result.retainedClaims.push_back(userStorageClaimFromColumns(claims.get()));
-  const auto writesSql = std::string(USER_STORAGE_WRITE_SELECT) +
+  const auto writesSql = userStorageWriteSelect(m_impl->userStorageAdmissionAvailable) +
     "WHERE w.repo_node=? AND w.state='Reserved' AND (w.object_name=? OR w.wire_sha256=?) "
     "ORDER BY w.owner_identity,w.operation_id";
   Statement writes(m_impl->database, writesSql.c_str());
@@ -4144,7 +4233,8 @@ SqliteArtifactMetadataStore::userStorageCleanupPeers(const std::string& node,
   bindText(m_impl->database, writes.get(), 3, cleanup->object.wireSha256);
   while (userStorageRow(m_impl->database, writes.get()))
     result.reservedWrites.push_back(userStorageWriteFromColumns(writes.get()));
-  const auto cancelledSql = std::string(USER_STORAGE_WRITE_SELECT) +
+  const auto cancelledSql =
+    userStorageWriteSelect(m_impl->userStorageAdmissionAvailable) +
     "WHERE w.repo_node=? AND w.owner_identity=? AND w.object_name=? AND w.owner_epoch=? "
     "AND w.grant_id=? AND w.state='Cancelled' AND w.reserved_bytes=0 "
     "AND w.wire_sha256=? AND w.generation=? AND w.payload_wire_bytes=? AND w.manifest_bytes=? "
@@ -4184,7 +4274,7 @@ SqliteArtifactMetadataStore::pendingUserStorageWrites(const std::string& node) c
   validateUserStorageName(node);
   std::lock_guard<std::mutex> guard(m_impl->mutex);
   requireUserStorageProfile(m_impl->userStorageCatalogAvailable, false, m_impl->migration.writesEnabled);
-  const auto sql = std::string(USER_STORAGE_WRITE_SELECT) +
+  const auto sql = userStorageWriteSelect(m_impl->userStorageAdmissionAvailable) +
     "WHERE w.repo_node=? AND w.state='Reserved' ORDER BY w.operation_id";
   Statement s(m_impl->database, sql.c_str()); bindText(m_impl->database, s.get(), 1, node);
   std::vector<RepoUserStorageWrite> result;
@@ -4257,11 +4347,29 @@ SqliteArtifactMetadataStore::reconcileUserStorageInventory(const std::string& no
       throw std::runtime_error("repo-user-storage-inventory-conflict: live object mismatch");
     liveNames.insert(claim.object.objectName);
   }
+  // Matching held writes already have an accountable owner and an exact
+  // cleanup route. Unexplained bytes still belong in quarantine.
+  std::set<std::string> heldNames;
+  uint64_t heldWrites = 0;
+  const auto heldSql = userStorageWriteSelect() +
+    "WHERE w.repo_node=? AND w.state='Reserved' AND w.admission_binding<>'legacy'";
+  Statement held(m_impl->database, heldSql.c_str());
+  bindText(m_impl->database, held.get(), 1, node);
+  while (userStorageRow(m_impl->database, held.get())) {
+    const auto write = userStorageWriteFromColumns(held.get());
+    const auto physical = measured.find(write.object.objectName);
+    if (physical != measured.end() && legacyNames.count(physical->first) == 0 &&
+        deletedNames.count(physical->first) == 0 &&
+        sameUserStorageObject(physical->second, write.object)) {
+      heldNames.insert(physical->first);
+      ++heldWrites;
+    }
+  }
   Statement clear(m_impl->database, "DELETE FROM repo_user_storage_quarantine WHERE repo_node=?");
   bindText(m_impl->database, clear.get(), 1, node); userStorageExecute(m_impl->database, clear.get());
   bool deletedBytesRemain = false;
   for (const auto& item : measured) {
-    if (liveNames.count(item.first)) continue;
+    if (liveNames.count(item.first) || heldNames.count(item.first)) continue;
     deletedBytesRemain = deletedBytesRemain || deletedNames.count(item.first) != 0;
     Statement s(m_impl->database,
       "INSERT INTO repo_user_storage_quarantine(repo_node,object_name,wire_sha256,generation,"
@@ -4275,7 +4383,8 @@ SqliteArtifactMetadataStore::reconcileUserStorageInventory(const std::string& no
     userStorageExecute(m_impl->database, s.get());
   }
   auto result = readUserStorageReconciliation(m_impl->database, node);
-  result.ready = !deletedBytesRemain && result.pendingWriteCount == 0 && result.pendingCleanupCount == 0;
+  result.ready = !deletedBytesRemain && result.pendingWriteCount == heldWrites &&
+                 result.pendingCleanupCount == 0;
   Statement state(m_impl->database,
     "INSERT INTO repo_user_storage_state(repo_node,ready,reconciled_at_ms) VALUES(?,?,?) "
     "ON CONFLICT(repo_node) DO UPDATE SET ready=excluded.ready,reconciled_at_ms=excluded.reconciled_at_ms");

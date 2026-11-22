@@ -37,7 +37,7 @@ struct Fixture
     fs::remove_all(root, error);
   }
 
-  void sql(const std::string& sql) const
+  void sql(const std::string& sql, std::string* row = nullptr) const
   {
     sqlite3* raw = nullptr;
     if (sqlite3_open(database.c_str(), &raw) != SQLITE_OK) {
@@ -45,7 +45,11 @@ struct Fixture
       throw std::runtime_error("fixture sqlite open failed");
     }
     std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(raw, sqlite3_close);
-    if (sqlite3_exec(db.get(), sql.c_str(), nullptr, nullptr, nullptr) != SQLITE_OK)
+    const auto readText = [](void* target, int, char** columns, char**) {
+      *static_cast<std::string*>(target) = columns[0];
+      return 0;
+    };
+    if (sqlite3_exec(db.get(), sql.c_str(), row ? +readText : nullptr, row, nullptr) != SQLITE_OK)
       throw std::runtime_error(sqlite3_errmsg(db.get()));
   }
 
@@ -72,6 +76,25 @@ struct Fixture
         "DROP TABLE repo_user_storage_grants; DROP TABLE repo_user_storage_state;"
         "DROP TABLE repo_user_storage_quarantine;"
         "UPDATE repo_meta SET value='15' WHERE key='schema_generation';");
+  }
+
+  void downgradeTo16() const
+  {
+    std::string writes;
+    sql("SELECT sql FROM sqlite_master WHERE name='repo_user_storage_writes'", &writes);
+    const auto admission = writes.find(", admission_binding ");
+    const auto constraints = writes.find(",CHECK(payload_wire_bytes<=", admission);
+    if (admission == std::string::npos || constraints == std::string::npos)
+      throw std::runtime_error("fixture cannot reconstruct the v16 writes table");
+    writes.erase(admission, constraints - admission);
+    sql("BEGIN; ALTER TABLE repo_user_storage_writes RENAME TO writes_v17;" + writes +
+        "; INSERT INTO repo_user_storage_writes SELECT repo_node,owner_identity,operation_id,"
+        "grant_id,object_name,owner_epoch,wire_sha256,generation,payload_wire_bytes,manifest_bytes,"
+        "reserved_bytes,state,created_at_ms,updated_at_ms FROM writes_v17;"
+        "DROP TABLE writes_v17;"
+        "CREATE UNIQUE INDEX repo_user_storage_pending_object ON repo_user_storage_writes("
+        "repo_node,owner_identity,object_name) WHERE state='Reserved';"
+        "UPDATE repo_meta SET value='16' WHERE key='schema_generation'; COMMIT;");
   }
 };
 
@@ -471,7 +494,7 @@ BOOST_AUTO_TEST_CASE(ReservedCleanupSurvivesRestartAndIsolatesOwnersNodesAndEpoc
     grant(store, pending, "b", "/user/u", "/repo/b"); reserve(store, pending, "b-write", "b", "/user/u", "/repo/b");
     (void)store.prepareUserStorageCleanup("/user/u", "/repo/a", "clear", pending.objectName, 1, 1002);
   }
-  SqliteArtifactMetadataStore reopened(f.database, true, 16, false);
+  SqliteArtifactMetadataStore reopened(f.database, true, REPO_ARTIFACT_SCHEMA_GENERATION, false);
   const auto prepared = reopened.prepareUserStorageCleanup("/user/u", "/repo/a", "clear", pending.objectName, 1, 1003);
   BOOST_CHECK(prepared.state == RepoUserStorageClaimState::CLEANUP_PREPARED);
   BOOST_CHECK_EQUAL(reopened.userStorageUsage("/user/u", "/repo/a").committedBytes, 30U);
@@ -802,20 +825,20 @@ BOOST_AUTO_TEST_CASE(Schema15MigrationPreservesHistoryAndReadonlyCeiling)
   }
   {
     SqliteArtifactMetadataStore upgraded(f.database);
-    BOOST_CHECK_EQUAL(upgraded.schemaGeneration(), 16U);
+    BOOST_CHECK_EQUAL(upgraded.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
     BOOST_CHECK_EQUAL(upgraded.migrationDiagnostics().previousSchemaGeneration, 15U);
     BOOST_CHECK(!upgraded.migrationDiagnostics().destructiveChanges);
     BOOST_REQUIRE_EQUAL(upgraded.lifecycleEvents("operation").size(), 1U);
     BOOST_CHECK_EQUAL(upgraded.lifecycleEvents("operation")[0].detail, "keep");
   }
-  BOOST_CHECK_EQUAL(f.integer("SELECT value FROM repo_meta WHERE key='schema_generation'"), 16U);
+  BOOST_CHECK_EQUAL(f.integer("SELECT value FROM repo_meta WHERE key='schema_generation'"), REPO_ARTIFACT_SCHEMA_GENERATION);
 }
 
 BOOST_AUTO_TEST_CASE(FutureReadonlyAndPartialCatalogAreFailClosed)
 {
   Fixture f;
   { SqliteArtifactMetadataStore initial(f.database); }
-  f.sql("UPDATE repo_meta SET value='17' WHERE key='schema_generation'");
+  f.sql("UPDATE repo_meta SET value='18' WHERE key='schema_generation'");
   {
     SqliteArtifactMetadataStore future(f.database);
     BOOST_CHECK(!future.artifactWritesEnabled());
@@ -827,6 +850,47 @@ BOOST_AUTO_TEST_CASE(FutureReadonlyAndPartialCatalogAreFailClosed)
   f.sql("UPDATE repo_meta SET value='16' WHERE key='schema_generation'; DROP TABLE repo_user_storage_quarantine");
   BOOST_CHECK_EXCEPTION(SqliteArtifactMetadataStore broken(f.database),
     std::runtime_error, hasCode("repo-schema-unsupported-profile"));
+}
+
+BOOST_AUTO_TEST_CASE(Schema16MigrationHoldsUnclassifiedWritesAndPreservesClaims)
+{
+  Fixture f;
+  const auto committed = object("/producer/committed", 50);
+  const auto pending = object("/producer/pending", 75);
+  {
+    SqliteArtifactMetadataStore initial(f.database);
+    BOOST_REQUIRE(initial.reconcileUserStorageInventory("/repo/a", {}, 1000).ready);
+    grant(initial, committed, "current-grant");
+    reserve(initial, committed, "current-write", "current-grant");
+    initial.commitUserStorage("/repo/a", "/user/u", "current-write", 1002);
+    grant(initial, pending);
+    reserve(initial, pending);
+  }
+  f.downgradeTo16();
+  {
+    SqliteArtifactMetadataStore oldReader(f.database, true, 16);
+    BOOST_CHECK(!oldReader.artifactWritesEnabled());
+    BOOST_CHECK_EQUAL(oldReader.schemaGeneration(), 16U);
+    const auto write = oldReader.lookupUserStorageWrite("/repo/a", "/user/u", "write");
+    BOOST_REQUIRE(write);
+    BOOST_CHECK(write->admission.mode == RepoUserStorageAdmissionMode::UNCLASSIFIED);
+  }
+  SqliteArtifactMetadataStore upgraded(f.database);
+  BOOST_CHECK_EQUAL(upgraded.migrationDiagnostics().previousSchemaGeneration, 16U);
+  BOOST_CHECK(upgraded.reconcileUserStorageInventory("/repo/a", {{committed}, {pending}}, 1003).ready);
+  BOOST_CHECK_EXCEPTION(upgraded.commitRecoveredUserStorage("/repo/a", "/user/u", "write", 1004),
+    std::runtime_error, hasCode("repo-user-storage-current-manifest-proof-required"));
+  BOOST_CHECK_EXCEPTION(reserve(upgraded, pending), std::runtime_error,
+    hasCode("repo-user-storage-operation-conflict"));
+  BOOST_CHECK(!upgraded.lookupCurrentUserStorageClaim("/user/u", "/repo/a", pending.objectName));
+  BOOST_CHECK(upgraded.lookupCurrentUserStorageClaim("/user/u", "/repo/a", committed.objectName));
+  const auto next = object("/producer/healthy", 25);
+  grant(upgraded, next, "healthy-grant");
+  reserve(upgraded, next, "healthy-write", "healthy-grant");
+  upgraded.commitUserStorage("/repo/a", "/user/u", "healthy-write", 1004);
+  const auto usage = upgraded.userStorageUsage("/user/u", "/repo/a");
+  BOOST_CHECK_EQUAL(usage.committedBytes, 75U);
+  BOOST_CHECK_EQUAL(usage.reservedBytes, 75U);
 }
 
 BOOST_AUTO_TEST_CASE(RejectsOverflowAndNoncanonicalInputs)
@@ -1134,10 +1198,51 @@ BOOST_AUTO_TEST_CASE(RestartRecoverySettlesExistingExpiredGrantBeforeAdmissionRe
     std::runtime_error, hasCode("repo-user-storage-grant-expired"));
 }
 
+BOOST_AUTO_TEST_CASE(ManifestReservationRequiresLiveProofAfterReopen)
+{
+  Fixture f;
+  const auto a = object("/producer/manifest", 75);
+  std::array<uint8_t, 32> binding{};
+  binding.front() = 0xa5;
+  const RepoUserStorageAdmission admission{RepoUserStorageAdmissionMode::MANIFEST_V1, binding};
+  {
+    SqliteArtifactMetadataStore store(f.database);
+    BOOST_REQUIRE(store.reconcileUserStorageInventory("/repo/a", {}, 1000).ready);
+    grant(store, a);
+    store.reserveUserStorage("/provider/a", "/repo/a", "/user/u", "grant", "write", a,
+                             1001, admission);
+  }
+
+  SqliteArtifactMetadataStore reopened(f.database);
+  BOOST_CHECK_EXCEPTION(reopened.commitRecoveredUserStorage("/repo/a", "/user/u", "write", 10002),
+    std::runtime_error, hasCode("repo-user-storage-current-manifest-proof-required"));
+  BOOST_REQUIRE(reopened.reconcileUserStorageInventory("/repo/a", {{a}}, 1002).ready);
+  BOOST_CHECK_EQUAL(reopened.userStorageUsage("/user/u", "/repo/a").reservedBytes, 75U);
+  BOOST_CHECK(!reopened.lookupCurrentUserStorageClaim("/user/u", "/repo/a", a.objectName));
+  const auto write = reopened.lookupUserStorageWrite("/repo/a", "/user/u", "write");
+  BOOST_REQUIRE(write);
+  BOOST_CHECK(write->admission.mode == RepoUserStorageAdmissionMode::MANIFEST_V1);
+  BOOST_CHECK(write->admission.manifestBinding == admission.manifestBinding);
+  BOOST_CHECK_EXCEPTION(reserve(reopened, a), std::runtime_error,
+                        hasCode("repo-user-storage-operation-conflict"));
+  auto other = admission;
+  other.manifestBinding->front() ^= 1;
+  BOOST_CHECK_EXCEPTION(reopened.reserveUserStorage(
+    "/provider/a", "/repo/a", "/user/u", "grant", "write", a, 1003, other),
+    std::runtime_error, hasCode("repo-user-storage-operation-conflict"));
+  BOOST_CHECK_EXCEPTION(reopened.commitUserStorage("/repo/a", "/user/u", "write", 1003, [] {
+    throw std::runtime_error("test-proof-no-longer-current");
+  }), std::runtime_error, hasCode("test-proof-no-longer-current"));
+  BOOST_CHECK(!reopened.lookupCurrentUserStorageClaim("/user/u", "/repo/a", a.objectName));
+  reopened.commitUserStorage("/repo/a", "/user/u", "write", 1004, [] {});
+  BOOST_REQUIRE(reopened.lookupCurrentUserStorageClaim("/user/u", "/repo/a", a.objectName));
+  BOOST_CHECK_EQUAL(reopened.userStorageUsage("/user/u", "/repo/a").committedBytes, 75U);
+}
+
 BOOST_AUTO_TEST_CASE(ExactGrantValidationDoesNotReserveOrRequireReady)
 {
   Fixture f;
-  SqliteArtifactMetadataStore store(f.database, true, 16, true);
+  SqliteArtifactMetadataStore store(f.database, true, REPO_ARTIFACT_SCHEMA_GENERATION, true);
   const auto grant = store.grantUserStorage("/user/u", "/repo/a", "grant", "/provider/a", "/object/a", 2000, 1000);
   const auto check = [&](const std::string& writer, const std::string& node,
                          const std::string& owner, const std::string& id,
@@ -1166,7 +1271,7 @@ BOOST_AUTO_TEST_CASE(ExactGrantValidationDoesNotReserveOrRequireReady)
 BOOST_AUTO_TEST_CASE(ExactGrantValidationHonorsCleanupAndNewEpoch)
 {
   Fixture f;
-  SqliteArtifactMetadataStore store(f.database, true, 16, true);
+  SqliteArtifactMetadataStore store(f.database, true, REPO_ARTIFACT_SCHEMA_GENERATION, true);
   const auto o = object("/object/a", 100);
   grant(store, o);
   BOOST_REQUIRE(store.reconcileUserStorageInventory("/repo/a", {}, 1000).ready);

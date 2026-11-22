@@ -367,7 +367,7 @@ BOOST_AUTO_TEST_CASE(UsesTransactionalLifecycleMetadataNotPacketRows)
   const auto database = (fs::path(root) / "metadata.sqlite3").string();
   {
     SqliteArtifactMetadataStore metadata(database);
-    BOOST_CHECK_EQUAL(metadata.schemaGeneration(), 16);
+    BOOST_CHECK_EQUAL(metadata.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
     BOOST_CHECK(metadata.artifactWritesEnabled());
     ArtifactLifecycleEvent event{
       "event-1", "operation-1", std::string(64, 'a'), 1,
@@ -404,7 +404,7 @@ BOOST_AUTO_TEST_CASE(MigrationIsAdditiveAndRollbackIsReadOnly)
   {
     SqliteArtifactMetadataStore metadata(database);
     metadata.appendLifecycleEvent(event);
-    BOOST_CHECK_EQUAL(metadata.schemaGeneration(), 16);
+    BOOST_CHECK_EQUAL(metadata.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
   }
 
   dropUserStorageCatalog(database);
@@ -421,8 +421,8 @@ BOOST_AUTO_TEST_CASE(MigrationIsAdditiveAndRollbackIsReadOnly)
     SqliteArtifactMetadataStore migrated(database);
     const auto diagnostics = migrated.migrationDiagnostics();
     BOOST_CHECK_EQUAL(diagnostics.previousSchemaGeneration, 12);
-    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, 16);
-    BOOST_CHECK_EQUAL(diagnostics.action, "roll-forward+schema-15+schema-16");
+    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, REPO_ARTIFACT_SCHEMA_GENERATION);
+    BOOST_CHECK_EQUAL(diagnostics.action, "roll-forward+schema-15+schema-16+schema-17");
     BOOST_CHECK(diagnostics.writesEnabled);
     BOOST_CHECK(!diagnostics.destructiveChanges);
     const auto events = migrated.lifecycleEvents("operation-1");
@@ -432,7 +432,7 @@ BOOST_AUTO_TEST_CASE(MigrationIsAdditiveAndRollbackIsReadOnly)
     BOOST_CHECK(!migrated.lookupLocalCommit(reference));
     const auto localCommit = migrated.recordLocalCommit(reference, 2345);
     BOOST_CHECK_EQUAL(localCommit.committedAtMs, 2345);
-    BOOST_CHECK_EQUAL(migrated.schemaGeneration(), 16);
+    BOOST_CHECK_EQUAL(migrated.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
   }
 
   const auto schema13Database =
@@ -455,8 +455,8 @@ BOOST_AUTO_TEST_CASE(MigrationIsAdditiveAndRollbackIsReadOnly)
     SqliteArtifactMetadataStore migrated(schema13Database);
     const auto diagnostics = migrated.migrationDiagnostics();
     BOOST_CHECK_EQUAL(diagnostics.previousSchemaGeneration, 13);
-    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, 16);
-    BOOST_CHECK_EQUAL(diagnostics.action, "roll-forward+schema-15+schema-16");
+    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, REPO_ARTIFACT_SCHEMA_GENERATION);
+    BOOST_CHECK_EQUAL(diagnostics.action, "roll-forward+schema-15+schema-16+schema-17");
     BOOST_CHECK(migrated.artifactWritesEnabled());
     const auto events = migrated.lifecycleEvents("operation-1");
     BOOST_REQUIRE_EQUAL(events.size(), 1);
@@ -480,8 +480,8 @@ BOOST_AUTO_TEST_CASE(MigrationIsAdditiveAndRollbackIsReadOnly)
     SqliteArtifactMetadataStore repaired(schema13Database);
     const auto diagnostics = repaired.migrationDiagnostics();
     BOOST_CHECK_EQUAL(diagnostics.previousSchemaGeneration, 9);
-    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, 16);
-    BOOST_CHECK_EQUAL(diagnostics.action, "marker-repaired+schema-15+schema-16");
+    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, REPO_ARTIFACT_SCHEMA_GENERATION);
+    BOOST_CHECK_EQUAL(diagnostics.action, "marker-repaired+schema-15+schema-16+schema-17");
     BOOST_CHECK(repaired.artifactWritesEnabled());
     const auto events = repaired.lifecycleEvents("operation-1");
     BOOST_REQUIRE_EQUAL(events.size(), 1);
@@ -599,7 +599,7 @@ BOOST_AUTO_TEST_CASE(Schema15To16PreservesEveryPersistentJournalRow)
   BOOST_CHECK(snapshotCatalogRows(database) == before);
   {
     SqliteArtifactMetadataStore migrated(database);
-    BOOST_CHECK_EQUAL(migrated.schemaGeneration(), 16U);
+    BOOST_CHECK_EQUAL(migrated.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
     const auto retained = migrated.lookupPublishOperation(operationId, "/publisher");
     BOOST_REQUIRE(retained);
     BOOST_CHECK_EQUAL(retained->aggregateReceiptJson, aggregateJson);
@@ -639,7 +639,7 @@ BOOST_AUTO_TEST_CASE(MigratesGeneration14ReceiptsAndLocationsTransactionallyTo15
     metadata.appendLifecycleEvent(event);
     metadata.recordLocalCommit(reference, 1500);
     metadata.recordPersistentCommit(legacyLocation);
-    BOOST_CHECK_EQUAL(metadata.schemaGeneration(), 16U);
+    BOOST_CHECK_EQUAL(metadata.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
   }
 
   downgradePersistentCatalogToSchema14(database);
@@ -648,10 +648,10 @@ BOOST_AUTO_TEST_CASE(MigratesGeneration14ReceiptsAndLocationsTransactionallyTo15
     SqliteArtifactMetadataStore migrated(database);
     const auto diagnostics = migrated.migrationDiagnostics();
     BOOST_CHECK_EQUAL(diagnostics.previousSchemaGeneration, 14U);
-    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, 16U);
-    BOOST_CHECK_EQUAL(diagnostics.action, "roll-forward+schema-15+schema-16");
+    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, REPO_ARTIFACT_SCHEMA_GENERATION);
+    BOOST_CHECK_EQUAL(diagnostics.action, "roll-forward+schema-15+schema-16+schema-17");
     BOOST_CHECK(migrated.artifactWritesEnabled());
-    BOOST_CHECK_EQUAL(migrated.schemaGeneration(), 16U);
+    BOOST_CHECK_EQUAL(migrated.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
     const auto events = migrated.lifecycleEvents("operation-schema14");
     BOOST_REQUIRE_EQUAL(events.size(), 1);
     BOOST_CHECK_EQUAL(events.front().eventId, event.eventId);
@@ -800,7 +800,7 @@ BOOST_AUTO_TEST_CASE(RejectsPersistentCatalogWithoutConstraintsBeforePromotion)
   const auto database = (fs::path(root) / "metadata.sqlite3").string();
   {
     SqliteArtifactMetadataStore initialized(database);
-    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), 16);
+    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
   }
   dropUserStorageCatalog(database);
   executeSql(
@@ -837,7 +837,7 @@ BOOST_AUTO_TEST_CASE(RejectsPersistentCatalogWithWrongIndexCollationBeforePromot
   const auto database = (fs::path(root) / "metadata.sqlite3").string();
   {
     SqliteArtifactMetadataStore initialized(database);
-    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), 16);
+    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
   }
   dropUserStorageCatalog(database);
   executeSql(
@@ -880,7 +880,7 @@ BOOST_AUTO_TEST_CASE(RejectsSchema15PublishJournalWithoutConstraintsReadOnly)
   const auto database = (fs::path(root) / "metadata.sqlite3").string();
   {
     SqliteArtifactMetadataStore initialized(database);
-    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), 16U);
+    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
   }
   dropUserStorageCatalog(database);
   executeSql(database, "UPDATE repo_meta SET value='15' WHERE key='schema_generation'");
@@ -914,7 +914,7 @@ BOOST_AUTO_TEST_CASE(RejectsSchema15OperationUniqueIndexWithoutPrimaryKeyReadOnl
   const auto database = (fs::path(root) / "metadata.sqlite3").string();
   {
     SqliteArtifactMetadataStore initialized(database);
-    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), 16U);
+    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
   }
   dropUserStorageCatalog(database);
   executeSql(database, "UPDATE repo_meta SET value='15' WHERE key='schema_generation'");
@@ -973,7 +973,7 @@ BOOST_AUTO_TEST_CASE(RejectsSchema15TargetUniqueIndexWithoutPrimaryKeyReadOnly)
   const auto database = (fs::path(root) / "metadata.sqlite3").string();
   {
     SqliteArtifactMetadataStore initialized(database);
-    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), 16U);
+    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), REPO_ARTIFACT_SCHEMA_GENERATION);
   }
   dropUserStorageCatalog(database);
   executeSql(database, "UPDATE repo_meta SET value='15' WHERE key='schema_generation'");

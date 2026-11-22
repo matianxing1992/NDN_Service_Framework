@@ -129,10 +129,12 @@ struct RepoNodeTestAccess
                    std::size_t packetCount,
                    const std::function<std::vector<uint8_t>(std::size_t)>& readPacket,
                    const RepoCore::OriginalPacketRangeReader& readRange,
-                   const std::function<void()>& requireActive)
+                   const std::function<void()>& requireActive,
+                   const RepoUserStorageAdmission& admission = {})
   {
     return node.insertWirePacketsImpl(request.reference, packetCount, readPacket, readRange,
-      request.operationId, request.generation, "/provider/a", request.storageBinding, requireActive);
+      request.operationId, request.generation, "/provider/a", request.storageBinding, requireActive,
+      nullptr, admission);
   }
 
   static std::pair<std::size_t, std::size_t>
@@ -4229,6 +4231,99 @@ BOOST_AUTO_TEST_CASE(OwnedSpoolLeavesWorkerFreeAndClaimHiddenDuringFinalVerifica
   BOOST_CHECK(fixture.node->getRange(name, {0, fixture.original.size()}) == fixture.original);
   BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
   BOOST_CHECK_GT(fixture.usage().committedBytes, fixture.original.size());
+}
+
+BOOST_AUTO_TEST_CASE(ManifestWriteWithStaleProofRemainsHiddenAfterReopen)
+{
+  OwnedPacketFixture fixture;
+  const auto name = fixture.request.reference.objectName;
+  const RepoUserStorageAdmission admission{
+    RepoUserStorageAdmissionMode::MANIFEST_V1, std::array<uint8_t, 32>{}};
+  const auto handler = std::this_thread::get_id();
+  const auto failed = RepoNodeTestAccess::insertOwnedSpool(*fixture.node, fixture.request,
+    fixture.packets.size(), [&](std::size_t index) { return fixture.packets.at(index); },
+    [&](uint64_t offset, std::size_t length) {
+      return std::vector<uint8_t>(fixture.original.begin() + offset,
+                                  fixture.original.begin() + offset + length);
+    }, [&] {
+      if (std::this_thread::get_id() == handler && fixture.node->core().has(name))
+        throw std::runtime_error("test-proof-expired-after-physical-commit");
+    }, admission);
+  BOOST_REQUIRE_EQUAL(failed.state, "FAILED");
+  BOOST_CHECK_EQUAL(failed.message, "test-proof-expired-after-physical-commit");
+  BOOST_REQUIRE(fixture.node->core().has(name));
+  fixture.provider.reset();
+  fixture.node.reset();
+  fixture.open();
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+  BOOST_CHECK_GT(fixture.usage().reservedBytes, 0U);
+  const auto& first = fixture.packets.front();
+  const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(first))};
+  BOOST_CHECK_THROW(fixture.node->getDataPacket(ndn::Interest(packet.getName())), std::exception);
+  BOOST_CHECK_THROW(fixture.node->getDataPacket(ndn::Interest(packet.getFullName())), std::exception);
+  const RepoUserStorageDeleteRequest cleanup{1, "cleanup", name,
+    fixture.request.storageBinding.ownerEpoch};
+  const auto erased = RepoUserStorageDeleteReply::fromJson(toString(
+    fixture.node->handleUserStorageDelete(toBytes(cleanup.toJson()), "/owner/a")));
+  BOOST_CHECK_EQUAL(erased.state, "DELETED");
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+  BOOST_CHECK(!fixture.node->core().has(name));
+}
+
+BOOST_AUTO_TEST_CASE(ManifestWriteKeepsCommitWhenReceiptProofBecomesStale)
+{
+  OwnedPacketFixture fixture;
+  const auto name = fixture.request.reference.objectName;
+  const RepoUserStorageAdmission admission{
+    RepoUserStorageAdmissionMode::MANIFEST_V1, std::array<uint8_t, 32>{}};
+  const SqliteArtifactMetadataStore observer(
+    (fixture.temp.path() / "metadata.sqlite3").string(), false);
+  const auto result = RepoNodeTestAccess::insertOwnedSpool(*fixture.node, fixture.request,
+    fixture.packets.size(), [&](std::size_t index) { return fixture.packets.at(index); },
+    [&](uint64_t offset, std::size_t length) {
+      return std::vector<uint8_t>(fixture.original.begin() + offset,
+                                  fixture.original.begin() + offset + length);
+    }, [&] {
+      if (observer.lookupCurrentUserStorageClaim("/owner/a", "/repo/a", name))
+        throw std::runtime_error("test-proof-expired-after-owner-commit");
+    }, admission);
+  BOOST_REQUIRE_EQUAL(result.state, "UNKNOWN");
+  BOOST_CHECK_EQUAL(result.message, "repo-user-storage-commit-receipt-no-longer-current");
+  BOOST_REQUIRE(observer.lookupCurrentUserStorageClaim("/owner/a", "/repo/a", name));
+  fixture.provider.reset();
+  fixture.node.reset();
+  fixture.open();
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+  BOOST_CHECK_GT(fixture.usage().committedBytes, fixture.original.size());
+  for (const auto& wire : fixture.packets) {
+    const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire))};
+    BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(packet.getName())) == wire);
+    BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(packet.getFullName())) == wire);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(OwnedInsertResultsAreAbsentFromUnscopedStatus)
+{
+  OwnedPacketFixture fixture;
+  const auto queryStatus = [&](const std::string& requester) {
+    const auto response = dispatch(*fixture.provider, ndn::Name(requester),
+      makeRepoServiceName(fixture.node->servicePrefix(), "STATUS"),
+      encodeStatusRequest(fixture.request.operationId), "unscoped-status");
+    BOOST_REQUIRE(response.getStatus());
+    const auto status = parseOperationStatusJson(responseString(response));
+    BOOST_CHECK_EQUAL(status.operation, "UNKNOWN");
+    BOOST_CHECK_EQUAL(status.state, "UNKNOWN");
+    BOOST_CHECK(status.objectName.empty());
+  };
+  const auto grantId = fixture.request.storageBinding.grantId;
+  fixture.request.storageBinding.grantId = "missing-grant";
+  BOOST_CHECK_EQUAL(fixture.insert().state, "FAILED");
+  queryStatus("/owner/b");
+  fixture.request.storageBinding.grantId = grantId;
+  BOOST_REQUIRE_EQUAL(fixture.insert().state, "DONE");
+  queryStatus("/owner/b");
+  queryStatus("/provider/a");
+  BOOST_CHECK_GT(fixture.usage().committedBytes, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(OwnerCleanupRemovesCanonicalPacketIndexOnlyAfterDurableConfirmation)

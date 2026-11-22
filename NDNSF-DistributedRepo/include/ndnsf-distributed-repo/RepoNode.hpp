@@ -243,7 +243,8 @@ private:
   void reconcilePersistentUserStorage();
   RepoUserStorageWrite reservePersistentOriginalPacketStorage(
     const RepoObjectManifest& manifest, const std::string& operationId,
-    const std::string& authenticatedWriter, const RepoUserStorageBinding& binding);
+    const std::string& authenticatedWriter, const RepoUserStorageBinding& binding,
+    const RepoUserStorageAdmission& admission);
   RepoOperationStatus insertWirePacketsImpl(
     const RepoDataReference& reference, std::size_t packetCount,
     const std::function<std::vector<uint8_t>(std::size_t)>& readPacket,
@@ -252,7 +253,8 @@ private:
     const std::string& authenticatedWriter,
     const std::optional<RepoUserStorageBinding>& storageBinding,
     const std::function<void()>& requireActive = {},
-    std::string* committedManifestOperationId = nullptr);
+    std::string* committedManifestOperationId = nullptr,
+    const RepoUserStorageAdmission& admission = {});
   std::vector<uint8_t> handleInsert(const std::vector<uint8_t>& request,
                                    const std::string& requesterIdentity, bool networkRequest);
 
