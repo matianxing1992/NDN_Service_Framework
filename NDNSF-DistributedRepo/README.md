@@ -64,6 +64,9 @@ header and full-index digest. The client derives names from the authenticated Pr
 rebuilds offsets from the original wires, and checks the complete stored manifest digest before
 revalidating the current Owner claim. Other modes retain the full index transfer. The file
 benchmark independently verifies the complete restored original wire and reconstructed file.
+With an explicit `--manifest-read-pipeline`, the native file benchmark accepts
+`--manifest-read-total-window 32|48|64`. It divides the Interest limit among the selected
+concurrent groups and defaults to 32.
 
 NDNSF-DistributedRepo is an experimental C++ subproject for a distributed,
 NDN-native, policy-controlled artifact and intermediate-data storage layer for

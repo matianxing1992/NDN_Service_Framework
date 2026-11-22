@@ -142,6 +142,7 @@ run(int argc, char** argv)
     std::cout << "[--phase write|read|write-read] [--reference PATH] "
                  "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
                  "[--manifest-read-pipeline serial|paired|quad] "
+                 "[--manifest-read-total-window 32|48|64] "
                  "[--manifest-owner-claims selected|targeted] "
                  "[--manifest-insert indexed|compact] "
                  "[--manifest-segment-bytes 7000|8400] "
@@ -158,6 +159,7 @@ run(int argc, char** argv)
       std::string(argv[i]) == "--reference" || std::string(argv[i]) == "--authentication" ||
       std::string(argv[i]) == "--signing-certificate" ||
       std::string(argv[i]) == "--manifest-read-pipeline" ||
+      std::string(argv[i]) == "--manifest-read-total-window" ||
       std::string(argv[i]) == "--manifest-owner-claims" ||
       std::string(argv[i]) == "--manifest-insert" ||
       std::string(argv[i]) == "--manifest-segment-bytes" ||
@@ -203,7 +205,15 @@ run(int argc, char** argv)
     if (mode == "paired") readGroups = 2;
     if (mode == "quad") readGroups = MAX_MANIFEST_READ_GROUPS;
   }
-  const auto readWindow = boundedRead ? MANIFEST_READ_WINDOW / readGroups : 0;
+  const auto configuredReadWindow = options.find("--manifest-read-total-window");
+  auto totalReadWindow = MANIFEST_READ_WINDOW;
+  if (configuredReadWindow != options.end()) {
+    const auto& value = configuredReadWindow->second;
+    require(boundedRead && (value == "32" || value == "48" || value == "64"),
+            "manifest read total window requires a bounded manifest pipeline and 32, 48 or 64");
+    totalReadWindow = static_cast<uint32_t>(std::stoul(value));
+  }
+  const auto readWindow = boundedRead ? totalReadWindow / readGroups : 0;
   const auto claimMode = options.find("--manifest-owner-claims");
   require(claimMode == options.end() || (useManifest && phaseOption != "write" &&
           (claimMode->second == "selected" || claimMode->second == "targeted")),
