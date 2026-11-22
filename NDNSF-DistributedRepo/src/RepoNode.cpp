@@ -541,6 +541,7 @@ RepoNode::isOriginalDataServingReady() const noexcept
 bool
 RepoNode::enqueueOriginalDataInterest(const ndn::Interest& interest)
 {
+  detail::traceManifestRoot(interest.getName(), "repo-arrival");
   const auto interestBytes = interest.wireEncode().size();
   if (interestBytes > ndn::MAX_NDN_PACKET_SIZE)
     return false;
@@ -708,8 +709,10 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
         else {
           // The lookup already validated this Data; sending it avoids the
           // second TLV parse the wire-returning overload required.
-          replies.push_back({getDataPacketObject(read.job.interest),
-                             read.job.deadline, read.completion});
+          detail::traceManifestRoot(read.job.interest.getName(), "repo-lookup-start");
+          auto data = getDataPacketObject(read.job.interest);
+          detail::traceManifestRoot(data.getName(), "repo-lookup-finish");
+          replies.push_back({std::move(data), read.job.deadline, read.completion});
         }
       }
       catch (const std::exception& error) {
@@ -731,6 +734,7 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
             NDN_LOG_DEBUG("original packet unavailable before put name=" << reply.data.getName());
             continue;
           }
+          detail::traceManifestRoot(reply.data.getName(), "repo-face-put");
           face.put(reply.data);
           NDN_LOG_DEBUG("original packet put name=" << reply.data.getName());
           // Keep each lease through its own queued put, including when a later

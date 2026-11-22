@@ -23,6 +23,9 @@ inline constexpr std::size_t MAX_NAMED_PACKET_COUNT = 4096;
 inline constexpr uint64_t MAX_NAMED_PACKET_WIRE_BYTES = 32U << 20;
 inline constexpr std::size_t MAX_NAMED_PACKET_NAME_BYTES = 512U << 10;
 
+/** Trace the ordinary manifest root along the exact Interest path. */
+void traceManifestRoot(const ndn::Name& name, const char* stage) noexcept;
+
 /** Private, unlinked disk spool for an exact ordered set of original Data wires.
  *
  * The fetch window bounds transient packet buffers. This object keeps only

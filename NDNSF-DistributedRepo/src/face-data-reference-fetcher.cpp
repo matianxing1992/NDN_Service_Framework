@@ -27,6 +27,22 @@
 #include <utility>
 
 namespace ndnsf_distributed_repo::detail {
+
+void
+traceManifestRoot(const ndn::Name& name, const char* stage) noexcept
+{
+  try {
+    if (!ndn_service_framework::controlTimingEnvEnabled() || name.empty()) return;
+    static const ndn::name::Component rootComponent("MANIFEST");
+    if (name[-1] == rootComponent) {
+      ndn_service_framework::logControlTiming("repo-manifest-root", stage, name);
+    }
+  }
+  catch (...) {
+    // Diagnostic logging must not affect the original Interest or Data path.
+  }
+}
+
 namespace {
 
 constexpr std::size_t MAX_ORIGINAL_DATA_PACKET_COUNT = 1000000;
@@ -551,9 +567,11 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       // expressInterest posts registration to the Face io_context. Keep the
       // state lock until its handle is installed so an early callback or a
       // sibling failure cannot remove a placeholder before registration.
+      traceManifestRoot(interest.getName(), "request-express");
       pending->second.handle = face.expressInterest(
         interest,
         [self, index, attempt] (const ndn::Interest&, const ndn::Data& data) {
+          traceManifestRoot(data.getName(), "request-face-data");
           boost::asio::post(self->strand, [self, index, attempt, data] {
             self->onData(index, attempt, data);
           });
@@ -580,6 +598,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   {
     if (standardTransport || !checkCurrent())
       return;
+    traceManifestRoot(data.getName(), "request-strand-data");
     {
       std::lock_guard<std::mutex> lock(mutex);
       const auto pending = pendingInterests.find(index);
@@ -1152,7 +1171,9 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   const auto rootSpool = fetchNamed({scope.rootName()},
     std::min<uint64_t>(reference.expectedSize, ndn::MAX_NDN_PACKET_SIZE),
     hint, requireCurrent, deadline, [](std::size_t, const ndn::Data&) {});
+  traceManifestRoot(scope.rootName(), "validate-start");
   auto root = validateRoot(rootSpool->readPacket(0), scope, deadline);
+  traceManifestRoot(scope.rootName(), "validate-finish");
   if (!root) {
     throw std::runtime_error("repo-manifest-root-validation-rejected");
   }
