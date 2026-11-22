@@ -84,6 +84,13 @@ wireOf(const ndn::Data& data)
   return {wire.begin(), wire.end()};
 }
 
+uint64_t
+segmentOf(const ndn::Interest& interest)
+{
+  const auto& name = interest.getName();
+  return name[name[-1].isImplicitSha256Digest() ? -2 : -1].toSegment();
+}
+
 RepoDataReference
 makeSegmentedReference(const ndn::Name& prefix, unsigned count,
                        std::vector<ndn::Data>& packets)
@@ -142,10 +149,11 @@ BOOST_AUTO_TEST_CASE(CompleteSegmentedObjectUsesStandardFetcherAndKeepsOriginalW
   unsigned issued = 0;
   auto connection = pump.face.onSendInterest.connect([&](const ndn::Interest& interest) {
     ++issued;
-    const auto index = interest.getName()[-1].toSegment();
+    const auto index = segmentOf(interest);
     if (interest.getCanBePrefix()) {
       nativeBootstrap = true;
-      BOOST_CHECK(interest.getName() == packets.front().getName());
+      BOOST_CHECK(interest.getName() == packets.front().getFullName());
+      BOOST_CHECK(interest.matchesData(packets.front()));
     }
     BOOST_REQUIRE_LT(index, packets.size());
     pump.face.receive(packets.at(index));
@@ -171,7 +179,7 @@ BOOST_AUTO_TEST_CASE(StandardStreamRetriesLostTailWithinWireLifetime)
   bool nativeBootstrap = false;
   auto connection = pump.face.onSendInterest.connect([&](const ndn::Interest& interest) {
     nativeBootstrap = nativeBootstrap || interest.getCanBePrefix();
-    const auto index = interest.getName()[-1].toSegment();
+    const auto index = segmentOf(interest);
     // The initial compatibility probe cannot reach this segment. Lose four
     // standard-stream attempts, then serve the unchanged original packet.
     if (index == packets.size() - 1 && ++tailRequests <= 4) return;
@@ -199,7 +207,7 @@ BOOST_AUTO_TEST_CASE(StandardStreamLeavesSlowStartBeforeBurstingHundredsOfIntere
   bool nativeBootstrap = false;
   auto connection = pump.face.onSendInterest.connect([&](const ndn::Interest& interest) {
     nativeBootstrap = nativeBootstrap || interest.getCanBePrefix();
-    const auto index = interest.getName()[-1].toSegment();
+    const auto index = segmentOf(interest);
     ++pending;
     peakPending = std::max(peakPending, pending);
     scheduler.schedule(ndn::time::milliseconds(5), [&, index] {
@@ -229,7 +237,7 @@ BOOST_AUTO_TEST_CASE(StandardStreamRejectsChangedFinalBlockWithoutDowngrade)
   bool nativeBootstrap = false;
   auto connection = pump.face.onSendInterest.connect([&](const ndn::Interest& interest) {
     nativeBootstrap = nativeBootstrap || interest.getCanBePrefix();
-    const auto index = interest.getName()[-1].toSegment();
+    const auto index = segmentOf(interest);
     auto data = packets.at(index);
     if (index == 32) data.setFinalBlock(ndn::name::Component::fromSegment(62));
     pump.face.receive(data);
@@ -287,7 +295,7 @@ BOOST_AUTO_TEST_CASE(StandardStreamCancellationDrainsBeforeReadmission)
         return;
       }
     }
-    pump.face.receive(packets.at(interest.getName()[-1].toSegment()));
+    pump.face.receive(packets.at(segmentOf(interest)));
   });
   FacePumpStop stop{pump};
   const detail::FaceDataReferenceFetcher fetcher(pump.face, 1s, 3s, 0, lifetime);

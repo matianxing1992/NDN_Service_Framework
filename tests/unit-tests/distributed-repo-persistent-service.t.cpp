@@ -4422,7 +4422,10 @@ BOOST_AUTO_TEST_CASE(PersistentOriginalReadUsesAcceptedHolderAndStandardInterest
   BOOST_REQUIRE_EQUAL(fixture.insert().state, "DONE");
   const auto& wire = fixture.packets.back();
   const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
-  BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(packet.getFullName())) == wire);
+  // SegmentFetcher sets CanBePrefix even when its probe identifies a full Data Name.
+  ndn::Interest bootstrap(packet.getFullName());
+  bootstrap.setCanBePrefix(true);
+  BOOST_CHECK(fixture.node->getDataPacket(bootstrap) == wire);
   ndn::Name wrong = packet.getName();
   const std::vector<uint8_t> digest(32, 0);
   wrong.appendImplicitSha256Digest(ndn::span<const uint8_t>(digest.data(), digest.size()));
