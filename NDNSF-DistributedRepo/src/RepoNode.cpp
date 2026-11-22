@@ -2280,16 +2280,19 @@ RepoNode::insertWirePacketsImpl(
             "repo-packet-set-invalid: Data name does not match requested segment order");
         }
       }
-      if (reference.packetSetMetadata &&
-          data.getName() != ndn::Name(reference.packetSetMetadata->packetNames.at(i))) {
-        throw std::runtime_error("repo-exact-packet-order-mismatch");
+      auto dataName = data.getName().toUri(ndn::name::UriFormat::CANONICAL);
+      if (reference.packetSetMetadata) {
+        // validateExactPacketSet already verified uniqueness of the declared typed names.
+        const auto& expected = reference.packetSetMetadata->packetNames.at(i);
+        if (expected != dataName && ndn::Name(expected) != data.getName()) {
+          throw std::runtime_error("repo-exact-packet-order-mismatch");
+        }
       }
-      const auto dataName = data.getName().toUri(ndn::name::UriFormat::CANONICAL);
-      if (!uniquePacketNames.insert(dataName).second) {
+      else if (!uniquePacketNames.insert(dataName).second) {
         throw std::runtime_error(
           "repo-packet-set-invalid: duplicate NDN Data name: " + dataName);
       }
-      packetNames.push_back(dataName);
+      packetNames.push_back(std::move(dataName));
       packetOffsets.push_back(totalSize);
       if (EVP_DigestUpdate(digest.get(), packetWire.data(), packetWire.size()) != 1) {
         throw std::runtime_error("repo-packet-digest-update-failed");
@@ -2974,7 +2977,6 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
     throw std::runtime_error("repo-user-storage-persistent-repo-required: INSERT");
   }
   const auto owned = decodeUserStorageInsertRequest(request);
-  owned.reference.validateExactPacketSet();
   if (requesterIdentity.empty() || owned.reference.objectName.empty() ||
       owned.reference.dataPrefix.empty() ||
       (!owned.reference.packetSetMetadata && (!owned.reference.hasFinalSegment ||

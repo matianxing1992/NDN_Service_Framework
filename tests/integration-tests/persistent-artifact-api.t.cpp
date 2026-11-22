@@ -3364,6 +3364,10 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_CHECK_EQUAL(admittedManifest.packetSet->packetNames.size(), manifestWires.size());
   auto indexedRetry = manifestInsert;
   indexedRetry.schemaVersion = 3;
+  auto& indexedSourceName = indexedRetry.reference.packetSetMetadata->packetNames.back();
+  const auto alternateName = ndn::Name(indexedSourceName).toUri(ndn::name::UriFormat::ALTERNATE);
+  BOOST_REQUIRE_NE(alternateName, indexedSourceName);
+  indexedSourceName = alternateName;
   const auto retry = commitManifest(indexedRetry);
   BOOST_REQUIRE(retry.packetSet);
   BOOST_CHECK_EQUAL(retry.packetSet->wireDigest, admittedManifest.packetSet->wireDigest);
