@@ -456,6 +456,9 @@ expandCompactManifestInsert(RepoDataReference& reference)
       metadata->segmentCount > SegmentManifestVerifier::MAX_SOURCE_PACKETS) {
     throw std::invalid_argument("repo-compact-manifest-insert-index-invalid");
   }
+  if (metadata->envelopeBytes != 0 || !metadata->dataPrefix.empty()) {
+    throw std::invalid_argument("repo-segment-manifest-insert-layout-invalid");
+  }
   const auto sources = metadata->segmentCount;
   const auto pages = SegmentManifestVerifier::pageCountFor(sources);
   const auto count = 1 + pages + sources;
@@ -485,6 +488,35 @@ expandCompactManifestInsert(RepoDataReference& reference)
     add(scope.sourceName(i));
   }
   metadata->segmentCount = count;
+}
+
+std::vector<uint8_t>
+frameUserStorageInsertRequest(const RepoUserStorageInsertRequest& request,
+                              const std::string& reference)
+{
+  static constexpr uint8_t MAGIC[] = {'R', 'P', 'O', 'I', '1', '\n'};
+  const auto binding = request.storageBinding.toJson();
+  if (reference.size() > MAX_STORE_MANIFEST_BYTES || binding.size() > 16U * 1024U)
+    throw std::invalid_argument("repo-user-storage-insert-request-too-large");
+
+  std::vector<uint8_t> encoded(std::begin(MAGIC), std::end(MAGIC));
+  encoded[4] = static_cast<uint8_t>('0' + request.schemaVersion);
+  const auto appendString = [&encoded] (const std::string& value) {
+    appendFramedLine(encoded, value.size());
+    encoded.insert(encoded.end(), value.begin(), value.end());
+  };
+  appendString(request.operationId);
+  appendFramedLine(encoded, request.generation);
+  appendString(reference);
+  appendString(binding);
+  if (request.segmentManifestBinding) {
+    const auto& digest = *request.segmentManifestBinding;
+    appendFramedLine(encoded, digest.size());
+    encoded.insert(encoded.end(), digest.cbegin(), digest.cend());
+  }
+  if (encoded.size() > MAX_RANGE_FRAME_BYTES)
+    throw std::invalid_argument("repo-user-storage-insert-request-too-large");
+  return encoded;
 }
 
 } // namespace
@@ -531,7 +563,6 @@ makeManifestInsertRequest(const ndn_service_framework::ManifestPublication& orig
 std::vector<uint8_t>
 encodeUserStorageInsertRequest(const RepoUserStorageInsertRequest& request)
 {
-  static constexpr uint8_t MAGIC[] = {'R', 'P', 'O', 'I', '1', '\n'};
   if (request.schemaVersion < 1 || request.schemaVersion > 4 ||
       (request.schemaVersion >= 3) != request.segmentManifestBinding.has_value() ||
       request.operationId.empty() || request.operationId.size() > 256 || request.operationId.find('\0') != std::string::npos ||
@@ -555,28 +586,7 @@ encodeUserStorageInsertRequest(const RepoUserStorageInsertRequest& request)
     metadata.segmentCount = sourceCount;
     return compact.toJson();
   }();
-  const auto binding = request.storageBinding.toJson();
-  if (reference.size() > MAX_STORE_MANIFEST_BYTES || binding.size() > 16U * 1024U)
-    throw std::invalid_argument("repo-user-storage-insert-request-too-large");
-
-  std::vector<uint8_t> encoded(std::begin(MAGIC), std::end(MAGIC));
-  encoded[4] = static_cast<uint8_t>('0' + request.schemaVersion);
-  const auto appendString = [&encoded] (const std::string& value) {
-    appendFramedLine(encoded, value.size());
-    encoded.insert(encoded.end(), value.begin(), value.end());
-  };
-  appendString(request.operationId);
-  appendFramedLine(encoded, request.generation);
-  appendString(reference);
-  appendString(binding);
-  if (request.segmentManifestBinding) {
-    const auto& digest = *request.segmentManifestBinding;
-    appendFramedLine(encoded, digest.size());
-    encoded.insert(encoded.end(), digest.cbegin(), digest.cend());
-  }
-  if (encoded.size() > MAX_RANGE_FRAME_BYTES)
-    throw std::invalid_argument("repo-user-storage-insert-request-too-large");
-  return encoded;
+  return frameUserStorageInsertRequest(request, reference);
 }
 
 std::vector<uint8_t>
@@ -760,10 +770,17 @@ decodeUserStorageInsertRequest(const std::vector<uint8_t>& request)
       decoded.operationId.find('\0') != std::string::npos)
     throw std::invalid_argument("repo-user-storage-insert-request-invalid-trailing-or-generation");
   decoded.reference = parseDataReferenceJson(referenceWire);
-  if (decoded.schemaVersion == 4) {
-    expandCompactManifestInsert(decoded.reference);
-  }
   decoded.storageBinding = RepoUserStorageBinding::fromJson(bindingWire);
+  if (decoded.schemaVersion == 4) {
+    // Check the compact frame before materializing the derived index.
+    // Expansion generates the canonical root, pages and sources.
+    if (frameUserStorageInsertRequest(decoded, decoded.reference.toJson()) != request) {
+      throw std::invalid_argument("repo-user-storage-insert-request-noncanonical");
+    }
+    expandCompactManifestInsert(decoded.reference);
+    decoded.reference.validateExactPacketSet();
+    return decoded;
+  }
   // One bounded re-encoding checks both JSON fields and decimal frame spelling.
   if (encodeUserStorageInsertRequest(decoded) != request) {
     throw std::invalid_argument("repo-user-storage-insert-request-noncanonical");

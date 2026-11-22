@@ -143,6 +143,17 @@ BOOST_AUTO_TEST_CASE(ManifestInsertBindsBinaryScopeAndCanonicalPacketOrder)
     }
     BOOST_CHECK_LT(compactWire.size(), wire.size());
     BOOST_CHECK(encodeUserStorageInsertRequest(expanded) == compactWire);
+    const std::string envelope = R"(envelopeBytes\":0)";
+    const auto envelopeField = std::search(compactWire.begin(), compactWire.end(),
+                                           envelope.begin(), envelope.end());
+    BOOST_REQUIRE(envelopeField != compactWire.end());
+    auto contradictoryEnvelope = compactWire;
+    contradictoryEnvelope.at(std::distance(compactWire.begin(), envelopeField) +
+                              envelope.size() - 1) = '1';
+    BOOST_CHECK_THROW(decodeUserStorageInsertRequest(contradictoryEnvelope), std::invalid_argument);
+    auto noncanonicalCompact = compactWire;
+    noncanonicalCompact.insert(noncanonicalCompact.begin() + 6, '0');
+    BOOST_CHECK_THROW(decodeUserStorageInsertRequest(noncanonicalCompact), std::invalid_argument);
     wrongOrder.schemaVersion = 4;
     BOOST_CHECK_THROW(encodeUserStorageInsertRequest(wrongOrder), std::invalid_argument);
     auto invalidCompact = wire;
