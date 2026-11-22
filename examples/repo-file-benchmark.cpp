@@ -109,7 +109,8 @@ ndn_service_framework::SegmentManifestScope
 manifestScope(const ndn::Name& producer, const ndn::Name& prefix)
 {
   ndn_service_framework::SegmentManifestScope scope{producer, prefix};
-  const auto& name = prefix.wireEncode();
+  // Encoding fills a mutable cache. Keep it local to the calling thread.
+  const auto& name = scope.objectPrefix.wireEncode();
   const auto hash = ndn::util::Sha256::computeDigest(
     ndn::span<const uint8_t>(name.data(), name.size()));
   std::copy(hash->begin(), hash->end(), scope.bindingDigest.begin());
