@@ -383,6 +383,14 @@ approval again or hide an exception in a special-case branch.
 
 ### Test and experiment completeness and portability
 
+- Run the host Python deployment suite in a dedicated virtual environment with
+  `tests/python/requirements-deployment.txt`. Create it with `python3 -m venv`,
+  install the requirements with its `python -m pip install -r`, and run
+  `python -m pytest tests/python/test_ndnsf_di_deployment_config.py` with
+  `umask 077` using that same environment. The Ops wheel and CLI fixtures use
+  the environment's pip for offline builds and installation into an isolated
+  consumer. The host distribution's pip is only a bootstrap input.
+
 - Define acceptance by observable behavior, not by a passing command or task
   status. Trace the maintained entry point through its actual producers,
   consumers, serialization, admission and backend execution to the asserted

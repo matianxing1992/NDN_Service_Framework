@@ -1,0 +1,7 @@
+# Use the same pip release as the installer bootstrap on Ubuntu 20.04.
+pip==25.0.1
+setuptools==75.3.2
+wheel==0.45.1
+pytest==8.3.5
+python-ndn==0.3
+aenum==3.1.17

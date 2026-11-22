@@ -552,6 +552,16 @@ def test_cancel_before_allocation_requires_bound_scheduler_proof(ops, tmp_path, 
         assert result['actor_cleanup'] == 'UNVERIFIED' and persisted['needs_closeout'] is True
 
 
+def _install_test_name_codec(site):
+    import aenum
+    import ndn.encoding
+
+    shutil.copytree(Path(ndn.encoding.__file__).parents[1], site / 'ndn',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    shutil.copytree(Path(aenum.__file__).parent, site / 'aenum',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+
+
 @pytest.fixture(scope="module")
 def ops(tmp_path_factory):
     root = tmp_path_factory.mktemp("deployment-wheel")
@@ -607,12 +617,7 @@ def ops(tmp_path_factory):
             archive.extractall(installed_root)
     # Install the existing declared pure Python Name codec into this isolated
     # fixture environment; native DI/runtime packages are not copied.
-    import ndn.encoding
-    shutil.copytree(Path(ndn.encoding.__file__).parents[1], installed_root / 'ndn',
-                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-    import aenum
-    shutil.copytree(Path(aenum.__file__).parent, installed_root / 'aenum',
-                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    _install_test_name_codec(installed_root)
     installed = installed_root / 'ndnsf_distributed_inference/ops'
     # A private package name isolates these configuration tests from any host
     # DI owner. Both parser and helper bytes come from the actual built wheel.
@@ -641,10 +646,13 @@ def test_ops_wheel_console_entry_runs_outside_source_checkout(ops, tmp_path):
         assert archive.read('ndnsf_di_launcher.py') == (
             ROOT/'NDNSF-DistributedInference/ndnsf_di_launcher.py').read_bytes()
     environment = tmp_path/'control'
-    venv.EnvBuilder(with_pip=False, system_site_packages=True).create(environment)
+    venv.EnvBuilder(with_pip=False).create(environment)
     python = str(environment/'bin/python')
-    subprocess.run([python, '-m', 'pip', 'install', '--no-deps', '--no-index', '--force-reinstall',
+    subprocess.run([sys.executable, '-m', 'pip', '--python', python, 'install',
+                    '--no-deps', '--no-index', '--force-reinstall',
                     *map(str, wheels)], check=True, capture_output=True, text=True, timeout=60)
+    _install_test_name_codec(
+        environment / 'lib' / ('python%d.%d' % sys.version_info[:2]) / 'site-packages')
     unrelated = tmp_path/'unrelated'
     unrelated.mkdir()
     result = subprocess.run([str(environment/'bin/ndnsf-di'), '--help'], cwd=unrelated,
