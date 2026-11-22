@@ -4225,6 +4225,96 @@ BOOST_AUTO_TEST_CASE(PersistentOriginalFaceBurstChecksEachDeadlineAndDrainsQueue
   BOOST_CHECK_EQUAL(pendingBytes(), 0U);
 }
 
+BOOST_AUTO_TEST_CASE(InterleavedOriginalPacketBatchesKeepIndependentAdmissionAndWireOrder)
+{
+  using namespace std::chrono_literals;
+  ndn::DummyClientFace face(ndn::DummyClientFace::Options{true, true});
+  OwnedPacketFixture fixture;
+  const auto certificate = fixture.keys.getPib().getIdentity(ndn::Name("/provider/a"))
+    .getDefaultKey().getDefaultCertificate();
+  const auto publish = [&](const std::string& group) {
+    auto& reference = fixture.request.reference;
+    auto& metadata = *reference.packetSetMetadata;
+    auto prefix = ndn::Name("/provider/a/batch").append(group);
+    reference.objectName = ndn::Name(prefix).appendSegment(0).toUri();
+    metadata.objectName = reference.objectName;
+    fixture.request.operationId = "batch-" + group;
+    metadata.packetNames.clear();
+    fixture.packets.clear();
+    fixture.original.clear();
+    std::vector<ndn::Data> data;
+    for (unsigned i = 0; i < 2; ++i) {
+      auto& packet = data.emplace_back(ndn::Name(prefix).appendSegment(i));
+      packet.setContent(toBytes(group + std::to_string(i)));
+      fixture.keys.sign(packet, ndn::security::signingByCertificate(certificate));
+      const auto& wire = packet.wireEncode();
+      metadata.packetNames.push_back(packet.getName().toUri());
+      fixture.packets.emplace_back(wire.begin(), wire.end());
+      fixture.original.insert(fixture.original.end(), wire.begin(), wire.end());
+    }
+    metadata.size = reference.expectedSize = fixture.original.size();
+    metadata.sha256 = reference.expectedSha256 = sha256(fixture.original);
+    const RepoUserStorageGrantRequest grant{1, "batch-grant-" + group, "/provider/a",
+      reference.objectName, fixture.now() + 60000};
+    const auto granted = RepoUserStorageGrantReply::fromJson(toString(
+      fixture.node->handleUserStorageGrant(toBytes(grant.toJson()), "/owner/a")));
+    fixture.request.storageBinding = {1, "/owner/a", grant.grantId, granted.grant.ownerEpoch};
+    const auto inserted = fixture.insert();
+    BOOST_REQUIRE_MESSAGE(inserted.state == "DONE", inserted.message);
+    return data;
+  };
+  const auto a = publish("a");
+  const auto b = publish("b");
+  const auto pumpUntil = [&](const auto& complete) {
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    do {
+      face.getIoContext().restart();
+      (void)face.getIoContext().poll();
+      if (complete()) return true;
+      std::this_thread::sleep_for(1ms);
+    } while (std::chrono::steady_clock::now() < deadline);
+    return complete();
+  };
+  fixture.node->registerOriginalDataServing(face);
+  BOOST_REQUIRE(pumpUntil([&] { return fixture.node->isOriginalDataServingReady(); }));
+  const auto pending = RepoNodeTestAccess::pending(*fixture.node);
+  const auto pendingBytes = RepoNodeTestAccess::pendingBytes(*fixture.node).first;
+  std::vector<ndn::Block> received;
+  ndn::signal::ScopedConnection observed = face.onSendData.connect([&](const ndn::Data& packet) {
+    received.push_back(packet.wireEncode());
+  });
+  const auto enqueue = [&](const ndn::Name& name) {
+    ndn::Interest interest(name);
+    interest.setCanBePrefix(false);
+    interest.setInterestLifetime(ndn::time::milliseconds(4000));
+    BOOST_REQUIRE(RepoNodeTestAccess::enqueue(*fixture.node, interest));
+  };
+  const std::array<uint8_t, 32> wrongDigest{};
+  auto wrong = a[1].getName();
+  wrong.appendImplicitSha256Digest(wrongDigest);
+  for (const bool invalid : {false, true}) {
+    received.clear();
+    auto guard = RepoCorePacketIndexTestAccess::holdPacketReads(fixture.node->core());
+    enqueue(a[0].getFullName());
+    BOOST_REQUIRE(pumpUntil([&] { return RepoNodeTestAccess::queued(*fixture.node) == 0; }));
+    enqueue(a[0].getFullName());
+    enqueue(b[0].getFullName());
+    enqueue(invalid ? wrong : a[1].getFullName());
+    enqueue(b[1].getFullName());
+    guard.unlock();
+    BOOST_REQUIRE(pumpUntil([&] { return pending() == 0; }));
+    BOOST_REQUIRE_EQUAL(received.size(), invalid ? 3U : 5U);
+    BOOST_CHECK(received[0] == a[0].wireEncode());
+    BOOST_CHECK(received[invalid ? 1 : 2] == b[0].wireEncode());
+    BOOST_CHECK(received.back() == b[1].wireEncode());
+    if (!invalid) {
+      BOOST_CHECK(received[1] == a[0].wireEncode());
+      BOOST_CHECK(received[3] == a[1].wireEncode());
+    }
+    BOOST_CHECK_EQUAL(pendingBytes(), 0U);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(UnbootstrappedSelectedRepoRequestWaitsUntilTimeoutOrCancellation)
 {
   TempRoot temp;

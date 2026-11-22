@@ -600,6 +600,8 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
   {
     OriginalDataJob job;
     std::shared_ptr<PendingRelease> completion;
+    std::optional<ndn::Data> batchData;
+    bool rejected = false;
   };
   for (;;) {
     std::vector<Read> reads;
@@ -634,19 +636,19 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
         completion->count = std::move(release.count);
         completion->bytes = std::move(release.bytes);
         completion->byteCharge = release.byteCharge;
-        reads.push_back({std::move(job), std::move(completion)});
+        reads.push_back({std::move(job), std::move(completion), std::nullopt});
       }
       catch (const std::exception& error) {
         NDN_LOG_DEBUG("original packet read admission failed name=" << job.interest.getName()
                       << " reason=" << error.what());
       }
     }
-    std::optional<std::vector<ndn::Data>> batch;
-    try {
-      if (reads.size() > 1) {
+    const auto prepareBatch = [&](const std::vector<std::size_t>& positions) {
+      try {
         std::vector<ndn::Interest> interests;
-        for (const auto& read : reads) interests.push_back(read.job.interest);
-        batch = m_core.tryGetDataPacketBatch(interests,
+        interests.reserve(positions.size());
+        for (const auto position : positions) interests.push_back(reads[position].job.interest);
+        auto batch = m_core.tryGetDataPacketBatch(interests,
           [this](const RepoObjectManifest& object) {
             return object.objectType == "original-packet-set" &&
               isPersistentArtifactVisible(object);
@@ -654,21 +656,54 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
             if (!isOriginalDataServingReady())
               throw std::runtime_error("repo-original-packet-read-stopped");
           });
+        if (!batch) return false;
+        for (std::size_t i = 0; i < positions.size(); ++i) {
+          reads[positions[i]].batchData = std::move(batch->at(i));
+        }
+      }
+      catch (const std::exception& error) {
+        // A rejected batch must not fall back to individually admitted replies.
+        for (const auto position : positions) reads[position].rejected = true;
+        NDN_LOG_DEBUG("original packet batch rejected reason=" << error.what());
+      }
+      return true;
+    };
+    try {
+      if (reads.size() > 1) {
+        std::vector<std::size_t> positions;
+        positions.reserve(reads.size());
+        for (std::size_t i = 0; i < reads.size(); ++i) positions.push_back(i);
+        if (!prepareBatch(positions)) {
+          // Exact segmented Interests sharing a prefix are candidates for one
+          // holder. Core still resolves the actual holder and checks the batch.
+          std::map<ndn::Name, std::vector<std::size_t>> groups;
+          for (const auto position : positions) {
+            const auto& interest = reads[position].job.interest;
+            const auto& name = interest.getName();
+            const auto size = name.size();
+            const auto digest = size != 0 && name[-1].isImplicitSha256Digest();
+            const auto components = size - digest;
+            if (!interest.getCanBePrefix() && components != 0 &&
+                name[components - 1].isSegment()) {
+              groups[name.getPrefix(components - 1)].push_back(position);
+            }
+          }
+          for (const auto& [prefix, group] : groups) {
+            if (group.size() > 1 && group.size() < positions.size()) prepareBatch(group);
+          }
+        }
       }
     }
     catch (const std::exception& error) {
-      // A failed batch admission or integrity check is authoritative. Do not
-      // turn a rejected prepared batch into individually admitted replies.
-      NDN_LOG_DEBUG("original packet batch rejected reason=" << error.what());
+      NDN_LOG_DEBUG("original packet grouping failed reason=" << error.what());
       continue;
     }
-    for (std::size_t i = 0; i < reads.size(); ++i) {
-      const auto& read = reads[i];
+    for (auto& read : reads) {
       if (!isOriginalDataServingReady()) return;
-      if (std::chrono::steady_clock::now() >= read.job.deadline) continue;
+      if (read.rejected || std::chrono::steady_clock::now() >= read.job.deadline) continue;
       try {
-        if (batch) {
-          replies.push_back({std::move(batch->at(i)), read.job.deadline, read.completion});
+        if (read.batchData) {
+          replies.push_back({std::move(*read.batchData), read.job.deadline, read.completion});
         }
         else {
           // The lookup already validated this Data; sending it avoids the
