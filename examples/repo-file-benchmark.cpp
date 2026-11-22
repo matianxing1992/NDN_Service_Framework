@@ -61,6 +61,7 @@ static_assert(1 + MAX_BENCHMARK_MANIFEST_GROUP_SEGMENTS +
     MAX_BENCHMARK_MANIFEST_GROUP_SEGMENTS)
   <= 4096);
 constexpr uint32_t MANIFEST_READ_WINDOW = 32;
+constexpr size_t MAX_MANIFEST_READ_GROUPS = 4;
 
 void
 require(bool condition, const char* message)
@@ -137,7 +138,8 @@ run(int argc, char** argv)
     for (const auto& option : required) std::cout << option << " VALUE ";
     std::cout << "[--phase write|read|write-read] [--reference PATH] "
                  "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
-                 "[--manifest-read-pipeline serial|paired] [--manifest-insert indexed|compact] "
+                 "[--manifest-read-pipeline serial|paired|quad] "
+                 "[--manifest-insert indexed|compact] "
                  "[--manifest-group-segments 2048|2560|3840] ";
     std::cout << "\nUses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
                  "whole-group reads and at most "
@@ -170,10 +172,15 @@ run(int argc, char** argv)
   const bool compactInsert = insertMode != options.end() && insertMode->second == "compact";
   const auto readPipeline = options.find("--manifest-read-pipeline");
   const bool boundedRead = readPipeline != options.end();
-  require(!boundedRead || (useManifest && phaseOption != "write" &&
-          (readPipeline->second == "serial" || readPipeline->second == "paired")),
-          "a bounded read pipeline requires a manifest read and serial or paired mode");
-  const size_t readGroups = boundedRead && readPipeline->second == "paired" ? 2 : 1;
+  size_t readGroups = 1;
+  if (boundedRead) {
+    const auto& mode = readPipeline->second;
+    require(useManifest && phaseOption != "write" &&
+            (mode == "serial" || mode == "paired" || mode == "quad"),
+            "a bounded read pipeline requires manifest read and serial, paired or quad mode");
+    if (mode == "paired") readGroups = 2;
+    if (mode == "quad") readGroups = MAX_MANIFEST_READ_GROUPS;
+  }
   const auto readWindow = boundedRead ? MANIFEST_READ_WINDOW / readGroups : 0;
 
   const auto selectedCertificate = options.find("--signing-certificate");
@@ -578,7 +585,7 @@ run(int argc, char** argv)
       ndn::util::Sha256 restored;
       uint64_t restoredBytes = 0;
       using PacketWires = std::vector<std::vector<uint8_t>>;
-      std::array<std::future<PacketWires>, 2> pending;
+      std::array<std::future<PacketWires>, MAX_MANIFEST_READ_GROUPS> pending;
       std::mutex readFailureMutex;
       std::exception_ptr readFailure;
       size_t failedReadIndex = 0;
@@ -625,7 +632,7 @@ run(int argc, char** argv)
       };
       const auto submitRead = [&](size_t index) {
         current();
-        const auto policy = readGroups == 2 ? std::launch::async : std::launch::deferred;
+        const auto policy = readGroups > 1 ? std::launch::async : std::launch::deferred;
         pending[index % readGroups] = std::async(policy, fetchGroup, index);
       };
       try {
