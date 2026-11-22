@@ -2778,6 +2778,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
   auto sourceWriter = makeRepoPublisherUser(environment, 0, servicePrefix, operations, true);
   auto secondOwner = makeRepoPublisherUser(environment, 2, servicePrefix, operations);
+  environment.provider(1).setHandlerThreads(2);
   // The full packet index requires Core's protected segmented response path.
   // Model the configured Controller state through maintained admission APIs;
   // never raise the inline threshold or synthesize an authenticated response.
@@ -2820,6 +2821,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   capability.repoMode = "persistent";
   capability.freeBytes = 4 * 1024 * 1024;
   const auto originalInsertFetches = std::make_shared<std::atomic<unsigned>>(0);
+  std::function<void(std::chrono::steady_clock::time_point)> afterManifestFetch;
   const auto openRepo = [&] {
     auto node = std::make_shared<repo::RepoNode>(servicePrefix, capability,
       std::make_shared<repo::FilesystemRepoStoreBackend>(
@@ -2829,22 +2831,26 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     node->registerServices(environment.provider(1));
     node->registerOriginalDataServing(environment.providerFace(1));
     node->setDataReferenceSpoolFetcher(
-      [originalInsertFetches, fetch = repo::detail::FaceDataReferenceFetcher(
-         environment.providerFace(1), 1s, 10s)](const repo::RepoDataReference& value) {
+      [&environment, originalInsertFetches](const repo::RepoDataReference& value) {
         ++*originalInsertFetches;
+        const repo::detail::FaceDataReferenceFetcher fetch(environment.providerFace(1), 1s, 10s);
         return fetch(value);
       });
     node->setManifestPacketFetcher(
-      [&environment](const repo::RepoDataReference& reference,
+      [&environment, &afterManifestFetch](const repo::RepoDataReference& reference,
         const ndn_service_framework::SegmentManifestScope& scope,
         std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
         auto& actor = environment.provider(1);
         const repo::detail::FaceDataReferenceFetcher fetch(
           environment.providerFace(1), 1s, 10s);
-        return fetch.fetchManifest(reference, scope, deadline,
+        auto admitted = fetch.fetchManifest(reference, scope, deadline,
           [&actor](const auto& wire, const auto& expected, auto expires) {
             return actor.validateManifestRootUntil(wire, expected, expires);
           }, std::move(requireCurrent));
+        if (afterManifestFetch) {
+          afterManifestFetch(deadline);
+        }
+        return admitted;
       });
     return node;
   };
@@ -2930,11 +2936,10 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_CHECK_EQUAL(aggregate.size(), packets.wireBytes);
   BOOST_CHECK_EQUAL("sha256:" + reference.expectedSha256, packets.wireDigest);
 
-  const auto ownerCall = [&](ServiceUser& caller, auto start) {
+  const auto submitOwnerCall = [](ServiceUser& caller, auto start) {
     auto result = std::make_shared<std::promise<ResponseMessage>>();
     auto ready = result->get_future();
-    const auto deadline = std::chrono::steady_clock::now() + 20s;
-    caller.postToIo([&, start, result] {
+    caller.postToIo([start, result] {
       try {
         const auto requestId = start([result](const ndn::Name&) {
           result->set_exception(std::make_exception_ptr(std::runtime_error("owner-call-timeout")));
@@ -2943,6 +2948,11 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
       }
       catch (...) { result->set_exception(std::current_exception()); }
     });
+    return ready;
+  };
+  const auto ownerCall = [&](ServiceUser& caller, auto start) {
+    auto ready = submitOwnerCall(caller, std::move(start));
+    const auto deadline = std::chrono::steady_clock::now() + 20s;
     return runWithFacePump(environment, [&] {
       if (ready.wait_until(deadline) != std::future_status::ready)
         throw std::runtime_error("owner-call-callback-deadline");
@@ -3253,7 +3263,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     return config;
   };
   auto manifestWriter = repo::RepoClient::makePersistent(sourceWriter, clientConfig());
-  const auto commitManifest = [&](const repo::RepoUserStorageInsertRequest& request) {
+  const auto publishManifest = [&](const repo::RepoUserStorageInsertRequest& request) {
     const auto& indexManifest = *request.reference.packetSetMetadata;
     std::size_t index = 0;
     repo::RepoDataPublication input;
@@ -3277,11 +3287,12 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     auto scope = manifestScope;
     scope.bindingDigest = *request.segmentManifestBinding;
     input.segmentManifest = std::make_shared<const SegmentManifestScope>(std::move(scope));
-    return runWithFacePump(environment, [&] {
-      repo::RepoOperationOptions options;
-      options.deadline = std::chrono::steady_clock::now() + 15s;
-      return manifestWriter.publishData(input, options);
-    });
+    repo::RepoOperationOptions options;
+    options.deadline = std::chrono::steady_clock::now() + 15s;
+    return manifestWriter.publishData(input, options);
+  };
+  const auto commitManifest = [&](const repo::RepoUserStorageInsertRequest& request) {
+    return runWithFacePump(environment, [&] { return publishManifest(request); });
   };
   auto wrongManifest = manifestInsert;
   wrongManifest.segmentManifestBinding->front() ^= 1;
@@ -3368,13 +3379,53 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_CHECK(reopened.ownerPacketSet->packetWires() == manifestWires);
   const repo::RepoUserStorageDeleteRequest manifestCleanup{1, "client-manifest-cleanup",
     manifestObject, manifestGrantReply.grant.ownerEpoch};
-  response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClientCompat::requestUserStorageDelete(environment.user(), target,
-      manifestCleanup, 15000, std::move(timeout), std::move(complete));
+  // Advance the Owner's deletion fence after the original packets have passed
+  // manifest validation, while the fresh operation still has to commit.
+  std::promise<void> fetched;
+  std::promise<void> release;
+  auto fetchReady = fetched.get_future();
+  const auto releaseReady = release.get_future().share();
+  afterManifestFetch = [&](auto deadline) {
+    fetched.set_value();
+    if (releaseReady.wait_until(deadline) != std::future_status::ready) {
+      throw std::runtime_error("manifest fixture commit barrier timed out");
+    }
+  };
+  auto racingInsert = manifestInsert;
+  racingInsert.operationId += "-in-flight-at-delete";
+  const auto overlapped = runWithFacePump(environment, [&] {
+    auto pendingWrite = std::async(std::launch::async, [&]() -> std::string {
+      try {
+        (void)publishManifest(racingInsert);
+        return {};
+      }
+      catch (const std::runtime_error& error) {
+        return error.what();
+      }
+    });
+    auto releaseGuard = ndn::make_scope_exit([&] { release.set_value(); });
+    if (fetchReady.wait_for(8s) != std::future_status::ready) {
+      throw std::runtime_error("manifest fixture did not reach the commit barrier");
+    }
+    auto pendingDelete = submitOwnerCall(environment.user(), [&](auto timeout, auto complete) {
+      return repo::RepoClientCompat::requestUserStorageDelete(environment.user(), target,
+        manifestCleanup, 4000, std::move(timeout), std::move(complete));
+    });
+    if (pendingDelete.wait_for(4s) != std::future_status::ready) {
+      throw std::runtime_error("manifest fixture Owner deletion did not complete");
+    }
+    auto deleted = pendingDelete.get();
+    release.set_value();
+    releaseGuard.release();
+    return std::make_pair(std::move(deleted), pendingWrite.get());
   });
+  afterManifestFetch = {};
+  response = overlapped.first;
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   BOOST_CHECK_EQUAL(repo::RepoUserStorageDeleteReply::fromJson(responseString(response)).state,
     "DELETED");
+  BOOST_CHECK_EQUAL(overlapped.second,
+    "repo-original-publication-insert-not-confirmed: repo-user-storage-deleted");
   BOOST_CHECK_THROW(readManifest(manifestScope), std::runtime_error);
   BOOST_CHECK(node->core().list().empty());
 
