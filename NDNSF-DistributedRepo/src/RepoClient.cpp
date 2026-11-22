@@ -1228,22 +1228,27 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   }
   for (size_t i = 0; i < names.size(); ++i) {
     current();
-    const auto wire = nextOriginalPacket();
+    auto wire = nextOriginalPacket();
     current();
     if (!wire || wire->empty() || wire->size() > ndn::MAX_NDN_PACKET_SIZE)
       throw std::invalid_argument("repo-original-publication-missing-or-oversized-packet");
-    const ndn::Data data{ndn::Block(ndn::span<const uint8_t>(wire->data(), wire->size()))};
-    if (data.wireEncode().size() != wire->size() || data.getName() != ndn::Name(names[i]) ||
+    auto buffer = std::make_shared<ndn::Buffer>();
+    buffer->swap(*wire);
+    const auto [parsed, block] = ndn::Block::fromBuffer(buffer);
+    if (!parsed || block.size() != buffer->size())
+      throw std::invalid_argument("repo-original-publication-packet-invalid");
+    const ndn::Data data(block);
+    if (data.getName() != ndn::Name(names[i]) ||
         !prefix.isPrefixOf(data.getName()) ||
         (!request.segmentManifestBinding && !verifyProducerSignature(data)) ||
-        !publication->index.emplace(data.getName(), std::make_pair(i, wire->size())).second)
+        !publication->index.emplace(data.getName(), std::make_pair(i, buffer->size())).second)
       throw std::invalid_argument("repo-original-publication-packet-invalid");
     current();
     if (request.segmentManifestBinding) {
       canonicalNames.push_back(data.getName().toUri(ndn::name::UriFormat::CANONICAL));
       contentBytes += data.getContent().value_size();
       if (i == 0) {
-        auto root = writer.validateManifestRootUntil(*wire, manifestScope, deadline);
+        auto root = writer.validateManifestRootUntil(*buffer, manifestScope, deadline);
         if (!root) {
           throw std::invalid_argument("repo-original-publication-root-proof-invalid");
         }
@@ -1265,9 +1270,9 @@ RepoClientCompat::commitUserStorageOriginalPackets(
         }
       }
     }
-    publication->spool->append(i, *wire);
-    digest.update(ndn::span<const uint8_t>(wire->data(), wire->size()));
-    offsets.push_back(offsets.back() + wire->size());
+    publication->spool->append(i, *buffer);
+    digest.update(ndn::span<const uint8_t>(buffer->data(), buffer->size()));
+    offsets.push_back(offsets.back() + buffer->size());
   }
   if (nextOriginalPacket())
     throw std::invalid_argument("repo-original-publication-extra-packet");

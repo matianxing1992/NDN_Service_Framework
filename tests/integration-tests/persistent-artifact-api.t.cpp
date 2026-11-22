@@ -2822,6 +2822,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   capability.repoMode = "persistent";
   capability.freeBytes = 4 * 1024 * 1024;
   const auto originalInsertFetches = std::make_shared<std::atomic<unsigned>>(0);
+  std::atomic<unsigned> manifestInsertFetches{0};
   const auto sourceWindow = std::make_shared<repo::detail::ManifestSourceWindow>(16);
   std::function<void(std::chrono::steady_clock::time_point)> afterManifestFetch;
   const auto openRepo = [&] {
@@ -2839,9 +2840,11 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
         return fetch(value);
       });
     node->setManifestPacketFetcher(
-      [&environment, &afterManifestFetch, sourceWindow](const repo::RepoDataReference& reference,
+      [&environment, &afterManifestFetch, &manifestInsertFetches,
+       sourceWindow](const repo::RepoDataReference& reference,
         const ndn_service_framework::SegmentManifestScope& scope,
         std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
+        ++manifestInsertFetches;
         auto& actor = environment.provider(1);
         const repo::detail::FaceDataReferenceFetcher fetch(
           environment.providerFace(1), 1s, 10s);
@@ -3311,6 +3314,25 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   const auto commitManifest = [&](const repo::RepoUserStorageInsertRequest& request) {
     return runWithFacePump(environment, [&] { return publishManifest(request); });
   };
+  const auto originalLast = manifestWires.back();
+  const auto fetchesBeforeMalformed = manifestInsertFetches.load();
+  for (const bool trailing : {false, true}) {
+    BOOST_TEST_CONTEXT("malformed original, trailing bytes: " << trailing) {
+      if (trailing) {
+        manifestWires.back().push_back(0);
+      }
+      else {
+        manifestWires.back().pop_back();
+      }
+      BOOST_CHECK_EXCEPTION(commitManifest(manifestInsert), std::invalid_argument,
+        [](const auto& error) {
+          return std::string_view(error.what()) == "repo-original-publication-packet-invalid";
+        });
+      manifestWires.back() = originalLast;
+      BOOST_CHECK_EQUAL(manifestInsertFetches.load(), fetchesBeforeMalformed);
+      BOOST_CHECK(node->core().list().empty());
+    }
+  }
   auto wrongManifest = manifestInsert;
   wrongManifest.segmentManifestBinding->front() ^= 1;
   const auto wrongBinding = [](const auto& error) {
@@ -3357,7 +3379,9 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     }
   }
   BOOST_CHECK(node->core().list().empty());
+  const auto fetchesBeforeAdmitted = manifestInsertFetches.load();
   const auto admittedManifest = commitManifest(manifestInsert);
+  BOOST_CHECK_GT(manifestInsertFetches.load(), fetchesBeforeAdmitted);
   BOOST_CHECK_EQUAL(sourceWindow->peak(), 16U);
   BOOST_REQUIRE(admittedManifest.packetSet);
   BOOST_REQUIRE_EQUAL(admittedManifest.packetSet->lifecycleState, "COMMITTED");
