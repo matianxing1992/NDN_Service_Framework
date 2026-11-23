@@ -2552,7 +2552,7 @@ RepoNode::insertWirePacketsImpl(
       }
       catch (const std::exception&) {
         status.state = "UNKNOWN";
-        status.message = "repo-user-storage-commit-receipt-no-longer-current";
+        status.message = detail::OWNED_MANIFEST_RECEIPT_NO_LONGER_CURRENT;
         return status;
       }
     }

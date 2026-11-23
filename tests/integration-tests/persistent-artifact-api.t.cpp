@@ -3488,6 +3488,48 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     return std::string(error.what()).find("repo-user-storage-operation-conflict") !=
            std::string::npos;
   });
+  // Keep the authenticated transport and production MANIFEST handler. Inject a
+  // lost INSERT receipt after the real commit, then try the same hint with no
+  // commit for the requested operation and with a different operation ID.
+  auto wrongReceiptOperation = std::make_shared<std::atomic<bool>>(false);
+  environment.provider(1).addService(repoService(servicePrefix, "INSERT"),
+    [](const RequestMessage&) {
+      ServiceProvider::AckDecision ack;
+      ack.status = true;
+      ack.message = "repo-ready";
+      return ack;
+    },
+    [wrongReceiptOperation](const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                            const ndn::Name&, const RequestMessage& request) {
+      const auto payload = request.getPayload();
+      const auto insert = repo::decodeUserStorageInsertRequest({payload.begin(), payload.end()});
+      repo::RepoOperationStatus status;
+      status.operationId = insert.operationId;
+      status.objectName = insert.reference.objectName;
+      status.operation = "INSERT";
+      if (wrongReceiptOperation->load())
+        status.operationId += "-different";
+      status.state = "UNKNOWN";
+      status.message = "repo-user-storage-commit-receipt-no-longer-current";
+      const auto output = status.toJson();
+      return makeSyntheticResponse(ndn::Buffer(output.data(), output.size()));
+    });
+  const auto recoveredReceipt = commitManifest(manifestInsert);
+  BOOST_REQUIRE(recoveredReceipt.packetSet);
+  BOOST_CHECK_EQUAL(recoveredReceipt.packetSet->operationId, admittedManifest.packetSet->operationId);
+  BOOST_CHECK_EQUAL(recoveredReceipt.packetSet->wireDigest, admittedManifest.packetSet->wireDigest);
+  BOOST_CHECK(recoveredReceipt.packetSet->packetNames == admittedManifest.packetSet->packetNames);
+  auto absentCommit = manifestInsert;
+  absentCommit.operationId += "-no-commit";
+  BOOST_CHECK_EXCEPTION(commitManifest(absentCommit), std::runtime_error, [](const auto& error) {
+    return std::string_view(error.what()).find("repo-owned-manifest-claim-mismatch") !=
+           std::string_view::npos;
+  });
+  wrongReceiptOperation->store(true);
+  BOOST_CHECK_EXCEPTION(commitManifest(manifestInsert), std::runtime_error, [](const auto& error) {
+    return std::string_view(error.what()) == "repo-original-publication-insert-not-confirmed: "
+                                            "repo-user-storage-commit-receipt-no-longer-current";
+  });
   const std::weak_ptr<repo::RepoNode> previousManifestRepo = node;
   releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix, *node);
   runWithFacePump(environment, [&] { node.reset(); return true; });

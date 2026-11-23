@@ -1441,12 +1441,16 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     status = parseOperationStatusJson(insertStatus);
     noteStage("insert-retry");
   }
-  if (!matchesInsert(status) || status.state != "DONE")
+  const bool uncertainCommit = request.segmentManifestBinding && status.state == "UNKNOWN" &&
+    status.message == detail::OWNED_MANIFEST_RECEIPT_NO_LONGER_CURRENT;
+  if (!matchesInsert(status) || (status.state != "DONE" && !uncertainCommit))
     throw std::runtime_error("repo-original-publication-insert-not-confirmed: " + status.message);
+  if (uncertainCommit && (!publication->proof || !publication->proof->isCurrent()))
+    throw std::runtime_error("repo-manifest-root-trust-expired");
 
   detail::OwnedManifestQuery manifestQuery(request);
   std::optional<RepoObjectManifest> expectedManifest;
-  const auto committedManifestOperationId = request.segmentManifestBinding
+  const auto committedManifestOperationId = request.segmentManifestBinding && !uncertainCommit
     ? detail::extractCommittedManifestOperationId(insertStatus) : std::string{};
   if (!committedManifestOperationId.empty()) {
     expectedManifest = detail::makeOriginalPacketSetManifest(
@@ -1486,8 +1490,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     current();
     return manifest;
   };
-  // INSERT is durable before DONE. Withdraw the temporary Producer before the
-  // final current grant/claim and physical-manifest confirmation.
+  // Withdraw the temporary Producer before checking the current grant, claim
+  // and physical manifest. An uncertain receipt can only proceed to this read.
   publication->stopped.store(true);
   auto withdrawn = std::make_shared<std::promise<void>>();
   auto withdrawalReady = withdrawn->get_future();
@@ -1507,6 +1511,12 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   noteStage("withdraw-producer");
   const auto manifest = readManifest();
   current();
+  if (uncertainCommit) {
+    if (!publication->proof->isCurrent())
+      throw std::runtime_error("repo-manifest-root-trust-expired");
+    noteStage("manifest-confirmation-uncertain");
+    return manifest;
+  }
   noteStage(expectedManifest ? "manifest-confirmation-digest" : "manifest-confirmation");
   return manifest;
 }
