@@ -1102,6 +1102,7 @@ struct SqliteArtifactMetadataStore::Impl
         setGeneration(database, 17);
         migration.action += "+schema-17";
       }
+      ensureCommittedClaimLookupIndex(database);
       sqlExec(database, "COMMIT");
     }
     catch (...) {
@@ -1988,6 +1989,15 @@ struct SqliteArtifactMetadataStore::Impl
     "(length(admission_binding)=64 AND admission_binding NOT GLOB '*[^0-9a-f]*'))";
 
   static void
+  ensureCommittedClaimLookupIndex(sqlite3* db)
+  {
+    // Packet serving looks up an object without knowing which owner committed it.
+    sqlExec(db,
+      "CREATE INDEX IF NOT EXISTS repo_user_storage_committed_claim_object "
+      "ON repo_user_storage_claims(repo_node,object_name) WHERE state='Committed'");
+  }
+
+  static void
   migrateUserStorageAdmission(sqlite3* db)
   {
     // Empty marks a v16 row with no recorded admission mode.
@@ -2012,6 +2022,7 @@ struct SqliteArtifactMetadataStore::Impl
       createPersistentCatalog(database);
       createPublishOperationTables(database);
       createUserStorageCatalog(database);
+      ensureCommittedClaimLookupIndex(database);
       migrateUserStorageAdmission(database);
       sqlExec(database, "COMMIT");
     }

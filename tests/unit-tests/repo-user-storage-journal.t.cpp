@@ -183,6 +183,40 @@ BOOST_AUTO_TEST_CASE(LiveClaimLookupObservesPeerCommitsAndRebindsEveryCall)
   BOOST_CHECK(reopened.liveUserStorageClaimsForObject("/repo/a", item.objectName).empty());
 }
 
+BOOST_AUTO_TEST_CASE(CommittedClaimLookupIndexIsAddedOnWritableReopen)
+{
+  Fixture fixture;
+  const auto item = object("/producer/committed-index", 30);
+  constexpr char countIndex[] =
+    "SELECT count(*) FROM sqlite_master WHERE type='index' "
+    "AND name='repo_user_storage_committed_claim_object'";
+  {
+    SqliteArtifactMetadataStore writer(fixture.database);
+    BOOST_CHECK_EQUAL(fixture.integer(countIndex), 1U);
+    (void)writer.reconcileUserStorageInventory("/repo/a", {}, 1000);
+    grant(writer, item);
+    reserve(writer, item);
+    (void)writer.commitUserStorage("/repo/a", "/user/u", "write", 1002);
+  }
+  fixture.sql("DROP INDEX repo_user_storage_committed_claim_object");
+  const auto hasClaim = [&](const SqliteArtifactMetadataStore& store, uint64_t generation) {
+    return store.hasLiveCommittedClaimForObject("/repo/a", item.objectName, item.wireSha256,
+      generation, item.payloadWireBytes, item.manifestBytes);
+  };
+  {
+    SqliteArtifactMetadataStore reader(fixture.database, false);
+    BOOST_CHECK_EQUAL(fixture.integer(countIndex), 0U);
+    BOOST_CHECK(hasClaim(reader, item.generation));
+  }
+  SqliteArtifactMetadataStore writer(fixture.database);
+  BOOST_CHECK_EQUAL(fixture.integer(countIndex), 1U);
+  BOOST_CHECK(hasClaim(writer, item.generation));
+  BOOST_CHECK(!hasClaim(writer, item.generation + 1));
+  (void)writer.prepareUserStorageCleanup("/user/u", "/repo/a", "clear",
+    item.objectName, item.generation, 1003);
+  BOOST_CHECK(!hasClaim(writer, item.generation));
+}
+
 BOOST_AUTO_TEST_CASE(PersistentNodeFactoryCreatesMigratesAndReopensCurrentCatalog)
 {
   Fixture fixture;
