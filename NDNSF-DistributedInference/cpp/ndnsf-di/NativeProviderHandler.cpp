@@ -5231,6 +5231,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           if (selectionProjection && !authenticatedGeneration.enabled && !kvBinding &&
               spec.steps && !spec.steps->empty() &&
               spec.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
+            // A cold runner can still be preparing when the worker's fallback wait expires.
+            // Use the admitted work horizon, as for streamed epochs, with each read bounded
+            // by its own transport deadline.
+            spec.executionDeadline = ctx.assignment().workDeadline;
             spec.stepScopedDependencyReads = true;
             spec.publishedStepResponseScope = config.finalResponseScope;
           }
