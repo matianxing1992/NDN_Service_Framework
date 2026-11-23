@@ -8,6 +8,7 @@
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/TimelineTrace.hpp"
 #include "ndn-service-framework/controller-certificate.hpp"
 
 #include <ndn-cxx/face.hpp>
@@ -33,6 +34,36 @@
 
 namespace {
 
+struct ManifestSpoolCharge
+{
+  explicit ManifestSpoolCharge(std::shared_ptr<std::atomic<uint64_t>> count)
+    : bytesInUse(std::move(count))
+  {
+  }
+
+  ~ManifestSpoolCharge() { bytesInUse->fetch_sub(bytes); }
+
+  std::shared_ptr<std::atomic<uint64_t>> bytesInUse;
+  uint64_t bytes = 0;
+};
+
+std::shared_ptr<ManifestSpoolCharge>
+reserveManifestSpool(const std::shared_ptr<std::atomic<uint64_t>>& count, uint64_t bytes)
+{
+  constexpr auto MAX_GROUP_BYTES = ndnsf_distributed_repo::detail::MAX_NAMED_PACKET_WIRE_BYTES;
+  constexpr uint64_t MAX_RETAINED_BYTES = 64ULL << 20;
+  if (!count || bytes == 0 || bytes > MAX_GROUP_BYTES)
+    return {};
+  auto charge = std::make_shared<ManifestSpoolCharge>(count);
+  auto previous = count->load();
+  do {
+    if (bytes > MAX_RETAINED_BYTES - previous)
+      return {};
+  } while (!count->compare_exchange_weak(previous, previous + bytes));
+  charge->bytes = bytes;
+  return charge;
+}
+
 void
 printUsage(std::ostream& output)
 {
@@ -44,7 +75,8 @@ printUsage(std::ostream& output)
             "[--failure-domain NAME] [--ack-collection-ms N] "
             "[--request-timeout-ms N] [--availability-freshness-ms N] "
             "[--manifest-fetch-window N] [--manifest-source-window N] "
-            "[--manifest-handler shared|reserved] [--manifest-fetch-face shared|dedicated]\n";
+            "[--manifest-handler shared|reserved] [--manifest-fetch-face shared|dedicated] "
+            "[--manifest-spool file|bounded-memory]\n";
 }
 
 class ManifestFetchFace
@@ -204,19 +236,33 @@ main(int argc, char* argv[])
     if (config.manifestSourceWindow != 0) {
       sourceWindow = std::make_shared<ManifestSourceWindow>(config.manifestSourceWindow);
     }
+    const auto spoolBudget = config.memoryManifestSpool
+      ? std::make_shared<std::atomic<uint64_t>>(0) : nullptr;
     repo->setManifestPacketFetcher(
       [&fetchFace, &provider, timeout = std::chrono::milliseconds(config.requestTimeoutMs),
-       window = config.manifestFetchWindow, sourceWindow = std::move(sourceWindow)](
+       window = config.manifestFetchWindow, sourceWindow = std::move(sourceWindow), spoolBudget](
         const ndnsf_distributed_repo::RepoDataReference& reference,
         const ndn_service_framework::SegmentManifestScope& scope,
         std::chrono::steady_clock::time_point deadline, std::function<void()> requireCurrent) {
         ndnsf_distributed_repo::detail::FaceDataReferenceFetcher fetcher(fetchFace, timeout, timeout,
                                                                        window);
+        auto charge = reserveManifestSpool(spoolBudget, reference.expectedSize);
+        const bool useMemory = bool(charge);
+        try {
+          if (ndn_service_framework::controlTimingEnvEnabled()) {
+            ndn_service_framework::logControlTiming("repo-server", "manifest-spool",
+              scope.rootName(), {{"mode", useMemory ? "memory" : "file"}});
+          }
+        }
+        catch (...) {
+          // Timing observers must not change packet admission.
+        }
         return fetcher.fetchManifest(reference, scope, deadline,
           [&provider](const auto& wire, const auto& expected, auto expires) {
             return provider.validateManifestRootUntil(wire, expected, expires);
           }, std::move(requireCurrent),
-          ndnsf_distributed_repo::detail::MAX_NAMED_PACKET_COUNT, sourceWindow);
+          ndnsf_distributed_repo::detail::MAX_NAMED_PACKET_COUNT, sourceWindow,
+          useMemory, std::move(charge));
       });
 
     // Fence owned INSERT and validation before Provider teardown on every exit path.
@@ -296,6 +342,7 @@ main(int argc, char* argv[])
               << repoStoreRoot << " handlers=" << provider.getHandlerThreads()
               << " manifestHandler=" << (config.reserveManifestHandler ? "reserved" : "shared")
               << " manifestFetchFace=" << (manifestFace ? "dedicated" : "shared")
+              << " manifestSpool=" << (spoolBudget ? "bounded-memory" : "file")
               << std::endl;
     if (std::getenv("NDNSF_DEPLOYMENT_BOOT_ID") != nullptr) {
       // The manager's fresh owned log binds this marker to its PID/launch.

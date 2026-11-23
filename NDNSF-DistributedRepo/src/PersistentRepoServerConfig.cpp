@@ -148,6 +148,13 @@ PersistentRepoServerConfig::fromArguments(int argc, char* argv[])
     config.dedicatedManifestFetchFace = it->second == "dedicated";
     options.erase(it);
   }
+  if (const auto it = options.find("--manifest-spool"); it != options.end()) {
+    if (it->second != "file" && it->second != "bounded-memory") {
+      throw std::invalid_argument("manifest-spool must be file or bounded-memory");
+    }
+    config.memoryManifestSpool = it->second == "bounded-memory";
+    options.erase(it);
+  }
   if (const auto it = options.find("--availability-freshness-ms"); it != options.end()) {
     config.availabilityFreshnessMs = parseUnsigned(it->second, it->first);
     options.erase(it);

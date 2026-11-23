@@ -362,7 +362,8 @@ struct FetchState : std::enable_shared_from_this<FetchState>
              std::chrono::milliseconds interestLifetimeArg,
              std::chrono::steady_clock::time_point deadlineArg,
              std::shared_ptr<FetchAdmission> admissionArg,
-             const std::vector<uint32_t>& plannedWireLengths, bool materializeWires)
+             const std::vector<uint32_t>& plannedWireLengths, bool materializeWires,
+             std::shared_ptr<void> spoolLease)
     : face(faceArg)
     , strand(boost::asio::make_strand(faceArg.getIoContext()))
     , reference(referenceArg)
@@ -376,7 +377,8 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     , deadline(deadlineArg)
     , admission(std::move(admissionArg))
     , spool(std::make_shared<FaceDataReferencePacketSpool>(
-        packetCountArg, referenceArg.expectedSize, plannedWireLengths, materializeWires))
+        packetCountArg, referenceArg.expectedSize, plannedWireLengths, materializeWires,
+        std::move(spoolLease)))
   {}
 
   ~FetchState()
@@ -999,8 +1001,9 @@ struct FetchState : std::enable_shared_from_this<FetchState>
 
 FaceDataReferencePacketSpool::FaceDataReferencePacketSpool(
   std::size_t packetCount, uint64_t maxWireBytes, const std::vector<uint32_t>& plannedWireLengths,
-  bool materializeWires)
-  : m_file(materializeWires ? nullptr : std::tmpfile(), &std::fclose)
+  bool materializeWires, std::shared_ptr<void> spoolLease)
+  : m_spoolLease(std::move(spoolLease))
+  , m_file(materializeWires ? nullptr : std::tmpfile(), &std::fclose)
   , m_packetOffsets(checkedPacketCount(packetCount, maxWireBytes), -1)
   , m_packetLengths(packetCount, 0)
   , m_packetPresent(packetCount, false)
@@ -1376,7 +1379,7 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
   std::chrono::steady_clock::time_point deadline,
   const ManifestRootValidator& validateRoot, std::function<void()> requireCurrent,
   std::size_t maxPacketCount, std::shared_ptr<ManifestSourceWindow> sourceWindow,
-  bool materializeWires) const
+  bool materializeWires, std::shared_ptr<void> spoolLease) const
 {
   using ndn_service_framework::SegmentManifestLimits;
   using ndn_service_framework::SegmentManifestVerifier;
@@ -1472,7 +1475,8 @@ FaceDataReferenceFetcher::fetchManifest(const RepoDataReference& reference,
         throw std::runtime_error("repo-manifest-source-proof-rejected");
       }
     }, std::move(sourceWindow), plannedWireLengths,
-    materializeWires && reference.expectedSize <= MAX_MATERIALIZED_WIRE_BYTES));
+    materializeWires && reference.expectedSize <= MAX_MATERIALIZED_WIRE_BYTES,
+    std::move(spoolLease)));
   current();
   if (spools->totalWireBytes() != reference.expectedSize) {
     throw std::runtime_error("repo-manifest-wire-size-mismatch");
@@ -1513,7 +1517,8 @@ FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t 
   PacketName nameAt, bool exactSize, std::function<void()> requireCurrent,
   std::chrono::steady_clock::time_point deadline, PacketAdmission admit,
   std::shared_ptr<ManifestSourceWindow> sourceWindow,
-  const std::vector<uint32_t>& plannedWireLengths, bool materializeWires) const
+  const std::vector<uint32_t>& plannedWireLengths, bool materializeWires,
+  std::shared_ptr<void> spoolLease) const
 {
   if (m_face.getIoContext().get_executor().running_in_this_thread())
     throw std::logic_error("repo-original-packet-fetch-on-face-thread");
@@ -1528,7 +1533,7 @@ FaceDataReferenceFetcher::fetch(const RepoDataReference& reference, std::size_t 
   auto admission = std::make_shared<FetchAdmission>(m_fetchActive, m_lifetime);
   auto state = std::make_shared<FetchState>(m_face, reference,
     static_cast<std::size_t>(packetCount), m_windowSize, m_interestLifetime, deadline, admission,
-    plannedWireLengths, materializeWires);
+    plannedWireLengths, materializeWires, std::move(spoolLease));
   state->exactSize = exactSize;
   state->nameAt = std::move(nameAt);
   state->requireCurrent = std::move(requireCurrent);

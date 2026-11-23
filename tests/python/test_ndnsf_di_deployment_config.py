@@ -1298,6 +1298,7 @@ def test_repo_cache_limits_reach_installed_native_actor(ops, deployment):
     repo['parameters'] = {'cache-bytes': 1 << 30, 'large-object-threshold-bytes': 32 << 20,
                           'manifest-fetch-window': 28, 'manifest-source-window': 40,
                           'manifest-handler': 'reserved', 'manifest-fetch-face': 'dedicated',
+                          'manifest-spool': 'bounded-memory',
                           'handler-threads': 1}
     frozen = module.load_deployment(write_config(root, config))
     actor = next(actor for actor in frozen['actors'] if actor['kind'] == 'repo')
@@ -1329,6 +1330,7 @@ def test_repo_cache_limits_reject_invalid_before_launch(ops, deployment, option,
     ('manifest-fetch-window', -1),
     ('manifest-source-window', 4097),
     ('manifest-fetch-face', 'other'),
+    ('manifest-spool', 'other'),
     ('manifest-handler', 'other'),
     ('handler-threads', 0),
     ('handler-threads', 2),

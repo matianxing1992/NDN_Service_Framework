@@ -1148,6 +1148,21 @@ BOOST_AUTO_TEST_CASE(MaterializedSpoolTransfersOnlyCompleteVerifiedWireSlots)
   BOOST_CHECK(spool.takePacket(1) == std::vector<uint8_t>({3, 4, 5}));
 }
 
+BOOST_AUTO_TEST_CASE(MaterializedSpoolRetainsOwnerReservationThroughReads)
+{
+  auto charge = std::make_shared<int>(1);
+  const std::weak_ptr<int> retained = charge;
+  {
+    detail::FaceDataReferencePacketSpool spool(2, 5, {2, 3}, true, std::move(charge));
+    spool.append(1, {3, 4, 5});
+    spool.append(0, {1, 2});
+    spool.finalize();
+    BOOST_CHECK(spool.readRange(0, 5) == std::vector<uint8_t>({1, 2, 3, 4, 5}));
+    BOOST_CHECK(!retained.expired());
+  }
+  BOOST_CHECK(retained.expired());
+}
+
 BOOST_AUTO_TEST_CASE(SpoolReadAppendTransitionsPreservePhysicalAndLogicalOrder)
 {
   constexpr std::size_t count = 64;

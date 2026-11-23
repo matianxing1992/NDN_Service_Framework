@@ -33,6 +33,7 @@ REPO_MANIFEST_SERVER_OPTIONS = {
     'manifest-source-window': 4096,
     'manifest-handler': ('shared', 'reserved'),
     'manifest-fetch-face': ('shared', 'dedicated'),
+    'manifest-spool': ('file', 'bounded-memory'),
 }
 
 

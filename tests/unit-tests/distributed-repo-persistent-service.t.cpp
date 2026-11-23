@@ -579,6 +579,16 @@ BOOST_AUTO_TEST_CASE(PersistentOperationWorkerTimeoutsAreParsedAndBounded)
   BOOST_CHECK_EQUAL(parsed.manifestFetchWindow, 0U);
   BOOST_CHECK(!parsed.reserveManifestHandler);
   BOOST_CHECK(!parsed.dedicatedManifestFetchFace);
+  BOOST_CHECK(!parsed.memoryManifestSpool);
+  auto spoolArguments = arguments;
+  spoolArguments.insert(spoolArguments.end(), {"--manifest-spool", "bounded-memory"});
+  auto spoolArgv = mutableArgv(spoolArguments);
+  BOOST_CHECK(PersistentRepoServerConfig::fromArguments(
+    static_cast<int>(spoolArgv.size()), spoolArgv.data()).memoryManifestSpool);
+  spoolArguments.back() = "invalid";
+  spoolArgv = mutableArgv(spoolArguments);
+  BOOST_CHECK_THROW(PersistentRepoServerConfig::fromArguments(
+    static_cast<int>(spoolArgv.size()), spoolArgv.data()), std::invalid_argument);
   auto fetchFaceArguments = arguments;
   fetchFaceArguments.insert(fetchFaceArguments.end(), {"--manifest-fetch-face", "dedicated"});
   auto fetchFaceArgv = mutableArgv(fetchFaceArguments);

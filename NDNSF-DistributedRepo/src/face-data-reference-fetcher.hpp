@@ -71,7 +71,8 @@ class FaceDataReferencePacketSpool final : public DataReferencePacketSource
 public:
   FaceDataReferencePacketSpool(std::size_t packetCount, uint64_t maxWireBytes,
                              const std::vector<uint32_t>& plannedWireLengths = {},
-                             bool materializeWires = false);
+                             bool materializeWires = false,
+                             std::shared_ptr<void> spoolLease = {});
 
   FaceDataReferencePacketSpool(const FaceDataReferencePacketSpool&) = delete;
   FaceDataReferencePacketSpool& operator=(const FaceDataReferencePacketSpool&) = delete;
@@ -106,6 +107,8 @@ private:
   readAt(long offset, uint8_t* output, std::size_t length) const;
 
   static constexpr std::size_t STDIO_BUFFER_BYTES = 64U << 10;
+  // Release the reservation after the retained wires and pending reads are gone.
+  std::shared_ptr<void> m_spoolLease;
   mutable std::mutex m_mutex;
   // FILE must close before its borrowed stdio buffer is destroyed.
   std::array<char, STDIO_BUFFER_BYTES> m_ioBuffer;
@@ -181,7 +184,8 @@ public:
                 std::function<void()> requireCurrent = {},
                 std::size_t maxPacketCount = MAX_NAMED_PACKET_COUNT,
                 std::shared_ptr<ManifestSourceWindow> sourceWindow = {},
-                bool materializeWires = false) const;
+                bool materializeWires = false,
+                std::shared_ptr<void> spoolLease = {}) const;
 
   using PacketAdmission = std::function<void(std::size_t, const ndn::Data&)>;
 
@@ -202,7 +206,7 @@ private:
           std::chrono::steady_clock::time_point::max(),
         PacketAdmission admit = {}, std::shared_ptr<ManifestSourceWindow> sourceWindow = {},
         const std::vector<uint32_t>& plannedWireLengths = {},
-        bool materializeWires = false) const;
+        bool materializeWires = false, std::shared_ptr<void> spoolLease = {}) const;
 
   ndn::Face& m_face;
   std::chrono::milliseconds m_interestLifetime;

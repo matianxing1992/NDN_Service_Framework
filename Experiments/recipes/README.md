@@ -143,6 +143,9 @@ selected. For the split-core comparison, pass
 `--cpu-placement Experiments/profiles/repo-wired-star-split.json` to both Repo and NFD
 commands. The launcher checks the actual native process affinities against this map.
 The bare replay uses the first CPU of each endpoint's list for its corresponding thread.
+For the memory-spool comparison, set the writer Repo actor's `manifest-spool` parameter
+to `bounded-memory`. Authenticated source wires use at most 32 MiB per object and 64 MiB
+per Repo process. Groups without a reservation use the default `file` spool.
 Run `--timing` separately from
 the throughput samples to capture source fetch, spooling and durable confirmation events.
 

@@ -36,6 +36,7 @@ struct PersistentRepoServerConfig
   uint32_t manifestSourceWindow = 0;
   bool reserveManifestHandler = false;
   bool dedicatedManifestFetchFace = false;
+  bool memoryManifestSpool = false;
   uint64_t availabilityFreshnessMs = 5000;
   std::string failureDomain;
 
