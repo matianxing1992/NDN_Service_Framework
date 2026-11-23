@@ -131,6 +131,13 @@ public:
   RepoPublishResult publishData(const RepoDataPublication& input,
                                 const RepoOperationOptions& options);
 
+  /** Publish Data owned by a locally prepared manifest. The packet source supplies
+   * geometry and the expected digest through input.packets, with no wire callback.
+   * The prepared packet set is used only during this call. */
+  RepoPublishResult publishPreparedManifest(
+    const RepoDataPublication& input, const ndn_service_framework::ManifestPublication& prepared,
+    const RepoOperationOptions& options);
+
   /** Retrieve an artifact by exactly one of a committed handle or a file reference. */
   RepoFetchResult fetchFile(const RepoFileFetch& input,
                             const RepoOperationOptions& options) const;
@@ -169,6 +176,9 @@ public:
   bool close(std::chrono::steady_clock::time_point deadline);
 
 private:
+  RepoPublishResult publishDataImpl(const RepoDataPublication& input,
+                                    const ndn_service_framework::ManifestPublication* prepared,
+                                    const RepoOperationOptions& options);
   struct Impl;
   explicit RepoClient(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> m_impl;

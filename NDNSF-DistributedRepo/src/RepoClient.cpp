@@ -1095,18 +1095,21 @@ RepoClientCompat::revalidateCurrentUserStorageClaim(
   return current;
 }
 
-RepoObjectManifest
-RepoClientCompat::commitUserStorageOriginalPackets(
+static RepoObjectManifest
+commitOriginalPacketPublication(
   ndn_service_framework::ServiceUser& writer, const RepoArtifactTarget& target,
   const RepoUserStorageInsertRequest& request,
   const std::function<std::optional<std::vector<uint8_t>>()>& nextOriginalPacket,
   const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
-  int ackCollectionTimeMs, int timeoutMs, const std::function<void()>& requireCurrent)
+  int ackCollectionTimeMs, int timeoutMs, const std::function<void()>& requireCurrent,
+  const ndn_service_framework::ManifestPublication* prepared)
 {
   validateUserStorageClientTarget(target, timeoutMs);
   if (writer.isOnIoThread())
     throw std::logic_error("repo-original-publication-on-face-thread");
-  if (!nextOriginalPacket || (!request.segmentManifestBinding && !verifyProducerSignature) || ackCollectionTimeMs <= 0 ||
+  if ((!nextOriginalPacket && !prepared) ||
+      (!request.segmentManifestBinding && !verifyProducerSignature) ||
+      ackCollectionTimeMs <= 0 ||
       timeoutMs <= ackCollectionTimeMs || !request.reference.packetSetMetadata ||
       request.reference.expectedSize == 0 ||
       request.reference.expectedSize > REPO_USER_STORAGE_OBJECT_MAX_BYTES)
@@ -1188,6 +1191,15 @@ RepoClientCompat::commitUserStorageOriginalPackets(
 
   const ndn_service_framework::SegmentManifestScope manifestScope{
     producer, prefix, request.segmentManifestBinding.value_or(std::array<uint8_t, 32>{})};
+
+  if (prepared) {
+    const auto& scope = prepared->scope();
+    if (!request.segmentManifestBinding || scope.producer != producer ||
+        scope.objectPrefix != prefix || scope.bindingDigest != *request.segmentManifestBinding ||
+        names.size() != prepared->packets().size()) {
+      throw std::invalid_argument("repo-original-publication-prepared-scope-or-count-mismatch");
+    }
+  }
 
   struct Publication
   {
@@ -1280,16 +1292,26 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     auto packetStarted = stamp(sample);
     sampledPackets += sample;
     current();
-    auto wire = nextOriginalPacket();
-    current();
-    if (!wire || wire->empty() || wire->size() > ndn::MAX_NDN_PACKET_SIZE)
+    std::optional<ndn::Data> decoded;
+    ndn::Block originalBlock;
+    if (!prepared) {
+      auto bytes = nextOriginalPacket();
+      current();
+      if (!bytes || bytes->empty() || bytes->size() > ndn::MAX_NDN_PACKET_SIZE)
+        throw std::invalid_argument("repo-original-publication-missing-or-oversized-packet");
+      auto buffer = std::make_shared<ndn::Buffer>();
+      buffer->swap(*bytes);
+      const auto [parsed, block] = ndn::Block::fromBuffer(buffer);
+      if (!parsed || block.size() != buffer->size())
+        throw std::invalid_argument("repo-original-publication-packet-invalid");
+      originalBlock = block;
+      decoded.emplace(originalBlock);
+    }
+    const auto& data = prepared ? prepared->packets()[i] : *decoded;
+    const auto& wire = prepared ? data.wireEncode() : originalBlock;
+    if (wire.size() == 0 || wire.size() > ndn::MAX_NDN_PACKET_SIZE)
       throw std::invalid_argument("repo-original-publication-missing-or-oversized-packet");
-    auto buffer = std::make_shared<ndn::Buffer>();
-    buffer->swap(*wire);
-    const auto [parsed, block] = ndn::Block::fromBuffer(buffer);
-    if (!parsed || block.size() != buffer->size())
-      throw std::invalid_argument("repo-original-publication-packet-invalid");
-    const ndn::Data data(block);
+    const ndn::span<const uint8_t> original(wire.data(), wire.size());
     const auto& name = data.getName();
     auto canonicalName = request.segmentManifestBinding
       ? name.toUri(ndn::name::UriFormat::CANONICAL) : std::string{};
@@ -1301,7 +1323,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
       throw std::invalid_argument("repo-original-publication-packet-invalid");
     const bool isSource = publication->proof && i > publication->proof->pageCount();
     if (!isSource &&
-        !publication->index.emplace(name.deepCopy(), std::make_pair(i, buffer->size())).second)
+        !publication->index.emplace(name.deepCopy(), std::make_pair(i, wire.size())).second)
       throw std::invalid_argument("repo-original-publication-packet-invalid");
     current();
     measure(packetStarted, packetDecode);
@@ -1310,7 +1332,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
       contentBytes += data.getContent().value_size();
       if (i == 0) {
         auto rootStarted = stamp(measurePreparation);
-        auto root = writer.validateManifestRootUntil(*buffer, manifestScope, deadline);
+        auto root = writer.validateManifestRootUntil(
+          {original.begin(), original.end()}, manifestScope, deadline);
         measure(rootStarted, rootValidation);
         if (!root) {
           throw std::invalid_argument("repo-original-publication-root-proof-invalid");
@@ -1332,18 +1355,18 @@ RepoClientCompat::commitUserStorageOriginalPackets(
         else {
           if (!proof.matchesSource(static_cast<uint32_t>(i - 1 - proof.pageCount()), data))
             throw std::invalid_argument("repo-original-publication-source-proof-invalid");
-          publication->sourcePacketSizes.push_back(buffer->size());
+          publication->sourcePacketSizes.push_back(wire.size());
         }
       }
     }
     measure(packetStarted, packetProof);
-    publication->spool->append(i, *buffer);
+    publication->spool->append(i, original);
     measure(packetStarted, spoolAppend);
-    digest.update(ndn::span<const uint8_t>(buffer->data(), buffer->size()));
+    digest.update(original);
     measure(packetStarted, wireDigest);
-    offsets.push_back(offsets.back() + buffer->size());
+    offsets.push_back(offsets.back() + wire.size());
   }
-  if (nextOriginalPacket())
+  if (!prepared && nextOriginalPacket())
     throw std::invalid_argument("repo-original-publication-extra-packet");
   current();
   if (request.schemaVersion == 4 && !request.reference.packetSetMetadata->packetOffsets.empty() &&
@@ -1462,7 +1485,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
       };
       ndn_service_framework::logControlTiming("repo-client", "producer-preparation",
         ndn::Name(request.reference.objectName), {
-          {"operation_id", request.operationId}, {"total_packets", std::to_string(names.size())},
+          {"operation_id", request.operationId}, {"packet_source", prepared ? "prepared" : "wire"},
+          {"total_packets", std::to_string(names.size())},
           {"sampled_packets", std::to_string(sampledPackets)},
           {"face_admission_ns", nanoseconds(faceAdmission)},
           {"root_validation_ns", nanoseconds(rootValidation)},
@@ -1580,6 +1604,18 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   }
   noteStage(expectedManifest ? "manifest-confirmation-digest" : "manifest-confirmation");
   return manifest;
+}
+
+RepoObjectManifest
+RepoClientCompat::commitUserStorageOriginalPackets(
+  ndn_service_framework::ServiceUser& writer, const RepoArtifactTarget& target,
+  const RepoUserStorageInsertRequest& request,
+  const std::function<std::optional<std::vector<uint8_t>>()>& nextOriginalPacket,
+  const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+  int ackCollectionTimeMs, int timeoutMs, const std::function<void()>& requireCurrent)
+{
+  return commitOriginalPacketPublication(writer, target, request, nextOriginalPacket,
+    verifyProducerSignature, ackCollectionTimeMs, timeoutMs, requireCurrent, nullptr);
 }
 
 namespace {
@@ -3527,6 +3563,22 @@ RepoPublishResult
 RepoClient::publishData(const RepoDataPublication& input,
                         const RepoOperationOptions& options)
 {
+  return publishDataImpl(input, nullptr, options);
+}
+
+RepoPublishResult
+RepoClient::publishPreparedManifest(
+  const RepoDataPublication& input, const ndn_service_framework::ManifestPublication& prepared,
+  const RepoOperationOptions& options)
+{
+  return publishDataImpl(input, &prepared, options);
+}
+
+RepoPublishResult
+RepoClient::publishDataImpl(const RepoDataPublication& input,
+                            const ndn_service_framework::ManifestPublication* prepared,
+                            const RepoOperationOptions& options)
+{
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishData");
@@ -3544,8 +3596,10 @@ RepoClient::publishData(const RepoDataPublication& input,
       "UNSUPPORTED",
       "publishData transfers caller packets; an opaque producer-object source is not a "
       "publication path", "publishData");
-  if (!input.packets || !input.packets->next)
+  if (!input.packets || (!prepared && !input.packets->next))
     throw std::invalid_argument("publishData requires a packet source");
+  if (prepared && (!input.segmentManifest || input.packets->next))
+    throw std::invalid_argument("prepared publication requires a manifest scope and no wire source");
   const auto& source = *input.packets;
   if (source.packetNames.empty() ||
       source.packetOffsets.size() != source.packetNames.size() + 1 ||
@@ -3642,10 +3696,9 @@ RepoClient::publishData(const RepoDataPublication& input,
   request.storageBinding.grantId = input.grantId;
   request.storageBinding.ownerEpoch = input.ownerEpoch;
 
-  auto remaining = *input.packets;
-  const auto nextPacket = [remaining]() mutable -> std::optional<std::vector<uint8_t>> {
+  const auto nextPacket = [next = source.next]() -> std::optional<std::vector<uint8_t>> {
     std::vector<uint8_t> wire;
-    if (!remaining.next(wire))
+    if (!next(wire))
       return std::nullopt;
     return wire;
   };
@@ -3659,9 +3712,9 @@ RepoClient::publishData(const RepoDataPublication& input,
   // travels through the SVS request path, so the collection window must cover
   // the sync latency rather than only the local round trip.
   constexpr int PUBLICATION_ACK_COLLECTION_MS = 1000;
-  const auto manifest = RepoClientCompat::commitUserStorageOriginalPackets(
+  const auto manifest = commitOriginalPacketPublication(
     *m_impl->user, target, request, nextPacket, verifySignature,
-    PUBLICATION_ACK_COLLECTION_MS, remainingMs(options.deadline), options.requireCurrent);
+    PUBLICATION_ACK_COLLECTION_MS, remainingMs(options.deadline), options.requireCurrent, prepared);
   RepoPublishResult result;
   // Deliberately no operationReference: the Repo's status service does not resolve an insert
   // operation by id (`repo-publish-operation-not-found`), so handing the caller an id it

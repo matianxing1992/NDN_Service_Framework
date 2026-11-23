@@ -3310,7 +3310,8 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_REQUIRE_LE(ordinaryNameBytes, 512U << 10);
   BOOST_REQUIRE_GT(sourceFullNameBytes, 512U << 10);
   auto manifestWriter = repo::RepoClient::makePersistent(sourceWriter, clientConfig());
-  const auto publishManifest = [&](const repo::RepoUserStorageInsertRequest& request) {
+  const auto publishManifest = [&](const repo::RepoUserStorageInsertRequest& request,
+                                   bool prepared = false) {
     const auto& indexManifest = *request.reference.packetSetMetadata;
     std::size_t index = 0;
     repo::RepoDataPublication input;
@@ -3319,11 +3320,13 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     input.packets->packetOffsets = indexManifest.packetOffsets;
     input.packets->expectedWireBytes = request.reference.expectedSize;
     input.packets->expectedDigest = "sha256:" + request.reference.expectedSha256;
-    input.packets->next = [&](auto& wire) {
-      if (index == manifestWires.size()) return false;
-      wire = manifestWires[index++];
-      return true;
-    };
+    if (!prepared) {
+      input.packets->next = [&](auto& wire) {
+        if (index == manifestWires.size()) return false;
+        wire = manifestWires[index++];
+        return true;
+      };
+    }
     input.target = manifestTarget;
     input.producerIdentity = sourceIdentity.toUri();
     input.ownerIdentity = request.storageBinding.ownerIdentity;
@@ -3337,10 +3340,12 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     input.compactSegmentManifestInsert = request.schemaVersion == 4;
     repo::RepoOperationOptions options;
     options.deadline = std::chrono::steady_clock::now() + 15s;
-    return manifestWriter.publishData(input, options);
+    return prepared ? manifestWriter.publishPreparedManifest(input, manifestPublication, options)
+                    : manifestWriter.publishData(input, options);
   };
-  const auto commitManifest = [&](const repo::RepoUserStorageInsertRequest& request) {
-    return runWithFacePump(environment, [&] { return publishManifest(request); });
+  const auto commitManifest = [&](const repo::RepoUserStorageInsertRequest& request,
+                                  bool prepared = false) {
+    return runWithFacePump(environment, [&] { return publishManifest(request, prepared); });
   };
   const auto originalLast = manifestWires.back();
   const auto fetchesBeforeMalformed = manifestInsertFetches.load();
@@ -3367,15 +3372,32 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     return std::string(error.what()) == "segment-manifest-binding";
   };
   BOOST_CHECK_EXCEPTION(commitManifest(wrongManifest), std::invalid_argument, wrongBinding);
+  BOOST_CHECK_EXCEPTION(commitManifest(wrongManifest, true), std::invalid_argument,
+    [](const auto& error) {
+      return std::string_view(error.what()) ==
+             "repo-original-publication-prepared-scope-or-count-mismatch";
+    });
   auto wrongOffsets = manifestInsert;
   ++wrongOffsets.reference.packetSetMetadata->packetOffsets.at(1);
   BOOST_CHECK_EXCEPTION(commitManifest(wrongOffsets), std::invalid_argument, [](const auto& error) {
     return std::string_view(error.what()) == "repo-original-publication-packet-offsets-mismatch";
   });
+  BOOST_CHECK_EXCEPTION(commitManifest(wrongOffsets, true), std::invalid_argument,
+    [](const auto& error) {
+      return std::string_view(error.what()) == "repo-original-publication-packet-offsets-mismatch";
+    });
+  auto wrongPreparedDigest = manifestInsert;
+  auto& digestPrefix = wrongPreparedDigest.reference.expectedSha256.front();
+  digestPrefix = digestPrefix == '0' ? '1' : '0';
+  BOOST_CHECK_EXCEPTION(commitManifest(wrongPreparedDigest, true), std::invalid_argument,
+    [](const auto& error) {
+      return std::string_view(error.what()) == "repo-original-publication-digest-or-size-mismatch";
+    });
+  BOOST_CHECK_EQUAL(manifestInsertFetches.load(), fetchesBeforeMalformed);
   BOOST_CHECK(node->core().list().empty());
   auto wrongGrant = manifestInsert;
   wrongGrant.storageBinding.grantId += "-unknown";
-  BOOST_CHECK_EXCEPTION(commitManifest(wrongGrant), std::runtime_error, [](const auto& error) {
+  BOOST_CHECK_EXCEPTION(commitManifest(wrongGrant, true), std::runtime_error, [](const auto& error) {
     return std::string(error.what()) ==
            "repo-original-publication-insert-not-confirmed: repo-user-storage-unauthorized";
   });
@@ -3430,7 +3452,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     };
     const auto resetFetch = ndn::make_scope_exit([&] { afterManifestFetch = {}; });
     environment.markRequestPublished(attempt);
-    auto result = commitManifest(manifestInsert);
+    auto result = commitManifest(manifestInsert, true);
     BOOST_REQUIRE_GE(lifetimes.size(), 4U);
     BOOST_CHECK(std::is_sorted(lifetimes.begin(), lifetimes.begin() + 4));
     BOOST_CHECK(lifetimes[3] <= ndn::time::seconds(1));
