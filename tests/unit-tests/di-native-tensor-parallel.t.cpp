@@ -5191,6 +5191,56 @@ BOOST_AUTO_TEST_CASE(UnitEntryTableAssemblesFromOneRankArtifact)
 }
 
 
+BOOST_AUTO_TEST_CASE(QwenStatefulEntryKeepsItsCertifiedCausalInputPair)
+{
+  NativeModelRunnerSpec parent;
+  parent.role = "S0R0";
+  parent.kind = "onnx";
+  parent.backend = qwen::QWEN_TENSOR_RUNNER_BACKEND;
+  parent.metadata = {{"tensorParallelEntryRoot", "/entries"},
+                     {"positionInputPolicy", "qwen-causal-position-v1"},
+                     {"attentionMaskInputName", "attention_mask"},
+                     {"positionIdsInputName", "position_ids"}};
+
+  qwen::QwenTpEntryContract entry;
+  entry.entryId = "S0R0/ATTN/0";
+  entry.unitId = parent.role;
+  entry.kind = "ATTN";
+  entry.relativeGraphPath = "attn.onnx";
+  entry.graphDigest = nativePlanningDigest("causal-attention-fixture");
+  entry.outputNames = {"projection"};
+  entry.outputSlotByGraphName = {{"projection", "partial"}};
+  entry.stateOutputGraphNames = {"present.0.key"};
+
+  NativeModelRunnerSpec observed;
+  RegistryNativeModelRunnerFactory factory;
+  factory.registerBackend("onnxruntime", [&] (const NativeModelRunnerSpec& child) {
+    observed = child;
+    return makeNativeModelRunner([] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{};
+    });
+  });
+  qwen::registerQwenTensorBackend(factory);
+
+  const auto configure = [&] (std::string mask, std::string position) {
+    entry.inputNames = {"hidden", mask, position, "past_key_values.0.key"};
+    entry.inputSlotByGraphName = {{"hidden", "x"}, {mask, "mask"}, {position, "positions"}};
+    parent.metadata["tensorParallelEntries"] = qwen::qwenTpEntryTableJson({entry});
+  };
+  configure("attention_mask", "position_ids");
+  BOOST_REQUIRE(factory.create(parent));
+  BOOST_CHECK_EQUAL(observed.metadata.at("positionInputPolicy"), "qwen-causal-position-v1");
+  BOOST_CHECK_EQUAL(observed.metadata.at("attentionMaskInputName"), "attention_mask");
+  BOOST_CHECK_EQUAL(observed.metadata.at("positionIdsInputName"), "position_ids");
+
+  configure("derived_mask", "derived_positions");
+  BOOST_REQUIRE(factory.create(parent));
+  BOOST_CHECK_EQUAL(observed.metadata.count("positionInputPolicy"), 0U);
+
+  configure("attention_mask", "derived_positions");
+  BOOST_CHECK_THROW(factory.create(parent), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(QwenEntryBindsCausalInputsFromAdmittedLineage)
 {
   qwen::QwenTpEntryContract entry;

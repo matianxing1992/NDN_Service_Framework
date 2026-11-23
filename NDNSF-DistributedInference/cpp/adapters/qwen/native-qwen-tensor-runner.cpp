@@ -266,11 +266,8 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
   // `attention_mask` through, which it never declares, so the child failed before running.
   child.metadata.erase("passthroughTensors");
   child.metadata.erase("passthrough_tensors");
-  // The causal-position policy names the assembled role graph's own inputs. An entry has a
-  // different signature -- INIT's mask arrives as `attention_mask`, an attention entry's as
-  // the reformat subgraph's output name -- and the parent already routes every one of them
-  // from the step slots. Carrying the role-level names down made each child demand an input
-  // its graph does not have.
+  // Bind causal inputs against each stateful entry's signature below. Other entries
+  // consume the values already bound to their sealed step slots.
   child.metadata.erase("positionInputPolicy");
   child.metadata.erase("attentionMaskInputName");
   child.metadata.erase("positionIdsInputName");
@@ -337,13 +334,28 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
       successor += name + "=present." + suffix;
     }
     child.metadata["stateSuccessorMap"] = successor;
-    // The entry reads positions and a mask the plan supplies as tensors, so the child takes
-    // them from its input bundles rather than materializing them from a token lineage.
-    // Declaring the policy would make the child demand an authenticated lineage this
-    // request-level path does not carry.
-    child.metadata["positionInputPolicy"] = "";
-    child.metadata["attentionMaskInputName"] = "";
-    child.metadata["positionIdsInputName"] = "";
+    const auto policy = parent.metadata.find("positionInputPolicy");
+    if (policy != parent.metadata.end() && !policy->second.empty()) {
+      std::size_t declared = 0;
+      std::size_t present = 0;
+      for (const auto* key : {"attentionMaskInputName", "positionIdsInputName",
+                              "cachePositionInputName"}) {
+        const auto input = parent.metadata.find(key);
+        if (input == parent.metadata.end() || input->second.empty()) continue;
+        ++declared;
+        if (std::find(entry.inputNames.begin(), entry.inputNames.end(), input->second) !=
+            entry.inputNames.end()) {
+          child.metadata.emplace(key, input->second);
+          ++present;
+        }
+      }
+      if (present != 0) {
+        if (declared < 2 || present != declared)
+          throw std::invalid_argument("Qwen tensor entry has incomplete causal position inputs");
+        // NativeEntryRunner preserves the authenticated epoch lineage in the child context.
+        child.metadata.emplace("positionInputPolicy", policy->second);
+      }
+    }
   }
   return child;
 }
