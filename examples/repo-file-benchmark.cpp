@@ -373,29 +373,22 @@ run(int argc, char** argv)
       if (useCertificate && phaseOption != "read") {
         packetClient.emplace(makePacketClient(user, target));
       }
-      const auto producerIdentity = identity.toUri(ndn::name::UriFormat::ALTERNATE);
-      const auto authorizeGroup = [&](const std::string& object, const std::string& grantId,
-                                      const repo::RepoOperationOptions& operation) {
-        const auto expiry = std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch() + (deadline - Clock::now()));
-        return packetClient->authorizeWrite({packetTarget, producerIdentity, object, grantId,
-          static_cast<uint64_t>(expiry.count())}, operation);
-      };
       const auto commitSecured = [&](di::NativeStoredModelPacketIo::PacketWires wires,
                                      repo::PacketSource packetSource,
                                      repo::RepoPreparedManifest* manifest,
-                                     const Group& group, const std::function<void()>& active,
-                                     const std::optional<repo::RepoWriteGrant>& preparedGrant) {
+                                     const Group& group, const std::function<void()>& active) {
         auto& client = *packetClient;
         const repo::RepoOperationOptions operation{deadline, active, {}};
         repo::RepoDataPublication publication;
         publication.compactSegmentManifestInsert = compactInsert;
         publication.target = packetTarget;
-        publication.producerIdentity = producerIdentity;
+        publication.producerIdentity = identity.toUri(ndn::name::UriFormat::ALTERNATE);
         publication.generation = 1;
         const auto object = rootName(group).toUri(ndn::name::UriFormat::ALTERNATE);
-        const auto grant = preparedGrant ? *preparedGrant :
-          authorizeGroup(object, group.wireDigest, operation);
+        const auto expiry = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch() + (deadline - Clock::now()));
+        const auto grant = client.authorizeWrite({packetTarget, publication.producerIdentity, object,
+          group.wireDigest, static_cast<uint64_t>(expiry.count())}, operation);
         publication.ownerIdentity = grant.ownerIdentity;
         publication.grantId = grant.grantId;
         publication.ownerEpoch = grant.ownerEpoch;
@@ -546,21 +539,7 @@ run(int argc, char** argv)
           payloadBytes += count;
         }
         std::shared_ptr<repo::RepoPreparedManifest> manifest;
-        std::optional<repo::RepoWriteGrant> preparedGrant;
         if (useManifest) {
-          std::atomic<bool> abandoned{false};
-          // The grant binds the immutable object name. Its wire digest is
-          // checked by the subsequent INSERT and its persistent confirmation.
-          auto grant = std::async(std::launch::async,
-            [&, object = rootName(group).toUri(ndn::name::UriFormat::ALTERNATE)] {
-              const auto currentGrant = [&] {
-                if (abandoned.load())
-                  throw std::runtime_error("benchmark write grant abandoned");
-                current();
-              };
-              return authorizeGroup(object, {}, {deadline, currentGrant, {}});
-            });
-          const auto abandon = ndn::make_scope_exit([&] { abandoned.store(true); });
           manifest = std::make_shared<repo::RepoPreparedManifest>(
             ndn_service_framework::ManifestPublication::prepare(*packetKeys,
             ndn::security::signingByCertificate(certificate), manifestScope(identity, group.prefix),
@@ -569,7 +548,6 @@ run(int argc, char** argv)
           for (const auto& packet : manifest->publication().packets()) {
             appendOriginal(packet);
           }
-          preparedGrant.emplace(grant.get());
         }
         group.wireDigest = manifest ? manifest->wireSha256() : digest(wireHash);
         const auto preparationEnd = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -578,15 +556,14 @@ run(int argc, char** argv)
         const auto index = groupIndex;
         pipeline.submit(prepared->wireBytes,
           [&, commit = io.commitConcurrent, wires = std::move(wires),
-           packetSource = std::move(packetSource), manifest = std::move(manifest),
-           grant = std::move(preparedGrant), prepared, index,
+           packetSource = std::move(packetSource), manifest = std::move(manifest), prepared, index,
            preparationEnd, groupTime](const di::NativeModelCommitPipeline::CurrentCheck& active)
             mutable {
             const Measurement commitTime;
             try {
               if (useCertificate) {
                 commitSecured(std::move(wires), std::move(packetSource),
-                              manifest.get(), *prepared, active, grant);
+                              manifest.get(), *prepared, active);
               }
               else {
                 commit(std::move(wires), "sha256:" + prepared->wireDigest, active);
