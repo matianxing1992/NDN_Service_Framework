@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <future>
 #include <map>
 #include <iomanip>
 #include <iterator>
@@ -368,19 +369,40 @@ RepoNode::reconcilePersistentUserStorage()
       cleanup.object.objectName, cleanup.ownerEpoch};
     (void)handleUserStorageDelete(toBytes(request.toJson()), cleanup.ownerIdentity);
   }
-  std::vector<RepoUserStorageInventoryEntry> inventory;
-  for (const auto& snapshot : m_core.listManifestSnapshots()) {
-    const auto& manifest = *snapshot;
+  auto snapshots = m_core.listManifestSnapshots();
+  snapshots.erase(std::remove_if(snapshots.begin(), snapshots.end(), [](const auto& snapshot) {
     // Ordinary artifact receipts keep their existing accounting and authorization.
-    if (manifest.objectType == "original-packet-set") {
+    return snapshot->objectType != "original-packet-set";
+  }), snapshots.end());
+  std::vector<RepoUserStorageInventoryEntry> inventory(snapshots.size());
+  const auto measure = [&](std::size_t begin, std::size_t end) {
+    for (auto index = begin; index < end; ++index) {
+      const auto& manifest = *snapshots[index];
       try {
-        inventory.push_back({measurePersistentUserStorageObject(manifest),
-          manifest.generation == 0 || manifest.operationId.empty()});
+        inventory[index] = {measurePersistentUserStorageObject(manifest),
+          manifest.generation == 0 || manifest.operationId.empty()};
       }
       catch (const std::runtime_error& error) {
         throw std::runtime_error(std::string(error.what()) + ": " + manifest.objectName);
       }
     }
+  };
+  constexpr uint64_t PARALLEL_VERIFICATION_MIN_BYTES = 32U << 20;
+  uint64_t remaining = PARALLEL_VERIFICATION_MIN_BYTES;
+  for (const auto& snapshot : snapshots) {
+    remaining -= std::min(remaining, snapshot->size);
+    if (remaining == 0) break;
+  }
+  if (remaining == 0 && snapshots.size() > 1 && m_core.supportsConcurrentCommittedReads()) {
+    // Join the one read-only helper before touching the recovery ledger or exposing services.
+    const auto middle = snapshots.size() / 2;
+    auto tail = std::async(std::launch::async | std::launch::deferred,
+                           measure, middle, snapshots.size());
+    measure(0, middle);
+    tail.get();
+  }
+  else {
+    measure(0, snapshots.size());
   }
   for (const auto& pending : m_artifactMetadataStore->pendingUserStorageWrites(m_repoNode)) {
     const auto physical = std::find_if(inventory.begin(), inventory.end(), [&pending] (const auto& entry) {

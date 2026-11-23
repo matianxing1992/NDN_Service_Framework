@@ -4463,6 +4463,22 @@ BOOST_AUTO_TEST_CASE(LargeOriginalStorageRestartChecksPendingAndCorruptBytes)
   BOOST_REQUIRE_EQUAL(erased.state, "DELETED");
   BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
 
+  fixture.request.operationId = "large-restart-companion-write";
+  fixture.useLargeDigestPackets(ndn::Name("/provider/a/kv-companion"));
+  const RepoUserStorageGrantRequest companionGrant{1, "large-restart-companion-grant",
+    "/provider/a", reference.objectName, OwnedPacketFixture::now() + 60000};
+  const auto companionGranted = RepoUserStorageGrantReply::fromJson(toString(
+    fixture.node->handleUserStorageGrant(toBytes(companionGrant.toJson()), "/owner/a")));
+  fixture.request.storageBinding = {1, "/owner/a", companionGrant.grantId,
+    companionGranted.grant.ownerEpoch};
+  const auto companionName = reference.objectName;
+  const auto companionDigest = reference.expectedSha256;
+  const auto companionLastByte = fixture.original.back();
+  const auto companionWire = fixture.packets.front();
+  const ndn::Data companionFirst{ndn::Block(ndn::span<const uint8_t>(companionWire))};
+  const auto companionWritten = submit([] {});
+  BOOST_REQUIRE_MESSAGE(companionWritten.state == "DONE", companionWritten.message);
+
   fixture.request.operationId = "large-restart-new-write";
   fixture.useLargeDigestPackets(ndn::Name("/provider/a/kv-committed"));
   const RepoUserStorageGrantRequest grant{1, "large-restart-grant", "/provider/a",
@@ -4483,34 +4499,42 @@ BOOST_AUTO_TEST_CASE(LargeOriginalStorageRestartChecksPendingAndCorruptBytes)
               fixture.original);
   BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(committedFirst.getFullName())) ==
               fixture.packets.front());
+  BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(companionFirst.getFullName())) ==
+              companionWire);
   fixture.node.reset();
 
-  const auto& digest = reference.expectedSha256;
-  const auto payload = fixture.temp.path() / "objects" / "payloads" / "sha256" /
-    digest.substr(0, 2) / digest;
-  const auto replaceLastByte = [&](uint8_t value) {
-    std::fstream stream(payload, std::ios::binary | std::ios::in | std::ios::out);
-    stream.seekp(-1, std::ios::end);
-    stream.write(reinterpret_cast<const char*>(&value), sizeof(value));
-    stream.close();
-    BOOST_REQUIRE(stream);
+  const auto checkCorruptObject = [&](const std::string& name, const std::string& digest,
+                                      uint8_t lastByte) {
+    const auto payload = fixture.temp.path() / "objects" / "payloads" / "sha256" /
+      digest.substr(0, 2) / digest;
+    const auto replaceLastByte = [&](uint8_t value) {
+      std::fstream stream(payload, std::ios::binary | std::ios::in | std::ios::out);
+      stream.seekp(-1, std::ios::end);
+      stream.write(reinterpret_cast<const char*>(&value), sizeof(value));
+      stream.close();
+      BOOST_REQUIRE(stream);
+    };
+    replaceLastByte(lastByte ^ 1);
+    BOOST_CHECK_EXCEPTION(fixture.open(), std::runtime_error, [&](const auto& error) {
+      const std::string_view message(error.what());
+      constexpr std::string_view reason =
+        "repo-artifact-byte-verification-failed: stored bytes do not match full reference digest: ";
+      return message.compare(0, reason.size(), reason) == 0 &&
+             ndn::Name(std::string(message.substr(reason.size()))) == ndn::Name(name);
+    });
+    BOOST_CHECK(!fixture.node);
+    replaceLastByte(lastByte);
   };
-  replaceLastByte(fixture.original.back() ^ 1);
   BOOST_TEST_MESSAGE("repo restart corrupt begin");
-  BOOST_CHECK_EXCEPTION(fixture.open(), std::runtime_error, [&](const auto& error) {
-    const std::string_view message(error.what());
-    constexpr std::string_view reason =
-      "repo-artifact-byte-verification-failed: stored bytes do not match full reference digest: ";
-    return message.compare(0, reason.size(), reason) == 0 &&
-           ndn::Name(std::string(message.substr(reason.size()))) == ndn::Name(reference.objectName);
-  });
+  checkCorruptObject(reference.objectName, reference.expectedSha256, fixture.original.back());
+  checkCorruptObject(companionName, companionDigest, companionLastByte);
   BOOST_TEST_MESSAGE("repo restart corrupt end");
-  BOOST_CHECK(!fixture.node);
 
-  replaceLastByte(fixture.original.back());
   fixture.open();
   BOOST_CHECK(fixture.node->getRange(reference.objectName, {0, reference.expectedSize}) ==
               fixture.original);
+  BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(companionFirst.getFullName())) ==
+              companionWire);
 }
 
 BOOST_AUTO_TEST_CASE(ManifestWriteKeepsCommitWhenReceiptProofBecomesStale)
