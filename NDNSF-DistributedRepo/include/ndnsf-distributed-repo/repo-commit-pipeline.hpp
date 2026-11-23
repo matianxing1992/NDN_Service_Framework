@@ -2,6 +2,7 @@
 #define NDNSF_DISTRIBUTED_REPO_REPO_COMMIT_PIPELINE_HPP
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -9,6 +10,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -37,10 +39,11 @@ public:
   using Commit = std::function<void(const CurrentCheck&)>;
   static constexpr std::size_t MAX_ACTIVE_COMMITS = 3;
   static constexpr std::size_t MAX_CONFIGURED_COMMITS = 5;
+  enum class CompletionOrder { SUBMISSION, READY };
 
   RepoCommitPipeline(CurrentCheck requireCurrent, std::uint64_t maxGroupWireBytes);
   RepoCommitPipeline(CurrentCheck requireCurrent, std::uint64_t maxGroupWireBytes,
-                     std::size_t capacity);
+                     std::size_t capacity, CompletionOrder order = CompletionOrder::SUBMISSION);
   ~RepoCommitPipeline() noexcept;
   RepoCommitPipeline(const RepoCommitPipeline&) = delete;
   RepoCommitPipeline&
@@ -61,12 +64,15 @@ private:
   {
     std::future<void> completion;
     std::function<void()> observe;
+    std::shared_ptr<bool> ready;
   };
 
   void
   requireOwner() const;
   void
-  completeFirst();
+  completeOne();
+  void
+  markReady(const std::shared_ptr<bool>& ready);
   void
   cancelAndDrain() noexcept;
   [[noreturn]] void
@@ -76,8 +82,11 @@ private:
   std::thread::id m_owner;
   std::shared_ptr<std::atomic<bool>> m_cancelled;
   std::deque<Pending> m_pending;
+  std::mutex m_readyMutex;
+  std::condition_variable m_ready;
   std::uint64_t m_maxGroupWireBytes = 0;
   std::size_t m_capacity;
+  CompletionOrder m_order;
   bool m_closed = false;
 };
 

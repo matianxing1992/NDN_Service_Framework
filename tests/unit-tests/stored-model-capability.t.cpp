@@ -374,6 +374,55 @@ BOOST_AUTO_TEST_CASE(CommitPipelineBoundsWorkersAndObservesInSubmissionOrder)
   BOOST_CHECK_EQUAL_COLLECTIONS(observed.begin(), observed.end(), expected.begin(), expected.end());
 }
 
+BOOST_AUTO_TEST_CASE(CommitPipelineReusesReadySlotWhileHeadIsStillRunning)
+{
+  using Order = NativeModelCommitPipeline::CompletionOrder;
+  std::promise<void> release;
+  auto gate = release.get_future();
+  std::vector<unsigned> observed;
+  NativeModelCommitPipeline pipeline([] {}, 1024, 2, Order::READY);
+  pipeline.submit(1, [&](const auto&) {
+    if (gate.wait_for(std::chrono::seconds(3)) != std::future_status::ready)
+      throw std::runtime_error("test head was not released by the next worker");
+  }, [&] { observed.push_back(0); });
+  pipeline.submit(1, [](const auto& current) { current(); }, [&] { observed.push_back(1); });
+  pipeline.submit(1, [&](const auto&) { release.set_value(); }, [&] { observed.push_back(2); });
+  BOOST_CHECK_EQUAL(observed.size(), 1U);
+  pipeline.finish();
+  BOOST_REQUIRE_EQUAL(observed.size(), 3U);
+  BOOST_CHECK_EQUAL(observed.front(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(CommitPipelineReadyFailureCancelsAnEarlierWorker)
+{
+  using Order = NativeModelCommitPipeline::CompletionOrder;
+  std::promise<void> started;
+  auto ready = started.get_future();
+  std::atomic<bool> cancelled{false};
+  NativeModelCommitPipeline pipeline([] {}, 1024, 2, Order::READY);
+  pipeline.submit(1, [&](const auto& current) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    started.set_value();
+    while (std::chrono::steady_clock::now() < deadline) {
+      try {
+        current();
+      }
+      catch (const std::runtime_error& error) {
+        cancelled = std::string_view(error.what()) == "REPO_COMMIT_PIPELINE_CANCELLED";
+        throw;
+      }
+      std::this_thread::yield();
+    }
+    throw std::runtime_error("test peer failed to cancel");
+  });
+  ready.get();
+  pipeline.submit(1, [](const auto&) { throw std::runtime_error("test later worker failure"); });
+  BOOST_CHECK_EXCEPTION(pipeline.finish(), std::runtime_error, [](const auto& error) {
+    return std::string_view(error.what()) == "test later worker failure";
+  });
+  BOOST_CHECK(cancelled.load());
+}
+
 BOOST_AUTO_TEST_CASE(CommitPipelineFailureCancelsAndDrainsAllPeers)
 {
   constexpr auto peers = NativeModelCommitPipeline::MAX_ACTIVE_COMMITS - 1;

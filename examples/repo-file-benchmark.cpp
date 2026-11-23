@@ -480,7 +480,9 @@ run(int argc, char** argv)
         return row;
       };
       const Measurement publicationTime;
-      di::NativeModelCommitPipeline pipeline(current, NDNSF_DI_WIRE_LIMIT, writeCapacity);
+      using CompletionOrder = di::NativeModelCommitPipeline::CompletionOrder;
+      di::NativeModelCommitPipeline pipeline(current, NDNSF_DI_WIRE_LIMIT, writeCapacity,
+        useManifest ? CompletionOrder::READY : CompletionOrder::SUBMISSION);
       while (payloadBytes < fileBytes) {
         const Measurement groupTime;
         Group group;
@@ -554,6 +556,7 @@ run(int argc, char** argv)
           Clock::now().time_since_epoch()).count();
         auto prepared = std::make_shared<Group>(std::move(group));
         const auto index = groupIndex;
+        groups.resize(index + 1);
         pipeline.submit(prepared->wireBytes,
           [&, commit = io.commitConcurrent, wires = std::move(wires),
            packetSource = std::move(packetSource), manifest = std::move(manifest), prepared, index,
@@ -593,7 +596,7 @@ run(int argc, char** argv)
             row["preparationEndMonotonicNs"] = preparationEnd;
             row["timingBoundary"] = "preparation start to owner-observed durable confirmation";
             record(std::move(row));
-            groups.push_back(std::move(*prepared));
+            groups[index] = std::move(*prepared);
           });
         ++groupIndex;
       }

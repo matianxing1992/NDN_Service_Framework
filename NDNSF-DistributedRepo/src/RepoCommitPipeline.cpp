@@ -1,5 +1,6 @@
 #include "ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 
+#include <algorithm>
 #include <chrono>
 
 namespace ndnsf_distributed_repo {
@@ -11,12 +12,14 @@ RepoCommitPipeline::RepoCommitPipeline(CurrentCheck requireCurrent,
 }
 
 RepoCommitPipeline::RepoCommitPipeline(CurrentCheck requireCurrent,
-                                       std::uint64_t maxGroupWireBytes, std::size_t capacity)
+                                       std::uint64_t maxGroupWireBytes, std::size_t capacity,
+                                       CompletionOrder order)
   : m_requireCurrent(std::move(requireCurrent))
   , m_owner(std::this_thread::get_id())
   , m_cancelled(std::make_shared<std::atomic<bool>>(false))
   , m_maxGroupWireBytes(maxGroupWireBytes)
   , m_capacity(capacity)
+  , m_order(order)
 {
   if (!m_requireCurrent) throw std::invalid_argument("REPO_COMMIT_PIPELINE_CURRENT_MISSING");
   if (m_maxGroupWireBytes == 0)
@@ -65,10 +68,31 @@ RepoCommitPipeline::fail(std::exception_ptr error)
 }
 
 void
-RepoCommitPipeline::completeFirst()
+RepoCommitPipeline::markReady(const std::shared_ptr<bool>& ready)
 {
-  auto pending = std::move(m_pending.front());
-  m_pending.pop_front();
+  if (!ready) return;
+  {
+    std::lock_guard<std::mutex> lock(m_readyMutex);
+    *ready = true;
+  }
+  m_ready.notify_one();
+}
+
+void
+RepoCommitPipeline::completeOne()
+{
+  auto position = m_pending.begin();
+  if (m_order == CompletionOrder::READY) {
+    std::unique_lock<std::mutex> lock(m_readyMutex);
+    m_ready.wait(lock, [&] {
+      position = std::find_if(m_pending.begin(), m_pending.end(), [](const Pending& p) {
+        return *p.ready;
+      });
+      return position != m_pending.end();
+    });
+  }
+  auto pending = std::move(*position);
+  m_pending.erase(position);
   try {
     pending.completion.get();
     if (pending.observe) pending.observe();
@@ -87,7 +111,7 @@ RepoCommitPipeline::submit(std::uint64_t wireBytes, Commit commit,
     if (m_closed || !commit || wireBytes == 0 || wireBytes > m_maxGroupWireBytes)
       throw std::invalid_argument("REPO_COMMIT_PIPELINE_SUBMISSION_INVALID");
     m_requireCurrent();
-    while (m_pending.size() >= m_capacity) completeFirst();
+    while (m_pending.size() >= m_capacity) completeOne();
     m_requireCurrent();
     const auto cancelled = m_cancelled;
     // Reserve the owner record before starting a task: allocation failure must
@@ -96,14 +120,22 @@ RepoCommitPipeline::submit(std::uint64_t wireBytes, Commit commit,
     auto& pending = m_pending.back();
     try {
       pending.observe = std::move(observe);
+      if (m_order == CompletionOrder::READY) pending.ready = std::make_shared<bool>(false);
       pending.completion = std::async(std::launch::async,
-        [commit = std::move(commit), cancelled] {
-          const CurrentCheck current = [cancelled] {
-            if (cancelled->load(std::memory_order_acquire))
-              throw std::runtime_error("REPO_COMMIT_PIPELINE_CANCELLED");
-          };
-          current();
-          commit(current);
+        [this, commit = std::move(commit), cancelled, ready = pending.ready] {
+          try {
+            const CurrentCheck current = [cancelled] {
+              if (cancelled->load(std::memory_order_acquire))
+                throw std::runtime_error("REPO_COMMIT_PIPELINE_CANCELLED");
+            };
+            current();
+            commit(current);
+          }
+          catch (...) {
+            markReady(ready);
+            throw;
+          }
+          markReady(ready);
         });
     }
     catch (...) {
@@ -123,7 +155,7 @@ RepoCommitPipeline::drain()
   if (m_closed) throw std::logic_error("REPO_COMMIT_PIPELINE_CLOSED");
   try {
     m_requireCurrent();
-    while (!m_pending.empty()) completeFirst();
+    while (!m_pending.empty()) completeOne();
     m_requireCurrent();
   }
   catch (...) {
