@@ -200,6 +200,23 @@ At 24 fps, these 25 frames play for about 1.04 seconds. For the original
 pass the same geometry to the workload generator. At 361 frames, 320×320 fits
 the complete FP32 Response bound and 1280×704 exceeds it.
 
+After a real MiniNDN clip completes, create a reference from the official CPU
+models using the inputs recorded at each stage. The output binds that clip
+manifest and the workload. The native oracle checks all stages, actual role
+placement, NDN delivery, and the RGB24 file with the same FP32 tolerance as the
+closed-loop comparison. Keep the closed-loop reference and its original result
+using the existing `--reference` invocation.
+
+```sh
+"$checkpoint_python" Experiments/prepare-wan22-video-reference.py \
+  --asset-root "$asset_root" --workload "$run_root/workload.json" \
+  --initial-latent "$run_root/initial.raw" --initial-receipt "$run_root/initial.json" \
+  --native-clip "$clip_dir" --output "$run_root/same-input-reference"
+"$prefix/bin/di-wan-video-oracle" --deployment-state "$operation_json" \
+  --conditioned-reference "$run_root/same-input-reference/reference.json" \
+  --workload "$run_root/workload.json" --initial-latent "$run_root/initial.raw"
+```
+
 For the short real-weight VAE diagnostic, prepare a separate nine-frame 32×32
 source using the same commands with `--frames 9 --width 32 --height 32` and fresh
 paths. Fetch `vae_reference.file` from its fixed source repository/revision as

@@ -433,16 +433,23 @@ referenceValues(const NativeJson& row, const fs::path& root)
 
 void
 validateCheckpoint(const fs::path& operation, const fs::path& referenceFile,
-                   const fs::path& workloadFile, const fs::path& initialFile)
+                   const fs::path& workloadFile, const fs::path& initialFile, bool conditioned)
 {
   static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559);
   const std::uint16_t endian = 1;
   require(*reinterpret_cast<const std::uint8_t*>(&endian) == 1, "reference needs little-endian FP32");
   const auto reference = readJson(referenceFile);
-  const auto workload = readJson(workloadFile);
-  require(reference.at("schema") == "ndnsf-di-wan22-trajectory-reference-v1" &&
+  const auto workloadWire = readFile(workloadFile);
+  const auto workload = nativeParseJson(workloadWire);
+  const auto* schema = conditioned ? "ndnsf-di-wan22-conditioned-trajectory-reference-v1" :
+                                     "ndnsf-di-wan22-trajectory-reference-v1";
+  require(reference.at("schema") == schema &&
           workload.at("schema") == "ndnsf-di-wan-checkpoint-workload-v1" &&
           reference.at("generation") == workload.at("generation"), "checkpoint reference workload");
+  if (conditioned) {
+    require(reference.at("provenance").at("workload_digest") == nativePlanningDigest(workloadWire),
+            "conditioned reference workload digest differs");
+  }
   require(reference.at("absolute_tolerance") == 2e-4 &&
           reference.at("relative_tolerance") == 2e-4, "checkpoint reference criterion");
   const auto& generation = reference.at("generation");
@@ -489,7 +496,12 @@ validateCheckpoint(const fs::path& operation, const fs::path& referenceFile,
   const auto& mode = workload.at("modes").at(deployment.substr(10));
   const auto& placement = requester.at("fixed_placement").at("role_providers");
   const fs::path clip = options.at("output_directory").get<std::string>();
-  const auto manifest = readJson(clip / "manifest.json");
+  const auto manifestWire = readFile(clip / "manifest.json");
+  const auto manifest = nativeParseJson(manifestWire);
+  if (conditioned) {
+    require(reference.at("native_clip_manifest_digest") == nativePlanningDigest(manifestWire),
+            "conditioned reference clip manifest digest differs");
+  }
   require(manifest.at("initial_latent_digest") == initial.at("digest"), "initial latent seed binding");
   const auto& receipts = manifest.at("children");
   require(receipts.size() == 3 + 2 * steps && observed.requests.size() == receipts.size(),
@@ -560,7 +572,8 @@ validateCheckpoint(const fs::path& operation, const fs::path& referenceFile,
   require(point == reference.at("tensors").size() && child == receipts.size() &&
           observed.requests.empty(), "unmatched checkpoint trajectory records");
   verifier.requireNumericalMatch();
-  std::cout << deployment << " checkpoint trajectory verified, boot=" << state.at("boot_id") << '\n';
+  std::cout << deployment << " checkpoint " << (conditioned ? "same-input " : "")
+            << "trajectory verified, boot=" << state.at("boot_id") << '\n';
 }
 
 void
@@ -655,12 +668,14 @@ validate(const fs::path& operation, const fs::path& fixtureFile)
 int
 main(int argc, char** argv)
 {
+  const bool conditioned = argc == 9 && std::string_view(argv[3]) == "--conditioned-reference";
   if (argc == 9 && std::string_view(argv[1]) == "--deployment-state" &&
-      std::string_view(argv[3]) == "--reference" && std::string_view(argv[5]) == "--workload" &&
+      (conditioned || std::string_view(argv[3]) == "--reference") &&
+      std::string_view(argv[5]) == "--workload" &&
       std::string_view(argv[7]) == "--initial-latent") {
     try {
       validateCheckpoint(fs::absolute(argv[2]), fs::absolute(argv[4]),
-                          fs::absolute(argv[6]), fs::absolute(argv[8]));
+                          fs::absolute(argv[6]), fs::absolute(argv[8]), conditioned);
       return 0;
     }
     catch (const std::exception& error) {
@@ -670,7 +685,10 @@ main(int argc, char** argv)
   }
   if (argc != 5 || std::string_view(argv[1]) != "--deployment-state" ||
       std::string_view(argv[3]) != "--fixture") {
-    std::cerr << "usage: di-wan-video-oracle --deployment-state OPERATION --fixture FIXTURE\n";
+    std::cerr << "usage: di-wan-video-oracle --deployment-state OPERATION --fixture FIXTURE\n"
+                 "       di-wan-video-oracle --deployment-state OPERATION "
+                 "(--reference | --conditioned-reference) REFERENCE "
+                 "--workload WORKLOAD --initial-latent INPUT\n";
     return 2;
   }
   try {

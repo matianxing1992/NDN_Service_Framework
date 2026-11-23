@@ -8,6 +8,7 @@ import importlib.metadata
 import importlib.util
 import json
 from pathlib import Path
+import struct
 import time
 import types
 
@@ -39,12 +40,55 @@ def sha256(wire):
     return 'sha256:' + hashlib.sha256(wire).hexdigest()
 
 
+class CapturedClip:
+    """Read the recorded inputs used for an independent, stage-by-stage replay."""
+
+    def __init__(self, directory, initial_digest, steps):
+        self.directory = directory.resolve(strict=True)
+        path = self.directory / 'manifest.json'
+        if path.stat().st_size > 1 << 20:
+            raise ValueError('native clip manifest exceeds 1 MiB')
+        wire = path.read_bytes()
+        manifest = json.loads(wire)
+        if (manifest['schema'] != 'ndnsf-di-wan-rgb24-v1' or
+                manifest['initial_latent_digest'] != initial_digest or
+                len(manifest['fixture_trace']) != 3 + 3 * steps):
+            raise ValueError('native clip does not match the reference workload')
+        self.digest = sha256(wire)
+        self.trace = manifest['fixture_trace']
+
+    def tensor(self, index, phase, name, shape, binding):
+        row = self.trace[index]
+        filename = f'trace-{index}.bundle'
+        if (row['phase'] != phase or row['file'] != filename or
+                any(row.get(key) != value for key, value in binding.items())):
+            raise ValueError('native clip stage binding differs: ' + phase)
+        # A checkpoint observation is one named FP32 tensor in the native bundle.
+        # Construct its expected header from the independent shape and port identity.
+        encoded_name = name.encode('ascii')
+        byte_count = int(np.prod(shape)) * 4
+        header = struct.pack('<8sII', b'NDITB001', 1, len(encoded_name)) + encoded_name
+        header += struct.pack('<II' + 'q' * len(shape) + 'Q', 1, len(shape), *shape, byte_count)
+        path = self.directory / filename
+        if path.stat().st_size != len(header) + byte_count:
+            raise ValueError('native clip tensor size differs: ' + phase)
+        wire = path.read_bytes()
+        if not wire.startswith(header) or sha256(wire) != row['digest']:
+            raise ValueError('native clip tensor identity differs: ' + phase)
+        value = torch.from_numpy(np.frombuffer(wire, dtype='<f4', offset=len(header)).copy())
+        if not torch.isfinite(value).all():
+            raise ValueError('native clip tensor contains nonfinite values: ' + phase)
+        return value.reshape(shape)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--asset-root', type=Path, required=True)
     parser.add_argument('--workload', type=Path, required=True)
     parser.add_argument('--initial-latent', type=Path, required=True)
     parser.add_argument('--initial-receipt', type=Path, required=True)
+    parser.add_argument('--native-clip', type=Path,
+                        help='condition each official stage on the actual captured inputs')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
@@ -82,6 +126,8 @@ def main():
     sample = torch.from_numpy(np.frombuffer(initial, dtype='<f4').copy()).reshape(expected_shape)
     if not torch.isfinite(sample).all():
         raise ValueError('initial latent contains nonfinite values')
+    capture = (CapturedClip(args.native_clip, receipt['digest'], generation['steps'])
+               if args.native_clip is not None else None)
     network, network_wire = module_at('wan22_reference_network',
                                       HERE / 'prepare-wan22-network-reference.py')
     vae, vae_wire = module_at('wan22_reference_vae', HERE / 'prepare-wan22-vae-reference.py')
@@ -150,6 +196,8 @@ def main():
         rows.append(dict(phase=phase, name=name, shape=expected, dtype='float32',
                          file=filename, digest=sha256(wire), **binding))
         print(phase, 'bytes=' + str(size), 'wall_s=' + str(time.monotonic() - started), flush=True)
+        return (tensor if capture is None else
+                capture.tensor(len(rows) - 1, phase, name, expected, binding))
 
     branches = ('positive', 'negative')
     contexts = []
@@ -159,8 +207,8 @@ def main():
             ids = torch.tensor([entry['ids']], dtype=torch.int64)
             mask = torch.arange(512)[None, :] < entry['valid_tokens']
             context = model(ids, mask)[:, :entry['valid_tokens']].contiguous()
-            record('text/' + branch, 'text-context', context, [1, entry['valid_tokens'], 4096])
-            contexts.append(context)
+            contexts.append(record('text/' + branch, 'text-context', context,
+                                   [1, entry['valid_tokens'], 4096]))
     del model
     gc.collect()
     model = network.load_dit_model(root, recipe)
@@ -172,14 +220,14 @@ def main():
             predictions = []
             for branch, context in zip(branches, contexts):
                 prediction = model([sample[0]], timestep.reshape(1), [context[0]], padded)[0][None]
-                record('denoise/' + str(index) + '/' + branch, 'prediction', prediction, expected_shape)
-                predictions.append(prediction)
+                predictions.append(record('denoise/' + str(index) + '/' + branch,
+                                          'prediction', prediction, expected_shape))
             flow = predictions[1] + generation['guidance'] * (predictions[0] - predictions[1])
             corrector_order = getattr(scheduler, 'this_order', 0)
-            sample = scheduler.step(flow, timestep, sample, return_dict=False)[0]
-            record('latent/' + str(index), 'latent', sample, expected_shape,
-                   timestep=int(timestep), predictor_order=scheduler.this_order,
-                   corrector_order=corrector_order)
+            updated = scheduler.step(flow, timestep, sample, return_dict=False)[0]
+            sample = record('latent/' + str(index), 'latent', updated, expected_shape,
+                            timestep=int(timestep), predictor_order=scheduler.this_order,
+                            corrector_order=corrector_order)
     del model, scheduler, predictions, flow
     gc.collect()
     model, scale = vae.load_vae_model(root, recipe)
@@ -203,6 +251,9 @@ def main():
                       cpu_adaptation='FP32 source networks, SDPA MATH, frozen C++ initial input, pad128',
                       wall_seconds=time.monotonic() - started,
                       cpu_seconds=time.process_time() - cpu_started))
+    if capture is not None:
+        result['schema'] = 'ndnsf-di-wan22-conditioned-trajectory-reference-v1'
+        result['native_clip_manifest_digest'] = capture.digest
     with (args.output / 'reference.json').open('x', encoding='utf-8') as output:
         json.dump(result, output, sort_keys=True, indent=2)
         output.write('\n')
