@@ -4,7 +4,7 @@ import re
 import sys
 
 import onnx
-from onnx import TensorProto, helper
+from onnx import TensorProto, helper, numpy_helper
 
 source, output = map(Path, sys.argv[1:3])
 family = sys.argv[3]
@@ -62,6 +62,23 @@ for index, attention in enumerate(attentions):
         copies.append(copy)
     cloned[index] = (copies, wires)
 
+position_branches = {}
+position_users = Counter()
+if family == "27b":
+    # A physical role that owns GQA binds both raw generation inputs. Derive the
+    # three text position planes alongside the rotary operators that consume them.
+    mrope = "ndnsf_text_positions_mrope"
+    tile = producer[mrope]
+    unsqueeze = producer[tile.input[0]]
+    assert (tile.domain, tile.op_type, list(tile.input), list(tile.output)) == (
+        "", "Tile", ["ndnsf_text_positions_expanded", "ndnsf_text_positions_repeats"], [mrope])
+    assert (unsqueeze.domain, unsqueeze.op_type, list(unsqueeze.input), list(unsqueeze.output)) == (
+        "", "Unsqueeze", ["position_ids", "ndnsf_text_positions_axes"], [tile.input[0]])
+    for name, values in (("ndnsf_text_positions_axes", [0]),
+                         ("ndnsf_text_positions_repeats", [3, 1, 1])):
+        initializer, = (value for value in graph.initializer if value.name == name)
+        assert numpy_helper.to_array(initializer).tolist() == values
+
 normalized = []
 attention_index = 0
 for node in source_nodes:
@@ -75,6 +92,25 @@ for node in source_nodes:
             if name == "/model/pos_ids_reformat/Reshape/output_0":
                 assert (copy.domain, copy.op_type, i) == ("com.microsoft", "RotaryEmbedding", 1)
                 copy.input[i] = "position_ids"
+    if family == "27b" and mrope in copy.input:
+        layer = re.fullmatch(r"(/model/layers\.\d+/)attn/[qk]_rotary/MRotaryEmbedding", copy.name)
+        assert layer is not None and (copy.domain, copy.op_type) == (
+            "com.microsoft", "MRotaryEmbedding")
+        assert copy.input[1] == mrope and list(copy.input).count(mrope) == 1
+        position_prefix = f"{layer[1]}spec235_text_positions/"
+        position_users[layer[1]] += 1
+        if position_users[layer[1]] == 1:
+            wires = {unsqueeze.output[0]: position_prefix + "expanded",
+                     mrope: position_prefix + "mrope"}
+            position_branches[layer[1]] = wires
+            for original in (unsqueeze, tile):
+                derived = onnx.NodeProto()
+                derived.CopyFrom(original)
+                derived.name = position_prefix + original.op_type
+                derived.input[0] = wires.get(original.input[0], original.input[0])
+                derived.output[0] = wires[original.output[0]]
+                normalized.append(derived)
+        copy.input[1] = position_branches[layer[1]][mrope]
     if (copy.domain, copy.op_type) == ("com.microsoft", "GroupQueryAttention"):
         assert re.match(r"/model/layers\.(\d+)/", copy.name)
         replacements, wires = cloned[attention_index]
@@ -84,6 +120,10 @@ for node in source_nodes:
             copy.input[i] = wires[copy.input[i]]
     normalized.append(copy)
 assert attention_index == attention_count
+if family == "27b":
+    assert set(position_users) == {re.match(r"/model/layers\.\d+/", node.name)[0]
+                                   for node in attentions}
+    assert set(position_users.values()) == {2}
 live = {port.name for port in graph.output}
 kept = []
 for node in reversed(normalized):
@@ -96,7 +136,9 @@ graph.node.extend(reversed(kept))
 for index in range(len(graph.value_info)-1, -1, -1):
     if graph.value_info[index].name not in live:
         del graph.value_info[index]
-for _, wires in cloned.values():
+branch_aliases = [wires for _, wires in cloned.values()]
+branch_aliases.extend(position_branches.values())
+for wires in branch_aliases:
     for value, alias in wires.items():
         if alias not in live:
             continue
