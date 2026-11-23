@@ -112,7 +112,7 @@ Python `RepoClient` 是轻量持久化兼容包装：`RepoClient(user, repo_serv
 | --- | --- |
 | `artifact_lifecycle` | `AuthenticatedReplicaReceipt`、`ArtifactReplicaSession`、`AtomicArtifactDestination`、`HmacReceiptAuthenticator`、`resolve_active_artifact`、`retrieve_to_atomic_destination`。 |
 | `artifact_transfer` | `ArtifactStoreAssignment/Offer`、`PendingReplicaLeaseCollaboration`、`PendingReplicaTaskCollaboration`、`ReplicaLeaseCollaborationClient`、`ReplicaTaskCollaborationClient`、`ReplicaTaskControlSnapshot`，以及 store offer/assignment/upload lease 的 encode/decode helpers。 |
-| backend/orchestration | `FilesystemArtifactApiBackend`、`CollaborationArtifactApiBackend`、`ArtifactControlMetrics`、`install_artifact_collaboration_service`、`NetworkDistributedRepoClient`、`RepoNodeApp`。 |
+| Repo 进程与客户端 | 由已安装的 `DistributedRepoServer` 启动 Repo，Python 调用 `ArtifactRepositoryApi.make_persistent`。旧 `CollaborationArtifactApiBackend` 仍会报告 `SPEC192_COMPATIBILITY_V1`。 |
 | persistence | `ArtifactCapacityStatus`、`ArtifactFinalizationRecord`、`ArtifactStorageIdentity`、`ArtifactTransferSessionRecord`、`FilesystemCasPayloadStore`、`LifecycleTransitionError`、`MetadataStore`、`PayloadStore`、`PersistenceOwnershipError`、`RepoLifecycleEvent`、`SqliteRepositoryPersistence`。 |
 | service naming | `DEFAULT_REPO_SERVICE_ROOT`、`canonical_repo_operation`、`is_internal_repo_service`、`repo_service_for_operation`、`repo_versioned_services`。 |
 

@@ -45,9 +45,6 @@ from ndnsf_distributed_inference.adapters.qwen import (
     build_qwen_three_stage_adapter,
     QWEN36_STAGE_ROLES,
 )
-from ndnsf_distributed_inference.adapters.qwen.repo_registration import (
-    publish_qwen_stage_manifest,
-)
 from ndnsf_distributed_inference.app_sdk.contracts import PreSplitCatalogSnapshot
 from ndnsf_distributed_inference.app_sdk.placement import (
     GenerationRequest,
@@ -640,32 +637,14 @@ class _QwenDeferredStageMaterializer:
 
 
 class _QwenDeferredRepoPublisher:
-    """Publish the selected Qwen split exactly once, after ACK_CLOSED."""
+    """Resolve an already registered Qwen role split after ACK_CLOSED."""
 
     def __init__(
-        self,
-        *,
-        service_user,
-        stage_manifest_path: str,
-        output_path: str,
-        publisher_identity: str,
-        object_prefix: str,
-        activate_catalog_snapshot=None,
-        canonical_model_name: str = "",
-        canonical_graph_digest: str = "",
-        canonical_profile: str = "",
-        canonical_publisher: str = "/ndnsf-di",
+        self, *, stage_manifest_path: str, output_path: str, activate_catalog_snapshot=None,
     ) -> None:
-        self._service_user = service_user
         self._stage_manifest_path = Path(stage_manifest_path)
         self._output_path = Path(output_path)
-        self._publisher_identity = str(publisher_identity)
-        self._object_prefix = str(object_prefix)
         self._activate_catalog_snapshot = activate_catalog_snapshot
-        self._canonical_model_name = str(canonical_model_name)
-        self._canonical_graph_digest = str(canonical_graph_digest)
-        self._canonical_profile = str(canonical_profile)
-        self._canonical_publisher = str(canonical_publisher)
 
     def _read_registration(self) -> dict | None:
         if not self._output_path.is_file():
@@ -735,51 +714,12 @@ class _QwenDeferredRepoPublisher:
         remaining_ms = int(deadline_ms) - int(time.time() * 1000)
         if remaining_ms <= 0:
             raise TimeoutError("deferred Qwen Repo publication deadline expired")
-        # Resolve the backend before touching the filesystem. `CollaborationArtifactApiBackend`
-        # is a retired compatibility name that raises on construction, so this deferred
-        # publication path can no longer run; constructing it first makes the retirement the
-        # first boundary and leaves no output directory or start marker behind.
-        from py_repoclient import CollaborationArtifactApiBackend
-        backend = CollaborationArtifactApiBackend(
-            None,
-            self._service_user,
-            "/NDNSF/DistributedRepo/Artifact/v2/STORE",
-            ack_timeout_ms=3000,
-            packet_payload_bytes=7600,
-            chunk_bytes=16 * 1024 * 1024,
+        from py_repoclient.compat import raise_repo_compatibility_error
+
+        raise_repo_compatibility_error(
+            "legacy Qwen cold Repo publication",
+            "use ndnsf-di cluster up with native requester/provider actors",
         )
-        self._output_path.parent.mkdir(parents=True, exist_ok=True)
-        print(
-            "LLM_PIPELINE_QWEN_DEFERRED_REPO_PUBLISH_START",
-            f"candidateDigest={candidate.candidate_digest}",
-            f"remainingMs={remaining_ms}",
-            flush=True,
-        )
-        publish_qwen_stage_manifest(
-            backend=backend,
-            stage_manifest_path=self._stage_manifest_path,
-            output_path=self._output_path,
-            publisher_identity=self._publisher_identity,
-            object_prefix=self._object_prefix,
-            deadline_ms=int(deadline_ms),
-            chunk_mib=16,
-            replication_factor=1,
-            control_mode="normal",
-            canonical_model_name=self._canonical_model_name,
-            canonical_graph_digest=self._canonical_graph_digest,
-            canonical_profile=self._canonical_profile,
-            canonical_publisher=self._canonical_publisher,
-        )
-        registration = self._read_registration()
-        if registration is None:
-            raise RuntimeError("Qwen Repo publisher exited without registration")
-        print(
-            "LLM_PIPELINE_QWEN_DEFERRED_REPO_PUBLISH_DONE",
-            f"candidateDigest={candidate.candidate_digest}",
-            f"output={self._output_path}",
-            flush=True,
-        )
-        return self._published(candidate, registration)
 
     def ensure(self, candidate, role_specs, *, deadline_ms: int) -> PublishedSplit:
         """Ensure the selected V3 canonical stage objects after ACK_CLOSED."""
@@ -1059,17 +999,9 @@ def _configure_qwen_automatic_planning(client, args) -> None:
             )
 
         artifact_publisher = _QwenDeferredRepoPublisher(
-            service_user=client.service_user,
             stage_manifest_path=args.qwen_stage_manifest,
             output_path=args.repo_registration_output,
-            publisher_identity=args.repo_user,
-            object_prefix=args.repo_object_prefix,
             activate_catalog_snapshot=activate_catalog_snapshot,
-            canonical_model_name=model.model_name,
-            canonical_graph_digest=str(graph.graph_digest),
-            canonical_profile=str(
-                manifest.get("modelProfile") or precision),
-            canonical_publisher="/ndnsf-di",
         )
         if v3_default:
             # V3 is request-first: the graph-derived stage objects are ensured

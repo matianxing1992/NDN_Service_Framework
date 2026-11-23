@@ -40,7 +40,7 @@ SOURCE_REQUIRED = (
     "NDNSF-DistributedRepo/src/RepoNode.cpp",
     "NDNSF-DistributedRepo/src/RepoProtocol.cpp",
     "NDNSF-DistributedRepo/pythonWrapper/setup.py", "pythonWrapper/setup.py",
-    "Experiments/NDNSF_DistributedRepo_Generic_Minindn.py",
+    "Experiments/NDNSF_NewAPI_Minindn_Perf.py",
     "tests/standalone/repo-client.cpp",
     "tests/standalone/object-repo-server.cpp",
     "tests/standalone/openabe-policy-lifecycle.cpp",
@@ -51,7 +51,6 @@ SOURCE_REQUIRED = (
     "tests/minindn/packet_oracle.py",
     "tests/minindn/binding_client.py",
     "tests/minindn/di_peer.py",
-    "tests/minindn/retired_python_peer.py",
     "tests/minindn/build_candidate.py",
     "tests/integration-tests/ndnsf-integration-fixture.cpp",
     "tests/integration-tests/ndnsf-integration-fixture.hpp",
@@ -98,6 +97,14 @@ BUILD_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 def dependency_prefix(name):
     identity = json.loads(require_file(DEPENDENCY_IDENTITY, "DEPENDENCY_IDENTITY").read_text())
     return Path(identity["libraries"][name]["path"]).parent.parent
+
+
+def pkg_config_path():
+    nac = dependency_prefix("libnac-abe.so")
+    runtime = dependency_prefix("libonnxruntime.so")
+    return f"{nac / 'lib/pkgconfig'}:{runtime / 'lib/pkgconfig'}:/usr/local/lib/pkgconfig"
+
+
 PYTHON_IMPORT_PROBE = """import json,pathlib
 import ndnsf._ndnsf, py_repoclient._py_repoclient
 paths=set()
@@ -143,7 +150,7 @@ def candidate_build_environment(fresh, source, build, ndn_cxx_source, bindings=F
               "NDNSF_NDN_CXX_SOURCE_TREE": str(ndn_cxx_source),
               "NDNSF_SKIP_DEV_PIP_INSTALL": "1",
               "PYTHONNOUSERSITE": "1",
-              "PKG_CONFIG_PATH": "/usr/local/lib/pkgconfig",
+              "PKG_CONFIG_PATH": pkg_config_path(),
               "PATH": BUILD_PATH, **BUILD_TOOLS}
     if bindings:
         prefix = fresh.parent / "prefix"
@@ -162,6 +169,7 @@ def candidate_build_environment(fresh, source, build, ndn_cxx_source, bindings=F
 
 def candidate_library_path(prefix, sdk):
     directories = (prefix / "lib", sdk, dependency_prefix("libnac-abe.so") / "lib",
+                   dependency_prefix("libonnxruntime.so") / "lib",
                    Path("/usr/local/lib"))
     return ":".join(str(directory) for directory in dict.fromkeys(directories))
 
@@ -391,7 +399,7 @@ def verify_build_receipt(root, source_sha, source_files, binaries, files, path, 
                 fresh, sdk_source, sdk_build, ndn_cxx_source, bindings=index >= 3)
             if step["environment"] != expected_environment:
                 raise ValueError("noncanonical build/runtime environment: " + label)
-        from spec202_build_candidate import sdk_inputs, compiler_dependencies
+        from build_candidate import sdk_inputs, compiler_dependencies
         if receipt["external_inputs"] != sdk_inputs(sdk_source, sdk_build, ndn_cxx_source):
             raise PreflightError("STALE_BUILD_RECEIPT", "external SDK inventory changed")
         if receipt["compiler_dependencies"] != compiler_dependencies(fresh, sdk_source, sdk_build):
@@ -561,7 +569,7 @@ def check(root, output, topology, source_sha, source_files, roles,
             for section, expected_type in (("trust", dict), ("runtime", dict),
                                            ("identities", dict), ("services", list))):
         raise PreflightError("POLICY_TEMPLATE", "missing trust/runtime/identities/services")
-    for tool in ("nfd", "nfdc", "nlsr", "ndnsec", "tcpdump", "tshark", "strace",
+    for tool in ("nfd", "nfdc", "nlsr", "ndnsec", "dumpcap", "tcpdump", "tshark", "strace",
                  "c++", "pkg-config"):
         path = shutil.which(tool)
         if not path:

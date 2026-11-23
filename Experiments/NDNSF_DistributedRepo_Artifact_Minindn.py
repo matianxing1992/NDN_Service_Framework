@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Spec 164 functional MiniNDN gate for trusted artifact publication/retrieval.
-
-This is a functional success/corruption matrix, not a throughput benchmark.
-It exercises publisher -> repository and repository -> consumer segmented NDN
-transfers with bounded adaptive fetch, trusted manifest verification, atomic
-repository activation, authenticated receipt validation, and atomic consumer
-destination exposure.
-"""
+"""Measure the Spec 164 artifact and physical network ceiling subjects."""
 
 from __future__ import annotations
 
@@ -28,14 +21,8 @@ from typing import Any
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = Path(__file__).resolve()
 DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/spec164-artifact-linear.conf"
-DEFAULT_RECOVERY_TOPOLOGY = (
-    REPO / "Experiments/Topology/spec164-artifact-recovery.conf"
-)
 DEFAULT_OUTPUT = REPO / "results/spec164-artifact-functional"
-PUBLISHER_ROOT = "/spec164/publisher/artifact"
-REPO_ROOT = "/spec164/repo/artifact"
 PAYLOAD_SEGMENT_BYTES = 4096
-ARTIFACT_CHUNK_BYTES = 16 * 1024
 RAW_NDN_ROOT = "/spec164/raw/artifact"
 
 
@@ -53,26 +40,6 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
         json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     os.replace(temporary, path)
-
-
-def _sanitize_evidence_run(run_dir: Path) -> None:
-    """Remove fixture secrets and duplicate payload bytes after verdict capture."""
-
-    for path in (
-        run_dir / "receipt.key",
-        run_dir / "payload.bin",
-        run_dir / "publisher.ready",
-        run_dir / "repo.ready",
-        run_dir / "stop",
-        run_dir / "control/source.bin",
-        run_dir / "control/destination.bin",
-    ):
-        path.unlink(missing_ok=True)
-    shutil.rmtree(run_dir / "repo-store", ignore_errors=True)
-    shutil.rmtree(run_dir / "consumer", ignore_errors=True)
-    shutil.rmtree(run_dir / "control/store", ignore_errors=True)
-    shutil.rmtree(run_dir / "security", ignore_errors=True)
-    shutil.rmtree(run_dir / "homes", ignore_errors=True)
 
 
 def _restore_output_ownership(output_dir: Path) -> None:
@@ -96,586 +63,6 @@ def _wait_for(path: Path, timeout_s: float) -> None:
             return
         time.sleep(0.05)
     raise TimeoutError(f"timed out waiting for {path}")
-
-
-def _load_fixture(run_dir: Path):
-    from py_repoclient import (
-        ArtifactLimits,
-        ArtifactManifestTrustPolicy,
-        artifact_capability_from_dict,
-        artifact_chunk_from_dict,
-        artifact_manifest_page_from_dict,
-        artifact_reference_from_dict,
-        decode_artifact_manifest_page,
-        decode_signed_artifact_root,
-    )
-
-    config = json.loads((run_dir / "fixture.json").read_text(encoding="utf-8"))
-    limits = ArtifactLimits()
-    limits.max_manifest_pages = 8
-    limits.max_manifest_chunks = 8
-    limits.max_cryptographic_operations = 32
-    artifact = artifact_reference_from_dict(config["artifact"], limits)
-    chunk_values = config.get("chunks", [config["chunk"]])
-    chunks = [
-        artifact_chunk_from_dict(value, artifact, limits)
-        for value in chunk_values
-    ]
-    capability = artifact_capability_from_dict(config["capability"], limits)
-    policy = ArtifactManifestTrustPolicy()
-    policy.trusted_publisher_identity = config["policy"]["trustedPublisherIdentity"]
-    policy.trusted_key_locator = config["policy"]["trustedKeyLocator"]
-    policy.public_key_pem = config["policy"]["publicKeyPem"]
-    policy.policy_epoch = config["policy"]["policyEpoch"]
-    policy.evaluation_time_ms = int(config["policy"]["evaluationTimeMs"])
-    policy.allowed_digest_algorithms = list(
-        config["policy"]["allowedDigestAlgorithms"]
-    )
-    policy.allowed_signature_algorithms = list(
-        config["policy"]["allowedSignatureAlgorithms"]
-    )
-    signed_root = decode_signed_artifact_root(
-        (run_dir / "root.wire").read_bytes(), limits
-    )
-    page = decode_artifact_manifest_page(
-        (run_dir / "page.wire").read_bytes(), limits
-    )
-    return config, limits, artifact, chunks, capability, policy, signed_root, page
-
-
-def _prepare_fixture(run_dir: Path, payload_size: int) -> None:
-    from py_repoclient import (
-        ArtifactLimits,
-        SignedArtifactRoot,
-        artifact_capability_from_dict,
-        artifact_chunk_from_dict,
-        artifact_manifest_page_from_dict,
-        artifact_reference_from_dict,
-        artifact_root_manifest_from_dict,
-        artifact_sha256_hex,
-        canonical_manifest_page_bytes,
-        canonical_root_manifest_bytes,
-        encode_artifact_manifest_page,
-        encode_signed_artifact_root,
-    )
-
-    run_dir.mkdir(parents=True, exist_ok=False)
-    payload = bytes((index * 131 + 17) % 256 for index in range(payload_size))
-    (run_dir / "payload.bin").write_bytes(payload)
-    limits = ArtifactLimits()
-    limits.max_manifest_pages = 8
-    limits.max_manifest_chunks = 8
-    limits.max_cryptographic_operations = 32
-    artifact_dict = {
-        "logicalName": PUBLISHER_ROOT,
-        "digestAlgorithm": "sha256",
-        "contentDigest": artifact_sha256_hex(payload),
-        "sizeBytes": len(payload),
-        "formatVersion": "artifact-manifest-v2",
-        "rootManifestName": f"{PUBLISHER_ROOT}/root",
-        "publisherIdentity": "/spec164/publisher",
-        "policyEpoch": "spec164-policy-1",
-    }
-    artifact = artifact_reference_from_dict(artifact_dict, limits)
-    chunk_bytes = min(
-        ARTIFACT_CHUNK_BYTES,
-        max(PAYLOAD_SEGMENT_BYTES, len(payload)),
-    )
-    chunk_dicts = []
-    children = []
-    for index, offset in enumerate(range(0, len(payload), chunk_bytes)):
-        chunk_payload = payload[offset:offset + chunk_bytes]
-        chunk_dict = {
-            "index": index,
-            "offsetBytes": offset,
-            "lengthBytes": len(chunk_payload),
-            "digestAlgorithm": "sha256",
-            "digest": artifact_sha256_hex(chunk_payload),
-            "firstSegment": 0,
-            "finalSegment": max(
-                0, (len(chunk_payload) - 1) // PAYLOAD_SEGMENT_BYTES
-            ),
-        }
-        artifact_chunk_from_dict(chunk_dict, artifact, limits)
-        chunk_dicts.append(chunk_dict)
-        children.append({
-            "kind": "chunk",
-            "index": index,
-            "offsetBytes": offset,
-            "lengthBytes": len(chunk_payload),
-            "digestAlgorithm": "sha256",
-            "digest": chunk_dict["digest"],
-        })
-    page_dict = {
-        "pageVersion": "artifact-manifest-page-v2",
-        "depth": 0,
-        "offsetBytes": 0,
-        "lengthBytes": len(payload),
-        "pageDigestAlgorithm": "sha256",
-        "pageDigest": "0" * 64,
-        "children": children,
-    }
-    placeholder = artifact_manifest_page_from_dict(
-        page_dict, 512, limits
-    )
-    page_dict["pageDigest"] = artifact_sha256_hex(
-        canonical_manifest_page_bytes(placeholder, limits)
-    )
-    page = artifact_manifest_page_from_dict(page_dict, 512, limits)
-    root_dict = {
-        "artifact": artifact_dict,
-        "packetPayloadBytes": PAYLOAD_SEGMENT_BYTES,
-        "chunkBytes": chunk_bytes,
-        "namingTemplate":
-            "/spec164/publisher/artifact/chunk/{chunk}/segment/{segment}",
-        "manifestRootDigestAlgorithm": "sha256",
-        "manifestRootDigest": page_dict["pageDigest"],
-        "signatureAlgorithm": "rsa-sha256",
-        "publisherKeyLocator": "/spec164/publisher/KEY/root-1",
-        "createdAtMs": 1000,
-        "expiresAtMs": 10000,
-        "criticalExtensions": [],
-    }
-    root = artifact_root_manifest_from_dict(root_dict, 1024, limits)
-    private_key = run_dir / "publisher-private.pem"
-    public_key = run_dir / "publisher-public.pem"
-    subprocess.run([
-        "openssl", "genpkey", "-algorithm", "RSA",
-        "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(private_key),
-    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run([
-        "openssl", "pkey", "-in", str(private_key),
-        "-pubout", "-out", str(public_key),
-    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    canonical = run_dir / "root.canonical"
-    signature = run_dir / "root.signature"
-    canonical.write_bytes(canonical_root_manifest_bytes(root, limits))
-    subprocess.run([
-        "openssl", "dgst", "-sha256", "-sign", str(private_key),
-        "-out", str(signature), str(canonical),
-    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    signed_root = SignedArtifactRoot()
-    signed_root.root = root
-    signed_root.signature_value = signature.read_bytes()
-    (run_dir / "root.wire").write_bytes(
-        encode_signed_artifact_root(signed_root, limits)
-    )
-    (run_dir / "page.wire").write_bytes(
-        encode_artifact_manifest_page(page, limits)
-    )
-    receipt_key = run_dir / "receipt.key"
-    receipt_key.write_bytes(bytes(range(32)))
-    receipt_key.chmod(0o600)
-    private_key.unlink()
-    canonical.unlink()
-    signature.unlink()
-
-    capability_dict = {
-        "repoNode": "/spec164/repo",
-        "formatVersions": ["artifact-manifest-v2"],
-        "digestAlgorithms": ["sha256"],
-        "signatureAlgorithms": ["rsa-sha256"],
-        "maxArtifactBytes": 1 << 30,
-        "maxChunkBytes": 64 * 1024 * 1024,
-        "maxRootEncodedBytes": 64 * 1024,
-        "maxPageEncodedBytes": 4 * 1024 * 1024,
-        "maxPageEntries": 65536,
-        "maxManifestDepth": 16,
-        "policyEpoch": "spec164-policy-1",
-    }
-    artifact_capability_from_dict(capability_dict, limits)
-    _write_json(run_dir / "fixture.json", {
-        "artifact": artifact_dict,
-        "chunk": chunk_dicts[0],
-        "chunks": chunk_dicts,
-        "capability": capability_dict,
-        "policy": {
-            "trustedPublisherIdentity": "/spec164/publisher",
-            "trustedKeyLocator": "/spec164/publisher/KEY/root-1",
-            "publicKeyPem": public_key.read_text(encoding="utf-8"),
-            "policyEpoch": "spec164-policy-1",
-            "evaluationTimeMs": 2000,
-            "allowedDigestAlgorithms": ["sha256"],
-            "allowedSignatureAlgorithms": ["rsa-sha256"],
-        },
-        "packetPayloadBytes": PAYLOAD_SEGMENT_BYTES,
-    })
-
-
-def _packet_producer(base_name: str, payload: bytes, identity: str):
-    from ndnsf import StoredDataProducer, make_segmented_data_packets
-
-    packets = make_segmented_data_packets(
-        base_name,
-        payload,
-        signing_identity=identity,
-        max_segment_size=PAYLOAD_SEGMENT_BYTES,
-    )
-    return StoredDataProducer(
-        base_name,
-        [packet.wire for packet in packets],
-        signing_identity=identity,
-    ).start()
-
-
-def _producer_role(run_dir: Path, scenario: str, timeout_s: float) -> int:
-    payload = (run_dir / "payload.bin").read_bytes()
-    if scenario == "corruption":
-        payload = payload[:-1] + bytes([payload[-1] ^ 0x01])
-    config = json.loads((run_dir / "fixture.json").read_text(encoding="utf-8"))
-    producers = [
-        _packet_producer(
-            f"{PUBLISHER_ROOT}/root",
-            (run_dir / "root.wire").read_bytes(),
-            "/spec164/publisher",
-        ),
-        _packet_producer(
-            f"{PUBLISHER_ROOT}/page/0",
-            (run_dir / "page.wire").read_bytes(),
-            "/spec164/publisher",
-        ),
-    ]
-    for chunk in config.get("chunks", [config["chunk"]]):
-        offset = int(chunk["offsetBytes"])
-        length = int(chunk["lengthBytes"])
-        producers.append(_packet_producer(
-            f"{PUBLISHER_ROOT}/payload/chunk/{chunk['index']}",
-            payload[offset:offset + length],
-            "/spec164/publisher",
-        ))
-    (run_dir / "publisher.ready").write_text("ready\n", encoding="utf-8")
-    try:
-        _wait_for(run_dir / "stop", timeout_s)
-    except TimeoutError:
-        return 2
-    finally:
-        for producer in reversed(producers):
-            producer.stop()
-    return 0
-
-
-def _repo_role(run_dir: Path, scenario: str, timeout_s: float) -> int:
-    from ndnsf import (
-        fetch_adaptive_segmented_data_packets,
-        fetch_segmented_object,
-    )
-    from py_repoclient import (
-        ArtifactReplicaSession,
-        HmacReceiptAuthenticator,
-        SqliteRepositoryPersistence,
-        artifact_upload_lease_from_dict,
-        decode_artifact_manifest_page,
-        decode_signed_artifact_root,
-    )
-    from spec164_artifact_campaign import self_resource_totals
-
-    phase_ms = {phase: 0.0 for phase in (
-        "discovery", "ackCollection", "planning", "queueWait",
-        "sessionStart", "transfer", "verification", "persistence",
-        "replication", "commit", "activation",
-    )}
-    _wait_for(run_dir / "publisher.ready", timeout_s)
-    phase_started = time.monotonic()
-    (
-        config,
-        limits,
-        artifact,
-        chunks,
-        capability,
-        policy,
-        _,
-        _,
-    ) = _load_fixture(run_dir)
-    root_wire = fetch_segmented_object(
-        f"{PUBLISHER_ROOT}/root", timeout_ms=int(timeout_s * 1000)
-    )
-    page_wire = fetch_segmented_object(
-        f"{PUBLISHER_ROOT}/page/0", timeout_ms=int(timeout_s * 1000)
-    )
-    phase_ms["discovery"] = (time.monotonic() - phase_started) * 1000.0
-    phase_started = time.monotonic()
-    signed_root = decode_signed_artifact_root(root_wire, limits)
-    page = decode_artifact_manifest_page(page_wire, limits)
-    persistence = SqliteRepositoryPersistence(
-        run_dir / "repo-store/repo.sqlite3", f"spec164-{scenario}-repo"
-    )
-    authenticator = HmacReceiptAuthenticator(
-        "/spec164/repo",
-        "/spec164/repo/KEY/receipt-1",
-        (run_dir / "receipt.key").read_bytes(),
-    )
-    upload_lease = artifact_upload_lease_from_dict({
-        "leaseId": f"lease-spec164-{scenario}",
-        "operationId": f"spec164-{scenario}-publication",
-        "repoNode": "/spec164/repo",
-        "artifact": config["artifact"],
-        "reservedBytes": int(artifact.size_bytes),
-        "issuedAtMs": 2500,
-        "expiresAtMs": 20000,
-        "replayId": f"replay-spec164-{scenario}",
-    }, 2900)
-    session = ArtifactReplicaSession(
-        persistence=persistence,
-        operation_id=f"spec164-{scenario}-publication",
-        repo_node="/spec164/repo",
-        generation=1,
-        upload_lease=upload_lease,
-        lease_validation_time_ms=2900,
-        artifact=artifact,
-        signed_root=signed_root,
-        pages=[page],
-        chunks=chunks,
-        capability=capability,
-        trust_policy=policy,
-        receipt_authenticator=authenticator,
-        limits=limits,
-    )
-    session.begin_assigned_task(3000)
-    phase_ms["sessionStart"] = (time.monotonic() - phase_started) * 1000.0
-    try:
-        transfer_metrics = []
-        transfer_started = time.monotonic()
-        persistence_ms = 0.0
-        for chunk in chunks:
-            received: dict[int, bytes] = {}
-
-            def accept(packet) -> None:
-                received[int(packet.segment)] = bytes(packet.content)
-
-            metrics = fetch_adaptive_segmented_data_packets(
-                f"{PUBLISHER_ROOT}/payload/chunk/{chunk.index}",
-                accept,
-                timeout_ms=int(timeout_s * 1000),
-                initial_window=2,
-                maximum_window=16,
-                maximum_retries=3,
-                persistence_backlog_limit=16,
-            )
-            transfer_metrics.append(metrics)
-            assembled = b"".join(
-                received[index] for index in sorted(received)
-            )
-            persistence_started = time.monotonic()
-            session.receive_chunk(
-                int(chunk.index), assembled, now_ms=3100 + int(chunk.index)
-            )
-            persistence_ms += (time.monotonic() - persistence_started) * 1000.0
-        phase_ms["transfer"] = (
-            (time.monotonic() - transfer_started) * 1000.0 - persistence_ms
-        )
-        phase_ms["persistence"] = persistence_ms
-        phase_started = time.monotonic()
-        session.verify_complete(3200)
-        phase_ms["verification"] = (time.monotonic() - phase_started) * 1000.0
-        phase_started = time.monotonic()
-        envelope = session.commit_and_activate(3300)
-        commit_activation_ms = (time.monotonic() - phase_started) * 1000.0
-        # The lifecycle API performs atomic commit and active-catalog exposure
-        # together. Keep both canonical phases visible without double-counting.
-        phase_ms["commit"] = commit_activation_ms
-        phase_ms["activation"] = 0.0
-    except BaseException as exc:
-        session.fail(str(exc), 3400)
-        rejected = scenario == "corruption" and session.state == "FAILED"
-        _write_json(run_dir / "repo-result.json", {
-            "scenario": scenario,
-            "status": "CORRUPTION_REJECTED" if rejected else "FAILED",
-            "error": str(exc),
-            "active": False,
-            "destinationVisible": False,
-            "phaseLatencyMs": phase_ms,
-            "resourceTotals": self_resource_totals(),
-        })
-        persistence.close()
-        if rejected:
-            print("SPEC164_ARTIFACT_MININDN_CORRUPTION_REJECTED", flush=True)
-            return 0
-        raise
-
-    committed = session.payload_store.committed_path(session.identity).read_bytes()
-    producers = [
-        _packet_producer(
-            f"{REPO_ROOT}/root", root_wire, "/spec164/repo"
-        ),
-        _packet_producer(
-            f"{REPO_ROOT}/page/0", page_wire, "/spec164/repo"
-        ),
-    ]
-    for chunk in chunks:
-        offset = int(chunk.offset_bytes)
-        length = int(chunk.length_bytes)
-        producers.append(_packet_producer(
-            f"{REPO_ROOT}/payload/chunk/{chunk.index}",
-            committed[offset:offset + length],
-            "/spec164/repo",
-        ))
-    # StoredDataProducer.start() schedules prefix registration on its Face
-    # thread. Do not publish cross-process readiness until the local NFD has
-    # had a bounded opportunity to install those filters; otherwise the
-    # consumer can race the registration and receive a no-route Nack.
-    time.sleep(0.5)
-    _write_json(run_dir / "repo-result.json", {
-        "scenario": scenario,
-        "status": "ACTIVE",
-        "active": True,
-        "receipt": envelope.to_dict(),
-        "publicationMetrics": {
-            "segments": sum(item.total_segments for item in transfer_metrics),
-            "interestCount": sum(
-                item.interest_count for item in transfer_metrics
-            ),
-            "retransmissionCount": sum(
-                item.retransmission_count for item in transfer_metrics
-            ),
-            "logicalBytes": sum(
-                item.logical_bytes for item in transfer_metrics
-            ),
-            "wireBytes": sum(item.wire_bytes for item in transfer_metrics),
-            "timeoutCount": sum(item.timeout_count for item in transfer_metrics),
-            "retransmittedBytes": sum(
-                item.retransmitted_bytes for item in transfer_metrics
-            ),
-            "windowMinimum": (
-                1 if any(item.delivered_segments for item in transfer_metrics) else 0
-            ),
-            "windowMaximum": max(
-                (item.maximum_in_flight for item in transfer_metrics), default=0
-            ),
-        },
-        "phaseLatencyMs": phase_ms,
-        "resourceTotals": self_resource_totals(),
-        "lifecycle": [
-            event.to_state
-            for event in persistence.lifecycle_events(
-                f"spec164-{scenario}-publication"
-            )
-            if event.accepted
-        ],
-    })
-    (run_dir / "repo.ready").write_text("ready\n", encoding="utf-8")
-    try:
-        _wait_for(run_dir / "stop", timeout_s)
-    finally:
-        for producer in reversed(producers):
-            producer.stop()
-        persistence.close()
-    return 0
-
-
-def _consumer_role(run_dir: Path, scenario: str, timeout_s: float) -> int:
-    from ndnsf import (
-        fetch_adaptive_segmented_data_packets,
-        fetch_segmented_object,
-    )
-    from py_repoclient import (
-        AuthenticatedReplicaReceipt,
-        AtomicArtifactDestination,
-        HmacReceiptAuthenticator,
-        decode_artifact_manifest_page,
-        decode_signed_artifact_root,
-        verify_artifact_manifest_graph,
-    )
-
-    _wait_for(run_dir / "repo.ready", timeout_s)
-    (
-        config,
-        limits,
-        artifact,
-        chunks,
-        capability,
-        policy,
-        _,
-        _,
-    ) = _load_fixture(run_dir)
-    repo_result = json.loads(
-        (run_dir / "repo-result.json").read_text(encoding="utf-8")
-    )
-    envelope = AuthenticatedReplicaReceipt.from_dict(repo_result["receipt"])
-    authenticator = HmacReceiptAuthenticator(
-        "/spec164/repo",
-        "/spec164/repo/KEY/receipt-1",
-        (run_dir / "receipt.key").read_bytes(),
-    )
-    authenticator.verify(
-        envelope,
-        expected_artifact=artifact,
-        expected_operation_id=f"spec164-{scenario}-publication",
-    )
-    root_wire = fetch_segmented_object(
-        f"{REPO_ROOT}/root", timeout_ms=int(timeout_s * 1000)
-    )
-    page_wire = fetch_segmented_object(
-        f"{REPO_ROOT}/page/0", timeout_ms=int(timeout_s * 1000)
-    )
-    signed_root = decode_signed_artifact_root(root_wire, limits)
-    page = decode_artifact_manifest_page(page_wire, limits)
-    verification = verify_artifact_manifest_graph(
-        signed_root,
-        artifact,
-        [page],
-        chunks,
-        capability,
-        policy,
-        limits,
-    )
-    destination = run_dir / "consumer/artifact.bin"
-    sink = AtomicArtifactDestination(
-        destination,
-        artifact,
-        f"spec164-{scenario}-retrieval",
-        max_range_bytes=PAYLOAD_SEGMENT_BYTES,
-    )
-
-    try:
-        transfer_metrics = []
-        for chunk in chunks:
-            def accept(packet, *, chunk_offset=int(chunk.offset_bytes)) -> None:
-                sink.write_range(
-                    chunk_offset
-                    + int(packet.segment) * int(config["packetPayloadBytes"]),
-                    bytes(packet.content),
-                )
-
-            metrics = fetch_adaptive_segmented_data_packets(
-                f"{REPO_ROOT}/payload/chunk/{chunk.index}",
-                accept,
-                timeout_ms=int(timeout_s * 1000),
-                initial_window=2,
-                maximum_window=16,
-                maximum_retries=3,
-                persistence_backlog_limit=16,
-            )
-            transfer_metrics.append(metrics)
-        sink.finalize()
-    except BaseException:
-        sink.abort()
-        raise
-    _write_json(run_dir / "consumer-result.json", {
-        "scenario": scenario,
-        "status": "SUCCESS",
-        "destination": str(destination),
-        "destinationVisible": destination.is_file(),
-        "contentDigest": artifact.content_digest,
-        "receiptAuthenticated": True,
-        "rootAsymmetricVerifications":
-            verification.asymmetric_verification_count,
-        "manifestDigestVerifications": verification.digest_verification_count,
-        "retrievalMetrics": {
-            "segments": sum(item.total_segments for item in transfer_metrics),
-            "interestCount": sum(
-                item.interest_count for item in transfer_metrics
-            ),
-            "retransmissionCount": sum(
-                item.retransmission_count for item in transfer_metrics
-            ),
-            "logicalBytes": sum(
-                item.logical_bytes for item in transfer_metrics
-            ),
-            "wireBytes": sum(item.wire_bytes for item in transfer_metrics),
-        },
-    })
-    print("SPEC164_ARTIFACT_MININDN_SUCCESS", flush=True)
-    return 0
 
 
 def _node_environment(host_name: str, timeline_sample_rate: float = 0.01) -> dict[str, str]:
@@ -1744,141 +1131,8 @@ def _run_physical_network_ceiling(
         Minindn.cleanUp()
 
 
-def _run_scenario(
-    scenario: str,
-    output_dir: Path,
-    topology_file: Path,
-    payload_size: int,
-    timeout_s: float,
-) -> dict[str, Any]:
-    from mininet.node import Controller
-    from mininet.log import setLogLevel
-    from minindn.apps.app_manager import AppManager
-    from minindn.apps.nfd import Nfd
-    from minindn.helpers.nfdc import Nfdc
-    from minindn.minindn import Minindn
-    from minindn.util import getPopen
-
-    run_dir = output_dir / scenario
-    _prepare_fixture(run_dir, payload_size)
-    setLogLevel("warning")
-    Minindn.cleanUp()
-    Minindn.verifyDependencies()
-    ndn = Minindn(topoFile=str(topology_file), controller=Controller)
-    processes = []
-    logs = []
-    started = time.monotonic()
-    try:
-        ndn.start()
-        AppManager(ndn, ndn.net.hosts, Nfd, logLevel="WARN")
-        time.sleep(0.5)
-        publisher = ndn.net["publisher"]
-        repo = ndn.net["repo"]
-        consumer = ndn.net["consumer"]
-        publisher_link_ip = publisher.connectionsTo(repo)[0][0].IP()
-        repo_consumer_link_ip = repo.connectionsTo(consumer)[0][0].IP()
-        Nfdc.createFace(repo, publisher_link_ip)
-        Nfdc.registerRoute(
-            repo, "/spec164/publisher", publisher_link_ip, cost=0
-        )
-        Nfdc.createFace(consumer, repo_consumer_link_ip)
-        Nfdc.registerRoute(
-            consumer, "/spec164/repo", repo_consumer_link_ip, cost=0
-        )
-
-        def start(host_name: str, role: str):
-            log_path = run_dir / f"{role}.log"
-            stream = log_path.open("wb")
-            command = " ".join((
-                "exec", shlex.quote(sys.executable), shlex.quote(str(SCRIPT)),
-                "--role", role,
-                "--scenario", scenario,
-                "--run-dir", shlex.quote(str(run_dir)),
-                "--timeout-seconds", str(timeout_s),
-            ))
-            process = getPopen(
-                ndn.net[host_name],
-                command,
-                envDict=_node_environment(host_name),
-                shell=True,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-            )
-            processes.append((role, process))
-            logs.append(stream)
-
-        start("publisher", "producer")
-        start("repo", "repo")
-        if scenario == "success":
-            start("consumer", "consumer")
-            _wait_for(run_dir / "consumer-result.json", timeout_s)
-        else:
-            _wait_for(run_dir / "repo-result.json", timeout_s)
-        (run_dir / "stop").write_text("stop\n", encoding="utf-8")
-        deadline = time.monotonic() + timeout_s
-        for role, process in processes:
-            remaining = max(0.1, deadline - time.monotonic())
-            process.wait(timeout=remaining)
-            if process.returncode != 0:
-                raise RuntimeError(f"{role} exited with {process.returncode}")
-        repo_result = json.loads(
-            (run_dir / "repo-result.json").read_text(encoding="utf-8")
-        )
-        consumer_result = None
-        if scenario == "success":
-            consumer_result = json.loads(
-                (run_dir / "consumer-result.json").read_text(encoding="utf-8")
-            )
-        result = {
-            "scenario": scenario,
-            "verdict": (
-                "PASS"
-                if (
-                    scenario == "success"
-                    and repo_result["status"] == "ACTIVE"
-                    and consumer_result
-                    and consumer_result["status"] == "SUCCESS"
-                    and consumer_result["destinationVisible"]
-                ) or (
-                    scenario == "corruption"
-                    and repo_result["status"] == "CORRUPTION_REJECTED"
-                    and not repo_result["active"]
-                )
-                else "BLOCK"
-            ),
-            "elapsedMs": round((time.monotonic() - started) * 1000, 3),
-            "repo": repo_result,
-            "consumer": consumer_result,
-            "performanceClaim": False,
-        }
-        _write_json(run_dir / "summary.json", result)
-        return result
-    finally:
-        try:
-            (run_dir / "stop").write_text("stop\n", encoding="utf-8")
-        except OSError:
-            pass
-        for _, process in processes:
-            if process.poll() is None:
-                process.terminate()
-        for _, process in processes:
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-        for stream in logs:
-            stream.close()
-        ndn.stop()
-        Minindn.cleanUp()
-        if (run_dir / "summary.json").is_file():
-            _sanitize_evidence_run(run_dir)
-
-
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--scenario", choices=("success", "corruption", "matrix"), default="matrix"
-    )
     parser.add_argument("--topology-file", type=Path, default=DEFAULT_TOPOLOGY)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--payload-size", type=int, default=64 * 1024)
@@ -1889,7 +1143,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "physical-network", "raw-segmented-ndn", "legacy-exact-packet",
             "digest-only", "signed-manifest",
         ),
-        help="Run one matched ceiling subject instead of the functional matrix.",
+        help="Run one matched ceiling subject.",
     )
     parser.add_argument(
         "--measurement-window-seconds",
@@ -1929,26 +1183,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--quick-smoke",
         action="store_true",
-        help="Run one <10s connectivity/functionality success case; no performance claim.",
-    )
-    parser.add_argument(
-        "--recovery-matrix",
-        action="store_true",
-        help=(
-            "Run the Spec 164 interruption, expiry, identity, concurrency, "
-            "low-space, and partial-replica recovery matrix."
-        ),
-    )
-    parser.add_argument(
-        "--recovery-topology-file",
-        type=Path,
-        default=DEFAULT_RECOVERY_TOPOLOGY,
-        help=argparse.SUPPRESS,
+        help="Run a short connectivity smoke without a performance claim.",
     )
     parser.add_argument(
         "--role",
         choices=(
-            "producer", "repo", "consumer", "raw-producer", "raw-consumer",
+            "raw-producer", "raw-consumer",
             "benchmark-producer", "benchmark-consumer",
             "benchmark-cold-consumer",
         ),
@@ -1963,7 +1203,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "performance roles; --run-dir remains the coordination directory."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.role and not args.performance_subject:
+        parser.error("--performance-subject is required")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1971,12 +1214,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.role:
         if args.run_dir is None:
             raise SystemExit("--run-dir is required for an internal role")
-        if args.role == "producer":
-            return _producer_role(args.run_dir, args.scenario, args.timeout_seconds)
-        if args.role == "repo":
-            return _repo_role(args.run_dir, args.scenario, args.timeout_seconds)
-        if args.role == "consumer":
-            return _consumer_role(args.run_dir, args.scenario, args.timeout_seconds)
         if args.role == "raw-producer":
             return _raw_producer_role(
                 args.run_dir, args.timeout_seconds, args.data_dir
@@ -2010,163 +1247,95 @@ def main(argv: list[str] | None = None) -> int:
             args.cold_prefix or None,
         )
 
-    if args.recovery_matrix:
-        from NDNSF_DistributedRepo_Recovery_Minindn import (
-            main as recovery_main,
-        )
-
-        recovery_argv = [
-            "--output-dir",
-            str(args.output_dir),
-            "--topology-file",
-            str(args.recovery_topology_file),
-            "--payload-size",
-            str(args.payload_size),
-            "--timeout-seconds",
-            str(args.timeout_seconds),
-        ]
-        if args.quick_smoke:
-            recovery_argv.append("--quick-smoke")
-        return recovery_main(recovery_argv)
-
     # MiniNDN parses process-global argv in its constructor. The experiment
     # parser above already owns these options, so do not let MiniNDN reinterpret
     # them as topology-runner arguments.
     sys.argv = [sys.argv[0]]
-    if args.performance_subject:
-        from spec164_artifact_campaign import (
-            build_cells,
-            create_campaign_manifest,
-            freeze_campaign,
-            validate_measurement_window,
-        )
-
-        validate_measurement_window(
-            args.measurement_window_seconds, args.quick_smoke
-        )
-        if not 0.0 <= args.timeline_sample_rate <= 1.0:
-            raise SystemExit("--timeline-sample-rate must be in [0,1]")
-        output_dir = args.output_dir.resolve()
-        if output_dir.exists():
-            raise SystemExit(f"output directory already exists: {output_dir}")
-        output_dir.mkdir(parents=True)
-        if args.freeze_campaign:
-            campaign_id = args.campaign_id or (
-                "spec164-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-            )
-            manifest = create_campaign_manifest(
-                campaign_id=campaign_id,
-                repo_root=REPO,
-                topology={
-                    "file": str(args.topology_file.resolve()),
-                    "kind": "publisher-repo-consumer-linear",
-                    "delayMsPerLink": 1,
-                    "bandwidthMbpsPerLink": 1000,
-                },
-                admissibility={
-                    "predeclaredExclusionsOnly": True,
-                    "retainFailedAndNegativeRuns": True,
-                    "rawAndRepositoryGeometryMatched": True,
-                },
-                cells=build_cells(),
-                repetitions=args.repetitions,
-                timeline_sample_rate=args.timeline_sample_rate,
-                quick_smoke=args.quick_smoke,
-                measurement_window_seconds=args.measurement_window_seconds,
-            )
-            freeze_campaign(output_dir, manifest)
-        try:
-            if args.performance_subject == "physical-network":
-                result = _run_physical_network_ceiling(
-                    output_dir=output_dir,
-                    topology_file=args.topology_file.resolve(),
-                    measurement_window_seconds=(
-                        min(1.0, args.measurement_window_seconds)
-                        if args.quick_smoke else args.measurement_window_seconds
-                    ),
-                    quick_smoke=args.quick_smoke,
-                )
-            else:
-                result = _run_repository_subject(
-                    subject=args.performance_subject,
-                    output_dir=output_dir,
-                    topology_file=args.recovery_topology_file.resolve(),
-                    payload_size=(
-                        min(args.payload_size, 1 * 1024 * 1024)
-                        if args.quick_smoke else args.payload_size
-                    ),
-                    replicas=args.replicas,
-                    concurrency=args.concurrency,
-                    timeout_s=(
-                        min(args.timeout_seconds, 8.0)
-                        if args.quick_smoke else args.timeout_seconds
-                    ),
-                    timeline_sample_rate=args.timeline_sample_rate,
-                    quick_smoke=args.quick_smoke,
-                )
-            _write_json(output_dir / "summary.json", {
-                "schema": "ndnsf-repo-spec164-ceiling-v2",
-                "quickSmoke": bool(args.quick_smoke),
-                "performanceClaim": bool(result.get("performanceClaim", False)),
-                "result": result,
-            })
-            _restore_output_ownership(output_dir)
-            if args.quick_smoke and result["verdict"] == "PASS":
-                print("SPEC164_ARTIFACT_CEILING_SMOKE_OK")
-            else:
-                print(json.dumps(result, sort_keys=True))
-            return 0 if result["verdict"] == "PASS" else 1
-        except Exception:
-            _restore_output_ownership(output_dir)
-            raise
-
-    scenario = "success" if args.quick_smoke else args.scenario
-    timeout_s = min(args.timeout_seconds, 8.0) if args.quick_smoke else (
-        args.timeout_seconds
+    from spec164_artifact_campaign import (
+        build_cells,
+        create_campaign_manifest,
+        freeze_campaign,
+        validate_measurement_window,
     )
-    payload_size = min(args.payload_size, 8 * 1024) if args.quick_smoke else (
-        args.payload_size
+
+    validate_measurement_window(
+        args.measurement_window_seconds, args.quick_smoke
     )
+    if not 0.0 <= args.timeline_sample_rate <= 1.0:
+        raise SystemExit("--timeline-sample-rate must be in [0,1]")
     output_dir = args.output_dir.resolve()
     if output_dir.exists():
         raise SystemExit(f"output directory already exists: {output_dir}")
     output_dir.mkdir(parents=True)
-    scenarios = ("success", "corruption") if scenario == "matrix" else (scenario,)
-    results = [
-        _run_scenario(
-            item,
-            output_dir,
-            args.topology_file.resolve(),
-            payload_size,
-            timeout_s,
+    if args.freeze_campaign:
+        campaign_id = args.campaign_id or (
+            "spec164-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         )
-        for item in scenarios
-    ]
-    summary = {
-        "schema": "ndnsf-repo-spec164-functional-minindn-v1",
-        "materialPassport": {
-            "originSkill": "experiment-agent",
-            "originMode": "run",
-            "originDate": time.strftime("%Y-%m-%d", time.gmtime()),
-            "verificationStatus": "VERIFIED",
-            "versionLabel": "spec164_t008_functional_v1",
-        },
-        "verdict": "PASS" if all(
-            result["verdict"] == "PASS" for result in results
-        ) else "BLOCK",
-        "topology": str(args.topology_file.resolve()),
-        "payloadSize": payload_size,
-        "scenarios": results,
-        "quickSmoke": bool(args.quick_smoke),
-        "performanceClaim": False,
-    }
-    _write_json(output_dir / "summary.json", summary)
-    _restore_output_ownership(output_dir)
-    if args.quick_smoke and summary["verdict"] == "PASS":
-        print("SPEC164_ARTIFACT_MININDN_SMOKE_OK")
-    else:
-        print(json.dumps(summary, sort_keys=True))
-    return 0 if summary["verdict"] == "PASS" else 1
+        manifest = create_campaign_manifest(
+            campaign_id=campaign_id,
+            repo_root=REPO,
+            topology={
+                "file": str(args.topology_file.resolve()),
+                "kind": "publisher-repo-consumer-linear",
+                "delayMsPerLink": 1,
+                "bandwidthMbpsPerLink": 1000,
+            },
+            admissibility={
+                "predeclaredExclusionsOnly": True,
+                "retainFailedAndNegativeRuns": True,
+                "rawAndRepositoryGeometryMatched": True,
+            },
+            cells=build_cells(),
+            repetitions=args.repetitions,
+            timeline_sample_rate=args.timeline_sample_rate,
+            quick_smoke=args.quick_smoke,
+            measurement_window_seconds=args.measurement_window_seconds,
+        )
+        freeze_campaign(output_dir, manifest)
+    try:
+        if args.performance_subject == "physical-network":
+            result = _run_physical_network_ceiling(
+                output_dir=output_dir,
+                topology_file=args.topology_file.resolve(),
+                measurement_window_seconds=(
+                    min(1.0, args.measurement_window_seconds)
+                    if args.quick_smoke else args.measurement_window_seconds
+                ),
+                quick_smoke=args.quick_smoke,
+            )
+        else:
+            result = _run_repository_subject(
+                subject=args.performance_subject,
+                output_dir=output_dir,
+                topology_file=args.recovery_topology_file.resolve(),
+                payload_size=(
+                    min(args.payload_size, 1 * 1024 * 1024)
+                    if args.quick_smoke else args.payload_size
+                ),
+                replicas=args.replicas,
+                concurrency=args.concurrency,
+                timeout_s=(
+                    min(args.timeout_seconds, 8.0)
+                    if args.quick_smoke else args.timeout_seconds
+                ),
+                timeline_sample_rate=args.timeline_sample_rate,
+                quick_smoke=args.quick_smoke,
+            )
+        _write_json(output_dir / "summary.json", {
+            "schema": "ndnsf-repo-spec164-ceiling-v2",
+            "quickSmoke": bool(args.quick_smoke),
+            "performanceClaim": bool(result.get("performanceClaim", False)),
+            "result": result,
+        })
+        _restore_output_ownership(output_dir)
+        if args.quick_smoke and result["verdict"] == "PASS":
+            print("SPEC164_ARTIFACT_CEILING_SMOKE_OK")
+        else:
+            print(json.dumps(result, sort_keys=True))
+        return 0 if result["verdict"] == "PASS" else 1
+    except Exception:
+        _restore_output_ownership(output_dir)
+        raise
 
 
 if __name__ == "__main__":

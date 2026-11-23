@@ -25,7 +25,6 @@ _RETIRED_METHODS = frozenset({
     "capability",
     "delete",
     "fetch",
-    "fetch_file_async",
     "fetch_object",
     "get",
     "get_object",
@@ -35,7 +34,6 @@ _RETIRED_METHODS = frozenset({
     "lookup_local_commit",
     "publisher_namespace",
     "publisher_object_name",
-    "publish_file_async",
     "remove",
     "store",
     "_require_publisher_object_name",
@@ -67,14 +65,7 @@ class RepoClient:
         *,
         ack_timeout_ms: int = 1000,
         timeout_ms: int = 30000,
-        artifact_backend=None,
     ) -> None:
-        if artifact_backend is not None:
-            raise_repo_compatibility_error(
-                "artifact_backend",
-                "Python-owned artifact backends were removed; pass an NDNSF "
-                "ServiceUser and use the native Persistent Repo service",
-            )
 
         self.user = user
         self.repo_service_name = str(repo_service_name)
@@ -91,12 +82,6 @@ class RepoClient:
     @property
     def artifact_api(self) -> ArtifactRepositoryApi:
         return self._artifact_api
-
-    def configure_artifact_backend(self, *args, **kwargs) -> None:
-        raise_repo_compatibility_error(
-            "configure_artifact_backend",
-            "construct RepoClient with an NDNSF ServiceUser and the C++ Repo service",
-        )
 
     def publish_file(
         self,
@@ -200,17 +185,10 @@ class RepoClient:
             self.timeout_ms if timeout_ms is None else int(timeout_ms),
         )
 
-    @staticmethod
-    def make_manifest(*args, **kwargs):
-        raise_repo_compatibility_error(
-            "make_manifest",
-            "use native ArtifactReference and ArtifactRepositoryApi",
-        )
-
     def __getattr__(self, name: str):
         if name in _NATIVE_API_METHODS:
             return getattr(self._artifact_api, name)
-        if name in _RETIRED_METHODS or name in {"begin_upload", "begin_fetch"}:
+        if name in _RETIRED_METHODS:
             replacement = _RETIRED_REPLACEMENT
             if name == "lookup_local_commit":
                 replacement = (

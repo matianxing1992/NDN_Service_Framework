@@ -91,7 +91,6 @@ Spec 192 已移除 Python-owned Repo runtime。`RepoClient` 保留为
 `timeout_ms=30000` 默认值。以下其他旧 API 保留 import 名称，并在调用时抛出带有
 `SPEC192_COMPATIBILITY_V1` 的 `RepoCompatibilityError`：
 
-- `RepoNodeApp`、`NetworkDistributedRepoClient`
 - `FilesystemArtifactApiBackend`、`CollaborationArtifactApiBackend`
 - Python upload/fetch session、async callback、Python server handler
 - Python placement、receipt/location/status、journal、availability 和 retry state

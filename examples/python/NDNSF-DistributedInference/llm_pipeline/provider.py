@@ -1160,11 +1160,10 @@ def _selection_v2_for_qwen(
     # therefore advertise their current residency first and reload the exact
     # content-bound registration when Selection preparation begins.
     repo_registration_by_role: dict[str, dict] = {}
-    repo_receipts: tuple[dict, ...] = ()
     repo_registration_lock = Lock()
 
     def refresh_repo_registration() -> dict[str, dict]:
-        nonlocal repo_registration_by_role, repo_receipts
+        nonlocal repo_registration_by_role
         if not repo_registration_path:
             return dict(repo_registration_by_role)
         path = Path(repo_registration_path)
@@ -1181,11 +1180,6 @@ def _selection_v2_for_qwen(
         }
         if not by_role:
             raise RuntimeError("Qwen DistributedRepo registration has no artifacts")
-        receipts = tuple(
-            dict(receipt)
-            for item in artifacts
-            for receipt in item.get("receipts", [])
-        )
         if not getattr(args, "selection_model_cache_dir", ""):
             raise RuntimeError(
                 "Qwen DistributedRepo fetch requires --selection-model-cache-dir")
@@ -1193,7 +1187,6 @@ def _selection_v2_for_qwen(
         # a transient empty map to concurrent Selection retries.
         with repo_registration_lock:
             repo_registration_by_role = by_role
-            repo_receipts = receipts
             return dict(repo_registration_by_role)
 
     def await_repo_registration(context, role: str) -> dict | None:
@@ -1228,7 +1221,6 @@ def _selection_v2_for_qwen(
     # Preserve compatibility with the pre-split path while allowing the file
     # to be absent during the initial ACK phase.
     refresh_repo_registration()
-    repo_holder: dict[str, object] = {}
     verified_disk_paths: dict[str, tuple[str, tuple[int, int, int, int]]] = {}
     prepared_runtime_by_request_role_digest: dict[
         tuple[str, str, str], dict,
@@ -1362,9 +1354,7 @@ def _selection_v2_for_qwen(
             str(registration_item["objectName"])
             if registration_item is not None else ""
         )
-        fetch_ms = 0.0
         disk_cache_hit = False
-        fetch_result = None
         with model_cache_lock:
             Path(args.selection_model_cache_dir).mkdir(
                 parents=True, exist_ok=True)
@@ -1402,95 +1392,11 @@ def _selection_v2_for_qwen(
                     if destination.exists():
                         raise RuntimeError(
                             "Qwen repo cache path exists with invalid content")
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    if "artifact_api" not in repo_holder:
-                        from py_repoclient import (
-                            ArtifactRepositoryApi,
-                            CollaborationArtifactApiBackend,
-                            artifact_reference_from_dict,
-                        )
-                        backend = CollaborationArtifactApiBackend.from_config(
-                            args.config,
-                            generated_policy_dir=(
-                                str(args.generated_policy_dir) + "-repo"),
-                            state_root=args.repo_client_state_root,
-                            user=args.provider_identity,
-                            committed_receipts=repo_receipts,
-                        )
-                        repo_holder["artifact_api"] = ArtifactRepositoryApi(
-                            backend,
-                            publisher_identity=args.provider_identity,
-                            default_timeout_ms=max(
-                                int(args.selection_max_prepare_ms), 600000),
-                        )
-                        repo_holder["reference_from_dict"] = (
-                            artifact_reference_from_dict
-                        )
-                    fetch_start = time.perf_counter()
-                    reference = repo_holder["reference_from_dict"](
-                        dict(registration_item["artifactReference"]))
-                    def emit_repo_fetch_progress(progress) -> None:
-                        # The Artifact API dispatches progress asynchronously;
-                        # this callback only writes bounded, structured
-                        # evidence and never controls the fetch lifecycle.
-                        _emit(
-                            "LLM_PIPELINE_QWEN_REPO_FETCH_PROGRESS",
-                            f"requestId={context.request_id}",
-                            f"role={role}",
-                            f"logicalName={reference.logical_name}",
-                            f"sequence={progress.sequence}",
-                            f"receivedBytes={progress.received_bytes}",
-                            f"verifiedBytes={progress.verified_bytes}",
-                            f"totalBytes={progress.total_bytes}",
-                            f"lastSegment={progress.last_segment}",
-                            f"deliveredSegments={progress.delivered_segments}",
-                            f"totalSegments={progress.total_segments}",
-                            f"retransmittedBytes={progress.retransmitted_bytes}",
-                            f"elapsedMs={progress.elapsed_ms:.2f}",
-                            flush=True,
-                        )
-                    try:
-                        fetch_result = repo_holder["artifact_api"].fetch_file(
-                            reference,
-                            destination,
-                            on_progress=emit_repo_fetch_progress,
-                            timeout_ms=max(
-                                int(args.selection_max_prepare_ms), 600000),
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        # Keep the public ArtifactApiError intentionally
-                        # bounded, but expose the local exception class and
-                        # message in the provider evidence.  Without this,
-                        # route/fetch failures collapse into the opaque
-                        # ``INTERNAL_ERROR: artifact backend failed`` and
-                        # cannot be distinguished from a Repo integrity fault.
-                        _emit(
-                            "LLM_PIPELINE_QWEN_REPO_FETCH_FAILED",
-                            f"requestId={context.request_id}",
-                            f"role={role}",
-                            f"logicalName={reference.logical_name}",
-                            f"errorType={type(exc).__name__}",
-                            f"error={str(exc)}",
-                            flush=True,
-                        )
-                        raise
-                    fetch_ms = _elapsed_ms(fetch_start)
-                    if (destination.stat().st_size
-                            != int(registration_item["fileBytes"])
-                            or _sha256_file(destination) != digest_hex):
-                        raise RuntimeError(
-                            "Qwen Repo fetch completed with invalid content")
-                    remember_verified_file(destination, digest)
-                    residency_ledger.admit_disk(
-                        residency_identity,
-                        destination,
-                        size=int(registration_item["fileBytes"]),
-                        unique_bytes=int(registration_item["fileBytes"]),
-                        wire_bytes=(
-                            int(getattr(fetch_result, "transferred_bytes", 0))
-                            + int(getattr(
-                                fetch_result, "retransmitted_bytes", 0))
-                        ),
+                    from py_repoclient.compat import raise_repo_compatibility_error
+
+                    raise_repo_compatibility_error(
+                        "legacy Qwen cold Repo fetch",
+                        "use ndnsf-di cluster up with native requester/provider actors",
                     )
                 _emit(
                     "LLM_PIPELINE_QWEN_REPO_FETCH",
@@ -1498,12 +1404,12 @@ def _selection_v2_for_qwen(
                     f"role={role}",
                     f"objectName={registration_item['objectName']}",
                     f"cacheHit={str(disk_cache_hit).lower()}",
-                    f"fetch_ms={fetch_ms:.2f}",
+                    "fetch_ms=0.00",
                     f"bytes={registration_item['fileBytes']}",
-                    f"lastSegment={getattr(fetch_result, 'last_segment', -1)}",
-                    f"deliveredSegments={getattr(fetch_result, 'delivered_segments', 0)}",
-                    f"totalSegments={getattr(fetch_result, 'total_segments', 0)}",
-                    f"retransmittedBytes={getattr(fetch_result, 'retransmitted_bytes', 0)}",
+                    "lastSegment=-1",
+                    "deliveredSegments=0",
+                    "totalSegments=0",
+                    "retransmittedBytes=0",
                     flush=True,
                 )
                 _emit(
@@ -1512,11 +1418,11 @@ def _selection_v2_for_qwen(
                     f"role={role}",
                     f"objectName={registration_item['objectName']}",
                     f"bytes={registration_item['fileBytes']}",
-                    f"lastSegment={getattr(fetch_result, 'last_segment', -1)}",
-                    f"deliveredSegments={getattr(fetch_result, 'delivered_segments', 0)}",
-                    f"totalSegments={getattr(fetch_result, 'total_segments', 0)}",
-                    f"retransmittedBytes={getattr(fetch_result, 'retransmitted_bytes', 0)}",
-                    f"fetchMs={fetch_ms:.2f}",
+                    "lastSegment=-1",
+                    "deliveredSegments=0",
+                    "totalSegments=0",
+                    "retransmittedBytes=0",
+                    "fetchMs=0.00",
                     flush=True,
                 )
             if not model_path:
@@ -1634,7 +1540,7 @@ def _selection_v2_for_qwen(
             f"role={role}",
             f"cacheHit={str(cache_hit).lower()}",
             f"diskCacheHit={str(disk_cache_hit).lower()}",
-            f"fetch_ms={fetch_ms:.2f}",
+            "fetch_ms=0.00",
             f"load_ms={_elapsed_ms(load_start):.2f}",
             f"device={getattr(model, 'ndnsf_execution_device', 'unknown')}",
             f"cpuFallback={str(bool(getattr(model, 'ndnsf_cpu_fallback', True))).lower()}",
@@ -4502,7 +4408,6 @@ def main() -> int:
     parser.add_argument(
         "--selection-local-artifact", action="append", default=[],
         help="Explicit immutable preloaded V3 stage binding ROLE=PATH.")
-    parser.add_argument("--repo-client-state-root", default="")
     parser.add_argument(
         "--spec175-fault-case",
         choices=("M02", "M03", "M04", "M05", "M09", "M11", "M12", "M13", "M14"),
@@ -4566,9 +4471,6 @@ def main() -> int:
             encoding="utf-8").strip()
         if not bootstrap_token:
             raise SystemExit("provider bootstrap token file is empty")
-    if args.selection_repo_registration and not args.repo_client_state_root:
-        raise SystemExit(
-            "Qwen DistributedRepo fetch requires --repo-client-state-root")
     if args.selection_dataflow_v2 and args.selection_dataflow_v3:
         raise SystemExit("select exactly one Selection Dataflow profile")
     if args.dry_run:

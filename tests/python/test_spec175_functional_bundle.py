@@ -162,7 +162,6 @@ def make_bundle(root: Path, gate: str = "multi-provider") -> Path:
             f"--selection-signing-key-file\n/evidence/selection-signing-{index}.key\n"
             f"--selection-residency-json\n/bundle/selection-residency-{index}.json\n"
             f"--selection-model-cache-dir\n/evidence/model-cache-{index}\n"
-            f"--repo-client-state-root\n/evidence/repo-client-{index}\n"
             "--selection-repo-registration\n/evidence/repo-registration.json\n"
             "--stages\n3\n",
             encoding="utf-8",

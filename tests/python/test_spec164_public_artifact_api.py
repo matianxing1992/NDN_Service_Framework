@@ -25,18 +25,13 @@ class RetiredPythonArtifactApiOptionsTest(unittest.TestCase):
         self.assertEqual(caught.exception.operation, operation)
         self.assertTrue(caught.exception.replacement)
 
-    def test_backend_sessions_async_and_python_callbacks_are_rejected(self):
+    def test_backend_and_python_callbacks_are_rejected(self):
         api = self.make_local_api()
         reference = object()
         self.assert_retired_call(
             "ArtifactRepositoryApi(backend=...)",
             lambda: ArtifactRepositoryApi(object(), publisher_identity="/app"),
         )
-        self.assert_retired_call("configure_artifact_backend", api.configure_artifact_backend)
-        self.assert_retired_call("begin_upload", api.begin_upload)
-        self.assert_retired_call("begin_fetch", api.begin_fetch)
-        self.assert_retired_call("publish_file_async", api.publish_file_async)
-        self.assert_retired_call("fetch_file_async", api.fetch_file_async)
         self.assert_retired_call(
             "publish_file legacy options",
             lambda: api.publish_file("source.bin", name="/app/model"),

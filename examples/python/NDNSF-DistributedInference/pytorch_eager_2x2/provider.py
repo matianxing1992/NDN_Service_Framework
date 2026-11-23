@@ -90,7 +90,7 @@ def main() -> int:
             group=args.group,
             handler_workers=args.handler_workers,
         )
-        provider.serve(
+        provider.serve_service(
             service=SERVICE,
             roles=[args.role] if args.role else args.roles,
             handler=handle_role,

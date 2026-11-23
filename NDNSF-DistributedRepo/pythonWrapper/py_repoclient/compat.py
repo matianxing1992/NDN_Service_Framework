@@ -19,26 +19,3 @@ class RepoCompatibilityError(RuntimeError):
 
 def raise_repo_compatibility_error(operation: str, replacement: str) -> None:
     raise RepoCompatibilityError(operation, replacement)
-
-
-class RetiredRepoFeature:
-    """Import-compatible base for APIs whose implementation was Python-owned."""
-
-    _repo_operation = "legacy Python Repo feature"
-    _repo_replacement = "use the native ArtifactRepositoryApi"
-
-    def __new__(cls, *args, **kwargs):
-        raise_repo_compatibility_error(cls._repo_operation, cls._repo_replacement)
-
-
-def retired_repo_feature(name: str, replacement: str):
-    """Create an import-compatible name with a precise versioned error."""
-    return type(
-        name,
-        (RetiredRepoFeature,),
-        {
-            "__module__": __name__,
-            "_repo_operation": name,
-            "_repo_replacement": replacement,
-        },
-    )

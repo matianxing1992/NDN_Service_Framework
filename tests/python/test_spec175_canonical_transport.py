@@ -138,11 +138,8 @@ def test_qwen_registration_separates_canonical_identity_from_transport_name():
         artifacts_by_role={role: (digest,) for role, digest in digests.items()},
     )
     publisher = user._QwenDeferredRepoPublisher(
-        service_user=None,
         stage_manifest_path="/tmp/spec175-stage-manifest.json",
         output_path="/tmp/spec175-registration.json",
-        publisher_identity="/publisher",
-        object_prefix="/repo",
     )
     registration = {
         "artifacts": [

@@ -269,20 +269,6 @@ def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[st
     return parse_pkg_config(output)
 
 
-def pkg_config_optional(*packages: str):
-    """Return pkg-config flags when installed, or None for a core-only host."""
-    validate_pkg_config_environment()
-    try:
-        output = subprocess.check_output(
-            ["pkg-config", "--cflags", "--libs", *packages],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    return parse_pkg_config(output)
-
-
 def explicit_ndn_svs_pair():
     source = os.environ.get("NDNSF_NDN_SVS_SOURCE_TREE", "")
     build = os.environ.get("NDNSF_NDN_SVS_BUILD_TREE", "")
@@ -350,7 +336,10 @@ def build_extension() -> Extension:
         "libnac-abe",
         "ndnsd",
     )
-    tracking = pkg_config_optional("ndnsf-uav-tracking")
+    runtime_lib = Path(candidate_dirs[0])
+    tracking = None
+    if (runtime_lib / "libndnsf-uav-tracking.so").is_file():
+        tracking = pkg_config(str(runtime_lib / "pkgconfig/ndnsf-uav-tracking.pc"))
     tracking_includes: list[str] = []
     tracking_library_dirs: list[str] = []
     tracking_libraries: list[str] = []
@@ -444,7 +433,7 @@ def build_extension() -> Extension:
             *tracking_includes,
             *include_dirs,
         ],
-        library_dirs=list(dict.fromkeys([*tracking_library_dirs, *library_dirs])),
+        library_dirs=list(dict.fromkeys([*candidate_dirs, *tracking_library_dirs, *library_dirs])),
         libraries=[
             *(["ndnsf-uav-tracking"] if tracking is not None else []),
             "ndn-service-framework",

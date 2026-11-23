@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import configparser
 import hashlib
 from importlib import metadata
 import json
@@ -25,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import spec193_preflight
+import preflight as repo_preflight
 
 REPO = Path(__file__).resolve().parents[2]
 BUILD_DIR = REPO / "build"
@@ -35,15 +36,49 @@ NO_PYTHON_CPP_BINARIES = {"repo-client", "DistributedRepoServer",
                           "object-repo-server", "ndnsf-repo-import"}
 sys.path.insert(0, str(REPO / "Experiments"))
 
-import NDNSF_DistributedRepo_Generic_Minindn as generic  # noqa: E402
+import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
 from minindn.apps.nfd import Nfd  # noqa: E402
+from minindn.apps.nlsr import Nlsr  # noqa: E402
 from minindn.helpers.ndn_routing_helper import NdnRoutingHelper  # noqa: E402
 from minindn.helpers.nfdc import Nfdc  # noqa: E402
 from minindn.minindn import Minindn  # noqa: E402
+from minindn.util import getPopen  # noqa: E402
 
-perf = generic.perf
-CleanNlsr = generic.CleanNlsr
+class CleanNlsr(Nlsr):
+    def createConfigFile(self):
+        super().createConfigFile()
+        conf = Path(self.confFile)
+        text = conf.read_text(encoding="utf-8")
+        clean_block = (
+            "advertising\n"
+            "{\n"
+            f"    /ndn/{self.node.name}-site/{self.node.name} 0\n"
+            "}\n"
+        )
+        text = re.sub(
+            r"advertising\s*\{.*?\}\n",
+            clean_block,
+            text,
+            count=1,
+            flags=re.S,
+        )
+        conf.write_text(text, encoding="utf-8")
+
+
+def normalize_nlsr_link_costs(ndn) -> None:
+    for host in ndn.net.hosts:
+        for intf in host.intfList():
+            delay = intf.params.get("delay")
+            if not delay or not str(delay).endswith("ms"):
+                continue
+            value = str(delay)[:-2]
+            try:
+                intf.params["delay"] = f"{max(1, int(round(float(value))))}ms"
+            except ValueError:
+                pass
+
+
 CONTROLLER_HOST = "memphis"
 APP_HOST = "neu"
 REPO_A_HOST = "ucla"
@@ -212,7 +247,7 @@ def read_log(path: Path) -> str:
 
 
 def source_candidate() -> Tuple[str, List[str]]:
-    return spec193_preflight.source_candidate(REPO)
+    return repo_preflight.source_candidate(REPO)
 
 
 def validate_di_publish_child_timeout() -> None:
@@ -780,7 +815,7 @@ def spawn(ndn, output: Path, processes: List[Dict[str, Any]], host_name: str,
     log_path = output / "logs" / (label + ".log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     stream = log_path.open("wb")
-    proc = generic.getPopen(ndn.net[host_name], command, envDict=launch_env,
+    proc = getPopen(ndn.net[host_name], command, envDict=launch_env,
                             shell=True, stdout=stream, stderr=subprocess.STDOUT)
     record = {"host": host_name, "label": label, "proc": proc,
               "stream": stream, "log": log_path, "argv": argv,
@@ -2814,7 +2849,7 @@ def run_spec193_network_object_wrappers(ndn, output: Path,
             response("FETCH_RANGE_DIRECT") != source.read_bytes()[37:150] or
             json.loads(response("STATUS"))["state"] != "DONE"):
         raise RuntimeError("independent wrapper byte/status oracle failed")
-    from spec193_packet_oracle import _certificate, _verify_signature
+    from packet_oracle import _certificate, _verify_signature
     from ndn.encoding import Name, parse_data
     root_name, root_key, root_signature, _ = _certificate(output / "identity/root.cert")
     _verify_signature(root_signature, root_key,
@@ -2885,7 +2920,7 @@ def run_spec193_local_registry_insert_segmented(ndn, output: Path,
     if "SPEC193_L03_L04_LOCAL_PASS" not in read_log(Path(child["log"])):
         raise RuntimeError("L03/L04 native local registry did not complete")
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    from spec193_packet_oracle import _certificate, _verify_signature
+    from packet_oracle import _certificate, _verify_signature
     from ndn.encoding import Name, parse_data
     root_name, root_key, root_signature, _ = _certificate(output / "identity/root.cert")
     _verify_signature(root_signature, root_key,
@@ -7420,45 +7455,6 @@ def run_spec193_legacy_import(ndn, output: Path, processes: List[Dict[str, Any]]
             "restarted_repo_a": restarted, "repo_b_unchanged": True}
 
 
-def run_spec193_retired_python(ndn, output: Path, processes: List[Dict[str, Any]],
-                              environments: Dict[str, Dict[str, str]],
-                              servers: List[Dict[str, Any]], trust_schema: Path) -> Dict[str, Any]:
-    work = output / "artifacts"
-    work.mkdir(parents=True, exist_ok=True)
-    source = work / "p06-source.bin"
-    source.write_bytes(bytes(range(256)) + b"p06-source")
-    source_hash = digest(source)
-    forbidden = work / "p06-forbidden"
-    report_path = work / "p06-report.json"
-    before = {item["repo_node"]: repo_database_state(item["repo_dir"]) for item in servers}
-    events = repo_request_events(processes, set(before))
-    child = run_child(ndn, output, processes, APP_HOST, "spec193-p06-retired-python",
-        [sys.executable, str(REPO / "tests/minindn/retired_python_peer.py"),
-         "--group", GROUP, "--controller", CONTROLLER, "--user", USER,
-         "--trust-schema", str(trust_schema), "--service-prefix", SERVICE_PREFIX,
-         "--source", str(source), "--forbidden-root", str(forbidden), "--report-out", str(report_path)],
-        environments[APP_HOST], 60)
-    report = json.loads(report_path.read_text())
-    cases = report.get("cases", [])
-    if (report.get("status") != "PASS" or len(cases) != 141 or len({x["case"] for x in cases}) != 141 or
-            any(x["code"] != "SPEC192_COMPATIBILITY_V1" or not x["operation"] or not x["replacement"] for x in cases) or
-            not report.get("native_type", "").endswith("NativeArtifactRepositoryApi") or
-            report.get("source_sha256") != source_hash or digest(source) != source_hash or forbidden.exists()):
-        raise RuntimeError("P06 independent compatibility/local-side-effect oracle failed")
-    for module in report["native_modules"].values():
-        if digest(Path(module["path"])) != module["sha256"]:
-            raise RuntimeError("P06 loaded native module hash changed")
-    for path, sha in report["loaded_libraries"].items():
-        if digest(Path(path)) != sha:
-            raise RuntimeError("P06 loaded native library hash changed")
-    after = {item["repo_node"]: repo_database_state(item["repo_dir"]) for item in servers}
-    if after != before or repo_request_events(processes, set(before)) != events:
-        raise RuntimeError("P06 retired calls changed Repo storage or invoked handler")
-    return {"case_id": "P06", "status": "PASS", "children": [child], "report": report,
-            "repo_state_before": before, "repo_state_after": after,
-            "repo_handler_events": events, "source_sha256": source_hash, "forbidden_root_absent": True}
-
-
 def run_spec193_cross_language(ndn, output: Path, processes: List[Dict[str, Any]],
                              environments: Dict[str, Dict[str, str]], repo_client: Path,
                              servers: List[Dict[str, Any]], trust_schema: Path) -> Dict[str, Any]:
@@ -7890,7 +7886,7 @@ def main() -> int:
     parser.add_argument("--campaign-case", choices=("A05", "ARTIFACT_BASELINE",
                                                    "ARTIFACT_SIX_HOST",
                                                    "OBJECT_BASELINE", "PERSIST_SEED", "PERSIST_READ", "PERSIST_ARTIFACT_SEED", "PERSIST_ARTIFACT_READ", "L01", "L02", "L03_L04", "NW_OBJECT", "NW_MALFORMED", "O01", "O02", "O03", "O04", "O05", "O06_O07", "O08", "O09", "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17_ROUTE",
-                                                   "PERSISTENT_MODE_BOUNDARY", "NW_REJECT", "NW_NEGATIVE", "NW_WRONG_SIGNER", "P01_P02", "P06", "P05", "P03_P04",
+                                                   "PERSISTENT_MODE_BOUNDARY", "NW_REJECT", "NW_NEGATIVE", "NW_WRONG_SIGNER", "P01_P02", "P05", "P03_P04",
                                                    "INAPP_MATRIX", "A04", "A06",
                                                    "A06_RANGE", "A06_LARGE", "A09", "A07",
                                                    "A08_ONE", "A08_QUORUM",
@@ -7901,7 +7897,7 @@ def main() -> int:
                                                    "A19", "A20", "A21", "A22"))
     parser.add_argument("--candidate-lock", type=Path)
     parser.add_argument("--build-receipt", type=Path,
-                        help="explicit candidate build receipt produced by spec202_build_candidate.py")
+                        help="explicit candidate build receipt produced by build_candidate.py")
     parser.add_argument("--o17-failover", action="store_true")
     parser.add_argument("--o17-corrupt-location", action="store_true")
     parser.add_argument("--o17-drop-original-data", action="store_true")
@@ -7985,7 +7981,7 @@ def main() -> int:
     args.output_dir = args.output_dir.resolve()
     try:
         candidate_sha, candidate_files = source_candidate()
-    except spec193_preflight.PreflightError as error:
+    except repo_preflight.PreflightError as error:
         if args.preflight_only:
             print(json.dumps({"status": "REJECT", "failure_class": error.failure_class,
                               "detail": str(error)}, sort_keys=True))
@@ -7997,7 +7993,7 @@ def main() -> int:
         if args.preflight_acl_services:
             acl_services = json.loads(args.preflight_acl_services.read_text(encoding="utf-8"))
         try:
-            preflight = spec193_preflight.check(
+            preflight = repo_preflight.check(
                 REPO, args.output_dir, args.topology_file, candidate_sha,
                 candidate_files, HOST_ROLES, SERVICE_PREFIX, REPO_OPERATIONS,
                 *repo_acl_principals(),
@@ -8009,7 +8005,7 @@ def main() -> int:
                 build_receipt=args.build_receipt.resolve() if args.build_receipt else None,
                 include_object_server=args.campaign_case == "A08_REJECT",
                 include_importer=args.campaign_case == "P05")
-        except spec193_preflight.PreflightError as error:
+        except repo_preflight.PreflightError as error:
             if args.preflight_only:
                 print(json.dumps({"status": "REJECT", "failure_class": error.failure_class,
                                   "detail": str(error)}, sort_keys=True))
@@ -8027,7 +8023,7 @@ def main() -> int:
     if preflight is not None:
         receipt_path = args.build_receipt.resolve()
         BUILD_DIR = receipt_path.parent / "build"
-        CANDIDATE_RUNTIME = spec193_preflight.candidate_runtime(receipt_path)
+        CANDIDATE_RUNTIME = repo_preflight.candidate_runtime(receipt_path)
         NO_PYTHON_PATH = args.output_dir / "no-python-path"
     NO_PYTHON_PATH.mkdir(parents=True, exist_ok=True)
     processes: List[Dict[str, Any]] = []
@@ -8057,8 +8053,6 @@ def main() -> int:
             if args.campaign_case == "P03_P04" else
             "Spec193 P05 explicit immutable legacy DB/CAS import and independent reads"
             if args.campaign_case == "P05" else
-            "Spec193 P06 retired Python/native facade zero Repo side effects"
-            if args.campaign_case == "P06" else
             "Spec193 P01/P02 native Python cross-language cross-node reuse"
             if args.campaign_case == "P01_P02" else
             "Spec193 selected A response name with trusted B signer fail-closed"
@@ -8182,9 +8176,16 @@ def main() -> int:
     try:
         Minindn.cleanUp()
         Minindn.verifyDependencies()
-        ndn = Minindn(topoFile=str(args.topology_file))
+        topology = configparser.ConfigParser(delimiters=" ", allow_no_value=True)
+        with args.topology_file.open(encoding="utf-8") as topology_stream:
+            topology.read_file(topology_stream)
+        network_options = {}
+        if not topology.has_section("switches") or not topology.items("switches"):
+            network_options["controller"] = None
+        ndn = Minindn(topoFile=str(args.topology_file),
+                      workDir=str(args.output_dir / "nodes"), **network_options)
         ndn.start()
-        generic.normalize_nlsr_link_costs(ndn)
+        normalize_nlsr_link_costs(ndn)
         AppManager(ndn, ndn.net.hosts, Nfd, logLevel="INFO")
         AppManager(ndn, ndn.net.hosts, CleanNlsr, sync="psync", security=False,
                    faceType="udp", nFaces=3, routingType="link-state",
@@ -8236,15 +8237,15 @@ def main() -> int:
             capture = spawn(
                 ndn, args.output_dir, processes, host_name,
                 "nfd-udp-trace-" + host_name,
-                ["tcpdump", "--immediate-mode", "-i", "any", "-U", "-n", "-w",
-                 str(capture_path), capture_filter],
+                ["dumpcap", "-i", "any", "-P", "-f", capture_filter, "-w",
+                 str(capture_path)],
                 node_environment(ndn.net[host_name], REPO),
             )
             capture["capture_path"] = capture_path
             captures.append(capture)
         time.sleep(1)
         if any(record["proc"].poll() is not None for record in captures):
-            raise RuntimeError("per-node tcpdump trace process failed to start")
+            raise RuntimeError("per-node dumpcap trace process failed to start")
 
         identities = generate_identities(ndn, args.output_dir)
         manifest["identities"] = identities
@@ -8256,7 +8257,7 @@ def main() -> int:
                             metadata_denied_user=metadata_denied_user)
         if args.campaign_case:
             manifest["verified_runtime_policy_sha256"] = \
-                spec193_preflight.verify_runtime_policy(
+                repo_preflight.verify_runtime_policy(
                     runtime_config, SERVICE_PREFIX, REPO_OPERATIONS,
                     *repo_acl_principals(),
                     metadata_denied_user=metadata_denied_user)
@@ -8452,9 +8453,6 @@ def main() -> int:
         elif args.campaign_case == "P05":
             scenario = run_spec193_legacy_import(
                 ndn, args.output_dir, processes, environments, repo_client, servers, trust_schema)
-        elif args.campaign_case == "P06":
-            scenario = run_spec193_retired_python(
-                ndn, args.output_dir, processes, environments, servers, trust_schema)
         elif args.campaign_case == "P01_P02":
             scenario = run_spec193_cross_language(
                 ndn, args.output_dir, processes, environments, repo_client, servers, trust_schema)
@@ -8581,7 +8579,7 @@ def main() -> int:
                for item in capture_results):
             raise RuntimeError("at least one MiniNDN host captured no NDN UDP packets")
         if args.campaign_case == "A05":
-            from spec193_packet_oracle import verify_a05
+            from packet_oracle import verify_a05
             scenario["signed_packet_oracle"] = verify_a05(
                 args.output_dir, SERVICE_PREFIX, USER,
                 {REPO_A_HOST: REPO_A_PROVIDER, REPO_B_HOST: REPO_B_PROVIDER},
@@ -8589,7 +8587,7 @@ def main() -> int:
                 scenario["candidates"])
             scenario["status"] = "PASS"
         elif args.campaign_case == "P03_P04":
-            from spec193_packet_oracle import verify_cross_language_calls, verify_local_namespace_absent
+            from packet_oracle import verify_cross_language_calls, verify_local_namespace_absent
             scenario["packet_oracle"] = {
                 "authorized": verify_cross_language_calls(args.output_dir, SERVICE_PREFIX,
                     {USER: APP_HOST, DI_REPO_CLIENT_IDENTITY: APP_HOST},
@@ -8599,21 +8597,17 @@ def main() -> int:
                 "denied": verify_local_namespace_absent(args.output_dir,
                     DI_UNAUTHORIZED_REPO_CLIENT_IDENTITY + "/NDNSF/REQUEST", list(HOST_ROLES))}
         elif args.campaign_case == "P05":
-            from spec193_packet_oracle import verify_network_wrapper_calls
+            from packet_oracle import verify_network_wrapper_calls
             scenario["packet_oracle"] = verify_network_wrapper_calls(
                 args.output_dir, scenario["reports"], SERVICE_PREFIX, CONSUMER,
                 REPO_A_PROVIDER, REPO_B_PROVIDER, caller_host=CONSUMER_HOST)
-        elif args.campaign_case == "P06":
-            from spec193_packet_oracle import verify_local_namespace_absent
-            scenario["packet_oracle"] = verify_local_namespace_absent(
-                args.output_dir, USER + "/NDNSF/REQUEST", list(HOST_ROLES))
         elif args.campaign_case == "P01_P02":
-            from spec193_packet_oracle import verify_cross_language_calls
+            from packet_oracle import verify_cross_language_calls
             scenario["packet_oracle"] = verify_cross_language_calls(
                 args.output_dir, SERVICE_PREFIX, {USER: APP_HOST, CONSUMER: CONSUMER_HOST},
                 {REPO_A_PROVIDER: REPO_A_HOST, REPO_B_PROVIDER: REPO_B_HOST})
         elif args.campaign_case == "NW_WRONG_SIGNER":
-            from spec193_packet_oracle import verify_network_wrapper_calls
+            from packet_oracle import verify_network_wrapper_calls
             fault_id = scenario["wrong_signer_report"]["calls"][0]["requestId"]
             scenario["packet_oracle"] = {
                 "positive": verify_network_wrapper_calls(args.output_dir, scenario["reports"], SERVICE_PREFIX,
@@ -8625,7 +8619,7 @@ def main() -> int:
             if len(calls) != 1 or len(calls[0]["wire"]["neu:response"]) != 1:
                 raise RuntimeError("wrong-signer fault is not one independently verified Response")
         elif args.campaign_case == "NW_MALFORMED":
-            from spec193_packet_oracle import verify_network_wrapper_calls
+            from packet_oracle import verify_network_wrapper_calls
             scenario["packet_oracle"] = {
                 "positive": verify_network_wrapper_calls(args.output_dir, scenario["reports"], SERVICE_PREFIX,
                     USER, REPO_A_PROVIDER, REPO_B_PROVIDER),
@@ -8636,7 +8630,7 @@ def main() -> int:
             if len(calls) != 1 or len(calls[0]["wire"]["neu:response"]) != 1:
                 raise RuntimeError("malformed fault is not one independently verified Response publication")
         elif args.campaign_case == "NW_NEGATIVE":
-            from spec193_packet_oracle import verify_network_wrapper_calls, verify_timeout_request
+            from packet_oracle import verify_network_wrapper_calls, verify_timeout_request
             scenario["packet_oracle"] = {
                 "positive": verify_network_wrapper_calls(args.output_dir, scenario["reports"], SERVICE_PREFIX,
                     USER, REPO_A_PROVIDER, REPO_B_PROVIDER),
@@ -8646,22 +8640,22 @@ def main() -> int:
                 "timeout": verify_timeout_request(args.output_dir, scenario["negative_reports"]["timeout"],
                     SERVICE_PREFIX, USER, [REPO_A_PROVIDER, REPO_B_PROVIDER], list(HOST_ROLES))}
         elif args.campaign_case in ("NW_OBJECT", "NW_ARTIFACT", "NW_REJECT"):
-            from spec193_packet_oracle import verify_network_wrapper_calls
+            from packet_oracle import verify_network_wrapper_calls
             scenario["packet_oracle"] = verify_network_wrapper_calls(
                 args.output_dir, scenario["reports"], SERVICE_PREFIX, USER,
                 REPO_A_PROVIDER, REPO_B_PROVIDER)
         elif args.campaign_case == "L03_L04":
-            from spec193_packet_oracle import verify_local_namespace_absent
+            from packet_oracle import verify_local_namespace_absent
             scenario["packet_oracle"] = verify_local_namespace_absent(
                 args.output_dir, scenario["object_name"], list(HOST_ROLES))
         elif args.campaign_case == "A21":
-            from spec193_packet_oracle import verify_a21_sync_attempts
+            from packet_oracle import verify_a21_sync_attempts
             scenario["packet_oracle"] = verify_a21_sync_attempts(
                 args.output_dir, SERVICE_PREFIX, CONSUMER, GROUP,
                 scenario["offline_capture_offsets"], scenario["fetch_attempts"],
                 [REPO_C_PROVIDER, REPO_B_PROVIDER, REPO_A_PROVIDER])
         elif args.campaign_case == "O17_ROUTE":
-            from spec193_packet_oracle import verify_original_data_route
+            from packet_oracle import verify_original_data_route
             scenario["packet_oracle"] = verify_original_data_route(
                 args.output_dir, scenario["data_name"],
                 scenario["wire_sha256"],
@@ -8674,14 +8668,14 @@ def main() -> int:
                 active_logs=scenario["active_repo_logs"],
                 expect_single_serve=args.o17_cache_hit)
             if args.o17_server_auth:
-                from spec193_packet_oracle import verify_metadata_denial
+                from packet_oracle import verify_metadata_denial
                 scenario["server_auth_packet_oracle"] = verify_metadata_denial(
                     args.output_dir, SERVICE_PREFIX, USER, scenario["data_name"],
                     {REPO_A_HOST: REPO_A_PROVIDER, REPO_B_HOST: REPO_B_PROVIDER})
         elif args.campaign_case in ("OBJECT_BASELINE", "PERSIST_SEED"):
-            from spec193_packet_oracle import verify_object_capability
+            from packet_oracle import verify_object_capability
             scenario["signed_packet_oracle"] = verify_object_capability(
-                args.output_dir, SERVICE_PREFIX, USER,
+                args.output_dir, SERVICE_PREFIX + "/CAPABILITY", USER,
                 REPO_A_PROVIDER, REPO_B_PROVIDER,
                 scenario["capability_admitted_acks"], scenario["capability_request_id"],
                 scenario["capability_ack_wire_digest"],

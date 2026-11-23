@@ -853,21 +853,13 @@ class QwenGenerationTest(unittest.TestCase):
             self.assertEqual(summary["successfulMeasuredCount"], 0)
 
     def test_deferred_repo_publish_fails_before_creating_output(self) -> None:
-        """The retired backend is the first boundary, not an afterthought.
-
-        `CollaborationArtifactApiBackend` raises on construction. This deferred
-        publication path used to create the output directory and print a start
-        marker first, so a retired mode left both behind before failing.
-        """
+        """Reject cold publication before creating the registration output."""
         candidate = type("Candidate", (), {"candidate_digest": "sha256:" + "0" * 64})()
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "nested" / "registration.json"
             publisher = self.user._QwenDeferredRepoPublisher(
-                service_user=object(),
                 stage_manifest_path=str(Path(directory) / "stage.json"),
                 output_path=str(output),
-                publisher_identity="/example/llm-pipeline/user",
-                object_prefix="/repo/qwen",
             )
             with self.assertRaises(RepoCompatibilityError):
                 publisher.publish(candidate, materialized=None,

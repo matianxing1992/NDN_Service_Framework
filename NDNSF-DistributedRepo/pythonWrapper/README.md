@@ -82,8 +82,7 @@ cancellation tokens had no native C++ equivalent.
 
 ## Retired Python APIs
 
-Legacy imports such as `RepoNodeApp`, `NetworkDistributedRepoClient`,
-`FilesystemArtifactApiBackend`, upload/fetch sessions, backend injection, and
-Python placement helpers remain as compatibility names where needed. Calling a
-retired feature raises `RepoCompatibilityError` with code
-`SPEC192_COMPATIBILITY_V1`, the operation name, and a native replacement path.
+`CollaborationArtifactApiBackend` still raises
+`RepoCompatibilityError` with code `SPEC192_COMPATIBILITY_V1`, the operation
+name, and a native replacement path. Use the installed `DistributedRepoServer`
+and the Persistent factory in the example above.

@@ -32,30 +32,6 @@ def load_provider():
         sys.path.remove(str(PIPELINE_DIR))
 
 
-class FakeRepo:
-    def __init__(self, payload: bytes) -> None:
-        self.payload = payload
-        self.fetches = 0
-
-    def fetch_file(self, reference, destination, **_kwargs):
-        self.fetches += 1
-        if reference.content_digest != hashlib.sha256(self.payload).hexdigest():
-            raise AssertionError(reference.content_digest)
-        if int(reference.size_bytes) != len(self.payload):
-            raise AssertionError(reference.size_bytes)
-        path = Path(destination)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(self.payload)
-        return types.SimpleNamespace(
-            destination=path,
-            transferred_bytes=len(self.payload),
-            retransmitted_bytes=0,
-            last_segment=0,
-            delivered_segments=1,
-            total_segments=1,
-        )
-
-
 class QwenRepoSelectionPrepareTest(unittest.TestCase):
     def test_explicit_cpu_stage_warmup_executes_without_cuda_sync(self):
         import torch
@@ -137,7 +113,7 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
             (900000, 900000),
         )
 
-    def test_delayed_registration_fetches_once_and_warm_selection_reuses_gpu(self):
+    def test_delayed_registration_uses_verified_disk_and_warm_selection_reuses_gpu(self):
         provider_module = load_provider()
         payload = b"qwen-stage-fixture"
         digest = hashlib.sha256(payload).hexdigest()
@@ -198,7 +174,6 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
                 selection_model_cache_dir=str(root / "model-cache"),
                 config=str(root / "policy.yaml"),
                 generated_policy_dir=str(root / "generated"),
-                repo_client_state_root=str(root / "repo-client-state"),
                 device="cuda:0",
                 require_cuda=True,
             )
@@ -213,7 +188,6 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
                 deployment=types.SimpleNamespace(
                     service_policy=lambda _service: types.SimpleNamespace(
                         artifacts=[])))
-            fake_repo = FakeRepo(payload)
             model = types.SimpleNamespace(
                 ndnsf_execution_device="cuda:0",
                 ndnsf_cpu_fallback=False,
@@ -228,13 +202,7 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
                     model_cache_lock=Lock(),
                 )
             args.provider_boot_epoch = "core-boot-epoch-verified"
-            with mock.patch(
-                "py_repoclient.CollaborationArtifactApiBackend.from_config",
-                return_value=object(),
-            ), mock.patch(
-                "py_repoclient.ArtifactRepositoryApi",
-                return_value=fake_repo,
-            ), mock.patch.object(
+            with mock.patch.object(
                 provider_module,
                 "qwen_transformer_model_from_stage_package",
                 return_value=model,
@@ -260,6 +228,10 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
                             data_name="/repo/qwen/stage-0"),
                     ),
                 )
+                cache_path = (root / "model-cache" / "sha256" / digest /
+                              f"{digest}.qwen-transformers.pt")
+                cache_path.parent.mkdir(parents=True)
+                cache_path.write_bytes(payload)
                 progress = []
                 writer = Thread(target=lambda: (
                     time.sleep(0.05),
@@ -303,7 +275,6 @@ class QwenRepoSelectionPrepareTest(unittest.TestCase):
                         context, "RESPONSE_PUBLISHED")
                 writer.join(timeout=1.0)
                 self.assertFalse(writer.is_alive())
-            self.assertEqual(fake_repo.fetches, 1)
             self.assertEqual(loader.call_count, 1)
             self.assertEqual(warmup.call_count, 1)
             warmup.assert_called_once_with(model, "cuda:0")

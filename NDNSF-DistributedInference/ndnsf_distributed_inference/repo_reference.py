@@ -1,7 +1,7 @@
 """DI-owned conversion between artifact metadata and public Repo references.
 
 This module contains no Repo server, placement, persistence, catalog, or repair
-policy. Operational Repo behavior belongs to ``py_repoclient.orchestration``.
+policy. The native Repo API owns artifact publication and retrieval.
 """
 
 from __future__ import annotations

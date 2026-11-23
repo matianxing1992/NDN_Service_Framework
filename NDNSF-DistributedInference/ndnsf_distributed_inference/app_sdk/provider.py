@@ -489,8 +489,6 @@ class APPProvider:
             raise RuntimeError("network Provider is not configured")
         return self._network_provider.serve_service(**kwargs)
 
-    serve = serve_service
-
     def run(self):
         if self._network_provider is None:
             raise RuntimeError("network Provider is not configured")

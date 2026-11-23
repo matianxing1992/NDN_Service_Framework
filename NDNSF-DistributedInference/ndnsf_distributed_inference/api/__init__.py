@@ -79,7 +79,6 @@ if _native is not None and hasattr(_native, "Runtime"):
     EventReader = _native.EventReader
     Subscription = _native.Subscription
     DiError = _native.DiError
-    NativeProviderConfig = _native.NativeProviderConfig
     ProviderConfig = _native.NativeProviderConfig
     ServiceDefinition = _native.ServiceDefinition
     ProviderCounters = _native.ProviderCounters
@@ -128,7 +127,7 @@ if _native is not None and hasattr(_native, "Runtime"):
         "ConversationCheckpoint", "ConversationOptions", "Runtime", "User", "PreparedModel",
         "PreparationHandle", "RequestHandle", "Conversation", "EventReader", "Subscription",
         "DiError",
-        "NativeProviderConfig", "ProviderConfig", "ServiceDefinition", "ProviderCounters",
+        "ProviderConfig", "ServiceDefinition", "ProviderCounters",
         "ProviderRegistration", "Provider", "NativeCallbackError", "drain_result",
         "events_async", "next_event", "preparation_result", "prepare", "request_result",
         "runtime_enter", "runtime_exit",

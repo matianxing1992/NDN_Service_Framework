@@ -41,11 +41,11 @@ def naming_inventory(root: Path):
         "native-plan-closure", [native + name for name in
         ("NativeInferenceClient.cpp", "NativeExecutionPlanJson.cpp", "NativeExecutionPlanJson.hpp")])
     add("C02", ["Root/artifact/material manifest page, only if independently published"],
-        "network_artifact_backend::_PreparedArtifactSource._prepare_manifest/start; FileSegmentedObjectProducer",
-        "_NetworkPublishDriver/source_page_name/artifact manifest page parser",
-        "artifact_manifest_page_from_dict/canonical_manifest_page_bytes/original packet validation",
+        "ImmutableFilePublication; FileSegmentedObjectProducer",
+        "native artifact manifest page parser",
+        "decodeArtifactManifestPage; canonicalManifestPageBytes; original packet validation",
         "original page source/ImmutableFilePublication",
-        "spec201-transparent-repo", [repo + "pythonWrapper/py_repoclient/network_artifact_backend.py",
+        "naming-transparent-repo", [repo + "src/ArtifactManifest.cpp",
         "pythonWrapper/ndnsf/service.py", "pythonWrapper/src/ndnsf/_ndnsf.cpp",
         core + "ImmutableFilePublication.hpp", core + "PublishedContentName.cpp"],
         "independent", "Existing raw semantic material/artifact-page representation and standard segmented transport.")

@@ -515,151 +515,57 @@ def test_spec175_repo_fetches_start_before_waiting_for_any_fetch():
     assert launch < append < collect < wait
 
 
-def test_spec175_repo_publisher_probes_same_identity_route_before_release(
-        tmp_path: Path):
+@pytest.mark.parametrize(("accepted_attempt", "expected_attempts"), [(1, 1), (2, 2), (0, 3)])
+def test_spec175_repo_route_probe_uses_native_discovery_with_bounded_attempts(
+        tmp_path, accepted_attempt, expected_attempts):
     repo = _repo_bootstrap_module()
+    repo_node = "/NDNSF/DistributedRepo/Node/0"
+    repo_provider = "/example/repo"
+    service_prefix = "/NDNSF/DistributedRepo/Object/v1"
+    expected = SimpleNamespace(
+        repo_node=repo_node, provider_identity=repo_provider, service_prefix=service_prefix,
+        ack_wire_digest="sha256:" + "a" * 64,
+        signer_key_locator=repo_provider + "/KEY/key",
+        observed_at_ms=123,
+    )
+    wrong_provider = SimpleNamespace(
+        repo_node=repo_node, provider_identity="/other/repo", service_prefix=service_prefix)
+    requirements = object()
+    calls = []
 
-    class FakeResponse:
-        status = True
-        payload = b'{"repoNode":"/NDNSF/DistributedRepo/Node/0","schema":"repo"}'
-        error = ""
-        data_name = "/NDNSF/DistributedRepo/Node/0/NDNSF/RESPONSE/x"
-        signer_certificate = "/cert/repo"
-        wire_digest = "sha256:" + "a" * 64
+    def discover(requirements_arg, timeout_ms):
+        assert requirements_arg is requirements
+        assert 0 < timeout_ms <= 20
+        calls.append(timeout_ms)
+        candidates = [expected] if len(calls) == accepted_attempt else [wrong_provider]
+        return SimpleNamespace(request_id=f"/probe/{len(calls)}", candidates=candidates)
 
-    class FakeUser:
-        def __init__(self):
-            self.calls = []
-
-        def request_service(self, *args, **kwargs):
-            self.calls.append((args, kwargs))
-            return FakeResponse()
-
-    service_user = FakeUser()
-    backend = SimpleNamespace(control=SimpleNamespace(service_user=service_user))
     output = tmp_path / "probe.json"
     args = SimpleNamespace(
-        user="/NDNSF/DistributedRepo/Publisher",
-        ack_timeout_ms=5000,
-        timeout_ms=60000,
-        probe_timeout_ms=None,
-        probe_output=str(output),
+        user="/publisher", repo_provider=repo_provider, repo_node=repo_node,
+        repo_service_prefix=service_prefix, probe_timeout_ms=100, probe_attempt_timeout_ms=20,
+        probe_retries=2, probe_retry_backoff_ms=0, probe_output=output,
     )
-    report = repo.run_live_service_probe(backend, args)
-    assert report["status"] == "PASS"
-    assert report["route"]["service"] == "/NDNSF/DistributedRepo/Object/v1/STATUS"
-    assert report["route"]["provider"] == "/NDNSF/DistributedRepo/Node/0"
-    assert report["request"]["nonMutating"] is True
-    assert service_user.calls[0][0][0] == report["route"]["service"]
+    report = repo.run_live_service_probe(
+        SimpleNamespace(discover_repo_candidates=discover), requirements, args)
+    assert len(calls) == expected_attempts
+    assert report["attemptCount"] == expected_attempts
+    assert [item["probeId"] for item in report["attempts"]] == [
+        f"/probe/{index}" for index in range(1, expected_attempts + 1)]
+    assert report["route"]["service"] == service_prefix + "/CAPABILITY"
+    if accepted_attempt:
+        assert report["status"] == "PASS"
+        assert report["route"]["provider"] == repo_provider
+        assert report["ack"]["wireDigest"] == expected.ack_wire_digest
+    else:
+        assert report["status"] == "FAIL"
+        assert report["failureReason"] == "REPO_SERVICE_ROUTE_NOT_READY"
     assert json.loads(output.read_text()) == report
-
-
-def test_spec175_repo_route_probe_fails_closed_without_provider_response(
-        tmp_path: Path):
-    repo = _repo_bootstrap_module()
-
-    class FakeResponse:
-        status = False
-        payload = b""
-        error = "timeout"
-        data_name = ""
-        signer_certificate = ""
-        wire_digest = ""
-
-    class FakeUser:
-        def request_service(self, *args, **kwargs):
-            return FakeResponse()
-
-    args = SimpleNamespace(
-        user="/publisher", ack_timeout_ms=10, timeout_ms=20,
-        probe_timeout_ms=20, probe_output=str(tmp_path / "probe.json"),
-    )
-    report = repo.run_live_service_probe(
-        SimpleNamespace(control=SimpleNamespace(service_user=FakeUser())), args)
-    assert report["status"] == "FAIL"
-    assert report["failureReason"] == "REPO_SERVICE_ROUTE_NOT_READY"
-    assert json.loads(Path(args.probe_output).read_text())["status"] == "FAIL"
-
-
-def test_spec175_repo_route_probe_retries_transient_no_response(tmp_path: Path):
-    repo = _repo_bootstrap_module()
-
-    class FakeResponse:
-        payload = b'{"repoNode":"/NDNSF/DistributedRepo/Node/0","schema":"repo"}'
-        error = ""
-        data_name = "/NDNSF/DistributedRepo/Node/0/NDNSF/RESPONSE/x"
-        signer_certificate = "/cert/repo"
-        wire_digest = "sha256:" + "a" * 64
-
-        def __init__(self, status: bool):
-            self.status = status
-
-    class FakeUser:
-        def __init__(self):
-            self.calls = []
-
-        def request_service(self, *args, **kwargs):
-            self.calls.append((args, kwargs))
-            return FakeResponse(status=len(self.calls) > 1)
-
-    service_user = FakeUser()
-    args = SimpleNamespace(
-        user="/publisher", ack_timeout_ms=10, timeout_ms=20,
-        probe_timeout_ms=100, probe_attempt_timeout_ms=20,
-        probe_retries=2, probe_retry_backoff_ms=0,
-        probe_output=str(tmp_path / "probe.json"),
-    )
-    report = repo.run_live_service_probe(
-        SimpleNamespace(control=SimpleNamespace(service_user=service_user)),
-        args,
-    )
-    assert report["status"] == "PASS"
-    assert report["attemptCount"] == 2
-    assert len(report["attempts"]) == 2
-    assert len(service_user.calls) == 2
-    assert service_user.calls[0][1]["request_id"] != service_user.calls[1][1]["request_id"]
-
-
-def test_spec175_repo_route_probe_retry_exhaustion_remains_fail_closed(
-        tmp_path: Path):
-    repo = _repo_bootstrap_module()
-
-    class FakeResponse:
-        status = False
-        payload = b""
-        error = "timeout"
-        data_name = ""
-        signer_certificate = ""
-        wire_digest = ""
-
-    class FakeUser:
-        def __init__(self):
-            self.calls = 0
-
-        def request_service(self, *args, **kwargs):
-            self.calls += 1
-            return FakeResponse()
-
-    service_user = FakeUser()
-    args = SimpleNamespace(
-        user="/publisher", ack_timeout_ms=10, timeout_ms=20,
-        probe_timeout_ms=100, probe_attempt_timeout_ms=20,
-        probe_retries=2, probe_retry_backoff_ms=0,
-        probe_output=str(tmp_path / "probe.json"),
-    )
-    report = repo.run_live_service_probe(
-        SimpleNamespace(control=SimpleNamespace(service_user=service_user)),
-        args,
-    )
-    assert report["status"] == "FAIL"
-    assert report["failureReason"] == "REPO_SERVICE_ROUTE_NOT_READY"
-    assert report["attemptCount"] == 3
-    assert service_user.calls == 3
 
 
 def test_spec175_repo_route_probe_is_before_publication_barrier():
     source = REPO_BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
-    probe = source.index("run_live_service_probe(backend, args)")
+    probe = source.index("run_live_service_probe(api, requirements, args)")
     barrier = source.index("wait_for_publication_start(args)")
     assert probe < barrier
 

@@ -32,7 +32,6 @@ from ._py_repoclient import (
 from .compat import (
     RepoCompatibilityError,
     raise_repo_compatibility_error,
-    retired_repo_feature,
 )
 
 
@@ -236,32 +235,6 @@ class ArtifactRepositoryApi:
             self._native.fetch_file, reference_or_handle, str(destination)
         )
 
-    def configure_artifact_backend(self, *args, **kwargs) -> None:
-        raise_repo_compatibility_error(
-            "configure_artifact_backend",
-            "construct a native ArtifactRepositoryApi with its lifecycle factory",
-        )
-
-    def begin_upload(self, *args, **kwargs):
-        raise_repo_compatibility_error(
-            "begin_upload", "use native ArtifactRepositoryApi.begin_publish_file"
-        )
-
-    def begin_fetch(self, *args, **kwargs):
-        raise_repo_compatibility_error(
-            "begin_fetch", "use native ArtifactRepositoryApi.fetch_file"
-        )
-
-    def publish_file_async(self, *args, **kwargs):
-        raise_repo_compatibility_error(
-            "publish_file_async", "use synchronous native ArtifactRepositoryApi.publish_file"
-        )
-
-    def fetch_file_async(self, *args, **kwargs):
-        raise_repo_compatibility_error(
-            "fetch_file_async", "use synchronous native ArtifactRepositoryApi.fetch_file"
-        )
-
     def lookup_local_commit(self, reference):
         return self._call(self._native.lookup_local_commit, reference)
 
@@ -307,96 +280,28 @@ class ArtifactRepositoryApi:
             raise ArtifactApiError(str(error), error.result) from error
 
 
-# Existing value names map directly to native C++ types.
-ArtifactDescriptor = retired_repo_feature(
-    "ArtifactDescriptor", "use native ArtifactReference"
-)
-ArtifactApiBackend = retired_repo_feature(
-    "ArtifactApiBackend", "use ArtifactRepositoryApi.make_in_app or make_persistent"
-)
-ArtifactCancellationToken = retired_repo_feature(
-    "ArtifactCancellationToken", "use native ArtifactRepositoryApi timeouts"
-)
-ArtifactCapabilityNegotiation = retired_repo_feature(
-    "ArtifactCapabilityNegotiation", "use native ArtifactCapabilityRequirements"
-)
-ArtifactCapabilityRejection = retired_repo_feature(
-    "ArtifactCapabilityRejection", "use native ArtifactCapabilityRequirements"
-)
-ArtifactControlMode = retired_repo_feature(
-    "ArtifactControlMode", "use native PersistentRepoClientConfig"
-)
-ArtifactControlOptions = retired_repo_feature(
-    "ArtifactControlOptions", "use native PersistentRepoClientConfig"
-)
-ArtifactErrorCode = retired_repo_feature(
-    "ArtifactErrorCode", "handle native validation errors and ArtifactApiError"
-)
-ArtifactFetchDriver = retired_repo_feature(
-    "ArtifactFetchDriver", "use ArtifactRepositoryApi.fetch_file"
-)
-ArtifactFetchSession = retired_repo_feature(
-    "ArtifactFetchSession", "use ArtifactRepositoryApi.fetch_file"
-)
-ArtifactProgress = retired_repo_feature(
-    "ArtifactProgress", "use native ArtifactFetchResult or PublishOperationStatus"
-)
-ArtifactPublishDriver = retired_repo_feature(
-    "ArtifactPublishDriver", "use ArtifactRepositoryApi.publish_file"
-)
-ArtifactSessionStatus = retired_repo_feature(
-    "ArtifactSessionStatus", "use native PublishOperationStatus"
-)
-ArtifactUploadSession = retired_repo_feature(
-    "ArtifactUploadSession", "use native ArtifactRepositoryApi.begin_publish_file"
-)
-SelectedRepoBinding = SelectedRepoTarget
-LocalArtifactCommit = ArtifactLocalCommitRecord
-WriteConsistency = RepoWriteConsistency
-
-
-def negotiate_artifact_capabilities(*args, **kwargs):
-    raise_repo_compatibility_error(
-        "negotiate_artifact_capabilities",
-        "use ArtifactRepositoryApi.discover_repo_candidates with native requirements",
-    )
-
-
 __all__ = [
-    "ArtifactApiBackend",
     "ArtifactApiError",
-    "ArtifactCancellationToken",
-    "ArtifactCapabilityNegotiation",
-    "ArtifactCapabilityRejection",
     "ArtifactCapabilityRequirements",
     "ArtifactCommitReceipt",
-    "ArtifactDescriptor",
-    "ArtifactErrorCode",
     "ArtifactFetchAttempt",
     "ArtifactFetchResult",
     "ArtifactHandle",
     "ArtifactLocalCommitRecord",
-    "ArtifactProgress",
-    "ArtifactPublishDriver",
     "ArtifactPublishResult",
     "ArtifactReplicaCommit",
     "ArtifactReplicaResult",
     "ArtifactRepositoryApi",
-    "ArtifactSessionStatus",
-    "ArtifactUploadSession",
     "AvailabilityLocationReport",
     "AvailabilityReport",
     "InAppRepoConfig",
-    "LocalArtifactCommit",
     "PersistentRepoClientConfig",
     "PublishOperationHandle",
     "PublishOperationStatus",
     "RepoCompatibilityError",
     "RepoCandidate",
     "RepoCandidateSet",
-    "SelectedRepoBinding",
+    "RepoWriteConsistency",
     "SelectedRepoSet",
     "SelectedRepoTarget",
-    "WriteConsistency",
-    "negotiate_artifact_capabilities",
 ]

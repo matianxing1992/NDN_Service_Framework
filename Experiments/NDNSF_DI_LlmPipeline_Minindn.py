@@ -103,7 +103,9 @@ REPOSITORY_IDENTITY = APP_ROOT + "/repo"
 # invocation ACK/deadline contract so a slow first SVS publication cannot be
 # misclassified as an M01 stream failure.
 SPEC175_REPO_ACK_TIMEOUT_MS = 5_000
-SPEC175_REPO_STORE_SERVICE = "/NDNSF/DistributedRepo/Artifact/v2/STORE"
+SPEC175_REPO_REQUEST_TIMEOUT_MS = 60_000
+SPEC175_REPO_SERVICE_PREFIX = "/NDNSF/DistributedRepo/Object/v1"
+SPEC175_REPO_NODE_ID = "/NDNSF/DistributedRepo/Node/0"
 # NFD validates management Command Interests against a strictly increasing
 # timestamp per signing key, even when the MiniNDN demo configuration grants
 # ``certfile any``.  Each ``nfdc`` invocation creates a fresh InterestSigner,
@@ -2288,32 +2290,26 @@ def prepare_policy(stages: int, layers: int, *,
 
 def configure_spec175_repo_policy(path: Path) -> None:
     """Authorize one dedicated Repo node and all frozen G3 Repo clients."""
-    from py_repoclient.service_names import repo_versioned_services
-
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     users = [USER_IDENTITY, *STAGE_IDENTITIES, REPOSITORY_IDENTITY]
-    artifact_service = SPEC175_REPO_STORE_SERVICE
-    service_names = list(repo_versioned_services())
-    if artifact_service not in service_names:
-        service_names.append(artifact_service)
-    by_name = {
-        str(service.get("name", "")): service
-        for service in document.get("services", ())
-    }
-    for service_name in service_names:
-        roles = ["artifact-replica-0"] if service_name == artifact_service else []
+    # These are the concrete services used by the native persistent client.
+    operations = (
+        "CAPABILITY", "STATUS", "STORE", "STORE_RANGE", "COMMIT_RANGES",
+        "ABORT_RANGES", "MANIFEST", "DATA_RECEIPT", "DATA_LOCATION",
+        "FETCH", "FETCH_RANGE",
+    )
+    services = document.setdefault("services", [])
+    by_name = {str(service.get("name", "")): service for service in services}
+    for operation in operations:
+        service_name = f"{SPEC175_REPO_SERVICE_PREFIX}/{operation}"
         service = by_name.get(service_name)
         if service is None:
             service = {"name": service_name, "model": service_name}
-            document.setdefault("services", []).append(service)
-            by_name[service_name] = service
+            services.append(service)
         service.update({
             "users": list(users),
-            "providers": [{
-                "identity": REPOSITORY_IDENTITY,
-                "roles": list(roles),
-            }],
-            "roles": list(roles),
+            "providers": [{"identity": REPOSITORY_IDENTITY, "roles": []}],
+            "roles": [],
             "dependencies": [],
         })
     path.write_text(
@@ -3083,13 +3079,8 @@ def main() -> int:
             raise SystemExit(
                 f"--{profile} requires a Qwen Transformers or ONNX runtime")
         if args.runtime != "tiny-onnx":
-            # This mode's publication step constructs CollaborationArtifactApiBackend, a retired
-            # compatibility name that raises on construction, so the run could only fail after
-            # NFD and the actors were already up. Reject it here instead, and point at the
-            # maintained replacement rather than at a missing flag.
             raise SystemExit(
-                f"--{profile} with a Qwen runtime is retired: its Repo publication used "
-                "CollaborationArtifactApiBackend, which now raises SPEC192_COMPATIBILITY_V1. "
+                f"--{profile} with a Qwen runtime is retired. "
                 "The tiny-onnx fixture path is still supported; for a real model use "
                 "`ndnsf-di cluster up` with the native requester/provider actors.")
         if args.runtime != "tiny-onnx":
@@ -3739,54 +3730,53 @@ def main() -> int:
         if args.spec175_case:
             if selection_bundle is None or not REPOSITORY_NODE:
                 raise RuntimeError("Spec175 Repo bootstrap configuration is missing")
-            token_file = OUT / "bootstrap-tokens.txt"
             controller_cert = OUT / "controller.cert"
-            if not token_file.is_file() or not controller_cert.is_file():
+            if not controller_cert.is_file():
                 raise RuntimeError(
-                    "controller did not publish Spec175 Repo bootstrap authority")
+                    "controller certificate is missing for Spec175 Repo")
             for env in node_env.values():
                 env["NDNSF_CONTROLLER_CERT_FILE"] = str(controller_cert)
-            repo_bootstrap = write_bootstrap_token(
-                token_file,
-                REPOSITORY_IDENTITY,
-                OUT / "spec175-repo-bootstrap.token",
-            )
-            repo_command = (
-                base
-                + perf.shell_quote(
-                    runtime_source_path(
-                        REPO / "specs/162-itiger-qwen36-generation/jobs/"
-                        "run-repo-node.py"))
-                + " --config " + perf.shell_quote(CONFIG)
-                + " --generated-policy-dir "
-                + perf.shell_quote(OUT / "generated/spec175-repo")
-                + " --provider-prefix "
-                + perf.shell_quote(REPOSITORY_IDENTITY)
-                + " --repo-node /NDNSF/DistributedRepo/Node/0"
-                + " --storage-dir "
-                + perf.shell_quote(OUT / "spec175-repo-store")
-                + " --state-root "
-                + perf.shell_quote(OUT / "spec175-repo-operator-state")
-                + " --test-only-allow-ephemeral-app-state"
-                + " --free-bytes " + str(shutil.disk_usage(OUT).free)
-                + " --bootstrap-token-file "
-                + perf.shell_quote(repo_bootstrap)
-            )
+            repo_store = OUT / "spec175-repo-store"
+            repo_store.mkdir()
+            trust_schema = Path(GEN_POLICY) / "trust-schema.conf"
+            if sif_runtime_enabled():
+                repo_binary = "DistributedRepoServer"
+                native_prefix = sif_exec_prefix(base_env) + " "
+            else:
+                repo_binary = shutil.which("DistributedRepoServer")
+                if repo_binary is None:
+                    raise RuntimeError("install DistributedRepoServer before running Spec175")
+                native_prefix = "exec "
+            boot_id = f"spec175-{args.spec175_case}-{args.seed}"
+            repo_argv = [
+                "env", f"NDNSF_DEPLOYMENT_BOOT_ID={boot_id}", repo_binary,
+                "--repo-node", SPEC175_REPO_NODE_ID,
+                "--database", str(repo_store / "repo.sqlite"),
+                "--group-prefix", GROUP_IDENTITY,
+                "--provider-identity", REPOSITORY_IDENTITY,
+                "--authority-identity", CONTROLLER_IDENTITY,
+                "--trust-schema", str(trust_schema),
+                "--service-prefix", SPEC175_REPO_SERVICE_PREFIX,
+                "--failure-domain", REPOSITORY_NODE,
+                "--ack-collection-ms", str(SPEC175_REPO_ACK_TIMEOUT_MS),
+                "--request-timeout-ms", str(SPEC175_REPO_REQUEST_TIMEOUT_MS),
+            ]
+            repo_command = native_prefix + " ".join(map(perf.shell_quote, repo_argv))
+            repo_client_args = "".join(
+                f" {flag} {perf.shell_quote(value)}" for flag, value in (
+                    ("--group", GROUP_IDENTITY),
+                    ("--controller", CONTROLLER_IDENTITY),
+                    ("--trust-schema", str(trust_schema)),
+                    ("--repo-provider", REPOSITORY_IDENTITY),
+                    ("--repo-node", SPEC175_REPO_NODE_ID),
+                    ("--repo-service-prefix", SPEC175_REPO_SERVICE_PREFIX),
+                    ("--timeout-ms", str(SPEC175_REPO_REQUEST_TIMEOUT_MS)),
+                ))
             repo_proc, repo_log = start_process(
                 ndn, REPOSITORY_NODE, "spec175-repo", repo_command,
                 node_env[REPOSITORY_NODE], processes)
             repo_logs.append(repo_log)
 
-            # Release the publisher while the repository is coming up rather
-            # than waiting for the repository marker first.  Both processes
-            # must acquire the controller's DKEY/permission state during the
-            # same startup window; serializing them made a publisher miss the
-            # initial DKEY response and block forever before it could publish
-            # the four stage artifacts.  The bounded publish ACK timeout
-            # still gates publication on actual repository readiness.
-            repo_user_bootstrap = write_bootstrap_token(
-                token_file, USER_IDENTITY,
-                OUT / "spec175-repo-user-bootstrap.token")
             repo_registration = OUT / "spec175-repo-registration.json"
             repo_route_probe = OUT / "spec175-repo-route-probe.json"
             repo_publication_barrier = OUT / "spec175-repo-publication.start"
@@ -3798,15 +3788,8 @@ def main() -> int:
             publish_command = (
                 base + perf.shell_quote(
                     runtime_source_path(REPO / "Experiments/spec175_repo_bootstrap.py"))
-                + " publish --config " + perf.shell_quote(CONFIG)
-                + " --generated-policy-dir "
-                + perf.shell_quote(OUT / "generated/spec175-repo-publisher")
-                + " --state-root "
-                + perf.shell_quote(OUT / "spec175-repo-publisher-state")
-                + " --test-only-allow-ephemeral-app-state"
+                + " publish" + repo_client_args
                 + " --user " + perf.shell_quote(USER_IDENTITY)
-                + " --bootstrap-token-file "
-                + perf.shell_quote(repo_user_bootstrap)
                 + " --registration " + perf.shell_quote(repo_registration)
                 + " --probe-output " + perf.shell_quote(repo_route_probe)
                 + " --stage-manifest "
@@ -3827,22 +3810,17 @@ def main() -> int:
                 ndn, USER_NODE, "spec175-repo-publisher", publish_command,
                 node_env[USER_NODE], processes)
             if not wait_log(
+                    repo_log, "NDNSF_REPO_READY identity=",
+                    args.provider_start_timeout_s, repo_proc):
+                raise RuntimeError(
+                    f"Spec175 Repo did not become ready; log={repo_log}")
+            if not wait_log(
                     publisher_log,
                     "NDNSF_DI_SPEC175_REPO_PUBLISHER_WAITING",
                     args.provider_start_timeout_s, publisher_proc):
                 raise RuntimeError(
                     "Spec175 Repo publisher did not initialize before its "
                     f"start barrier; log={publisher_log}")
-            repo_ready_marker = (
-                "Installed provider permission provider="
-                f"{REPOSITORY_IDENTITY}{SPEC175_REPO_STORE_SERVICE} "
-                f"service={SPEC175_REPO_STORE_SERVICE}")
-            if not wait_log(
-                    repo_log, repo_ready_marker,
-                    args.provider_start_timeout_s, repo_proc):
-                raise RuntimeError(
-                    "Spec175 Repo Store service did not become ready; "
-                    f"log={repo_log}")
             if not wait_log(
                     publisher_log,
                     "NDNSF_DI_SPEC175_REPO_ROUTE_PROBE_PASS",
@@ -3862,7 +3840,7 @@ def main() -> int:
                     "Spec175 Repo route probe evidence is unreadable: "
                     f"{repo_route_probe}") from exc
             if (route_probe.get("schema") !=
-                    "ndnsf-di-spec175-repo-route-probe-v1" or
+                    "ndnsf-di-spec175-repo-route-probe-v2" or
                     route_probe.get("status") != "PASS"):
                 raise RuntimeError(
                     "Spec175 Repo route probe evidence is not PASS: "
@@ -3888,26 +3866,14 @@ def main() -> int:
                     zip(STAGE_NODES, STAGE_IDENTITIES)):
                 role_index = provider_role_indices[stage_index]
                 role_name = f"/LLM/Pipeline/Stage/{role_index}"
-                provider_bootstrap = write_bootstrap_token(
-                    token_file, identity,
-                    OUT / f"spec175-repo-provider-{stage_index}.token")
                 destination = (
                     OUT / f"spec175-provider-cache-{stage_index}"
                     / f"role-{role_index}.onnx")
                 fetch_command = (
                     base + perf.shell_quote(
                         runtime_source_path(REPO / "Experiments/spec175_repo_bootstrap.py"))
-                    + " fetch --config " + perf.shell_quote(CONFIG)
-                    + " --generated-policy-dir "
-                    + perf.shell_quote(
-                        OUT / f"generated/spec175-repo-fetch-{stage_index}")
-                    + " --state-root "
-                    + perf.shell_quote(
-                        OUT / f"spec175-repo-fetch-state-{stage_index}")
-                    + " --test-only-allow-ephemeral-app-state"
+                    + " fetch" + repo_client_args
                     + " --user " + perf.shell_quote(identity)
-                    + " --bootstrap-token-file "
-                    + perf.shell_quote(provider_bootstrap)
                     + " --registration " + perf.shell_quote(repo_registration)
                     + " --role " + perf.shell_quote(role_name)
                     + " --destination " + perf.shell_quote(destination)
@@ -4117,8 +4083,6 @@ def main() -> int:
                         + perf.shell_quote(OUT / f"provider-model-cache-{stage_index}")
                         + " --selection-local-artifact "
                         + perf.shell_quote(selection_bundle["localArtifacts"][stage_index])
-                        + " --repo-client-state-root "
-                        + perf.shell_quote(OUT / f"repo-client-state-{stage_index}")
                     )
             if args.runtime == "qwen-onnx-cpu-native":
                 if native_plan is None or native_manifest is None:

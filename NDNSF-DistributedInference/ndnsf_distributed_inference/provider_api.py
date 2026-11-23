@@ -6,7 +6,6 @@ runner, or shutdown state in Python.
 """
 
 from .api import (
-    NativeProviderConfig,
     ProviderConfig,
     ServiceDefinition,
     ProviderCounters,
@@ -15,7 +14,6 @@ from .api import (
 )
 
 __all__ = [
-    "NativeProviderConfig",
     "ProviderConfig",
     "ServiceDefinition",
     "ProviderCounters",
