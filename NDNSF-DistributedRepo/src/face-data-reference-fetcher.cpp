@@ -443,6 +443,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
           {"timeouts", std::to_string(timeoutRetries)},
           {"timeout_slot_ns", std::to_string(timeoutSlotNs)},
           {"timeout_lifetime_max_ms", std::to_string(maxTimedOutLifetime.count())},
+          {"refill_yields", std::to_string(refillYields)},
           {"cwnd_deficit_slot_ns", std::to_string(cwndDeficitSlotNs)},
           {"source_tail_ns", std::to_string(lastFirstSend && finishedAt
             ? std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -584,8 +585,11 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   void
   launchWindow()
   {
-    if (standardTransport || !checkCurrent())
+    if (refillDeferred || standardTransport || !checkCurrent())
       return;
+    // Yield between large source refills when there is no shared credit scheduler.
+    constexpr std::size_t SOURCE_REFILL_BURST = 4;
+    std::size_t expressed = 0;
     while (true) {
       std::size_t index = 0;
       unsigned attempt = 1;
@@ -620,6 +624,32 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         if (bootstrapPending && retryQueue.empty() && nextPacket >= std::min(
               windowCapacity, ndn_service_framework::detail::ExactDataCongestionWindow::INITIAL_WINDOW))
           return;
+        if (authenticatedSource && !sourceWindow && expressed == SOURCE_REFILL_BURST) {
+          const auto weak = weak_from_this();
+          const auto executor = strand;
+          try {
+            boost::asio::post(face.getIoContext(), [weak, executor] {
+              if (auto state = weak.lock()) {
+                try {
+                  boost::asio::post(executor, [state] {
+                    state->refillDeferred = false;
+                    state->launchWindow();
+                  });
+                }
+                catch (const std::exception&) {
+                  state->fail("repo-original-packet-refill-failed");
+                }
+              }
+            });
+          }
+          catch (const std::exception&) {
+            failLocked("repo-original-packet-refill-failed");
+            return;
+          }
+          refillDeferred = true;
+          if (measureWindow) ++refillYields;
+          return;
+        }
         if (sourceWindow) {
           waitingForCredit = !sourceWindow->tryAcquire(this, wakeForCredit);
           if (waitingForCredit) return;
@@ -639,6 +669,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       }
 
       expressPacket(index, attempt, minimumRto);
+      ++expressed;
     }
   }
 
@@ -1023,6 +1054,8 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   uint64_t rttMaxNs = 0;
   std::size_t timeoutRetries = 0;
   std::size_t nackRetries = 0;
+  bool refillDeferred = false; // Accessed on strand.
+  std::size_t refillYields = 0;
   bool done = false;
   std::string error;
 };
