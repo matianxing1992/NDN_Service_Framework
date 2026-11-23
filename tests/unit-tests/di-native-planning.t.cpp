@@ -18,7 +18,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
-#include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
@@ -1214,116 +1213,6 @@ BOOST_AUTO_TEST_CASE(QwenLayerSplitEnforcesBudgetBoundaries)
                         .size(), 1U);
 }
 
-BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsUncoveredGraphAndSortsPriority)
-{
-  const auto graphDigest = digest("yolo-graph");
-  auto graphSnapshot = graph(graphDigest, {"backbone", "neck", "detect", "output"});
-  auto modelDescriptor = model("yolo26n", "YOLO26n", graphDigest);
-  yolo::NativeYoloComponentSpec atomic{
-    "atomic-v1", 10, {"FullModel"}, {}, "FullModel", "FullModel", "", digest("registered-atomic")};
-  yolo::NativeYoloComponentSpec split{
-    "split-v1", 1, {"Backbone", "Head"},
-    {{"Backbone", {"backbone", "neck"}}, {"Head", {"detect", "output"}}},
-    "Backbone", "Head", "NATIVE_POSTPROCESS", digest("registered-split")};
-  yolo::NativeYoloComponentSplit splitter({atomic, split});
-  const auto candidates = splitter.enumerate(modelDescriptor, graphSnapshot,
-                                             NativeCandidateBudget{2, 100, 1});
-  BOOST_REQUIRE_EQUAL(candidates.size(), 2U);
-  BOOST_CHECK_EQUAL(candidates.front().selectionPriority, 1);
-  BOOST_CHECK_EQUAL(candidates.front().executionPlan.roles.front(), "Backbone");
-  BOOST_CHECK_EQUAL(candidates.back().executionPlan.roles.front(), "FullModel");
-
-  yolo::NativeYoloComponentSpec invalid{
-    "invalid", 0, {"Backbone", "Head"},
-    {{"Backbone", {"backbone"}}, {"Head", {"output"}}},
-    "Backbone", "Head", "", digest("registered-invalid")};
-  yolo::NativeYoloComponentSplit bad({invalid});
-  BOOST_CHECK_THROW(bad.enumerate(modelDescriptor, graphSnapshot, {}),
-                    std::invalid_argument);
-}
-
-BOOST_AUTO_TEST_CASE(YoloNamespacedTerminalRoleKeepsPostprocessingButAtomicDoesNot)
-{
-  const auto graphDigest = digest("yolo-namespaced-terminal");
-  const auto graphSnapshot = graph(graphDigest, {"backbone", "head"});
-  const auto descriptor = model("yolo26n", "YOLO26n", graphDigest);
-  const std::string postprocessing = R"({"identity":"YOLO26n-canonical-detection-rows"})";
-  const yolo::NativeYoloComponentSpec split{
-    "split-v1", 1, {"/BackboneNeck", "/Merge"},
-    {{"/BackboneNeck", {"backbone"}}, {"/Merge", {"head"}}},
-    "/BackboneNeck", "/Merge", "NATIVE_POSTPROCESS", digest("registered-split")};
-  const auto splitCandidate = yolo::NativeYoloComponentSplit({split}, postprocessing)
-    .enumerate(descriptor, graphSnapshot, {}).front();
-  BOOST_CHECK_EQUAL(splitCandidate.mergeKind, "NATIVE_POSTPROCESS");
-  BOOST_CHECK_EQUAL(splitCandidate.postprocessingJson, postprocessing);
-
-  const yolo::NativeYoloComponentSpec noMerge{
-    "split-no-merge-v1", 2, {"/BackboneNeck", "/Tail"},
-    {{"/BackboneNeck", {"backbone"}}, {"/Tail", {"head"}}},
-    "/BackboneNeck", "/Tail", "", digest("registered-no-merge")};
-  const auto noMergeCandidate = yolo::NativeYoloComponentSplit({noMerge}, postprocessing)
-    .enumerate(descriptor, graphSnapshot, {}).front();
-  BOOST_CHECK(noMergeCandidate.mergeKind.empty());
-  BOOST_CHECK_EQUAL(noMergeCandidate.postprocessingJson, "{}");
-
-  const yolo::NativeYoloComponentSpec atomic{
-    "atomic-v1", 3, {"FullModel"}, {}, "FullModel", "FullModel",
-    "NATIVE_POSTPROCESS", digest("registered-atomic")};
-  const auto atomicCandidate = yolo::NativeYoloComponentSplit({atomic}, postprocessing)
-    .enumerate(descriptor, graphSnapshot, {}).front();
-  BOOST_CHECK(atomicCandidate.mergeKind.empty());
-  BOOST_CHECK_EQUAL(atomicCandidate.postprocessingJson, "{}");
-}
-
-BOOST_AUTO_TEST_CASE(YoloUsesRealBranchTensorsAndKnownByteEstimates)
-{
-  const auto identity = digest("branch-graph");
-  auto snapshot = graph(identity, {"a", "b", "c", "d", "e"});
-  const auto descriptor = model("yolo26n", "YOLO26n", identity);
-  snapshot.edges = {
-    {"x", "a", {"b", "c", "e"}, {"x", "float32", {std::int64_t(2), std::int64_t(2)}, 16}},
-    {"y", "b", {"d"}, {"y", "float32", {std::int64_t(2), std::int64_t(4)}, 32}},
-    {"latent", "b", {"c"}, {"latent", "float32", {std::string("batch"), std::int64_t(4)}, std::nullopt}}
-  };
-  snapshot.legalCutEdges = {"x", "y"};
-  snapshot.modelInputs = {{"input", "float32", {std::int64_t(-1), std::string("batch")}, std::nullopt}};
-  BOOST_CHECK_NO_THROW(snapshot.validate(descriptor));
-  BOOST_CHECK_EQUAL(std::get<std::int64_t>(snapshot.modelInputs[0].shape[0]), -1);
-  const yolo::NativeYoloComponentSpec partition{"branch", 1, {"Left", "Right", "Merge"},
-    {{"Left", {"a"}}, {"Right", {"b", "c"}}, {"Merge", {"d", "e"}}}, "Left", "Merge", "", digest("registered")};
-  const yolo::NativeYoloComponentSplit splitter({partition});
-  const auto candidate = splitter.enumerate(descriptor, snapshot, {}).front();
-  const std::map<std::string, std::string> expectedOwners{
-    {"a", "Left"}, {"b", "Right"}, {"c", "Right"}, {"d", "Merge"}, {"e", "Merge"}};
-  BOOST_CHECK(candidate.nodeRoles == expectedOwners);
-  BOOST_CHECK(candidate.roleStateInputsByRole.empty() && candidate.roleStateOutputsByRole.empty());
-  // Python Yolo26Splitter._candidate's actual tensor semantics: x fans out to
-  // two roles (b/c share Right), y reaches non-adjacent d, latent stays local.
-  std::vector<std::string> actual;
-  for (const auto& dependency : candidate.executionPlan.dependencies) {
-    BOOST_REQUIRE_EQUAL(dependency.producers.size(), 1);
-    BOOST_REQUIRE_EQUAL(dependency.consumers.size(), 1);
-    BOOST_REQUIRE_EQUAL(dependency.tensors.size(), 1);
-    actual.push_back(dependency.producers[0] + "->" + dependency.consumers[0] + ":" + dependency.tensors[0]);
-  }
-  const std::vector<std::string> expected{"Left->Merge:x", "Left->Right:x", "Right->Merge:y"};
-  BOOST_CHECK(actual == expected);
-  BOOST_CHECK(candidate.crossPartitionTensors == std::vector<std::string>({"x", "y"}));
-  for (const auto& role : partition.roles) BOOST_CHECK_EQUAL(candidate.requirementsByRole.at(role).weightBytes.value(), 16);
-  BOOST_CHECK_EQUAL(std::get<std::string>(snapshot.edges[2].tensor.shape[0]), "batch");
-  BOOST_CHECK(!snapshot.edges[2].tensor.estimatedBytes);
-  snapshot.legalCutEdges = {"x"};
-  BOOST_CHECK_THROW(splitter.enumerate(descriptor, snapshot, {}), std::invalid_argument);
-  snapshot.legalCutEdges = {"x", "y"};
-  snapshot.edges[0].tensor.estimatedBytes = std::numeric_limits<std::uint64_t>::max();
-  BOOST_CHECK_THROW(splitter.enumerate(descriptor, snapshot, {}), std::invalid_argument);
-  snapshot.edges.clear(); snapshot.legalCutEdges.clear();
-  const auto independent = splitter.enumerate(descriptor, snapshot, {}).front();
-  BOOST_CHECK(independent.executionPlan.dependencies.empty());
-  BOOST_CHECK(independent.crossPartitionTensors.empty());
-  BOOST_CHECK_EQUAL(independent.requirementsByRole.at("Right").weightBytes.value(), 1);
-}
-
 BOOST_AUTO_TEST_CASE(GraphRejectsForeignTensorReferencesAndInvalidTopology)
 {
   const auto identity = digest("edge-validation");
@@ -1343,117 +1232,6 @@ BOOST_AUTO_TEST_CASE(GraphRejectsForeignTensorReferencesAndInvalidTopology)
     if (mutation == 8) broken.edges[0].tensor.dtype.clear();
     BOOST_CHECK_THROW(broken.validate(descriptor), std::invalid_argument);
   }
-}
-
-BOOST_AUTO_TEST_CASE(YoloComponentSplitRejectsInvalidComponentsAndForeignModel)
-{
-  const auto graphDigest = digest("yolo-invalid-graph");
-  auto graphSnapshot = graph(graphDigest, {"backbone", "neck", "detect", "output"});
-  auto yoloModel = model("yolo26n", "YOLO26n", graphDigest);
-  const yolo::NativeYoloComponentSpec atomic{
-    "atomic-v1", 10, {"FullModel"}, {}, "FullModel", "FullModel", "", digest("registered-atomic")};
-
-  // Invalid construction: no candidates, duplicate ids, empty roles,
-  // duplicate roles, undeclared ingress/egress, malformed candidate digest.
-  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({}), std::invalid_argument);
-  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({atomic, atomic}),
-                    std::invalid_argument);
-  yolo::NativeYoloComponentSpec emptyRoles{
-    "e", 1, {}, {}, "FullModel", "FullModel", "", digest("registered")};
-  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({emptyRoles}),
-                    std::invalid_argument);
-  yolo::NativeYoloComponentSpec dupRoles{
-    "d", 1, {"A", "A"}, {{"A", {"backbone"}}}, "A", "A", "", digest("registered")};
-  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({dupRoles}),
-                    std::invalid_argument);
-  yolo::NativeYoloComponentSpec noIngress{
-    "n", 1, {"A"}, {{"A", {"backbone"}}}, "", "A", "", digest("registered")};
-  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({noIngress}),
-                    std::invalid_argument);
-  yolo::NativeYoloComponentSpec badDigest{
-    "b", 1, {"A"}, {{"A", {"backbone"}}}, "A", "A", "", "not-a-digest"};
-  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({badDigest}),
-                    std::invalid_argument);
-
-  // Enumerate rejects a foreign model before any candidate work.
-  auto qwenModel = model("qwen-three-stage-pipeline", "QwenFixture", graphDigest);
-  yolo::NativeYoloComponentSplit splitter({atomic});
-  BOOST_CHECK_THROW(splitter.enumerate(qwenModel, graphSnapshot, {}),
-                    std::invalid_argument);
-
-  // Component-level defects that survive construction are rejected per
-  // candidate during enumerate: undeclared ingress/egress, an empty semantic
-  // node set, a node assigned twice, and a partition whose names do not match
-  // the graph.
-  const std::vector<std::string> rolesA = {"A", "B"};
-  yolo::NativeYoloComponentSpec undeclared{
-    "u", 1, rolesA, {{"A", {"backbone"}}, {"B", {"neck"}}}, "C", "B", "", digest("registered")};
-  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({undeclared})
-                      .enumerate(yoloModel, graphSnapshot, {}),
-                    std::invalid_argument);
-  yolo::NativeYoloComponentSpec emptySet{
-    "s", 1, rolesA, {{"A", {}}, {"B", {"neck"}}}, "A", "B", "", digest("registered")};
-  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({emptySet})
-                      .enumerate(yoloModel, graphSnapshot, {}),
-                    std::invalid_argument);
-  yolo::NativeYoloComponentSpec doubleAssign{
-    "t", 1, rolesA,
-    {{"A", {"backbone", "neck"}}, {"B", {"neck", "detect"}}},
-    "A", "B", "", digest("registered")};
-  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({doubleAssign})
-                      .enumerate(yoloModel, graphSnapshot, {}),
-                    std::invalid_argument);
-  yolo::NativeYoloComponentSpec wrongNames{
-    "w", 1, rolesA,
-    {{"A", {"backbone", "neck"}}, {"B", {"detect", "extra"}}},
-    "A", "B", "", digest("registered")};
-  BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({wrongNames})
-                      .enumerate(yoloModel, graphSnapshot, {}),
-                    std::invalid_argument);
-  // The same legal component still enumerates after all rejections.
-  BOOST_CHECK_EQUAL(splitter.enumerate(yoloModel, graphSnapshot, {}).size(), 1U);
-}
-
-BOOST_AUTO_TEST_CASE(YoloComponentSplitIsDeterministicAndBudgetTruncates)
-{
-  const auto graphDigest = digest("yolo-order-graph");
-  auto graphSnapshot = graph(graphDigest, {"backbone", "neck", "detect", "output"});
-  auto yoloModel = model("yolo26n", "YOLO26n", graphDigest);
-  const auto atomic = [] (std::string id, int priority) {
-    const auto registered = digest("registered-" + id);
-    return yolo::NativeYoloComponentSpec{
-      std::move(id), priority, {"FullModel"}, {}, "FullModel", "FullModel", "", registered};
-  };
-  yolo::NativeYoloComponentSplit splitter({atomic("z", 9), atomic("a", 1),
-                                           atomic("m", 5), atomic("b", 1),
-                                           atomic("k", 3)});
-
-  // Stable order: priority ascending, then candidateId ascending.
-  const auto full = splitter.enumerate(yoloModel, graphSnapshot,
-                                       NativeCandidateBudget{1024, 100, 16});
-  BOOST_REQUIRE_EQUAL(full.size(), 5U);
-  std::vector<std::string> fullDigests;
-  for (const auto& candidate : full) fullDigests.push_back(candidate.candidateDigest);
-
-  // Repeated calls are byte-identical (deterministic candidate digest).
-  const auto again = splitter.enumerate(yoloModel, graphSnapshot,
-                                        NativeCandidateBudget{1024, 100, 16});
-  BOOST_REQUIRE_EQUAL(again.size(), 5U);
-  for (std::size_t i = 0; i < full.size(); ++i) {
-    BOOST_CHECK_EQUAL(again[i].candidateDigest, fullDigests[i]);
-  }
-
-  // Budget truncation keeps the head of the same stable order.
-  const auto head = splitter.enumerate(yoloModel, graphSnapshot,
-                                       NativeCandidateBudget{3, 100, 1});
-  BOOST_REQUIRE_EQUAL(head.size(), 3U);
-  for (std::size_t i = 0; i < head.size(); ++i) {
-    BOOST_CHECK_EQUAL(head[i].candidateDigest, fullDigests[i]);
-  }
-  const auto one = splitter.enumerate(yoloModel, graphSnapshot,
-                                      NativeCandidateBudget{1, 100, 1});
-  BOOST_REQUIRE_EQUAL(one.size(), 1U);
-  BOOST_CHECK_EQUAL(one.front().candidateDigest, fullDigests.front());
 }
 
 BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersAndDeterministicallyBindsOneProvider)
@@ -1850,39 +1628,6 @@ BOOST_AUTO_TEST_CASE(CompleteModelDescriptorMatchesMaintainedPythonCanonicalIden
   }
 }
 
-BOOST_AUTO_TEST_CASE(YoloFragmentMatchesMaintainedSplitterAndBindsRegistration)
-{
-  std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-fragment-oracle.json").string());
-  BOOST_REQUIRE(file.good());
-  const auto rows = NativeJson::parse(file);
-  BOOST_REQUIRE_EQUAL(rows.size(), 2);
-  std::set<std::string> fragments;
-  for (const auto& row : rows) {
-    const auto graphDigest = row.at("graph_digest").get<std::string>();
-    auto snapshot = graph(graphDigest, row.at("nodes").get<std::vector<std::string>>());
-    snapshot.edges.clear(); snapshot.legalCutEdges.clear();
-    const auto descriptor = model("yolo26n", "YOLOFixture", graphDigest);
-    yolo::NativeYoloComponentSpec registered{"atomic-v1", 1, {"FullModel"}, {},
-      "FullModel", "FullModel", "NATIVE_POSTPROCESS", row.at("registered_digest")};
-    const auto candidate = yolo::NativeYoloComponentSplit({registered}).enumerate(descriptor, snapshot, {}).front();
-    BOOST_CHECK_EQUAL(candidate.canonicalJson(), row.at("candidate_json").get<std::string>());
-    BOOST_CHECK_EQUAL(candidate.candidateDigest, row.at("candidate_digest").get<std::string>());
-    BOOST_CHECK_EQUAL(candidate.fragmentsByRole.at("FullModel"), row.at("fragment_digest").get<std::string>());
-    BOOST_CHECK(candidate.artifactsByRole.at("FullModel") == std::vector<std::string>({row.at("fragment_digest")}));
-    const auto& requirement = candidate.requirementsByRole.at("FullModel");
-    BOOST_CHECK(requirement.backends == row.at("backends").get<std::vector<std::string>>());
-    BOOST_CHECK_EQUAL(requirement.weightBytes.value(), row.at("weight_bytes").get<std::uint64_t>());
-    BOOST_CHECK_EQUAL(requirement.safetyMargin, row.at("safety_margin").get<double>());
-    BOOST_CHECK_EQUAL(candidate.mergeKind, row.at("merge_kind").get<std::string>());
-    fragments.insert(candidate.fragmentsByRole.at("FullModel"));
-    registered.candidateDigest.clear();
-    BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit({registered}), std::invalid_argument);
-  }
-  // Both rows have the same candidate ID, role and graph. Registration changes
-  // must change the fragment identity independently of these shared fields.
-  BOOST_CHECK_EQUAL(fragments.size(), 2);
-}
-
 BOOST_AUTO_TEST_CASE(ResourceBudgetsMatchMaintainedPythonContract)
 {
   std::ifstream input(ndnsf::test::testFixturePath("spec182/resource-budget-oracle.json").string());
@@ -2107,59 +1852,6 @@ BOOST_AUTO_TEST_CASE(QwenMetadataBuildsMaintainedGraphAndCandidate)
   }
 }
 
-BOOST_AUTO_TEST_CASE(YoloCatalogConsumesActualOnnxSemanticPartition)
-{
-  std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
-  BOOST_REQUIRE(file.good());
-  const auto row = NativeJson::parse(file);
-  NativeCanonicalSource source;
-  const auto hex = row.at("model_hex").get<std::string>();
-  for (std::size_t i = 0; i < hex.size(); i += 2)
-    source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
-  auto descriptor = model("yolo26n", "YOLOFixture", row.at("graph_digest").get<std::string>());
-  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
-    [] {}, 1024 * 1024, 1024 * 1024};
-  yolo::NativeYoloComponentSpec component{"semantic-v1", 1, {"Front", "Branch", "Merge"}, {},
-    "Front", "Merge", "NATIVE_POSTPROCESS", row.at("registered_digest").get<std::string>()};
-  const auto partition = row.at("partition");
-  auto splitter = yolo::NativeYoloComponentSplit::fromOnnxCatalog(descriptor, source, control,
-    {{component, nativeCanonicalJson(partition)}});
-  const auto inspected = inspectNativeOnnxPlanningGraph(source, descriptor, control);
-  const auto actual = splitter.enumerate(descriptor, inspected.graph, {});
-  BOOST_REQUIRE_EQUAL(actual.size(), 1);
-  BOOST_CHECK(actual.front().canonicalJson() == row.at("candidate_json").get<std::string>());
-  BOOST_CHECK_EQUAL(actual.front().computedDigest(), row.at("candidate_digest").get<std::string>());
-  const auto expectedOwners = row.at("node_roles").get<std::map<std::string, std::string>>();
-  BOOST_CHECK(actual.front().nodeRoles == expectedOwners);
-  // A caller's reconstructed graph cannot replace source-derived facts.
-  auto supplied = inspected.graph;
-  supplied.nodes.clear(); supplied.edges.clear();
-  BOOST_CHECK_EQUAL(splitter.enumerate(descriptor, supplied, {}).front().candidateDigest,
-                    actual.front().candidateDigest);
-  auto foreign = descriptor; foreign.sourceRevision = "foreign";
-  BOOST_CHECK_THROW(splitter.enumerate(foreign, inspected.graph, {}), std::invalid_argument);
-  supplied.graphDigest = digest("foreign");
-  BOOST_CHECK_THROW(splitter.enumerate(descriptor, supplied, {}), std::invalid_argument);
-  for (int mutation = 0; mutation < 9; ++mutation) {
-    auto broken = partition;
-    switch (mutation) {
-      case 0: broken["roleNodeSets"]["Front"][0] = "onnx-node-0"; break;
-      case 1: broken["tensorInterfaces"][0]["producerNode"] = "foreign"; break;
-      case 2: broken["tensorInterfaces"][0]["consumerRoles"] = NativeJson::array({"Front"}); break;
-      case 3: broken["tensorInterfaces"][0]["dtype"] = "int64"; break;
-      case 4: broken["tensorInterfaces"][0]["shape"] = NativeJson::array({99}); break;
-      case 5: broken["dependencyEdges"] = NativeJson::array(); break;
-      case 6: broken["safeCuts"] = NativeJson::array(); break;
-      case 7: broken["roleInterfaces"]["Front"]["inputs"] = NativeJson::array(); break;
-      case 8: broken["roleInterfaces"]["Merge"]["outputs"][0]["name"] = "foreign"; break;
-    }
-    BOOST_TEST_CONTEXT("semantic mutation " << mutation) {
-      BOOST_CHECK_THROW(yolo::NativeYoloComponentSplit::fromOnnxCatalog(descriptor, source, control,
-        {{component, nativeCanonicalJson(broken)}}), std::invalid_argument);
-    }
-  }
-}
-
 BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift)
 {
   std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
@@ -2169,14 +1861,14 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift
   const auto hex = oracle.at("model_hex").get<std::string>();
   for (std::size_t i = 0; i < hex.size(); i += 2)
     source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
-  const auto descriptor = model("yolo26n", "YOLOFixture", oracle.at("graph_digest").get<std::string>());
+  auto descriptor = model("yolo26n", "YOLOFixture", oracle.at("graph_digest").get<std::string>());
   NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
     [] {}, 1024 * 1024, 1024 * 1024};
   const auto identity = canonicalOnnxSourceIdentity(source, control);
+  descriptor.graphDigest =
+    inspectNativeOnnxSourceGraph(source, descriptor, control).graph.graphDigest;
   const NativeJson configuration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
-    // Spec182 compares against the historical YOLO route on purpose.
-    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/source"},
       {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
@@ -2188,22 +1880,22 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift
       {"max_assembled_bytes", 1048576}, {"max_nodes", 100}}},
     {"publication", {{"artifact_root", "/fixture/artifacts"}}},
     {"input_format", "JSON"}, {"max_payload_bytes", 32},
-    {"splitter", {{"kind", "YOLO"}, {"components", NativeJson::array({{
-      {"candidate_id", "semantic-v1"}, {"priority", 1}, {"roles", {"Front", "Branch", "Merge"}},
-      {"node_names_by_role", NativeJson::object()}, {"input_ingress_role", "Front"},
-      {"result_egress_role", "Merge"}, {"merge_kind", "NATIVE_POSTPROCESS"},
-      {"candidate_digest", oracle.at("registered_digest")}, {"semantic_partition", oracle.at("partition")}
-    }})}}}};
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"selection_mode", "full"},
+      {"roles", {"FullModel"}}, {"input_ingress_role", "FullModel"},
+      {"result_egress_role", "FullModel"}}}
+  };
   const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
   BOOST_REQUIRE(loaded.planningCache);
   BOOST_REQUIRE_EQUAL(loaded.planningCache->candidates.size(), 1U);
   const auto& preparedRoles = loaded.planningCache->candidates.front().roles;
-  BOOST_REQUIRE_EQUAL(preparedRoles.size(), 3U);
-  BOOST_CHECK_EQUAL(preparedRoles[0].artifactCoordinate,
-                    "/graph/semantic/component/Front/entry/region/profile/whole");
-  BOOST_CHECK_EQUAL(preparedRoles[1].artifactCoordinate,
-                    "/graph/semantic/component/Branch/entry/region/profile/whole");
-  BOOST_CHECK(preparedRoles[2].artifactCoordinate.empty());
+  BOOST_REQUIRE_EQUAL(preparedRoles.size(), 1U);
+  BOOST_CHECK_EQUAL(preparedRoles.front().role, "FullModel");
+  const std::vector<std::uint64_t> expectedNodes{0, 1, 2, 3};
+  BOOST_CHECK(preparedRoles.front().nodeIndices == expectedNodes);
+  BOOST_REQUIRE_EQUAL(preparedRoles.front().expectedInputs.size(), 1U);
+  BOOST_REQUIRE_EQUAL(preparedRoles.front().expectedOutputs.size(), 1U);
+  BOOST_CHECK_EQUAL(preparedRoles.front().expectedInputs.front().name, "images");
+  BOOST_CHECK_EQUAL(preparedRoles.front().expectedOutputs.front().name, "predictions");
   auto profiledConfiguration = configuration;
   const auto transferProfile = NativeJson{{"schema", "ndnsf-di-request-transfer-profile-v1"},
     {"source_digest", configuration.at("source").at("digest")},
@@ -2228,7 +1920,12 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift
                     std::invalid_argument);
   const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph, {});
   BOOST_REQUIRE_EQUAL(candidates.size(), 1);
-  BOOST_CHECK_EQUAL(candidates.front().canonicalJson(), oracle.at("candidate_json").get<std::string>());
+  BOOST_CHECK_EQUAL(candidates.front().inputIngressRole, "FullModel");
+  BOOST_CHECK_EQUAL(candidates.front().resultEgressRole, "FullModel");
+  BOOST_CHECK(candidates.front().crossPartitionTensors.empty());
+  BOOST_REQUIRE_EQUAL(candidates.front().nodeRoles.size(), 4U);
+  for (const auto& owner : candidates.front().nodeRoles)
+    BOOST_CHECK_EQUAL(owner.second, "FullModel");
   const auto adapter = loaded.preparation->adapters()->find(descriptor.adapterId);
   BOOST_REQUIRE(adapter);
   const std::vector<std::uint8_t> payload{'{', '}'};
@@ -2268,14 +1965,14 @@ BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
   const auto hex = oracle.at("model_hex").get<std::string>();
   for (std::size_t i = 0; i < hex.size(); i += 2)
     source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
-  const auto descriptor = model("yolo26n", "YOLOFixture", oracle.at("graph_digest").get<std::string>());
+  auto descriptor = model("yolo26n", "YOLOFixture", oracle.at("graph_digest").get<std::string>());
   NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
     [] {}, 1024 * 1024, 1024 * 1024};
   const auto identity = canonicalOnnxSourceIdentity(source, control);
+  descriptor.graphDigest =
+    inspectNativeOnnxSourceGraph(source, descriptor, control).graph.graphDigest;
   const NativeJson catalogConfiguration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
-    // Spec182 compares against the historical YOLO route on purpose.
-    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/source"},
       {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
@@ -2287,12 +1984,10 @@ BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
       {"max_assembled_bytes", 1048576}, {"max_nodes", 100}}},
     {"publication", {{"artifact_root", "/fixture/artifacts"}}},
     {"input_format", "JSON"}, {"max_payload_bytes", 32},
-    {"splitter", {{"kind", "YOLO"}, {"components", NativeJson::array({{
-      {"candidate_id", "semantic-v1"}, {"priority", 1}, {"roles", {"Front", "Branch", "Merge"}},
-      {"node_names_by_role", NativeJson::object()}, {"input_ingress_role", "Front"},
-      {"result_egress_role", "Merge"}, {"merge_kind", "NATIVE_POSTPROCESS"},
-      {"candidate_digest", oracle.at("registered_digest")}, {"semantic_partition", oracle.at("partition")}
-    }})}}}};
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"selection_mode", "full"},
+      {"roles", {"FullModel"}}, {"input_ingress_role", "FullModel"},
+      {"result_egress_role", "FullModel"}}}
+  };
   const auto catalog = NativeRequestCatalog::load(nativeCanonicalJson(catalogConfiguration), source, control);
 
   const auto key = [] (char seed) {
@@ -2728,8 +2423,6 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
   const auto identity = canonicalOnnxSourceIdentity(source, control);
   const NativeJson configuration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
-    // Spec182 compares against the historical YOLO route on purpose.
-    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/source"},
       {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
@@ -2742,7 +2435,7 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
       {"max_assembled_bytes", 1048576}, {"max_nodes", 100}}},
     {"publication", {{"artifact_root", "/fixture/artifacts"}}},
     {"input_format", "JSON"}, {"max_payload_bytes", 32},
-    {"splitter", {{"kind", "ONNX_SOURCE"}, {"mode", "full"}, {"roles", {"FullModel"}},
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"selection_mode", "full"}, {"roles", {"FullModel"}},
       {"input_ingress_role", "FullModel"}, {"result_egress_role", "FullModel"},
       {"postprocessing", NativeJson::object()}}}
   };
@@ -2807,20 +2500,28 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
     BOOST_CHECK_NO_THROW(full.preparation->prepareRoles(full.model, plans.front(), requestControl));
   }
 
-  {
-    auto alias = configuration;
-    alias["splitter"].erase("mode");
-    alias["splitter"]["selection_mode"] = "full";
-    const auto aliased = NativeRequestCatalog::load(nativeCanonicalJson(alias), source, control);
-    BOOST_REQUIRE(aliased.splitter);
-    auto conflicting = alias;
-    conflicting["splitter"]["mode"] = "component";
-    BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(conflicting), source, control),
-                      std::invalid_argument);
+  for (const bool canonicalPresent : {false, true}) {
+    auto retired = configuration;
+    if (!canonicalPresent) retired["splitter"].erase("selection_mode");
+    retired["splitter"]["mode"] = "full";
+    BOOST_CHECK_EXCEPTION(
+      NativeRequestCatalog::load(nativeCanonicalJson(retired), source, control),
+      std::invalid_argument, [] (const auto& error) {
+        return std::string(error.what()).find("splitter.mode is retired") != std::string::npos;
+      });
+  }
+  for (const bool legacySwitch : {false, true}) {
+    auto retired = configuration;
+    retired["legacy_yolo_retired"] = legacySwitch;
+    BOOST_CHECK_EXCEPTION(
+      NativeRequestCatalog::load(nativeCanonicalJson(retired), source, control),
+      std::runtime_error, [] (const auto& error) {
+        return std::string(error.what()).find("DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED") == 0;
+      });
   }
 
   for (const auto& mutation : std::vector<std::pair<std::string, NativeJson>>{
-         {"mode", NativeJson("foreign")},
+         {"selection_mode", NativeJson("foreign")},
          {"roles", NativeJson::array()},
          {"input_ingress_role", NativeJson("Missing")},
          {"result_egress_role", NativeJson("Missing")}}) {
@@ -2850,8 +2551,6 @@ BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
   const auto boundary = inspected.graph.topologicalOrder.at(1);
   const NativeJson configuration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
-    // Spec182 compares against the historical YOLO route on purpose.
-    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/conv"},
       {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
@@ -2864,7 +2563,7 @@ BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
       {"max_assembled_bytes", 4194304}, {"max_nodes", 100}}},
     {"publication", {{"artifact_root", "/fixture/conv/artifacts"}}},
     {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
-    {"splitter", {{"kind", "ONNX_SOURCE"}, {"mode", "hybrid"},
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"selection_mode", "hybrid"},
       {"roles", {"Prefix", "Rank0", "Rank1", "Suffix"}},
       {"boundary_node", boundary}, {"input_ingress_role", "Prefix"},
       {"result_egress_role", "Suffix"}, {"postprocessing", NativeJson::object()},
@@ -4296,7 +3995,6 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformShardsBothFfnProjections)
   const auto identity = canonicalOnnxSourceIdentity(canonicalSource, control);
   const NativeJson configuration{
     {"schema", "ndnsf-di-native-request-catalog-v1"},
-    {"legacy_yolo_retired", false},
     {"model", nativeParseJson(descriptor.canonicalJson())},
     {"source", {{"data_name", "/fixture/ffn"},
       {"digest", nativePlanningDigest(canonicalSource.modelBytes.data(),
@@ -4310,7 +4008,7 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformShardsBothFfnProjections)
       {"max_assembled_bytes", 4194304}, {"max_nodes", 100}}},
     {"publication", {{"artifact_root", "/fixture/ffn/artifacts"}}},
     {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
-    {"splitter", {{"kind", "ONNX_SOURCE"}, {"mode", "hybrid"},
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"selection_mode", "hybrid"},
       {"roles", {"Prefix", "Rank0", "Rank1", "Suffix"}},
       {"boundary_node", "onnx-node-1"}, {"ffn_down_node", "onnx-node-4"},
       {"input_ingress_role", "Prefix"}, {"result_egress_role", "Suffix"}}}
@@ -4513,7 +4211,7 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformShardsBothFfnProjections)
     BOOST_CHECK_SMALL(activation[i] + hidden[i] - fullMulti[i], 1e-6f);
 
   auto fullConfig = multiConfig;
-  fullConfig["splitter"] = {{"kind", "ONNX_SOURCE"}, {"mode", "full"}, {"roles", {"Prefix"}},
+  fullConfig["splitter"] = {{"kind", "ONNX_SOURCE"}, {"selection_mode", "full"}, {"roles", {"Prefix"}},
     {"input_ingress_role", "Prefix"}, {"result_egress_role", "Prefix"}};
   const auto fullCatalog = NativeRequestCatalog::load(nativeCanonicalJson(fullConfig),
                                                         canonicalSource, control);
@@ -4738,21 +4436,19 @@ BOOST_AUTO_TEST_CASE(RequestCatalogRejectsRetiredLegacyYolo)
     {"input_format", "JSON"}, {"max_payload_bytes", 32},
     {"splitter", {{"kind", "YOLO"}}}
   };
-  // Retired by default.
+  // A retired splitter cannot be executed.
   BOOST_CHECK_EXCEPTION(
     NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control),
     std::runtime_error, [] (const std::runtime_error& error) {
       return std::string(error.what()).find("DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED") == 0;
     });
-  // A historical comparison run may opt back in; it then fails on its own
-  // missing components rather than on the retirement gate.
+  // The removed switch cannot restore execution.
   NativeJson legacy = configuration;
   legacy["legacy_yolo_retired"] = false;
   BOOST_CHECK_EXCEPTION(
     NativeRequestCatalog::load(nativeCanonicalJson(legacy), source, control),
-    std::exception, [] (const std::exception& error) {
-      return std::string(error.what()).find("DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED") ==
-        std::string::npos;
+    std::runtime_error, [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED") == 0;
     });
 }
 

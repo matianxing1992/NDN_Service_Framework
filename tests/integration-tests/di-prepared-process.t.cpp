@@ -360,8 +360,9 @@ int runProcessCase(const std::string& name, const std::vector<std::string>& argu
   const auto root = repositoryRoot();
   const auto build = buildDirectory(root);
   const auto externalBuild = externalBuildDirectory(root);
-  const auto script = root / (std::string("tests/standalone/run-spec182-native-") +
-                              (name == "unary" ? "unary" : "stream") + "-process.py");
+  const auto script = root / (name == "unary"
+    ? "tests/standalone/run-spec261-source-full-process.py"
+    : "tests/standalone/run-spec182-native-stream-process.py");
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(script),
                         "missing process orchestrator: " + script.string());
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_directory(build),
@@ -407,6 +408,19 @@ int runProcessCase(const std::string& name, const std::vector<std::string>& argu
   if (name == "unary") {
     const bool revoked = std::find(arguments.begin(), arguments.end(), "--revoke") !=
       arguments.end();
+    const auto measurements = nativeParseJson(readFile(runRoot / "unary-process-measurements.json"));
+    BOOST_REQUIRE(measurements.at("first_failure").is_null());
+    BOOST_REQUIRE(measurements.at("forced_cleanup").empty());
+    BOOST_REQUIRE(measurements.at("cleanup_errors").empty());
+    BOOST_REQUIRE(measurements.at("live_processes").empty());
+    const auto& exits = measurements.at("actor_exit_codes");
+    BOOST_REQUIRE_EQUAL(exits.size(), revoked ? 6U : 5U);
+    for (const auto& actor : exits.items()) {
+      if (revoked && actor.key() == "requester")
+        BOOST_REQUIRE_NE(actor.value().get<int>(), 0);
+      else
+        BOOST_REQUIRE_EQUAL(actor.value().get<int>(), 0);
+    }
     requireProcessExit(output, "requester", !revoked, log);
     if (revoked)
       requireProcessExit(output, "requester-baseline", true, log);

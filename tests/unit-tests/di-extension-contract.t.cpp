@@ -6,7 +6,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
-#include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 
@@ -199,29 +198,6 @@ BOOST_AUTO_TEST_CASE(BuiltinCooperativeSplitterChecksControlInsideLoops)
                            [&checks] { return checks.fetch_add(1) >= 2; }};
   BOOST_CHECK_THROW(splitter.enumerate(model, graph, {1, 100, 1}, control), std::runtime_error);
   BOOST_CHECK_GE(checks.load(), 2);
-}
-
-BOOST_AUTO_TEST_CASE(BuiltinYoloCooperativeSplitterChecksControlInsideLoops)
-{
-  const auto digest = [](const std::string& value) { return nativePlanningDigest(value); };
-  auto model = fixture::completeModel({"YoloFixture", digest("yolo-model"), digest("semantics"),
-    digest("yolo-graph"), "onnx", "float32", "yolo", "1"});
-  ndnsf::di::NativeGraphSnapshot graph;
-  graph.graphDigest = model.graphDigest;
-  graph.nodes = {{"input", "Input", 0}};
-  graph.topologicalOrder = {"input"};
-  yolo::NativeYoloComponentSpec component;
-  component.candidateId = "full";
-  component.roles = {"FullModel"};
-  component.inputIngressRole = "FullModel";
-  component.resultEgressRole = "FullModel";
-  component.candidateDigest = digest("registered-yolo-candidate");
-  yolo::NativeYoloComponentSplit splitter({component});
-  std::atomic<int> checks{0};
-  ExtensionControl control{std::chrono::steady_clock::now() + std::chrono::seconds(1),
-                           [&checks] { return checks.fetch_add(1) >= 2; }};
-  BOOST_CHECK_THROW(splitter.enumerate(model, graph, {1, 100, 1}, control), std::runtime_error);
-  BOOST_CHECK_GE(checks.load(), 3);
 }
 
 BOOST_AUTO_TEST_CASE(CooperativePlannerRejectsCancelledRequestBeforePublication)

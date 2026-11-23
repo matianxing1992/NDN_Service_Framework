@@ -540,8 +540,7 @@ def prepare_native_yolo_assets(
         encoding="utf-8"), encoding="utf-8")
     # The ONNX_SOURCE splitter is generated from the inspected Conv facts so the
     # catalog cannot restate operand names, geometry or channel counts that the
-    # model does not have. A historical comparison run may still set
-    # `legacy_yolo_retired: false` on a hand-built kind=YOLO catalog.
+    # model does not have.
     conv_index = int(os.environ.get("SPEC261_CONV_INDEX", "3"))
     conv_facts = _inspect_source_conv(graph_path, weights_path, conv_index, inspector)
     from ndnsf_distributed_inference.adapters.onnx.graph import analyze_onnx_graph

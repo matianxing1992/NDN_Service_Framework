@@ -19,7 +19,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-journal-file.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
-#include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 
 #include "ndn-service-framework/ControllerVersion.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
@@ -1031,27 +1030,6 @@ bindDistributedInference(py::module_& module)
            "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1",
            "/LLM/Pipeline/Stage/2"},
          py::arg("tensor_degrees") = std::vector<std::uint64_t>{1, 1, 1});
-
-  py::class_<di::yolo::NativeYoloComponentSpec>(module, "NativeYoloComponentSpec")
-    .def(py::init<>())
-    .def_readwrite("candidate_id", &di::yolo::NativeYoloComponentSpec::candidateId)
-    .def_readwrite("priority", &di::yolo::NativeYoloComponentSpec::priority)
-    .def_readwrite("roles", &di::yolo::NativeYoloComponentSpec::roles)
-    .def_readwrite("node_names_by_role",
-                   &di::yolo::NativeYoloComponentSpec::nodeNamesByRole)
-    .def_readwrite("input_ingress_role",
-                   &di::yolo::NativeYoloComponentSpec::inputIngressRole)
-    .def_readwrite("result_egress_role",
-                   &di::yolo::NativeYoloComponentSpec::resultEgressRole)
-    .def_readwrite("merge_kind", &di::yolo::NativeYoloComponentSpec::mergeKind)
-    .def_readwrite("candidate_digest",
-                   &di::yolo::NativeYoloComponentSpec::candidateDigest);
-
-  py::class_<di::yolo::NativeYoloComponentSplit, di::NativeModelSplitStrategy,
-             std::shared_ptr<di::yolo::NativeYoloComponentSplit>>(
-    module, "NativeYoloComponentSplit")
-    .def(py::init<std::vector<di::yolo::NativeYoloComponentSpec>>(),
-         py::arg("candidates"));
 
   py::class_<di::NativePreSplitFirstPlacement, di::NativePlacementStrategy,
              std::shared_ptr<di::NativePreSplitFirstPlacement>>(

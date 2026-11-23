@@ -2369,7 +2369,6 @@ def build(bld):
     tests_share = '${PREFIX}/share/ndnsf/tests'
     bld.install_files(tests_share, 'run-checks.py', chmod=0o755)
     driver_names = (['run-spec182-native-grant-process.py',
-                     'run-spec182-native-unary-process.py',
                      'run-spec182-native-stream-process.py',
                      'run-spec261-source-full-process.py',
                      'run-spec261-source-component-process.py',

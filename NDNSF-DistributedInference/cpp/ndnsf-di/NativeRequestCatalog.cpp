@@ -8,7 +8,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
-#include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
@@ -25,14 +24,17 @@
 
 namespace ndnsf::di {
 namespace {
-enum class CatalogRoute { QWEN, LLAMA, YOLO, ONNX_SOURCE, AUTOMATIC };
+enum class CatalogRoute { QWEN, LLAMA, ONNX_SOURCE, AUTOMATIC };
 
 CatalogRoute
 parseCatalogRoute(std::string_view kind)
 {
   if (kind == "QWEN") return CatalogRoute::QWEN;
   if (kind == "LLAMA") return CatalogRoute::LLAMA;
-  if (kind == "YOLO") return CatalogRoute::YOLO;
+  if (kind == "YOLO")
+    throw std::runtime_error(
+      "DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED: kind=YOLO is retired; "
+      "use splitter.kind=ONNX_SOURCE");
   if (kind == "ONNX_SOURCE") return CatalogRoute::ONNX_SOURCE;
   if (kind == "AUTOMATIC") return CatalogRoute::AUTOMATIC;
   throw std::invalid_argument("unsupported native request splitter");
@@ -567,6 +569,10 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
   const auto root = nativeParseJson(configurationJson);
   if (root.at("schema") != "ndnsf-di-native-request-catalog-v1")
     throw std::invalid_argument("unsupported native request catalog schema");
+  if (root.contains("legacy_yolo_retired"))
+    throw std::runtime_error(
+      "DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED: legacy_yolo_retired is retired; "
+      "use splitter.kind=ONNX_SOURCE without the legacy option");
   NativeCanonicalCatalogEntry entry;
   auto& model = entry.model;
   model.descriptor = NativeModelDescriptor::fromCanonicalJson(nativeCanonicalJson(root.at("model")));
@@ -725,50 +731,16 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
     result.cooperativeSplitter = transformerStrategy;
     result.splitter = transformerStrategy;
   }
-  else if (route == CatalogRoute::YOLO) {
-    // The legacy YOLO splitter is retired by default. A historical comparison
-    // run may opt back in explicitly with `legacy_yolo_retired: false`; every
-    // other catalog gets the typed retirement error instead of silently
-    // falling back to the old component model.
-    if (root.value("legacy_yolo_retired", true))
-      throw std::runtime_error(
-        "DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED: kind=YOLO is retired; "
-        "use splitter.kind=ONNX_SOURCE");
-    if (referenceOnly)
-      throw std::invalid_argument("DI_NATIVE_PREPARATION_REFERENCE_RESTORE_UNSUPPORTED");
-    model.graph = inspectNativeOnnxPlanningGraph(source, model.descriptor, control).graph;
-    std::vector<yolo::NativeYoloCatalogComponent> components;
-    for (const auto& item : split.at("components")) {
-      yolo::NativeYoloComponentSpec component;
-      component.candidateId = item.at("candidate_id").get<std::string>();
-      component.priority = item.at("priority").get<int>();
-      component.roles = item.at("roles").get<std::vector<std::string>>();
-      component.nodeNamesByRole = item.at("node_names_by_role").get<std::map<std::string, std::vector<std::string>>>();
-      component.inputIngressRole = item.at("input_ingress_role").get<std::string>();
-      component.resultEgressRole = item.at("result_egress_role").get<std::string>();
-      component.mergeKind = item.at("merge_kind").get<std::string>();
-      component.candidateDigest = item.at("candidate_digest").get<std::string>();
-      components.push_back({std::move(component), nativeCanonicalJson(item.at("semantic_partition"))});
-    }
-    auto strategy = std::make_shared<yolo::NativeYoloComponentSplit>(
-      yolo::NativeYoloComponentSplit::fromOnnxCatalog(model.descriptor, source, control,
-        std::move(components), nativeCanonicalJson(split.value("postprocessing", NativeJson::object()))));
-    result.cooperativeSplitter = strategy;
-    result.splitter = std::move(strategy);
-  }
   else if (route == CatalogRoute::ONNX_SOURCE) {
     if (referenceOnly)
       throw std::invalid_argument("DI_NATIVE_PREPARATION_REFERENCE_RESTORE_UNSUPPORTED");
-    // The historical design names this field selection_mode; keep accepting the
-    // shorter alias for existing configurations but refuse an ambiguous pair.
+    if (split.contains("mode"))
+      throw std::invalid_argument(
+        "ONNX_SOURCE splitter.mode is retired; use selection_mode");
     const auto modeValue = split.find("selection_mode");
-    const auto aliasValue = split.find("mode");
-    if (modeValue == split.end() && aliasValue == split.end())
+    if (modeValue == split.end())
       throw std::invalid_argument("ONNX_SOURCE splitter has no selection mode");
-    if (modeValue != split.end() && aliasValue != split.end() &&
-        *modeValue != *aliasValue)
-      throw std::invalid_argument("ONNX_SOURCE mode and selection_mode disagree");
-    const auto& modeNode = modeValue != split.end() ? *modeValue : *aliasValue;
+    const auto& modeNode = *modeValue;
     if (!modeNode.is_string())
       throw std::invalid_argument("ONNX_SOURCE selection mode is not a string");
     const auto modeText = modeNode.get<std::string>();
