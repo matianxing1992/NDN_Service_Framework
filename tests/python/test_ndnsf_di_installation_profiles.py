@@ -143,7 +143,7 @@ class InstallationProfilesTest(unittest.TestCase):
             # Only management wheels are installed here. Third-party/native
             # dependencies come from the declared host runtime, never DI stubs.
             native_origin = subprocess.check_output(
-                [sys.executable, "-I", "-c", "import importlib.util; "
+                [sys.executable, "-c", "import importlib.util; "
                  "print(importlib.util.find_spec('ndnsf').origin)"], text=True).strip()
             native_init = Path(native_origin).resolve(strict=True)
             self.assertNotIn(ROOT, native_init.parents,

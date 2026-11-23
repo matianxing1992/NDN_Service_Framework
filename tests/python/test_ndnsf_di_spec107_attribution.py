@@ -152,7 +152,7 @@ class Spec107AttributionTest(unittest.TestCase):
                 "command": "sha256:" + "a" * 64,
             })
             args = SimpleNamespace(
-                topology_file="Experiments/Topology/AI_Lab.conf", stages=3,
+                topology_file=str(REPO / "Experiments/Topology/AI_Lab.conf"), stages=3,
                 runtime="qwen-onnx-cpu-native", prompt="frozen prompt",
                 expected_token_ids="1,2,3", warmup_requests=0,
                 measured_requests=1, max_new_tokens=3,
