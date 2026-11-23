@@ -147,8 +147,10 @@ public:
    * ndn-cxx SegmentFetcher. Its progress timeout and the external total deadline
    * bound retries; its InterestLifetime and RTO are independent. SDK window
    * statistics and a per-packet three-attempt limit are not exposed.
-   * Compatibility/bootstrap retries retain at most three expressions per packet,
-   * fresh Nonces, a lifetime of at most one second and the original deadline.
+   * Compatibility/bootstrap retries retain at most three expressions per packet.
+   * A source slot backed by a validated manifest index can express one additional
+   * timeout recovery. Retries retain fresh Nonces, the one-second lifetime cap
+   * and the original deadline.
    * Zero windowSize lets the compatibility AIMD grow across the
    * admitted packet set without a fixed packet ceiling. A nonzero value is an
    * explicit caller capacity: start with at most 16 and reduce on marks/loss.

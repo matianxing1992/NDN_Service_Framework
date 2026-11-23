@@ -3408,7 +3408,28 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   }
   BOOST_CHECK(node->core().list().empty());
   const auto fetchesBeforeAdmitted = manifestInsertFetches.load();
-  const auto admittedManifest = commitManifest(manifestInsert);
+  const auto admittedManifest = [&] {
+    const auto& source = manifestPublication.packets().back();
+    const auto fullName = source.getFullName();
+    std::vector<ndn::time::milliseconds> lifetimes;
+    ndn::signal::ScopedConnection observed = environment.providerFace(1).onSendInterest.connect(
+      [&](const ndn::Interest& interest) {
+        if (interest.getName() == fullName)
+          lifetimes.push_back(interest.getInterestLifetime());
+      });
+    FaultProfile faults;
+    faults.dropDataPredicate = [&](const auto& data) {
+      return data.getName() == source.getName() && lifetimes.size() < 4;
+    };
+    auto attempt = environment.beginRequest("repo-manifest-source-recovery", std::move(faults));
+    const auto reset = ndn::make_scope_exit([&] { environment.resetRequest(attempt); });
+    environment.markRequestPublished(attempt);
+    auto result = commitManifest(manifestInsert);
+    BOOST_REQUIRE_EQUAL(lifetimes.size(), 4U);
+    BOOST_CHECK(std::is_sorted(lifetimes.begin(), lifetimes.end()));
+    BOOST_CHECK(lifetimes.back() <= ndn::time::seconds(1));
+    return result;
+  }();
   BOOST_CHECK_GT(manifestInsertFetches.load(), fetchesBeforeAdmitted);
   BOOST_CHECK_EQUAL(sourceWindow->peak(), 16U);
   BOOST_REQUIRE(admittedManifest.packetSet);

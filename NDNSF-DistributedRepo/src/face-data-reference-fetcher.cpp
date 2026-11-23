@@ -369,6 +369,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
     , reference(referenceArg)
     , forwardingHint(referenceArg.forwardingHint)
     , packetCount(packetCountArg)
+    , authenticatedSource(!plannedWireLengths.empty())
     , windowCapacity(windowSizeArg == 0 ? packetCountArg : std::min(packetCountArg, windowSizeArg))
     , congestion(windowCapacity, ndn::time::milliseconds(
         std::min(interestLifetimeArg, std::chrono::milliseconds(1000)).count()),
@@ -838,8 +839,11 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       if (done || standardTransport || pending == pendingInterests.end() ||
           pending->second.attempt != attempt)
         return;
-      constexpr unsigned MAX_ATTEMPTS = 3;
-      if (attempt >= MAX_ATTEMPTS || std::chrono::steady_clock::now() >= deadline ||
+      // Only source slots backed by a validated index get one more timeout
+      // recovery. The express path still caps every retry by the same deadline.
+      const bool timedOut = message == "repo-original-packet-timeout";
+      const unsigned maxAttempts = authenticatedSource && timedOut ? 4 : 3;
+      if (attempt >= maxAttempts || std::chrono::steady_clock::now() >= deadline ||
           (message != "repo-original-packet-timeout" && message != "repo-original-packet-nack")) {
         if (measureWindow) {
           failedPacketIndex = index;
@@ -850,7 +854,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         return;
       }
       pending->second.handle.cancel();
-      if (message == "repo-original-packet-timeout")
+      if (timedOut)
         ++timeoutRetries;
       else
         ++nackRetries;
@@ -942,6 +946,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   const RepoDataReference reference;
   const ndn::Name forwardingHint;
   const std::size_t packetCount;
+  const bool authenticatedSource;
   const std::size_t windowCapacity;
   ndn_service_framework::detail::ExactDataCongestionWindow congestion;
   const std::chrono::milliseconds interestLifetime;
