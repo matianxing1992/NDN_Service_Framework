@@ -262,10 +262,17 @@ class SlurmApptainerAdapter(Adapter):
                            '--name=' + reference['job_name'], '--format=%i|%U|%k|%T|%N'] + cluster,
                           timeout=deadline - time.monotonic())
         since = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(reference['submitted_after']))
+        account_format = 'JobIDRaw,UID,Comment%256,State%40,ExitCode,NodeList%1024,JobName%128,Submit%32'
         account = self._run(['sacct', '-n', '-P', '--user=' + str(reference['owner_uid']),
                              '--name=' + reference['job_name'], '--starttime=' + since,
-                             '-o', 'JobIDRaw,UID,Comment%256,State%40,ExitCode,NodeList%1024,JobName%128,Submit%32'] + cluster,
+                             '-o', account_format] + cluster,
                             timeout=deadline - time.monotonic())
+        if reference['job_id'] is not None and not queue.stdout.strip() and not account.stdout.strip():
+            # A cancelled held job may have no Eligible time for the name/window query.
+            # Validate the exact-ID record with the same boot and ownership checks below.
+            account = self._run(['sacct', '-n', '-P', '-j', reference['job_id'],
+                                 '-o', account_format] + cluster,
+                                timeout=deadline - time.monotonic())
         found = {}
         # A live queue record takes precedence over lagging accounting data.
         for output, active in ((account.stdout, False), (queue.stdout, True)):

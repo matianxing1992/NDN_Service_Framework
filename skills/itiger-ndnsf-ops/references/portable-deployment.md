@@ -50,6 +50,10 @@ handler can cancel the child when the owner expires. A normal account may be
 unable to extend an already running owner. If replacement is necessary, verify
 that the original deployment never acquired nodes before releasing a successor,
 and repoint the acceptance dependencies to the new verified receipt chain.
+After cancelling a held job, use the verified numeric ID for accounting if the
+name/time query returns no rows. Match its owner, boot-qualified job name and
+submission time. Confirm from duplicate-aware accounting that it never started
+or received nodes before recording pre-allocation cleanup.
 When Slurm has evicted an old completed prerequisite, verify its exact
 `sacct` status, exit code and artifact identity before submitting. Use scheduler
 dependencies for still-active jobs and check the completed receipts again in

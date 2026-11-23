@@ -27,6 +27,7 @@ class DeploymentSchedulerTest(unittest.TestCase):
         self.calls = []
         self.queue = ''
         self.account = ''
+        self.account_by_id = ''
         self.never_allocated = ''
         self.adapter = slurm.SlurmApptainerAdapter(runner=self.runner)
         self.reference = self.adapter.prepare_deployment(
@@ -37,6 +38,8 @@ class DeploymentSchedulerTest(unittest.TestCase):
         output = {'sbatch': '42\n', 'squeue': self.queue, 'sacct': self.account, 'scancel': ''}[command[0]]
         if command[0] == 'sacct' and 'JobIDRaw,UID,JobName%128,Start%32' in command[-1]:
             output = self.never_allocated
+        elif command[0] == 'sacct' and '-j' in command:
+            output = self.account_by_id
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr='')
 
     def queue_row(self, job='42', *, uid=None, comment=None):
@@ -123,6 +126,24 @@ class DeploymentSchedulerTest(unittest.TestCase):
         self.never_allocated = '|'.join(fields) + '\n'
         self.queue = self.queue_row()
         self.assertFalse(self.adapter.deployment_status(self.reference).get('never_allocated'))
+
+    def test_cancelled_held_job_omitted_from_window_reconciles_by_bound_id(self):
+        self.reference['job_id'] = '42'
+        self.account_by_id = self.account_row(
+            state='CANCELLED by 1000', comment='').replace('|node-a|', '|None assigned|')
+        fields = ['42', str(os.getuid()), self.reference['job_name'],
+                  'None', 'None assigned', '0', '0', '0']
+        self.never_allocated = '|'.join(fields) + '\n'
+        result = self.adapter.deployment_status(self.reference)
+        self.assertEqual(result['state'], 'CANCELLED')
+        self.assertTrue(result['terminal'])
+        self.assertTrue(result['never_allocated'])
+        self.assertTrue(any(arg.startswith('--starttime=') for arg in self.calls[1][0]))
+        self.assertEqual(self.calls[2][0][3:5], ['-j', '42'])
+
+        self.account_by_id = self.account_row(state='CANCELLED', name='foreign')
+        with self.assertRaisesRegex(slurm.SlurmAdapterError, 'OWNERSHIP_MISMATCH'):
+            self.adapter.deployment_status(self.reference)
 
     def test_ambiguous_binding_is_not_adopted(self):
         self.queue = self.queue_row() + self.queue_row('43')
