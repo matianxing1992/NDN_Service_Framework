@@ -75,8 +75,11 @@ with open(sys.argv[1], "xb") as file:
                                   index.to_bytes(8, "big")).digest(min(block_size, total - offset))
         file.write(block)
         digest.update(block)
-if total == 500_000_000:
-    assert digest.hexdigest() == "78368e90250b5865c0e7ca1fa7d922bcea90ad0ae85a65f30d10610733abbb6d"
+expected = {
+    500_000_000: "78368e90250b5865c0e7ca1fa7d922bcea90ad0ae85a65f30d10610733abbb6d",
+    20_000_000_000: "b50b9ef4fe6ae99494d4047405739a9e5df11eb5f1b3c199d52a8067c3c1c1db",
+}
+assert digest.hexdigest() == expected[total]
 print(digest.hexdigest())
 PY
 )
@@ -130,11 +133,14 @@ matched trials and bare NFD replay of the same original wire in each applicable 
 For the local 20 GB test, set `repo_file_bytes=20000000000` before generating the input.
 Reserve space for the dense input and its original-wire Repo store. Set
 `storage.repo_root` in both configs to a new private directory for this trial.
-Allow `--timeout 1800` for each phase. Use ordered durable group completions and verified
-retrieval records to report throughput over cumulative payload intervals. Measure from each
-native phase start and retain the process and configuration evidence. After every trial,
-confirm that both deployments have stopped and retain their reports before removing the
-trial's private Repo store and generated source. Create a fresh private store for any retry.
+Allow `--timeout 1800` for each phase. For the tuned long run, use the 8,400 B settings
+below with write windows `manifest-fetch-window=20` and `manifest-source-window=24`,
+`request-timeout-ms=5000`, and `manifest-spool=bounded-memory`. Set read-side
+`manifest-spool=file` and `cache-bytes=1`; the read opens the written store in a separate
+Repo process. Use durable group completions and verified retrieval events to report
+throughput for each cumulative 5 GB interval, measured from the native phase start.
+After every trial, verify both deployments have stopped, retain the reports, and remove the
+trial's private Repo store and generated source. A new write trial uses a fresh private store.
 
 For the 8,400 B tuned comparison, set the Repo actor's `resources.cpus` to at least five
 and give its `parameters` the following native settings. This applies to the new write
