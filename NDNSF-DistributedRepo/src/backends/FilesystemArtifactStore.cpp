@@ -4,6 +4,7 @@
 #include <openssl/evp.h>
 #include <sqlite3.h>
 #include <ndn-cxx/name.hpp>
+#include <ndn-cxx/util/scope.hpp>
 #include <ndn-cxx/util/string-helper.hpp>
 
 #include <algorithm>
@@ -279,6 +280,26 @@ private:
   struct stat m_opened{};
   int m_fd = -1;
 };
+
+int
+openSizedStagingFile(const std::string& path, uint64_t size)
+{
+  const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (fd < 0) {
+    throwSystem("repo-artifact-begin-failed", "open", path);
+  }
+  struct stat status {};
+  if (::fstat(fd, &status) != 0 ||
+      (status.st_size != 0 &&
+       static_cast<uint64_t>(status.st_size) != size) ||
+      ::ftruncate(fd, static_cast<off_t>(size)) != 0) {
+    const int saved = errno;
+    ::close(fd);
+    errno = saved;
+    throwSystem("repo-artifact-begin-failed", "size staging file", path);
+  }
+  return fd;
+}
 
 void
 fsyncDirectory(const fs::path& directory)
@@ -677,35 +698,10 @@ FilesystemArtifactPayloadStore::begin(const ArtifactReference& artifact,
 {
   std::lock_guard<std::mutex> guard(m_mutex);
   artifact.validate();
-  const auto path = stagingPath(artifact, generation);
-  const auto committed = committedPath(artifact);
-  std::error_code statusError;
-  const auto committedStatus = fs::symlink_status(committed, statusError);
-  if (statusError && statusError != std::errc::no_such_file_or_directory) {
-    throw std::runtime_error("repo-artifact-committed-stat-failed: " +
-                             statusError.message());
-  }
-  if (fs::is_symlink(committedStatus)) {
-    throw std::runtime_error("repo-artifact-committed-symlink-forbidden: " +
-                             committed);
-  }
-  if (fs::exists(committedStatus)) {
+  if (isCommitted(artifact, generation))
     return;
-  }
-  const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
-  if (fd < 0) {
-    throwSystem("repo-artifact-begin-failed", "open", path);
-  }
-  struct stat status {};
-  if (::fstat(fd, &status) != 0 ||
-      (status.st_size != 0 &&
-       static_cast<uint64_t>(status.st_size) != artifact.sizeBytes) ||
-      ::ftruncate(fd, static_cast<off_t>(artifact.sizeBytes)) != 0) {
-    const int saved = errno;
-    ::close(fd);
-    errno = saved;
-    throwSystem("repo-artifact-begin-failed", "size staging file", path);
-  }
+  const auto path = stagingPath(artifact, generation);
+  const int fd = openSizedStagingFile(path, artifact.sizeBytes);
   if (::fsync(fd) != 0) {
     const int saved = errno;
     ::close(fd);
@@ -827,12 +823,29 @@ FilesystemArtifactPayloadStore::markVerified(const ArtifactReference& artifact,
 }
 
 void
-FilesystemArtifactPayloadStore::markComplete(const ArtifactReference& artifact, uint64_t generation)
+FilesystemArtifactPayloadStore::stageComplete(const ArtifactReference& artifact, uint64_t generation,
+  const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read)
 {
   std::lock_guard<std::mutex> guard(m_mutex);
   artifact.validate();
-  const auto path = rangePath(stagingPath(artifact, generation));
-  atomicWrite(path, encodeRanges({{0, artifact.sizeBytes}}));
+  const auto path = stagingPath(artifact, generation);
+  const int fd = openSizedStagingFile(path, artifact.sizeBytes);
+  const auto close = ndn::make_scope_exit([fd] { ::close(fd); });
+  constexpr uint64_t CHUNK_BYTES = 1U << 20;
+  const auto window = std::min(m_maxRangeBytes, CHUNK_BYTES);
+  for (uint64_t offset = 0; offset < artifact.sizeBytes;) {
+    const auto length = static_cast<std::size_t>(std::min(window, artifact.sizeBytes - offset));
+    const auto bytes = read(offset, length);
+    if (bytes.size() != length)
+      throw std::runtime_error("repo-original-packet-input-truncated");
+    pwriteAll(fd, bytes.data(), bytes.size(), offset, path);
+    offset += bytes.size();
+  }
+  // The complete-range sidecar sync also makes the staging entry durable.
+  // No caller can resume a range before this payload has been synchronized.
+  if (::fsync(fd) != 0)
+    throwSystem("repo-artifact-sync-failed", "fsync", path);
+  atomicWrite(rangePath(path), encodeRanges({{0, artifact.sizeBytes}}));
 }
 
 std::vector<ArtifactByteRange>

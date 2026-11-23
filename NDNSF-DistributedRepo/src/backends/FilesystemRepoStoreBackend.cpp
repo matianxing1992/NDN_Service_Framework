@@ -1040,6 +1040,7 @@ FilesystemRepoStoreBackend::putRange(const RepoObjectManifest& manifest,
       }
       return;
     }
+    m_payloadStore.begin(reference, generation);
     m_payloadStore.writeRange(reference, generation, part, bytes);
     if (range.lengthBytes != 0) {
       m_payloadStore.markVerified(reference, generation, part);
@@ -1056,6 +1057,10 @@ FilesystemRepoStoreBackend::stageOriginalPacketSet(const RepoObjectManifest& man
     throw std::invalid_argument("repo-file-original-packet-source-invalid");
   }
   stageRanges(manifest, [&](const auto& reference, auto generation, bool committed) {
+    if (!committed) {
+      m_payloadStore.stageComplete(reference, generation, read);
+      return;
+    }
     constexpr uint64_t CHUNK_BYTES = 1U << 20;
     const auto window = std::min(m_maxRangeBytes, CHUNK_BYTES);
     for (uint64_t offset = 0; offset < manifest.size;) {
@@ -1065,19 +1070,9 @@ FilesystemRepoStoreBackend::stageOriginalPacketSet(const RepoObjectManifest& man
         throw std::runtime_error("repo-original-packet-input-truncated");
       }
       const ArtifactByteRange part{offset, length};
-      if (committed) {
-        if (m_payloadStore.readRange(reference, generation, part) != bytes) {
-          throw std::runtime_error("repo-file-immutable-digest-conflict");
-        }
-      }
-      else {
-        m_payloadStore.writeRange(reference, generation, part, bytes);
-      }
+      if (m_payloadStore.readCommittedRange(reference, generation, part) != bytes)
+        throw std::runtime_error("repo-file-immutable-digest-conflict");
       offset += length;
-    }
-    if (!committed) {
-      m_payloadStore.flush(reference, generation);
-      m_payloadStore.markComplete(reference, generation);
     }
   });
 }
@@ -1121,7 +1116,6 @@ FilesystemRepoStoreBackend::stageRanges(const RepoObjectManifest& manifest,
   }
   reserveDiskUnlocked(canonicalManifest, canonicalIdentity);
   try {
-    m_payloadStore.begin(reference, generation);
     write(reference, generation, false);
   }
   catch (...) {

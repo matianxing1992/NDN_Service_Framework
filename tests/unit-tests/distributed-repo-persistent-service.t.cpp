@@ -2931,6 +2931,33 @@ BOOST_AUTO_TEST_CASE(CompleteOriginalPacketStagingRollsBackAndSurvivesReopen)
   BOOST_CHECK(core.getRange(source.manifest.objectName, {0, source.wire.size()}) == source.wire);
 }
 
+BOOST_AUTO_TEST_CASE(CompleteOriginalPacketStageCanBeCommittedAfterReopen)
+{
+  TempRoot temp;
+  OriginalPacketSource source(180);
+  const auto root = temp.path() / "objects";
+  const auto open = [&] {
+    return std::make_shared<FilesystemRepoStoreBackend>(root.string(), 4U << 20, 1U << 20,
+      "staging-recovery", FilesystemRecoveryPolicy::KEEP_UNCONFIRMED);
+  };
+  {
+    auto backend = open();
+    backend->stageOriginalPacketSet(source.manifest,
+      [&](uint64_t offset, std::size_t length) { return source.read(offset, length); });
+  }
+  {
+    auto backend = open();
+    BOOST_CHECK(!backend->has(source.manifest.objectName));
+    backend->commitRanges(source.manifest);
+  }
+  StorageCapability capability;
+  capability.repoNode = "/repo/a";
+  capability.freeBytes = 4U << 20;
+  RepoCore core(capability, open());
+  BOOST_CHECK(core.getManifest(source.manifest.objectName).hasSameMetadata(source.manifest));
+  BOOST_CHECK(core.getRange(source.manifest.objectName, {0, source.wire.size()}) == source.wire);
+}
+
 struct OwnedPacketFixture
 {
   TempRoot temp;

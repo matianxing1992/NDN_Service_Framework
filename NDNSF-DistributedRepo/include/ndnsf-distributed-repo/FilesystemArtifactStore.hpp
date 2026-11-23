@@ -156,8 +156,8 @@ private:
   std::shared_ptr<RepoStoreBackend::RangeReadBatch>
   beginCommittedRangeBatch(const ArtifactReference& artifact) const;
 
-  // Called only after a complete object has been staged and flushed.
-  void markComplete(const ArtifactReference& artifact, uint64_t generation);
+  void stageComplete(const ArtifactReference& artifact, uint64_t generation,
+    const std::function<std::vector<uint8_t>(uint64_t, std::size_t)>& read);
 
   std::vector<uint8_t> readRangeImpl(const ArtifactReference& artifact, uint64_t generation,
                                     ArtifactByteRange range, bool committedOnly) const;
