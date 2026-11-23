@@ -2,7 +2,6 @@
 #define NDNSF_DI_NATIVE_PROVIDER_RUNNER_REUSE_CACHE_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderResidencyV4.hpp"
 
@@ -64,12 +63,6 @@ public:
     const std::string& processEpoch,
     std::uint64_t capturedAtMs,
     std::uint64_t expiresAtMs) const;
-
-  /** Release idle runners that prevent their device from offering the admitted
-   * role's working set. The caller samples physical free memory again after
-   * reclamation. Committed conversation state has a separate owner. */
-  std::size_t
-  reclaimUnderDevicePressure(const std::vector<NativeDeviceResourceObservationV3>& resources);
 
   void
   setAuthority(const std::shared_ptr<ProtectedResidentAuthority>& authority) noexcept;

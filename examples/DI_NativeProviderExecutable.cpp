@@ -1606,7 +1606,6 @@ main(int argc, char** argv)
             };
         }
         const std::weak_ptr<NativeProviderTelemetryCollector> weakTelemetry = telemetryCollector;
-        const std::weak_ptr<NativeProviderRunnerReuseCache> weakRunnerCache = runnerReuseCache;
         std::vector<std::shared_ptr<CudaDeviceMemoryQuery>> deviceQueries;
         const bool needsGpuResources = options.offerBackend.find("cuda") != std::string::npos ||
           std::any_of(options.offerDevices.begin(), options.offerDevices.end(),
@@ -1626,29 +1625,17 @@ main(int argc, char** argv)
           deviceQueries.push_back(std::move(query));
         }
         nativeOfferConfig->observeResources =
-          [weakTelemetry, weakRunnerCache, deviceQueries = std::move(deviceQueries)] (
+          [weakTelemetry, deviceQueries = std::move(deviceQueries)] (
               std::uint64_t nowMs, const std::shared_ptr<NativeWorkStatistics>& statistics) {
             const auto telemetry = weakTelemetry.lock();
             if (!telemetry) throw std::runtime_error("GPU_RESOURCE_OWNER_CLOSED");
             const auto snapshot = telemetry->snapshot();
             NativeWorkScope collection(statistics, "gpu-resource-collection", NativeWorkKind::LOCAL);
-            const auto sample = [&] {
-              std::vector<NativeDeviceResourceObservationV3> resources;
-              for (const auto& query : deviceQueries) {
-                resources.push_back(query->query(nowMs,
-                  std::max<std::uint64_t>(1, snapshot.sequence),
-                  snapshot.capacity.activeWorkerCount, statistics));
-              }
-              return resources;
-            };
-            auto resources = sample();
-            if (const auto cache = weakRunnerCache.lock()) {
-              const auto reclaimed = cache->reclaimUnderDevicePressure(resources);
-              if (reclaimed != 0) {
-                resources = sample();
-                logRuntimeEvidence("NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_RECLAIMED"
-                  " count=" + std::to_string(reclaimed) + " detail=device-memory-pressure");
-              }
+            std::vector<NativeDeviceResourceObservationV3> resources;
+            for (const auto& query : deviceQueries) {
+              resources.push_back(query->query(nowMs,
+                std::max<std::uint64_t>(1, snapshot.sequence), snapshot.capacity.activeWorkerCount,
+                statistics));
             }
             return resources;
           };

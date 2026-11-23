@@ -1646,35 +1646,6 @@ BOOST_AUTO_TEST_CASE(RunnerReuseResidencyQueryIsBoundedAndReadOnly)
   auto runner = std::make_shared<TestRunner>();
   cache.publish(projection, "/provider/a", "boot-a", {}, runner);
 
-  auto cudaProjection = projection;
-  cudaProjection.assembly.backend = "onnxruntime-cuda";
-  cudaProjection.assembly.deviceSet = {"cuda:0"};
-  cudaProjection.assembly.requiredDeviceMemoryMb = 35000;
-  auto cudaRunner = std::make_shared<TestRunner>();
-  const std::weak_ptr<TestRunner> cachedCudaRunner = cudaRunner;
-  cache.publish(cudaProjection, "/provider/a", "boot-a", {}, cudaRunner);
-  auto active = cache.lookup(cudaProjection, "/provider/a", "boot-a", {});
-  BOOST_REQUIRE(active);
-  cudaRunner.reset();
-
-  NativeDeviceResourceObservationV3 memory;
-  memory.device = "cuda:0";
-  memory.totalMemoryMb = 48000;
-  memory.freeMemoryMb = 20000;
-  BOOST_CHECK_EQUAL(cache.reclaimUnderDevicePressure({memory}), 0U);
-  active.reset();
-  memory.device = "cuda:1";
-  BOOST_CHECK_EQUAL(cache.reclaimUnderDevicePressure({memory}), 0U);
-  memory.device = "cuda:0";
-  memory.freeMemoryMb = 35000;
-  BOOST_CHECK_EQUAL(cache.reclaimUnderDevicePressure({memory}), 0U);
-  BOOST_CHECK(!cachedCudaRunner.expired());
-  memory.freeMemoryMb = 20000;
-  BOOST_CHECK_EQUAL(cache.reclaimUnderDevicePressure({memory}), 1U);
-  BOOST_CHECK(cachedCudaRunner.expired());
-  BOOST_CHECK(!cache.lookup(cudaProjection, "/provider/a", "boot-a", {}));
-  BOOST_CHECK(static_cast<bool>(cache.lookup(projection, "/provider/a", "boot-a", {})));
-
   const std::vector<NativeJson> candidateArtifacts{NativeJson{
     {"artifact_digest", projection.assembly.artifactDigest},
     {"model_manifest_digest", projection.assembly.modelManifestDigest},
