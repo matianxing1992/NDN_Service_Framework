@@ -76,6 +76,8 @@ public:
   void commitRanges(const RepoObjectManifest& manifest, bool verifyExistingDigest);
   std::vector<uint8_t> getRange(const std::string& objectName,
                                 RepoByteRange range) const override;
+  std::shared_ptr<RangeReadBatch>
+  beginRangeBatch(const std::string& objectName) const override;
   RepoObjectManifest getManifest(const std::string& objectName) const override;
   /** Internal read integration: pin current parsed metadata without copying its index. */
   std::shared_ptr<const RepoObjectManifest>

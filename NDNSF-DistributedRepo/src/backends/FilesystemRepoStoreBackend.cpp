@@ -1286,6 +1286,15 @@ FilesystemRepoStoreBackend::getRange(const std::string& objectName,
   return bytes;
 }
 
+std::shared_ptr<RepoStoreBackend::RangeReadBatch>
+FilesystemRepoStoreBackend::beginRangeBatch(const std::string& objectName) const
+{
+  const auto manifest = readManifestUnlocked(objectName);
+  if (isMetadataOnly(*manifest))
+    throw std::runtime_error("repo-metadata-only-payload-not-materialized");
+  return m_payloadStore.beginCommittedRangeBatch(artifactReference(*manifest));
+}
+
 RepoRangeReadFunction
 FilesystemRepoStoreBackend::bindCurrentRangeReader(
   std::shared_ptr<const RepoObjectManifest> expected) const

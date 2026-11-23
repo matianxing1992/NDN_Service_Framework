@@ -153,6 +153,9 @@ public:
 private:
   friend class FilesystemRepoStoreBackend;
 
+  std::shared_ptr<RepoStoreBackend::RangeReadBatch>
+  beginCommittedRangeBatch(const ArtifactReference& artifact) const;
+
   // Called only after a complete object has been staged and flushed.
   void markComplete(const ArtifactReference& artifact, uint64_t generation);
 

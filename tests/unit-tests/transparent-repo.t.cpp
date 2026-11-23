@@ -820,6 +820,30 @@ BOOST_AUTO_TEST_CASE(PacketBatchPreservesOriginalWiresAndReopensWithSmallRangeLi
   }
 }
 
+BOOST_AUTO_TEST_CASE(ColdFilesystemBatchRejectsReplacementOfOpenedPayload)
+{
+  Fixture fixture;
+  AdmissionFile incoming(fixture, "replace-open-batch", 4);
+  const auto root = fixture.root / "replace-open-batch-store";
+  auto backend = makeFilesystemRepoStore(root.string());
+  RepoCore writer(fixture.capability(), backend);
+  const auto manifest = writer.commitOriginalPacketFile(incoming.manifest, incoming.path);
+  auto tiered = makeTieredRepoStore(backend, 1, "filesystem", 1U << 20);
+  const auto batch = tiered->beginRangeBatch(manifest.objectName);
+  const RepoByteRange first{0, manifest.packetOffsets.at(1)};
+  BOOST_CHECK(batch->read(first) == incoming.packets.front().second);
+
+  const auto payload = root / "payloads/sha256" / manifest.sha256.substr(0, 2) / manifest.sha256;
+  const auto unlinked = root / "previous-payload";
+  std::filesystem::rename(payload, unlinked);
+  BOOST_REQUIRE(std::filesystem::copy_file(unlinked, payload));
+  BOOST_CHECK_EXCEPTION(batch->read(first), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()) == "repo-artifact-committed-payload-changed";
+  });
+  BOOST_CHECK(tiered->beginRangeBatch(manifest.objectName)->read(first) ==
+              incoming.packets.front().second);
+}
+
 BOOST_AUTO_TEST_CASE(PacketBatchUnsupportedShapesRetainExactReadCompatibility)
 {
   Fixture fixture;

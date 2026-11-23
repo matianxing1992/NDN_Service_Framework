@@ -1233,6 +1233,14 @@ public:
     const bool cacheable = manifest.size != 0 && m_status.budgetBytes != 0 &&
       manifest.size <= m_largeObjectThreshold && manifest.size <= m_status.budgetBytes &&
       m_authoritativeStore->hasCommittedPayload(manifest);
+    if (!cacheable && supportsConcurrentCommittedReads()) {
+      {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        ++m_status.misses;
+        ++m_status.backingReads;
+      }
+      return m_authoritativeStore->beginRangeBatch(objectName);
+    }
     if (cacheable) {
       std::lock_guard<std::mutex> lock(m_mutex);
       const auto found = m_cache.find(objectName);

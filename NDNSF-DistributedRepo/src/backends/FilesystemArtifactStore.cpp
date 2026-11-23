@@ -228,6 +228,58 @@ preadAll(int fd, uint8_t* bytes, size_t size, uint64_t offset,
   }
 }
 
+class CommittedRangeBatch final : public RepoStoreBackend::RangeReadBatch
+{
+public:
+  CommittedRangeBatch(ArtifactReference artifact, std::string path, uint64_t maxRangeBytes)
+    : m_artifact(std::move(artifact))
+    , m_path(std::move(path))
+    , m_maxRangeBytes(maxRangeBytes)
+  {
+    const int fd = ::open(m_path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0)
+      throwSystem("repo-artifact-committed-payload-unavailable", "open", m_path);
+    if (::fstat(fd, &m_opened) != 0 || !S_ISREG(m_opened.st_mode) || m_opened.st_size < 0 ||
+        static_cast<uint64_t>(m_opened.st_size) != m_artifact.sizeBytes) {
+      ::close(fd);
+      throw std::runtime_error("repo-artifact-committed-payload-unavailable");
+    }
+    m_fd = fd;
+  }
+
+  CommittedRangeBatch(const CommittedRangeBatch&) = delete;
+  CommittedRangeBatch& operator=(const CommittedRangeBatch&) = delete;
+
+  ~CommittedRangeBatch() override
+  {
+    ::close(m_fd);
+  }
+
+  std::vector<uint8_t>
+  read(RepoByteRange range) override
+  {
+    validateRange(m_artifact, {range.offsetBytes, range.lengthBytes}, 0, false, m_maxRangeBytes);
+    struct stat current{};
+    // Do not serve the unlinked inode if the authoritative path is replaced.
+    if (::lstat(m_path.c_str(), &current) != 0 || !S_ISREG(current.st_mode) ||
+        current.st_dev != m_opened.st_dev || current.st_ino != m_opened.st_ino ||
+        current.st_size != m_opened.st_size || current.st_ctim.tv_sec != m_opened.st_ctim.tv_sec ||
+        current.st_ctim.tv_nsec != m_opened.st_ctim.tv_nsec) {
+      throw std::runtime_error("repo-artifact-committed-payload-changed");
+    }
+    std::vector<uint8_t> bytes(static_cast<size_t>(range.lengthBytes));
+    preadAll(m_fd, bytes.data(), bytes.size(), range.offsetBytes, m_path);
+    return bytes;
+  }
+
+private:
+  ArtifactReference m_artifact;
+  std::string m_path;
+  uint64_t m_maxRangeBytes;
+  struct stat m_opened{};
+  int m_fd = -1;
+};
+
 void
 fsyncDirectory(const fs::path& directory)
 {
@@ -703,6 +755,13 @@ FilesystemArtifactPayloadStore::readCommittedRange(const ArtifactReference& arti
   uint64_t generation, ArtifactByteRange range) const
 {
   return readRangeImpl(artifact, generation, range, true);
+}
+
+std::shared_ptr<RepoStoreBackend::RangeReadBatch>
+FilesystemArtifactPayloadStore::beginCommittedRangeBatch(const ArtifactReference& artifact) const
+{
+  artifact.validate();
+  return std::make_shared<CommittedRangeBatch>(artifact, committedPath(artifact), m_maxRangeBytes);
 }
 
 std::vector<uint8_t>
