@@ -1104,7 +1104,8 @@ commitOriginalPacketPublication(
   int ackCollectionTimeMs, int timeoutMs, const std::function<void()>& requireCurrent,
   const ndn_service_framework::ManifestPublication* prepared,
   std::unique_ptr<ndn_service_framework::ManifestPublication>* preparedOwner = nullptr,
-  const std::string* preparedDigest = nullptr)
+  const std::string* preparedDigest = nullptr,
+  const std::shared_ptr<std::atomic<uint64_t>>& retainedWireBytes = {})
 {
   validateUserStorageClientTarget(target, timeoutMs);
   if (writer.isOnIoThread())
@@ -1207,10 +1208,15 @@ commitOriginalPacketPublication(
   {
     ~Publication()
     {
+      if (retainedCharge != 0) {
+        retained.reset();
+        retainedWireBytes->fetch_sub(retainedCharge);
+      }
       try {
         ndn_service_framework::logControlTiming("repo-producer", "reply-admission",
           prefix, {{"limit_bytes", std::to_string(replyBudgetBytes)},
                    {"peak_pending_bytes", std::to_string(peakPendingBytes.load())},
+                   {"retained_wire_bytes", std::to_string(retainedCharge)},
                    {"drops", std::to_string(admissionDrops.load())}});
       }
       catch (...) {
@@ -1229,6 +1235,9 @@ commitOriginalPacketPublication(
     std::vector<size_t> sourcePacketSizes;
     std::unordered_map<ndn::Name, std::pair<size_t, size_t>> index;
     std::shared_ptr<detail::FaceDataReferencePacketSpool> spool;
+    std::unique_ptr<ndn_service_framework::ManifestPublication> retained;
+    std::shared_ptr<std::atomic<uint64_t>> retainedWireBytes;
+    uint64_t retainedCharge = 0;
     std::optional<ndn_service_framework::SegmentManifestVerifier> proof;
     ndn::ScopedInterestFilterHandle filter;
     std::shared_ptr<void> faceLease;
@@ -1278,8 +1287,30 @@ commitOriginalPacketPublication(
   current();
   measure(faceStarted, faceAdmission);
   auto packetLoopStarted = stamp(measurePreparation);
-  publication->spool = std::make_shared<detail::FaceDataReferencePacketSpool>(
-    names.size(), request.reference.expectedSize);
+  if (preparedOwner && retainedWireBytes) {
+    constexpr uint64_t RETAINED_WIRE_LIMIT = 40ULL << 20;
+    uint64_t charge = prepared->packets().capacity() * sizeof(ndn::Data);
+    for (const auto& packet : prepared->packets()) {
+      const auto capacity = packet.wireEncode().getBuffer()->capacity();
+      if (charge > RETAINED_WIRE_LIMIT || capacity > RETAINED_WIRE_LIMIT - charge) {
+        charge = RETAINED_WIRE_LIMIT + 1;
+        break;
+      }
+      charge += capacity;
+    }
+    auto used = retainedWireBytes->load();
+    while (charge <= RETAINED_WIRE_LIMIT - used) {
+      if (retainedWireBytes->compare_exchange_weak(used, used + charge)) {
+        publication->retainedWireBytes = retainedWireBytes;
+        publication->retainedCharge = charge;
+        break;
+      }
+    }
+  }
+  if (publication->retainedCharge == 0) {
+    publication->spool = std::make_shared<detail::FaceDataReferencePacketSpool>(
+      names.size(), request.reference.expectedSize);
+  }
   std::optional<ndn::util::Sha256> digest;
   if (preparedDigest == nullptr) {
     digest.emplace();
@@ -1365,7 +1396,12 @@ commitOriginalPacketPublication(
       }
     }
     measure(packetStarted, packetProof);
-    publication->spool->append(i, original);
+    if (publication->spool) {
+      publication->spool->append(i, original);
+    }
+    else if (wire.size() > request.reference.expectedSize - offsets.back()) {
+      throw std::runtime_error("repo-original-packet-spool-packet-invalid");
+    }
     measure(packetStarted, spoolAppend);
     if (digest) {
       digest->update(original);
@@ -1380,15 +1416,23 @@ commitOriginalPacketPublication(
       request.reference.packetSetMetadata->packetOffsets != offsets) {
     throw std::invalid_argument("repo-original-publication-packet-offsets-mismatch");
   }
-  publication->spool->finalize();
-  if (publication->spool->totalWireBytes() != request.reference.expectedSize ||
+  if (publication->spool) {
+    publication->spool->finalize();
+  }
+  const auto stagedWireBytes = publication->spool
+    ? publication->spool->totalWireBytes() : offsets.back();
+  if (stagedWireBytes != request.reference.expectedSize ||
       (preparedDigest ? *preparedDigest : toLowerHex(digest->toString())) !=
         request.reference.expectedSha256)
     throw std::invalid_argument("repo-original-publication-digest-or-size-mismatch");
 
   const auto packetSource = preparedOwner ? "prepared-owned" : prepared ? "prepared" : "wire";
-  if (preparedOwner)
+  if (publication->retainedCharge != 0) {
+    publication->retained = std::move(*preparedOwner);
+  }
+  else if (preparedOwner) {
     preparedOwner->reset();
+  }
 
   measure(packetLoopStarted, packetLoop);
   auto installStarted = stamp(measurePreparation);
@@ -1456,11 +1500,15 @@ commitOriginalPacketPublication(
               reply = std::make_shared<PacketReplyLease>();
               reply->owner = state;
               reply->bytes = packetBytes;
-              auto wire = state->spool->readPacket(packetIndex);
+              std::optional<ndn::Data> spooled;
+              if (state->spool) {
+                auto wire = state->spool->readPacket(packetIndex);
+                auto buffer = std::make_shared<ndn::Buffer>();
+                buffer->swap(wire);
+                spooled.emplace(ndn::Block(buffer));
+              }
               if (state->stopped.load() || std::chrono::steady_clock::now() >= deadline) return;
-              auto buffer = std::make_shared<ndn::Buffer>();
-              buffer->swap(wire);
-              const ndn::Data data{ndn::Block(buffer)};
+              const auto& data = spooled ? *spooled : state->retained->packets().at(packetIndex);
               if (interest.matchesData(data)) {
                 const bool sampled = state->proof &&
                   detail::traceManifestSource(name, "producer-submit-data");
@@ -1498,6 +1546,7 @@ commitOriginalPacketPublication(
       ndn_service_framework::logControlTiming("repo-client", "producer-preparation",
         ndn::Name(request.reference.objectName), {
           {"operation_id", request.operationId}, {"packet_source", packetSource},
+          {"retained_wire_bytes", std::to_string(publication->retainedCharge)},
           {"total_packets", std::to_string(names.size())},
           {"sampled_packets", std::to_string(sampledPackets)},
           {"face_admission_ns", nanoseconds(faceAdmission)},
@@ -3308,6 +3357,9 @@ toArtifactHandle(const RepoHandle& input)
 struct RepoClient::Impl
 {
   ArtifactLimits persistentLimits;
+  // A queued Face reply can retain its publication past the client operation.
+  std::shared_ptr<std::atomic<uint64_t>> retainedWriterWireBytes =
+    std::make_shared<std::atomic<uint64_t>>(0);
   /** Counts operations that are still running so close() can report the truth
    *  instead of claiming a drain it did not observe. */
   struct Ticket
@@ -3768,7 +3820,7 @@ RepoClient::publishDataImpl(const RepoDataPublication& input,
   const auto manifest = commitOriginalPacketPublication(
     *m_impl->user, target, request, nextPacket, verifySignature,
     PUBLICATION_ACK_COLLECTION_MS, remainingMs(options.deadline), options.requireCurrent,
-    prepared, owner, preparedDigest);
+    prepared, owner, preparedDigest, m_impl->retainedWriterWireBytes);
   RepoPublishResult result;
   // Deliberately no operationReference: the Repo's status service does not resolve an insert
   // operation by id (`repo-publish-operation-not-found`), so handing the caller an id it

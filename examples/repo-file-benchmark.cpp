@@ -369,11 +369,15 @@ run(int argc, char** argv)
         return useManifest ? manifestScope(identity, group.prefix).rootName()
                            : ndn::Name(group.prefix).appendSegment(0);
       };
+      std::optional<repo::RepoClient> packetClient;
+      if (useCertificate && phaseOption != "read") {
+        packetClient.emplace(makePacketClient(user, target));
+      }
       const auto commitSecured = [&](di::NativeStoredModelPacketIo::PacketWires wires,
                                      repo::PacketSource packetSource,
                                      repo::RepoPreparedManifest* manifest,
                                      const Group& group, const std::function<void()>& active) {
-        repo::RepoClient client = makePacketClient(user, target);
+        auto& client = *packetClient;
         const repo::RepoOperationOptions operation{deadline, active, {}};
         repo::RepoDataPublication publication;
         publication.compactSegmentManifestInsert = compactInsert;
