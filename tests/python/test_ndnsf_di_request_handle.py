@@ -17,7 +17,7 @@ from ndnsf_distributed_inference.app_sdk.contracts import (
 )
 from ndnsf_distributed_inference.app_sdk.client import RequestRecoveryError
 from ndnsf_distributed_inference.core.ports import (
-    AssignmentProposal, ExecutionOutcome, ValidatedExecutionIntent,
+    ExecutionOutcome,
 )
 from ndnsf_distributed_inference.app_sdk.status import RequestState
 
@@ -45,15 +45,9 @@ class RequestHandleTest(unittest.TestCase):
             client=APPClient(RuntimeJournal(root,"alice"))
             with self.assertRaises(KeyError): client.open_request("missing")
 
-    def test_atomic_intent_and_optional_outcome_hooks(self):
+    def test_optional_outcome_hooks_and_local_cancel(self):
         with tempfile.TemporaryDirectory() as root:
             client=APPClient(RuntimeJournal(root,"requester"))
-            assignment=AssignmentProposal("a","p","v",{"r":"/p"})
-            intent=ValidatedExecutionIntent(
-                "intent","request",1,1,"v","p",assignment,
-                "sha256:lease",1,0)
-            committed=client.prepare_intent(intent)
-            self.assertEqual(committed.state,"COMMITTED")
             self.assertEqual(client.emit_outcome(
                 ExecutionOutcome("request",1,"SUCCEEDED","sha256:result"),
                 idempotency_key="outcome"),{})

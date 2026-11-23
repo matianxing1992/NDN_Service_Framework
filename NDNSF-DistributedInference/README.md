@@ -284,6 +284,14 @@ continuous output, output encodings and model bindings are rejected before
 submission. A signed definition alone does not establish backend support.
 The durable journal binds the application request ID to the native request ID.
 
+Historical APP journals remain readable with the original envelope key. Completed
+requests retain their results, and reopening an active record still checks its
+requester and attempt. An active record bound to the retired APP R0 activation
+path cannot resume remote execution or cancellation: control and new results
+are rejected before journal writes. Submit a fresh request through the native
+path; the old record is not evidence that its remote work has stopped. Core and
+embedded C++ SDK activation protocols retain their separate contracts.
+
 Remote discovery is record-based rather than metadata-based. The Application
 publishes an exact, signed definition Data packet; the lifecycle owner may
 publish an exact signed activation or revocation packet. NDNSD carries only a

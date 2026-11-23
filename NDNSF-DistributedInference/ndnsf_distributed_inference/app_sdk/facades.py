@@ -8,7 +8,6 @@ artifact provisioning, and collaboration generic enough for non-YOLO models.
 from __future__ import annotations
 
 import os
-import time
 
 import json
 from dataclasses import dataclass, field, replace
@@ -17,7 +16,6 @@ import hashlib
 import io
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from uuid import uuid4
 
 from ndnsf import (
     CollaborationRole,
@@ -27,9 +25,7 @@ from ndnsf import (
 
 from ..client import DistributedInferenceClient, InferenceResult
 from ..client import DeploymentSession
-from ..core import AssignmentContext
 from .controller import APPController
-from .execution_control import _execution_control_request_prefix
 from ..plan import (
     ArtifactSpec,
     DistributedInferencePlan,
@@ -306,43 +302,6 @@ class APPClient:
             raise RuntimeError(
                 "APPClient requires an AutomaticPlanningCoordinator")
         return self._automatic_planner.generate(request)
-
-    def request_execution_control(
-        self, provider: str, role: str, service: str, payload: bytes, *,
-        timeout_ms: int = 5000
-    ):
-        """Send control through the existing authenticated collaboration service."""
-        wire = bytes(payload)
-        # The payload retains the original cancellation ID on retry. Each Core
-        # exchange needs its own Selection identity to reach the Provider.
-        nonce = hashlib.sha256(wire).hexdigest()
-        request_id = _execution_control_request_prefix(wire) + uuid4().hex
-        context = AssignmentContext(
-            request_id=request_id,
-            attempt_epoch=1,
-            plan_digest="sha256:" + hashlib.sha256(wire).hexdigest(),
-            model_variant_id="ndnsf-di-execution-control-v1",
-            role_providers=((role, provider),),
-            original_deadline_ms=int(time.time() * 1000) + max(1, timeout_ms),
-        )
-        return self._client.user.request_collaboration(
-            service,
-            wire,
-            roles=[CollaborationRole(
-                role=role,
-                service=service,
-                allow_dynamic_provisioning=False,
-                min_providers=1,
-                max_providers=1,
-            )],
-            key_scopes={},
-            dependencies=[],
-            role_scopes={role: []},
-            ack_timeout_ms=min(1000, max(100, timeout_ms // 3)),
-            timeout_ms=timeout_ms,
-            assignment_context=context,
-            request_id=request_id,
-        )
 
     @classmethod
     def from_config(

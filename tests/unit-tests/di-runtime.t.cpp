@@ -253,15 +253,11 @@ public:
     catalog["publication"] = {{"artifact_root", "/fixture/artifacts"}};
     catalog["input_format"] = "JSON";
     catalog["max_payload_bytes"] = 32;
-    const ndnsf::di::NativeJson component = {
-      {"candidate_id", "semantic-v1"}, {"priority", 1},
-      {"roles", {"Front", "Branch", "Merge"}},
-      {"node_names_by_role", ndnsf::di::NativeJson::object()},
-      {"input_ingress_role", "Front"}, {"result_egress_role", "Merge"},
-      {"merge_kind", "NATIVE_POSTPROCESS"},
-      {"candidate_digest", oracle.at("registered_digest")},
-      {"semantic_partition", oracle.at("partition")} };
-    catalog["splitter"] = {{"kind", "YOLO"}, {"components", {component}}};
+    catalog["splitter"] = {
+      {"kind", "ONNX_SOURCE"}, {"selection_mode", "component"},
+      {"roles", {"Front", "Merge"}},
+      {"boundary_node", planning.graph.topologicalOrder.at(1)},
+      {"input_ingress_role", "Front"}, {"result_egress_role", "Merge"}};
 
     std::ifstream input(configPath);
     ndnsf::di::NativeJson runtime;

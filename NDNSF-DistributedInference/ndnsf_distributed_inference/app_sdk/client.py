@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import base64
 import json
 import os
 import time
@@ -17,9 +16,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Mapping
 
-from ..client import (
-    InferenceResult, SelectionAcceptanceTracker,
-)
+from ..client import InferenceResult
 from .contracts import (
     DeploymentConstraints,
     DeploymentProgress,
@@ -35,9 +32,6 @@ from .contracts import (
     RequestHandle,
     ResultRendezvousRecord,
 )
-from ..core.execution_intent import ExecutionIntentCoordinator
-from ..core.contracts import ExecutionActivateMessage
-from .execution_control import ExecutionControlEvidence, ExistingServiceExecutionControlTransport
 from .runtime_journal import (
     FileRequestEnvelopeKeyProvider,
     RequestEnvelopeKeyProvider,
@@ -292,8 +286,8 @@ class NativeStreamingHandle:
 
 class APPClient:
     def __init__(self, journal: RuntimeJournal, *, executor=None, engine=None,
-                 observers=None, intent_coordinator=None, network_client=None,
-                 requester_identity: str = "", execution_control_transport=None,
+                 observers=None, network_client=None,
+                 requester_identity: str = "",
                  automatic_planner=None, native_client=None):
         if not journal.has_envelope_key:
             raise RuntimeJournalKeyError(
@@ -303,7 +297,6 @@ class APPClient:
         self.engine = engine
         self.observers = observers
         self._network_client = network_client
-        self._execution_control_transport = execution_control_transport
         self._automatic_planner = automatic_planner
         # Optional native requester owner.  When configured, callers use the
         # explicit request_native() surface below; the compatibility planner
@@ -324,10 +317,7 @@ class APPClient:
         self._native_tokenizer_digest = ""
         self._network_futures = {}
         self._result_cache: dict[str, bytes] = {}
-        self._selection_acceptance_trackers: dict[
-            tuple[str, int], SelectionAcceptanceTracker] = {}
         self.requester_identity = requester_identity or journal.root.name
-        self.intent_coordinator = intent_coordinator or ExecutionIntentCoordinator()
         self._request_handles: dict[str, RequestHandle] = {}
         from ndnsf import _ndnsf
 
@@ -1569,29 +1559,6 @@ class APPClient:
         self._automatic_planner = coordinator
         return coordinator
 
-    def track_selection_acceptance(
-        self, *, request_id: str, attempt: int, deadline_ms: int,
-        encryption_key: bytes,
-    ) -> SelectionAcceptanceTracker:
-        """Create/reuse the encrypted V2 final-Selection control journal."""
-        key = (request_id, int(attempt))
-        current = self._selection_acceptance_trackers.get(key)
-        if current is not None:
-            if current.deadline_ms != int(deadline_ms):
-                raise ValueError(
-                    "Selection acceptance tracker deadline is immutable")
-            return current
-        tracker = SelectionAcceptanceTracker(
-            request_id=request_id, attempt=attempt,
-            deadline_ms=deadline_ms, encryption_key=encryption_key)
-        self._selection_acceptance_trackers[key] = tracker
-        return tracker
-
-    def prepare_intent(self, intent, validator=lambda value: None):
-        prepared = self.intent_coordinator.prepare(intent)
-        self.intent_coordinator.revalidate(prepared.intent_id, validator)
-        return self.intent_coordinator.commit(prepared.intent_id)
-
     def emit_outcome(self, outcome, *, idempotency_key: str, timeout_ms: int = 100):
         if self.observers is None:
             return {}
@@ -1921,49 +1888,6 @@ class APPClient:
                 self._event(handle, RequestState.FAILED, reason=type(exc).__name__)
         return handle
 
-    def bind_execution_activation(
-        self, handle: RequestHandle, activation: ExecutionActivateMessage,
-    ) -> RequestHandle:
-        """Durably bind USER-authorized exact ReadySet activation."""
-        current = self._request_handles.get(handle.request_id, handle)
-        if (activation.requester_identity != current.requester_identity
-                or activation.request_id != current.request_id
-                or activation.attempt != current.attempt_epoch
-                or not activation.members):
-            raise RequestRecoveryError("EXECUTION_ACTIVATION_BINDING_MISMATCH")
-        wire = activation.to_bytes()
-        digest = activation.digest()
-        if current.activation_digest:
-            if current.activation_digest != digest:
-                raise RequestRecoveryError("EXECUTION_ACTIVATION_CONFLICT")
-            return current
-        updated = replace(
-            current,
-            activation_digest=digest,
-            execution_activation_wire=base64.b64encode(wire).decode("ascii"),
-        )
-        return self._append_events(
-            updated, [(RequestState.CERTIFIED, "", "")],
-            extra_entries=(("request-handle-update", updated.to_record()),))
-
-    def _execution_activation(
-        self, handle: RequestHandle,
-    ) -> ExecutionActivateMessage:
-        if not handle.activation_digest or not handle.execution_activation_wire:
-            raise RequestRecoveryError("EXECUTION_ACTIVATION_MISSING")
-        try:
-            activation = ExecutionActivateMessage.from_bytes(
-                base64.b64decode(handle.execution_activation_wire, validate=True))
-        except Exception as exc:
-            raise RequestRecoveryError("EXECUTION_ACTIVATION_INVALID") from exc
-        if activation.digest() != handle.activation_digest:
-            raise RequestRecoveryError("EXECUTION_ACTIVATION_DIGEST_MISMATCH")
-        if (activation.requester_identity != handle.requester_identity
-                or activation.request_id != handle.request_id
-                or activation.attempt != handle.attempt_epoch):
-            raise RequestRecoveryError("EXECUTION_ACTIVATION_BINDING_MISMATCH")
-        return activation
-
     def _network_result(self, handle: RequestHandle, result, *, native_request_id="") -> None:
         # The callback closes over the initially submitted handle.  Certificate
         # binding may advance the durable handle while the request is in flight,
@@ -1973,6 +1897,8 @@ class APPClient:
                 RequestState.COMPLETED, RequestState.FAILED,
                 RequestState.CANCELLED, RequestState.EXPIRED):
             return
+        if handle.activation_digest:
+            raise RequestRecoveryError("LEGACY_EXECUTION_RESULT_RETIRED")
         wire_request_id = str(getattr(result, "request_id", "")).lstrip("/")
         if wire_request_id != handle.request_id:
             self._event(
@@ -2004,24 +1930,11 @@ class APPClient:
                 handle, RequestState.FAILED,
                 reason="RESULT_PERSISTENCE_FAILED")
             return
-        if handle.activation_digest:
-            self._execution_activation(handle)
-            current_state = self.status(handle)
-            if current_state == RequestState.CERTIFIED:
-                transitions = (RequestState.EXECUTING, RequestState.COMPLETED)
-            elif current_state == RequestState.EXECUTING:
-                transitions = (RequestState.COMPLETED,)
-            else:
-                self._event(
-                    handle, RequestState.FAILED,
-                    reason="EXECUTION_ACTIVATION_STATE_MISMATCH")
-                return
-        else:
-            transitions = (
-                RequestState.CERTIFIED,
-                RequestState.EXECUTING,
-                RequestState.COMPLETED,
-            )
+        transitions = (
+            RequestState.CERTIFIED,
+            RequestState.EXECUTING,
+            RequestState.COMPLETED,
+        )
         try:
             committed = self._complete_request(
                 handle, payload, prepared_result.wire_digest,
@@ -2185,6 +2098,8 @@ class APPClient:
                 RequestState.COMPLETED, RequestState.FAILED,
                 RequestState.CANCELLED, RequestState.EXPIRED}:
             return
+        if current.activation_digest:
+            raise RequestRecoveryError("LEGACY_EXECUTION_CONTROL_RETIRED")
         cancellation_id = "sha256:" + hashlib.sha256(
             (f"{handle.request_id}:{current.attempt_epoch}:"
              f"{current.activation_digest}:{reason}").encode()
@@ -2194,12 +2109,6 @@ class APPClient:
             cancellation_id=cancellation_id,
             cancellation_reason=str(reason)[:160],
         )
-        if current.activation_digest:
-            if not self._request_events.with_cancellation_lease(
-                    str(self.journal.lock_path), current.request_id,
-                    lambda: self._cancel_with_peers(current, updated)):
-                raise RequestRecoveryError("CANCELLATION_IN_PROGRESS")
-            return
         committed = self._append_events(
             updated,
             [(RequestState.CANCELLED, "", updated.cancellation_reason)],
@@ -2209,142 +2118,6 @@ class APPClient:
         )
         if committed is not None:
             self._cancel_network_future(handle.request_id)
-
-    def _cancel_with_peers(self, current: RequestHandle, updated: RequestHandle) -> None:
-        activation = self._execution_activation(current)
-        if not current.service_name:
-            raise RequestRecoveryError("EXECUTION_CONTROL_SERVICE_MISSING")
-        transport = self._execution_control_transport
-        if transport is None and self._network_client is not None:
-            transport = ExistingServiceExecutionControlTransport(
-                self._network_client)
-        request_record = {
-            "schema": "ndnsf-di-execution-control-v2",
-            "operation": "CANCEL",
-            "requestId": current.request_id,
-            "attemptEpoch": current.attempt_epoch,
-            "requesterIdentity": current.requester_identity,
-            "activationDigest": current.activation_digest,
-            "cancellationId": updated.cancellation_id,
-            "reason": updated.cancellation_reason,
-        }
-        def persist_cancellation(entries=()):
-            def check_cancellation(sequence):
-                fence = (
-                    current.request_id, sequence,
-                    (current.attempt_epoch, current.envelope_digest),
-                )
-                self.journal.append_many(entries, _request_fence=fence)
-
-            return self._request_events.admit_cancellation(
-                current.request_id, check_cancellation)
-
-        if not persist_cancellation():
-            return
-        records = self.journal.records()
-        for record in reversed(records):
-            if record["kind"] != "request-cancellation-request":
-                continue
-            saved = record["payload"]
-            if all(saved.get(key) == request_record[key] for key in (
-                    "schema", "operation", "requestId", "attemptEpoch",
-                    "requesterIdentity", "activationDigest")):
-                cancellation_id, reason = saved.get("cancellationId"), saved.get("reason")
-                if (not isinstance(cancellation_id, str)
-                        or not re.fullmatch(r"sha256:[0-9a-f]{64}", cancellation_id)
-                        or not isinstance(reason, str) or len(reason) > 160):
-                    raise RequestRecoveryError("CANCELLATION_INTENT_INVALID")
-                request_record = saved
-                updated = replace(
-                    updated, cancellation_id=cancellation_id, cancellation_reason=reason,
-                )
-                break
-        else:
-            if transport is None:
-                raise RequestRecoveryError("EXECUTION_CONTROL_TRANSPORT_MISSING")
-            if not persist_cancellation((("request-cancellation-request", request_record),)):
-                return
-
-        recovered = {
-            record["payload"].get("provider"): record["payload"]
-            for record in records if record["kind"] == "request-cancellation-progress"
-            and record["payload"].get("request_id") == current.request_id
-            and record["payload"].get("cancellation_id") == updated.cancellation_id
-        }
-
-        def matches(evidence, provider):
-            return (
-                evidence.accepted is True
-                and evidence.operation == "CANCEL"
-                and evidence.provider == provider
-                and evidence.service_name == current.service_name
-                and evidence.requester_identity == current.requester_identity
-                and evidence.request_id == current.request_id
-                and evidence.attempt_epoch == current.attempt_epoch
-                and evidence.activation_digest == current.activation_digest
-                and evidence.cancellation_id == updated.cancellation_id
-            )
-
-        evidence_records = []
-        seen_providers = set()
-        for member in activation.members:
-            if member.provider in seen_providers:
-                continue
-            seen_providers.add(member.provider)
-            if member.provider in recovered:
-                try:
-                    evidence = ExecutionControlEvidence.from_record(recovered[member.provider])
-                except (TypeError, ValueError) as exc:
-                    raise RequestRecoveryError("CANCELLATION_EVIDENCE_INVALID") from exc
-                if not matches(evidence, member.provider):
-                    raise RequestRecoveryError("CANCELLATION_EVIDENCE_INVALID")
-                evidence_records.append(("execution-control-evidence", evidence.to_record()))
-                continue
-            if transport is None:
-                raise RequestRecoveryError("EXECUTION_CONTROL_TRANSPORT_MISSING")
-            if not persist_cancellation():
-                return
-            payload = {
-                **request_record,
-                "providerName": member.provider,
-                "providerRole": member.role,
-            }
-            try:
-                evidence = transport.cancel(
-                    member.provider,
-                    current.service_name,
-                    payload,
-                    timeout_ms=max(1, min(5000, current.expires_at_ms - int(time.time() * 1000))),
-                )
-            except Exception as exc:
-                self.journal.append("request-cancellation-failure", {
-                    **request_record,
-                    "provider": member.provider,
-                    "reason": type(exc).__name__,
-                })
-                raise RequestRecoveryError("CANCELLATION_INCOMPLETE") from exc
-            if not matches(evidence, member.provider):
-                self.journal.append("request-cancellation-failure", {
-                    **request_record,
-                    "provider": member.provider,
-                    "reason": "EVIDENCE_BINDING_MISMATCH",
-                })
-                raise RequestRecoveryError("CANCELLATION_INCOMPLETE")
-            committed_evidence = evidence.to_record()
-            if not persist_cancellation((("request-cancellation-progress", committed_evidence),)):
-                return
-            evidence_records.append(("execution-control-evidence", committed_evidence))
-        committed = self._append_events(
-            updated,
-            [(RequestState.CANCELLED, "", updated.cancellation_reason)],
-            extra_entries=(
-                *evidence_records,
-                ("request-handle-update", updated.to_record()),
-            ),
-            allow_terminal_winner=True,
-        )
-        if committed is not None:
-            self._cancel_network_future(current.request_id)
 
     def _cancel_network_future(self, request_id: str) -> None:
         future = self._network_futures.get(request_id)

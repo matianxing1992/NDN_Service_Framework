@@ -31,8 +31,6 @@ try:
     from .controller import APPController, DistributedInferenceController
     from .deployment import APPDeployment, APPDeploymentLifecycleStore
     from .engine import DistributedInferenceEngine
-    from .execution_control import *
-    from .execution_control import __all__ as _execution_control_exports
     from .facades import ProviderRuntimeContext
     from .placement import *
     from .placement import __all__ as _placement_exports
@@ -48,7 +46,7 @@ except ModuleNotFoundError as exc:
         raise
 else:
     _exports += [
-        *_journal_exports, *_execution_control_exports, *_placement_exports, *_presplit_exports,
+        *_journal_exports, *_placement_exports, *_presplit_exports,
         "APPClient", "InferenceClient", "InferenceRequestHandle", "APPController",
         "DistributedInferenceController", "APPDeployment", "APPDeploymentLifecycleStore",
         "DistributedInferenceEngine", "ProviderRuntimeContext", "APPProvider",

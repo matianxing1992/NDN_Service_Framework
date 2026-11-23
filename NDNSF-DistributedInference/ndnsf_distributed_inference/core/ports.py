@@ -264,21 +264,6 @@ class CheckpointRecord(ContractValue):
 
 
 @dataclass(frozen=True)
-class ValidatedExecutionIntent(ContractValue):
-    intent_id: str
-    request_id: str
-    attempt_epoch: int
-    snapshot_epoch: int
-    model_variant_id: str
-    plan_id: str
-    assignment: AssignmentProposal
-    lease_digest: str
-    cache_epoch: int
-    checkpoint_epoch: int
-    state: str = "PREPARED"
-
-
-@dataclass(frozen=True)
 class ExecutionOutcome(ContractValue):
     request_id: str
     attempt_epoch: int

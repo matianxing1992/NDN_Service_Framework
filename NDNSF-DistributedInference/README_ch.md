@@ -61,6 +61,12 @@ Collaboration 状态投影同一聚合结果，而其内部请求仍逐一验证
 绑定会在提交前被拒绝。签名定义本身不能证明后端支持。耐久日志保存应用请求 ID
 与原生请求 ID 的绑定。
 
+历史 APP 日志仍可用原信封密钥读取，已完成请求保留原结果，活动记录重开仍核对
+requester 和 attempt。绑定已退役 APP R0 激活路径的活动记录不能恢复远端执行或
+取消；控制和新结果会在日志写入前明确拒绝。需要继续运行时，请经原生路径提交
+新请求。旧记录不能作为远端工作已停止的证据。Core 与嵌入 C++ SDK 的激活协议
+保留各自不同的契约。
+
 远程发现以记录而不是元数据为权威。Application 发布精确名称、带签名的 definition
 Data；生命周期所有者可以发布精确名称、带签名的 activation 或 revocation Data。
 NDNSD 只携带由 `application.deployments.discovery_hint(...)` 或

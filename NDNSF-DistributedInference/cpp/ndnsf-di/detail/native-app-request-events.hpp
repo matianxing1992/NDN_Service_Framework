@@ -23,15 +23,6 @@ public:
   std::size_t count(const std::string& requestId) const;
   std::string status(const std::string& requestId) const;
 
-  /** Check or persist cancellation admission against an active request's current cursor. */
-  bool admitCancellation(const std::string& requestId,
-                         const std::function<void(std::size_t)>& check) const;
-
-  /** Serialize cancellation dispatch across journal owners, without holding the write lock. */
-  static bool withCancellationLease(const std::string& journalLockPath,
-                                    const std::string& requestId,
-                                    const std::function<void()>& cancel);
-
   /** Serialize validation, persistence and publication of an event batch.
    * The persistence callback must not reenter the event owner.
    */

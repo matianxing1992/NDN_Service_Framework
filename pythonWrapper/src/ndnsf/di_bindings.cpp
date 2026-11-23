@@ -359,23 +359,6 @@ bindDistributedInference(py::module_& module)
     .def("events", &AppRequestEvents::events, py::call_guard<py::gil_scoped_release>())
     .def("count", &AppRequestEvents::count, py::call_guard<py::gil_scoped_release>())
     .def("status", &AppRequestEvents::status, py::call_guard<py::gil_scoped_release>())
-    .def_static("with_cancellation_lease", [] (const std::string& journalLockPath,
-                                                const std::string& requestId,
-                                                py::function cancel) {
-      py::gil_scoped_release release;
-      return AppRequestEvents::withCancellationLease(journalLockPath, requestId, [&cancel] {
-        py::gil_scoped_acquire acquire;
-        cancel();
-      });
-    })
-    .def("admit_cancellation", [] (const AppRequestEvents& self, const std::string& requestId,
-                                    py::function check) {
-      py::gil_scoped_release release;
-      return self.admitCancellation(requestId, [&check] (std::size_t sequence) {
-        py::gil_scoped_acquire acquire;
-        check(sequence);
-      });
-    })
     .def("append", [] (AppRequestEvents& self, const std::string& requestId,
                        const std::vector<AppRequestEvents::Transition>& transitions,
                        py::function persist, bool allowTerminalWinner) {
