@@ -345,17 +345,18 @@ def prepare_warm(cold_path):
         for field in ('file', 'initializer_file'):
             source.pop(field, None)
 
-    bind_handle(main)
     files = {}
-    for component in ('denoiser', 'decoder'):
-        field = component + '_config_file'
-        path = Path(generation[field]).resolve()
-        path.relative_to(root / 'workload')
-        secondary = json.loads(path.read_bytes())
-        bind_handle(secondary)
-        path = path.with_name('requester-warm.json')
-        files[path] = secondary
-        generation[field] = str(path)
+    if main['model_input']['mode'] != 'source-cache':
+        bind_handle(main)
+        for component in ('denoiser', 'decoder'):
+            field = component + '_config_file'
+            path = Path(generation[field]).resolve()
+            path.relative_to(root / 'workload')
+            secondary = json.loads(path.read_bytes())
+            bind_handle(secondary)
+            path = path.with_name('requester-warm.json')
+            files[path] = secondary
+            generation[field] = str(path)
     generation['output_directory'] = str(root / 'evidence/clip-warm')
     output = root / 'deployment-warm.json'
     files[output] = cold

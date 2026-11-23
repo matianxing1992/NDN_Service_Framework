@@ -52,7 +52,7 @@ def check_preparation_cancellation(args):
     require(not journal.exists() and not handle.exists(), 'source preparation is not cold')
     args.logs.mkdir(mode=0o700)
     logs = args.logs.resolve()
-    command = [str(prefix / 'libexec/ndnsf-python/bin/ndnsf-di'), 'cluster']
+    command = [str(args.cluster_cli), 'cluster']
     config = ['--config', str(source)]
     with (logs / 'check.log').open('x') as log:
         subprocess.run(command + ['check'] + config, check=True, stdout=log,
@@ -119,9 +119,10 @@ def check_preparation_cancellation(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prefix', type=Path, required=True)
+    parser.add_argument('--cluster-cli', type=Path, help='installed ndnsf-di host launcher')
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument('--warm-deployment', type=Path,
-                             help='completed stored-mode TP deployment')
+                             help='completed warm TP deployment')
     input_group.add_argument('--source-deployment', type=Path,
                              help='fresh source-mode deployment; cancel when its journal is created')
     parser.add_argument('--logs', type=Path, required=True, help='fresh log directory')
@@ -131,6 +132,8 @@ def main():
     fault_group.add_argument('--cancel-after-publication', action='store_true',
                              help='cancel after the first DiT stores a signed exact object')
     args = parser.parse_args()
+    args.cluster_cli = (args.cluster_cli or args.prefix / 'libexec/ndnsf-python/bin/ndnsf-di')
+    args.cluster_cli = args.cluster_cli.resolve(strict=True)
     if args.source_deployment:
         if args.expire_inflight or args.cancel_after_publication:
             parser.error('source preparation cancellation does not select an inference fault')
@@ -142,8 +145,8 @@ def main():
     prefix = args.prefix.resolve(strict=True)
     raw = json.loads(warm.read_text())
     require(raw['deployment_id'] == 'wan-video-tp' and
-            raw['requester']['model_input']['mode'] == 'stored',
-            'expected a completed stored-mode TP deployment')
+            raw['requester']['model_input']['mode'] in ('source-cache', 'stored'),
+            'expected a completed warm TP deployment')
     args.logs.mkdir(mode=0o700)
     logs = args.logs.resolve()
     run_name = logs.name
@@ -167,7 +170,7 @@ def main():
         json.dump(raw, stream, sort_keys=True)
     state_path = tp / raw['storage']['state_root'] / raw['deployment_id'] / 'state.json'
     old_boot = json.loads(state_path.read_text())['boot_id']
-    command = [str(prefix / 'libexec/ndnsf-python/bin/ndnsf-di'), 'cluster']
+    command = [str(args.cluster_cli), 'cluster']
     config = ['--config', str(source)]
     with (logs / 'check.log').open('x') as stream:
         subprocess.run(command + ['check'] + config, check=True, stdout=stream,
@@ -267,7 +270,12 @@ def main():
         require(terminal['boot_id'] == injected['boot'] and terminal['requester']['exit_code'] != 0,
                 'the injected requester did not fail')
         cleanup = terminal['cleanup'] + terminal['facility']['cleanup']
-        require(len(terminal['cleanup']) == 10 and len(terminal['facility']['cleanup']) == 4,
+        expected_actors = {actor['id'] for actor in raw['actors']}
+        expected_actors.update('nfd.' + node['id'] for node in raw['nodes']
+                               if node['nfd']['mode'] == 'managed')
+        require(len(terminal['cleanup']) == len(expected_actors) and
+                {row['id'] for row in terminal['cleanup']} == expected_actors and
+                len(terminal['facility']['cleanup']) == len(raw['nodes']),
                 'incomplete TP deployment cleanup')
         require(all(row['forced'] is False and row['status'] == 'ZERO'
                     for row in cleanup) and

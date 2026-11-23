@@ -171,17 +171,20 @@ class ReplayRelay:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prefix', type=Path, required=True)
+    parser.add_argument('--cluster-cli', type=Path, help='installed ndnsf-di host launcher')
     parser.add_argument('--warm-deployment', type=Path, required=True)
     parser.add_argument('--fixture', type=Path, required=True)
     args = parser.parse_args()
     prefix = args.prefix.resolve(strict=True)
+    cli = (args.cluster_cli or prefix / 'libexec/ndnsf-python/bin/ndnsf-di').resolve(strict=True)
     warm = args.warm_deployment.resolve(strict=True)
     fixture = args.fixture.resolve(strict=True)
     config = json.loads(warm.read_text())
     requester = config['requester']
     require(config['deployment_id'] == 'wan-video-tp' and requester['test_only'] and
-            requester['test_wan_fixture_trace'] and requester['model_input']['mode'] == 'stored',
-            'expected the completed TP fixture in stored mode')
+            requester['test_wan_fixture_trace'] and
+            requester['model_input']['mode'] in ('source-cache', 'stored'),
+            'expected the completed warm TP fixture')
     run = Path(tempfile.mkdtemp(prefix='wan-replay-', dir=warm.parent))
     clip = run / 'clip'
     requester['wan_generation']['output_directory'] = str(clip)
@@ -191,7 +194,7 @@ def main():
         json.dump(config, output, sort_keys=True)
     native_launch = cluster._native_launch
 
-    subprocess.run([str(prefix / 'libexec/ndnsf-python/bin/ndnsf-di'), 'cluster', 'check',
+    subprocess.run([str(cli), 'cluster', 'check',
                     '--config', str(source)], timeout=30, check=True, stdout=subprocess.DEVNULL)
     with tempfile.TemporaryDirectory(prefix='wan-relay-') as private:
         with ReplayRelay(Path(private) / 'face.sock', clip) as relay:
@@ -218,7 +221,12 @@ def main():
             'deployment did not finish cleanly')
     facility = down['facility']
     cleanup = down['cleanup'] + facility['cleanup']
-    require(len(cleanup) == 14 and
+    expected_actors = {actor['id'] for actor in config['actors']}
+    expected_actors.update('nfd.' + node['id'] for node in config['nodes']
+                           if node['nfd']['mode'] == 'managed')
+    require(len(down['cleanup']) == len(expected_actors) and
+            {row['id'] for row in down['cleanup']} == expected_actors and
+            len(facility['cleanup']) == len(config['nodes']) and
             all(row['status'] == 'ZERO' and not row['forced'] for row in cleanup) and
             not facility['namespace_survivors'] and not facility['remaining_interfaces'],
             'expected all actors and namespaces to exit without force')
