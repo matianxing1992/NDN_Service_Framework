@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -136,8 +137,11 @@ private:
   {
     std::string encoded;
     std::shared_ptr<const RepoObjectManifest> parsed;
-    std::array<uint64_t, 7> identity{};
+    ManifestStamp identity{};
+    std::list<std::string>::iterator recency;
   };
+
+  using CatalogParseCache = std::unordered_map<std::string, CachedManifest>;
 
   struct ManifestCollisionSummary
   {
@@ -170,6 +174,7 @@ private:
   std::shared_ptr<const RepoObjectManifest>
   parseManifestCachedUnlocked(const std::string& key, std::string encoded,
                               const std::filesystem::path* source = nullptr) const;
+  CatalogParseCache::iterator eraseCachedManifestUnlocked(CatalogParseCache::iterator entry) const;
   void writeManifest(const std::string& objectName, const std::string& encoded) const;
   bool isDigestReferencedUnlocked(const std::string& digest,
                                   const std::string& exceptObjectName) const;
@@ -195,7 +200,8 @@ private:
   mutable uint64_t m_reservedBytes = 0;
   mutable std::atomic<uint64_t> m_fullCopyFallbacks{0};
   // Reuse only while the complete current filesystem identity remains unchanged.
-  mutable std::unordered_map<std::string, CachedManifest> m_catalogParseCache;
+  mutable std::list<std::string> m_catalogParseRecency;
+  mutable CatalogParseCache m_catalogParseCache;
   mutable std::mutex m_catalogParseMutex;
   mutable size_t m_catalogEncodedBytes = 0;
   mutable std::mutex m_manifestCollisionMutex;

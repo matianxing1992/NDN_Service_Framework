@@ -13,6 +13,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -750,8 +751,7 @@ FilesystemRepoStoreBackend::readManifestCatalog(StampedCatalog* capture,
   std::lock_guard<std::mutex> parseLock(m_catalogParseMutex);
   for (auto cached = m_catalogParseCache.begin(); cached != m_catalogParseCache.end();) {
     if (!present.count(cached->first)) {
-      m_catalogEncodedBytes -= cached->second.encoded.size();
-      cached = m_catalogParseCache.erase(cached);
+      cached = eraseCachedManifestUnlocked(cached);
     }
     else {
       ++cached;
@@ -1837,10 +1837,8 @@ FilesystemRepoStoreBackend::loadManifestUnlocked(const fs::path& path,
   if (stamp != manifestStamp(path)) {
     std::lock_guard<std::mutex> lock(m_catalogParseMutex);
     const auto found = m_catalogParseCache.find(path.filename().string());
-    if (found != m_catalogParseCache.end()) {
-      m_catalogEncodedBytes -= found->second.encoded.size();
-      m_catalogParseCache.erase(found);
-    }
+    if (found != m_catalogParseCache.end())
+      eraseCachedManifestUnlocked(found);
     throw std::runtime_error("repo-file-metadata-changed-during-read");
   }
   if (observed)
@@ -1864,9 +1862,19 @@ FilesystemRepoStoreBackend::cachedManifestUnlocked(const fs::path& path,
   // this is a cache bypass for recent files, not a stale-data grace period.
   if (!isStableManifestStamp(*identity))
     return {};
+  m_catalogParseRecency.splice(m_catalogParseRecency.end(), m_catalogParseRecency,
+                              found->second.recency);
   if (observed)
     *observed = {*identity, true};
   return found->second.parsed;
+}
+
+FilesystemRepoStoreBackend::CatalogParseCache::iterator
+FilesystemRepoStoreBackend::eraseCachedManifestUnlocked(CatalogParseCache::iterator entry) const
+{
+  m_catalogEncodedBytes -= entry->second.encoded.size();
+  m_catalogParseRecency.erase(entry->second.recency);
+  return m_catalogParseCache.erase(entry);
 }
 
 std::shared_ptr<const RepoObjectManifest>
@@ -1877,27 +1885,24 @@ FilesystemRepoStoreBackend::parseManifestCachedUnlocked(const std::string& key,
   std::lock_guard<std::mutex> lock(m_catalogParseMutex);
   constexpr size_t maxEncodedBytes = 64U * 1024U * 1024U;
   constexpr size_t maxEntries = 4096;
-  const auto identity = [source] {
-    CachedManifest value;
-    if (source != nullptr) {
-      const auto stamp = manifestStamp(*source);
-      // A young parse cannot become a stat-only hit just by aging: bytes must
-      // be read once after the timestamp tick is stable. Zero means unvalidated.
-      if (isStableManifestStamp(stamp))
-        value.identity = stamp;
-    }
-    return value;
-  }();
-  auto found = m_catalogParseCache.find(key);
+  ManifestStamp identity{};
+  if (source != nullptr) {
+    const auto stamp = manifestStamp(*source);
+    // A young parse cannot become a stat-only hit just by aging: bytes must
+    // be read once after the timestamp tick is stable. Zero means unvalidated.
+    if (isStableManifestStamp(stamp))
+      identity = stamp;
+  }
+  const auto found = m_catalogParseCache.find(key);
   if (found != m_catalogParseCache.end() && found->second.encoded == encoded) {
     // Content is unchanged; keep the entry usable for later stat-validated hits.
-    found->second.identity = identity.identity;
+    found->second.identity = identity;
+    m_catalogParseRecency.splice(m_catalogParseRecency.end(), m_catalogParseRecency,
+                                found->second.recency);
     return found->second.parsed;
   }
-  if (found != m_catalogParseCache.end()) {
-    m_catalogEncodedBytes -= found->second.encoded.size();
-    m_catalogParseCache.erase(found);
-  }
+  if (found != m_catalogParseCache.end())
+    eraseCachedManifestUnlocked(found);
   {
     std::lock_guard<std::mutex> hooksLock(g_ioHooksMutex);
     if (g_ioHooks.catalogParse) g_ioHooks.catalogParse();
@@ -1906,15 +1911,19 @@ FilesystemRepoStoreBackend::parseManifestCachedUnlocked(const std::string& key,
   while (!m_catalogParseCache.empty() &&
          (m_catalogParseCache.size() >= maxEntries ||
           encoded.size() > maxEncodedBytes - m_catalogEncodedBytes)) {
-    auto victim = m_catalogParseCache.begin();
-    m_catalogEncodedBytes -= victim->second.encoded.size();
-    m_catalogParseCache.erase(victim);
+    eraseCachedManifestUnlocked(m_catalogParseCache.find(m_catalogParseRecency.front()));
   }
   if (encoded.size() <= maxEncodedBytes) {
     const auto bytes = encoded.size();
-    CachedManifest entry{std::move(encoded), parsed};
-    entry.identity = identity.identity;
-    m_catalogParseCache.emplace(key, std::move(entry));
+    m_catalogParseRecency.push_back(key);
+    const auto recency = std::prev(m_catalogParseRecency.end());
+    try {
+      m_catalogParseCache.emplace(key, CachedManifest{std::move(encoded), parsed, identity, recency});
+    }
+    catch (...) {
+      m_catalogParseRecency.erase(recency);
+      throw;
+    }
     m_catalogEncodedBytes += bytes;
   }
   return parsed;

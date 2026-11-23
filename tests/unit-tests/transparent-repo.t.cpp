@@ -1814,17 +1814,34 @@ BOOST_AUTO_TEST_CASE(CatalogParseCacheEvictsBeyondEntryBound)
   const auto directory = fixture.root / "bounded-parse-cache";
   auto store = makeFilesystemRepoStore(directory.string());
   RepoObjectManifest metadata;
-  for (size_t i = 0; i < 4097; ++i) {
-    metadata.objectName = "/actual/producer/catalog/" + std::to_string(i);
-    std::ofstream output(directory / "manifests" / (std::to_string(i) + ".json"));
+  constexpr size_t entries = 4096;
+  const auto objectName = [](size_t i) {
+    return "/actual/producer/catalog/" + std::to_string(i);
+  };
+  for (size_t i = 0; i <= entries; ++i) {
+    metadata.objectName = objectName(i);
+    const std::vector<uint8_t> nameBytes(metadata.objectName.begin(), metadata.objectName.end());
+    std::ofstream output(directory / "manifests" / (sha256Hex(nameBytes) + ".json"));
     output << metadata.toJson();
+    output.close();
+    BOOST_REQUIRE(output.good());
   }
   CatalogParseScope counts;
-  BOOST_REQUIRE_EQUAL(store->listManifests().size(), 4097U);
-  BOOST_CHECK_EQUAL(catalogParses.load(), 4097U);
-  catalogParses = 0;
-  BOOST_REQUIRE_EQUAL(store->listManifests().size(), 4097U);
-  BOOST_CHECK_GT(catalogParses.load(), 0U);
+  for (size_t i = 0; i < entries; ++i) {
+    BOOST_REQUIRE_EQUAL(store->getManifest(objectName(i)).objectName, objectName(i));
+  }
+  BOOST_REQUIRE_EQUAL(catalogParses.load(), entries);
+  BOOST_CHECK_EQUAL(store->getManifest(objectName(0)).objectName, objectName(0));
+  BOOST_CHECK_EQUAL(catalogParses.load(), entries);
+  BOOST_CHECK_EQUAL(store->getManifest(objectName(entries)).objectName, objectName(entries));
+  BOOST_CHECK_EQUAL(catalogParses.load(), entries + 1);
+  for (const size_t i : {size_t{0}, entries - 1, entries}) {
+    BOOST_CHECK_EQUAL(store->getManifest(objectName(i)).objectName, objectName(i));
+  }
+  BOOST_CHECK_EQUAL(catalogParses.load(), entries + 1);
+  BOOST_CHECK_EQUAL(store->getManifest(objectName(1)).objectName, objectName(1));
+  BOOST_CHECK_EQUAL(catalogParses.load(), entries + 2);
+  BOOST_CHECK_EQUAL(store->listManifests().size(), entries + 1);
 }
 
 BOOST_AUTO_TEST_CASE(CatalogParseCacheHonorsEncodedByteBound)
