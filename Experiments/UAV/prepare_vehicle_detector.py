@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare the dynamic raw ONNX detector used by native vehicle tracking."""
+"""Prepare the dynamic ONNX detector used by native vehicle or person tracking."""
 
 import argparse
 import hashlib
@@ -16,6 +16,8 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--checkpoint-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--tracking-mode", choices=("vehicle", "person"), default="vehicle",
+                        help="vehicle requires raw output; person preserves the stock head")
     args = parser.parse_args()
     if (args.output.suffix != ".onnx" or args.output.exists() or args.output.is_symlink()
             or not args.output.parent.is_dir()):
@@ -44,6 +46,8 @@ def main():
         if any(not isinstance(name, str) or not 0 < len(name.encode()) <= 256
                or any(ord(ch) < 32 or ord(ch) == 127 for ch in name) for name in labels):
             parser.error("checkpoint class label outside supported bounds")
+        if args.tracking_mode == "person" and labels.count("person") != 1:
+            parser.error("person tracking requires exactly one person class")
         exported = Path(model.export(format="onnx", imgsz=640, batch=1, dynamic=True,
                                      simplify=False, opset=17, nms=None, device="cpu"))
         graph = onnx.load(exported)
@@ -57,17 +61,29 @@ def main():
         session = ort.InferenceSession(str(exported), options, providers=["CPUExecutionProvider"])
         inputs, outputs = session.get_inputs(), session.get_outputs()
         if len(inputs) != 1 or len(outputs) != 1:
-            parser.error("raw detector export must have one input and one output")
+            parser.error("detector export must have one input and one output")
+        output_contract = None
         for height, width in ((640, 480), (384, 640)):
             image = np.zeros((1, 3, height, width), dtype=np.float32)
             result, = session.run(None, {inputs[0].name: image})
             anchors = sum((height // stride) * (width // stride) for stride in (8, 16, 32))
-            if (result.dtype != np.float32 or result.shape != (1, 4 + len(labels), anchors)
-                    or not np.isfinite(result).all()):
-                parser.error("ONNX export did not produce a finite dynamic raw YOLO head")
+            if result.shape == (1, 4 + len(labels), anchors):
+                contract = "raw"
+            elif args.tracking_mode == "person" and result.shape == (1, 300, 6):
+                if labels[0] != "person":
+                    parser.error("end-to-end person tracking requires person at class index zero")
+                contract = "end-to-end"
+            else:
+                parser.error("ONNX export did not produce the required dynamic YOLO head")
+            if result.dtype != np.float32 or not np.isfinite(result).all():
+                parser.error("ONNX export did not produce a finite float32 tensor")
+            if output_contract is not None and output_contract != contract:
+                parser.error("ONNX output contract changed with the image dimensions")
+            output_contract = contract
         artifact_digest = hashlib.sha256(exported.read_bytes()).hexdigest()
         os.link(exported, args.output)
         print(json.dumps({"checkpointSha256": digest, "onnxSha256": artifact_digest,
+                          "trackingMode": args.tracking_mode, "outputContract": output_contract,
                           "classNames": labels, "ultralytics": ultralytics_version,
                           "torch": torch.__version__, "onnx": onnx.__version__,
                           "onnxruntime": ort.__version__}, sort_keys=True))

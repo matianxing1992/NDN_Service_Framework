@@ -35,6 +35,38 @@ python3 Experiments/UAV/run_multicamera_tracking_demo.py \
   --output-dir "$RUN_DIRECTORY"
 ```
 
+### Prepare person checkpoints for native replay
+
+Checkpoints are offline preparation inputs. Use the existing detector exporter
+with `--tracking-mode person`; it preserves either the raw or end-to-end head
+and checks two rectangular input shapes before publishing the ONNX file.
+End-to-end graphs require person at class index zero; raw graphs use the
+unique person index from their class metadata.
+The default vehicle mode continues to require a raw head. Preparation versions
+and the fixed Torchreid source are recorded in the
+[shared input recipe](../recipes/uav-multicam-tracking.json). Both exporters run
+on the preparation host.
+
+```bash
+python Experiments/UAV/prepare_vehicle_detector.py --tracking-mode person \
+  --checkpoint "$DETECTOR_CHECKPOINT" --checkpoint-sha256 "$DETECTOR_SHA256" \
+  --output "$DETECTOR_ONNX" > "$DETECTOR_EXPORT_LOG"
+python tools/person-reid/export_osnet_reid.py \
+  --checkpoint "$REID_CHECKPOINT" --dataset "$REID_DATASET" \
+  --output "$REID_ONNX" --receipt "$REID_EXPORT_RECEIPT"
+python NDNSF-UAV-APP/tracking/person_profile.py \
+  --template "$PERSON_PROFILE_TEMPLATE" --detector "$DETECTOR_ONNX" \
+  --reid "$REID_ONNX" --output "$PERSON_PROFILE"
+```
+
+The operator template must explicitly select schema
+`uav-person-tracking-profile-v2` and detector preprocessing
+`yolo-default640-stock-box-v1`, with the existing GAP ReID preprocessing.
+The last command binds the two actual ONNX digests without changing the template's
+policy. Keep the detector export log (its final line is the JSON receipt) and
+the ReID receipt; start a new run with its newly generated
+computation manifest rather than resuming checkpoint worker state.
+
 ### Offline native crop reference
 
 Use the frozen host inference environment for this preparation step. The box
