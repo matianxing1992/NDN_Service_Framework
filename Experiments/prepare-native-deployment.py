@@ -18,6 +18,7 @@ import signal
 import stat
 import sys
 import tempfile
+from urllib.parse import quote
 
 from model_assets import contained_file, file_digest, read_json, validate_manifest
 from native_probe_validation_links import render_anchored_probe_validation_schema
@@ -168,12 +169,20 @@ def policy_text(identities, network, provider_roles, tp_base_role):
                      if "repo" in identities else [])
     def rule(kind, identity, services):
         return "{}-policy {{ for {} allow {{ {} }} }}".format(kind, identity, "\n".join(services))
+    def role_permission(role):
+        if role.startswith('/'):
+            suffix = role
+        elif not role.strip('.'):
+            suffix = '/' + '...' + role
+        else:
+            suffix = '/' + quote(role, safe='')
+        return network["service"] + "/ROLE" + suffix
     providers = [rule("provider", identities["repo"], repo_services)] if repo_services else []
     providers.append(rule("provider", identities["authority"], [network["artifact_service"]]))
     for actor, roles in provider_roles.items():
         scoped_roles = ([tp_base_role] if tp_base_role else []) + roles
         providers.append(rule("provider", identities[actor], [network["service"]] +
-            [network["service"] + "/ROLE" + role for role in scoped_roles] +
+            [role_permission(role) for role in scoped_roles] +
             ["/NDNSF/Network/Probe/v1"]))
     users = [rule("user", identities["requester"], repo_services + [
         network["service"], network["artifact_service"], "/NDNSF/Network/Probe/v1"])]
