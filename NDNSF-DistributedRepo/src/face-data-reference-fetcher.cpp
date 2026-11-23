@@ -594,7 +594,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   {
     if (refillDeferred || standardTransport || !checkCurrent())
       return;
-    // Yield between large source refills when there is no shared credit scheduler.
+    // Let the Face process pending work between source Interest bursts.
     constexpr std::size_t SOURCE_REFILL_BURST = 4;
     std::size_t expressed = 0;
     while (true) {
@@ -631,7 +631,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         if (bootstrapPending && retryQueue.empty() && nextPacket >= std::min(
               windowCapacity, ndn_service_framework::detail::ExactDataCongestionWindow::INITIAL_WINDOW))
           return;
-        if (authenticatedSource && !sourceWindow && expressed == SOURCE_REFILL_BURST) {
+        if (authenticatedSource && expressed == SOURCE_REFILL_BURST) {
           const auto weak = weak_from_this();
           const auto executor = strand;
           try {
