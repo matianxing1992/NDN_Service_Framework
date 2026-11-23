@@ -1126,7 +1126,29 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     return static_cast<int>(milliseconds);
   };
   current();
-  auto stageStarted = std::chrono::steady_clock::now();
+  using Clock = std::chrono::steady_clock;
+  auto stageStarted = Clock::now();
+  const bool measurePreparation = [&]() noexcept {
+    try {
+      return request.segmentManifestBinding && ndn_service_framework::controlTimingEnvEnabled();
+    }
+    catch (...) {
+      return false;
+    }
+  }();
+  Clock::duration faceAdmission{}, rootValidation{}, packetLoop{}, filterInstall{};
+  Clock::duration packetDecode{}, packetProof{}, spoolAppend{}, wireDigest{};
+  size_t sampledPackets = 0;
+  const auto stamp = [](bool enabled) {
+    return enabled ? Clock::now() : Clock::time_point{};
+  };
+  const auto measure = [](Clock::time_point& previous, Clock::duration& elapsed) {
+    if (previous != Clock::time_point{}) {
+      const auto now = Clock::now();
+      elapsed += now - previous;
+      previous = now;
+    }
+  };
   std::size_t insertBytes = 0;
   const auto noteStage = [&](const char* stage) noexcept {
     try {
@@ -1223,6 +1245,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
       // Scoped cancellation remains the final release path if posting fails.
     }
   });
+  auto faceStarted = stamp(measurePreparation);
   auto admitted = std::make_shared<std::promise<void>>();
   auto admissionReady = admitted->get_future();
   publication->faceLease = writer.postToIoWithFace(
@@ -1239,6 +1262,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     throw std::runtime_error("repo-original-publication-admission-deadline");
   admissionReady.get();
   current();
+  measure(faceStarted, faceAdmission);
+  auto packetLoopStarted = stamp(measurePreparation);
   publication->spool = std::make_shared<detail::FaceDataReferencePacketSpool>(
     names.size(), request.reference.expectedSize);
   ndn::util::Sha256 digest;
@@ -1249,6 +1274,11 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     canonicalNames.reserve(names.size());
   }
   for (size_t i = 0; i < names.size(); ++i) {
+    // Sample source packets only. Root validation has its own boundary below.
+    constexpr size_t SAMPLE_EVERY = 127;
+    const bool sample = measurePreparation && i != 0 && i % SAMPLE_EVERY == 0;
+    auto packetStarted = stamp(sample);
+    sampledPackets += sample;
     current();
     auto wire = nextOriginalPacket();
     current();
@@ -1274,11 +1304,14 @@ RepoClientCompat::commitUserStorageOriginalPackets(
         !publication->index.emplace(name.deepCopy(), std::make_pair(i, buffer->size())).second)
       throw std::invalid_argument("repo-original-publication-packet-invalid");
     current();
+    measure(packetStarted, packetDecode);
     if (request.segmentManifestBinding) {
       canonicalNames.push_back(std::move(canonicalName));
       contentBytes += data.getContent().value_size();
       if (i == 0) {
+        auto rootStarted = stamp(measurePreparation);
         auto root = writer.validateManifestRootUntil(*buffer, manifestScope, deadline);
+        measure(rootStarted, rootValidation);
         if (!root) {
           throw std::invalid_argument("repo-original-publication-root-proof-invalid");
         }
@@ -1303,8 +1336,11 @@ RepoClientCompat::commitUserStorageOriginalPackets(
         }
       }
     }
+    measure(packetStarted, packetProof);
     publication->spool->append(i, *buffer);
+    measure(packetStarted, spoolAppend);
     digest.update(ndn::span<const uint8_t>(buffer->data(), buffer->size()));
+    measure(packetStarted, wireDigest);
     offsets.push_back(offsets.back() + buffer->size());
   }
   if (nextOriginalPacket())
@@ -1319,6 +1355,8 @@ RepoClientCompat::commitUserStorageOriginalPackets(
       toLowerHex(digest.toString()) != request.reference.expectedSha256)
     throw std::invalid_argument("repo-original-publication-digest-or-size-mismatch");
 
+  measure(packetLoopStarted, packetLoop);
+  auto installStarted = stamp(measurePreparation);
   auto installed = std::make_shared<std::promise<void>>();
   auto ready = installed->get_future();
   writer.postToIo(
@@ -1416,6 +1454,29 @@ RepoClientCompat::commitUserStorageOriginalPackets(
     throw std::runtime_error("repo-original-publication-install-deadline");
   ready.get();
   current();
+  measure(installStarted, filterInstall);
+  if (measurePreparation) {
+    try {
+      const auto nanoseconds = [](Clock::duration time) {
+        return std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(time).count());
+      };
+      ndn_service_framework::logControlTiming("repo-client", "producer-preparation",
+        ndn::Name(request.reference.objectName), {
+          {"operation_id", request.operationId}, {"total_packets", std::to_string(names.size())},
+          {"sampled_packets", std::to_string(sampledPackets)},
+          {"face_admission_ns", nanoseconds(faceAdmission)},
+          {"root_validation_ns", nanoseconds(rootValidation)},
+          {"packet_loop_ns", nanoseconds(packetLoop)},
+          {"filter_install_ns", nanoseconds(filterInstall)},
+          {"sample_decode_index_ns", nanoseconds(packetDecode)},
+          {"sample_member_proof_ns", nanoseconds(packetProof)},
+          {"sample_spool_append_ns", nanoseconds(spoolAppend)},
+          {"sample_wire_digest_ns", nanoseconds(wireDigest)}});
+    }
+    catch (...) {
+      // Optional timing cannot change commit or cancellation behavior.
+    }
+  }
   const auto provider = ndn::Name(target.providerIdentity);
   const auto servicePrefix = ndn::Name(target.servicePrefix);
   noteStage("prepare-producer");
