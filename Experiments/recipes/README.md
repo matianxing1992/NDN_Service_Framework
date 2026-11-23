@@ -137,8 +137,11 @@ Allow `--timeout 1800` for each phase. For the tuned long run, use the 8,400 B s
 below with write windows `manifest-fetch-window=20` and `manifest-source-window=24`,
 `request-timeout-ms=5000`, and `manifest-spool=bounded-memory`. Set read-side
 `manifest-spool=file` and `cache-bytes=1`; the read opens the written store in a separate
-Repo process. Use durable group completions and verified retrieval events to report
-throughput for each cumulative 5 GB interval, measured from the native phase start.
+Repo process. The 1-byte limit applies to the Repo's object cache. Record the Repo process's
+`read_bytes` delta to show whether Linux charged storage reads to that process.
+Use durable group completions and verified retrieval events to report throughput for each
+cumulative 5 GB interval, measured from the native phase start. Keep the Repo RSS samples
+for the same intervals when investigating a slowdown as the store grows.
 After every trial, verify both deployments have stopped, retain the reports, and remove the
 trial's private Repo store and generated source. A new write trial uses a fresh private store.
 
