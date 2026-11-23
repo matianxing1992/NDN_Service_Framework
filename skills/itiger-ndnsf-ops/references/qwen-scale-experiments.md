@@ -34,7 +34,9 @@
   placement cache TTL, confirm the valid authenticated fixed-role lease owns
   its original placement. Keep exact role/runner/artifact/device binding and
   failure closure. Test expiry of the opportunistic cache independently of grant
-  expiry before an expensive retry.
+  expiry before an expensive retry. In Tiger job `306364`, warm planning
+  retained the pinned placement 704.779 seconds after the last cold cache
+  install, beyond the cache's 600-second TTL.
 - In the 27B FP16 case, warm token 24 diverged. The same warm activation on the
   same GPU type reproduced the CUDA full-vocabulary projection's ranking change.
   Disallowing reduced-precision GEMM reduction restored the CPU result in that
