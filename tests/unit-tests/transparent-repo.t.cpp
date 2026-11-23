@@ -1829,8 +1829,25 @@ BOOST_AUTO_TEST_CASE(CatalogParseCacheHonorsEncodedByteBound)
       catalogParses = 0;
       BOOST_CHECK(first == recheck());
       BOOST_CHECK_EQUAL(catalogParses.load(), 0U);
+      const std::unordered_set<std::string_view> unrelated{"/different/object/packet"};
+      BOOST_REQUIRE(detail::inspectOriginalPacketWriteCatalog(*store, unrelated));
+      catalogParses = 0;
+      const auto inspected = detail::inspectOriginalPacketWriteCatalog(*store, unrelated);
+      BOOST_REQUIRE(inspected);
+      BOOST_CHECK_EQUAL(inspected->objectTypes.size(), first.size());
+      BOOST_CHECK(inspected->matchingPackets.empty());
+      BOOST_CHECK_EQUAL(catalogParses.load(), 0U);
+      {
+        std::ofstream output(directory / "manifests" / "small.json", std::ios::app);
+        output << '\n';
+        BOOST_REQUIRE(output.good());
+      }
+      BOOST_CHECK_NO_THROW(inspected->recheck());
       std::filesystem::remove(directory / "manifests" / "small.json");
       BOOST_CHECK_EQUAL(recheck().size(), first.size() - 1);
+      BOOST_CHECK_EXCEPTION(inspected->recheck(), std::runtime_error, [](const auto& error) {
+        return std::string(error.what()) == "repo-original-packet-catalog-changed";
+      });
     }
   }
 }

@@ -1426,6 +1426,20 @@ public:
     return snapshots;
   }
 
+  std::optional<detail::OriginalPacketWriteCatalog>
+  inspectOriginalPacketWriteCatalog(const std::unordered_set<std::string_view>& incoming) const
+  {
+    std::lock_guard<std::mutex> lock(m_authorityMutex);
+    auto catalog = detail::inspectOriginalPacketWriteCatalog(*m_authoritativeStore, incoming);
+    if (catalog) {
+      catalog->recheck = [this, recheck = std::move(catalog->recheck)] {
+        std::lock_guard<std::mutex> lock(m_authorityMutex);
+        recheck();
+      };
+    }
+    return catalog;
+  }
+
   std::vector<RepoObjectManifest>
   findPacketManifests(const std::string& canonical, const std::string& alternate,
                       bool prefixMatch) const
@@ -1753,6 +1767,17 @@ detail::listManifestSnapshots(const RepoStoreBackend& store, RecheckManifestCata
   for (auto& manifest : manifests)
     snapshots.push_back(std::make_shared<const RepoObjectManifest>(std::move(manifest)));
   return snapshots;
+}
+
+std::optional<detail::OriginalPacketWriteCatalog>
+detail::inspectOriginalPacketWriteCatalog(const RepoStoreBackend& store,
+                                          const std::unordered_set<std::string_view>& incoming)
+{
+  if (const auto tiered = dynamic_cast<const TieredRepoStore*>(&store))
+    return tiered->inspectOriginalPacketWriteCatalog(incoming);
+  if (const auto filesystem = dynamic_cast<const FilesystemRepoStoreBackend*>(&store))
+    return filesystem->inspectOriginalPacketWriteCatalog(incoming);
+  return std::nullopt;
 }
 
 RepoObjectMetadataSnapshot

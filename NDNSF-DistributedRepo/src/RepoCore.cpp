@@ -1979,10 +1979,14 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
       replayNames.insert(name.toUri(ndn::name::UriFormat::ALTERNATE));
     }
   }
-  std::set<std::string> indexedPacketNames;
+  auto compactCatalog = stageTogether && !existing
+    ? detail::inspectOriginalPacketWriteCatalog(*m_store, incomingNames) : std::nullopt;
+  auto indexedPacketNames = compactCatalog ? std::move(compactCatalog->matchingPackets)
+                                           : std::unordered_set<std::string>{};
   std::map<std::string, std::shared_ptr<const RepoObjectManifest>> catalogMetadata;
   detail::RecheckManifestCatalog recheckCatalog;
-  const auto catalog = detail::listManifestSnapshots(*m_store, &recheckCatalog);
+  const auto catalog = compactCatalog ? std::vector<std::shared_ptr<const RepoObjectManifest>>{}
+                                      : detail::listManifestSnapshots(*m_store, &recheckCatalog);
   for (const auto& stored : catalog) {
     catalogMetadata.emplace(stored->objectName, stored);
     if (verifyStoredSpool && stored->objectName != existing->objectName &&
@@ -2005,6 +2009,10 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   finishStage("catalog");
   const auto requireCurrentCatalog = [&] {
     if (requireActive) requireActive();
+    if (compactCatalog) {
+      compactCatalog->recheck();
+      return;
+    }
     const auto current = recheckCatalog();
     const auto rejectCatalog = [&] (const char* kind, const std::string* affected = nullptr,
                                    const std::string* before = nullptr,
@@ -2087,9 +2095,17 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   // RepoNode already checked the ordered packet view of an owned spool. For a
   // new set with no possible name collisions, bind the staged bytes to that
   // view below. Existing names still require the per-packet storage checks.
+  const auto getStoredType = [&](const std::string& name) -> const std::string* {
+    if (compactCatalog) {
+      const auto found = compactCatalog->objectTypes.find(name);
+      return found == compactCatalog->objectTypes.end() ? nullptr : &found->second;
+    }
+    const auto found = catalogMetadata.find(name);
+    return found == catalogMetadata.end() ? nullptr : &found->second->objectType;
+  };
   const bool verifyStagedSpool = stageTogether && !existing && indexedPacketNames.empty() &&
     std::none_of(manifest.packetNames.begin(), manifest.packetNames.end(),
-      [&](const auto& name) { return catalogMetadata.count(name) != 0; });
+      [&](const auto& name) { return getStoredType(name) != nullptr; });
   for (size_t i = 0; !verifyStagedSpool && i < manifest.packetNames.size(); ++i) {
     if (requireActive) requireActive();
     const auto length = manifest.packetOffsets[i + 1] - manifest.packetOffsets[i];
@@ -2107,12 +2123,12 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
         throw std::runtime_error("repo-data-wire-conflict");
       continue;
     }
-    const auto stored = catalogMetadata.find(manifest.packetNames[i]);
+    const auto* storedType = getStoredType(manifest.packetNames[i]);
     // A catalog miss is already known for this transaction. For a hit, retain
     // the physical check: metadata may outlive a missing committed payload.
-    const bool hasStoredPacket = stored != catalogMetadata.end() &&
+    const bool hasStoredPacket = storedType &&
       m_store->has(manifest.packetNames[i]);
-    if (hasStoredPacket && stored->second->objectType != "ndn-data-wire" &&
+    if (hasStoredPacket && *storedType != "ndn-data-wire" &&
         (!existing || manifest.packetNames[i] != existing->objectName))
       throw std::runtime_error("repo-original-packet-format-conflict");
     if ((hasStoredPacket || indexedPacketNames.count(manifest.packetNames[i])) &&

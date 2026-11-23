@@ -55,6 +55,9 @@ public:
   using ManifestSnapshots = std::vector<std::shared_ptr<const RepoObjectManifest>>;
   using RecheckManifestCatalog = std::function<ManifestSnapshots()>;
   ManifestSnapshots listManifestSnapshots(RecheckManifestCatalog* recheck = nullptr) const;
+  /** Inspect current collisions for a new owned original packet set. */
+  detail::OriginalPacketWriteCatalog inspectOriginalPacketWriteCatalog(
+    const std::unordered_set<std::string_view>& incoming) const;
   /** Internal locator integration: copy matching metadata under the existing lock. */
   std::vector<RepoObjectManifest>
   findPacketManifests(const std::string& canonical, const std::string& alternate,
@@ -133,6 +136,16 @@ private:
     std::array<uint64_t, 7> identity{};
   };
 
+  struct ManifestCollisionSummary
+  {
+    ManifestStamp stamp{};
+    std::string objectName;
+    std::string objectType;
+    std::string packetPrefix;
+    std::string metadataDigest;
+    bool reusable = false;
+  };
+
   ArtifactReference artifactReference(const RepoObjectManifest& manifest) const;
   std::filesystem::path manifestPath(const std::string& objectName) const;
   std::filesystem::path receiptDirectory(const std::string& dataName,
@@ -179,6 +192,8 @@ private:
   mutable std::unordered_map<std::string, CachedManifest> m_catalogParseCache;
   mutable std::mutex m_catalogParseMutex;
   mutable size_t m_catalogEncodedBytes = 0;
+  // The store mutex owns this bounded projection of stable filesystem sidecars.
+  mutable std::unordered_map<std::string, ManifestCollisionSummary> m_manifestCollisionSummaries;
 };
 
 std::shared_ptr<RepoStoreBackend>

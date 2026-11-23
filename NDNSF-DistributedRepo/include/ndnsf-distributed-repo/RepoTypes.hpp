@@ -10,6 +10,8 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace ndnsf_distributed_repo {
@@ -261,6 +263,15 @@ struct RepoObjectMetadataSnapshot
   bool manifestMeasurementAvailable = false;
   uint64_t manifestWireBytes = 0;
 };
+
+namespace detail {
+struct OriginalPacketWriteCatalog
+{
+  std::map<std::string, std::string> objectTypes;
+  std::unordered_set<std::string> matchingPackets;
+  std::function<void()> recheck;
+};
+} // namespace detail
 
 struct RepoWriteIntent
 {

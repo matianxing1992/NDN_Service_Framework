@@ -747,6 +747,122 @@ FilesystemRepoStoreBackend::readManifestCatalog(StampedCatalog* capture,
   return manifests;
 }
 
+detail::OriginalPacketWriteCatalog
+FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
+  const std::unordered_set<std::string_view>& incoming) const
+{
+  constexpr std::size_t MAX_PREFIX_BYTES = 512;
+  constexpr std::size_t MAX_SUMMARIES = 4096;
+  if (incoming.empty())
+    throw std::invalid_argument("repo-original-packet-catalog-empty");
+  const auto clipPrefix = [](std::string_view prefix, std::string_view name) {
+    return prefix.substr(0, std::mismatch(prefix.begin(), prefix.end(),
+      name.begin(), name.end()).first - prefix.begin());
+  };
+  std::string_view incomingPrefix = incoming.begin()->substr(0, MAX_PREFIX_BYTES);
+  for (const auto name : incoming)
+    incomingPrefix = clipPrefix(incomingPrefix, name);
+
+  detail::OriginalPacketWriteCatalog result;
+  std::unordered_map<std::string, ManifestCollisionSummary> observed;
+  const auto directory = fs::path(m_rootPath) / "manifests";
+  std::lock_guard<std::mutex> lock(m_mutex);
+  for (const auto& entry : fs::directory_iterator(directory)) {
+    if (entry.path().extension() != ".json" || !entry.is_regular_file())
+      continue;
+    const auto key = entry.path().filename().string();
+    const auto stamp = manifestStamp(entry.path());
+    const auto known = m_manifestCollisionSummaries.find(key);
+    std::shared_ptr<const RepoObjectManifest> manifest;
+    ManifestCollisionSummary summary;
+    if (known != m_manifestCollisionSummaries.end() && known->second.stamp == stamp &&
+        isStableManifestStamp(stamp)) {
+      summary = known->second;
+    }
+    else {
+      if (known != m_manifestCollisionSummaries.end())
+        m_manifestCollisionSummaries.erase(known);
+      ManifestObservation observation;
+      manifest = cachedManifestUnlocked(entry.path(), &observation);
+      if (!manifest)
+        manifest = loadManifestUnlocked(entry.path(), &observation);
+      summary.stamp = observation.stamp;
+      summary.reusable = observation.reusable;
+      summary.objectName = manifest->objectName;
+      summary.objectType = manifest->objectType;
+      summary.metadataDigest = sha256Hex(toBytes(manifest->toJson()));
+      if (manifest->objectType == "original-packet-set" && !manifest->packetNames.empty()) {
+        std::string_view prefix = std::string_view(manifest->packetNames.front())
+                                    .substr(0, MAX_PREFIX_BYTES);
+        for (const auto& name : manifest->packetNames) {
+          prefix = clipPrefix(prefix, name);
+          if (prefix.empty())
+            break;
+        }
+        summary.packetPrefix = prefix;
+      }
+      if (summary.reusable && summary.objectName.size() <= 4096 &&
+          summary.objectType.size() <= 64) {
+        if (m_manifestCollisionSummaries.size() == MAX_SUMMARIES)
+          m_manifestCollisionSummaries.erase(m_manifestCollisionSummaries.begin());
+        m_manifestCollisionSummaries.emplace(key, summary);
+      }
+    }
+    if (!result.objectTypes.emplace(summary.objectName, summary.objectType).second)
+      throw std::runtime_error("repo-original-packet-catalog-changed");
+    if (summary.objectType == "ndn-data-wire") {
+      const auto canonical = ndn::Name(summary.objectName).toUri(ndn::name::UriFormat::CANONICAL);
+      if (incoming.count(canonical))
+        result.matchingPackets.insert(canonical);
+    }
+    if (summary.objectType == "original-packet-set" &&
+        clipPrefix(incomingPrefix, summary.packetPrefix).size() ==
+          std::min(incomingPrefix.size(), summary.packetPrefix.size())) {
+      if (!manifest) {
+        ManifestObservation observation;
+        manifest = cachedManifestUnlocked(entry.path(), &observation);
+        if (!manifest)
+          manifest = loadManifestUnlocked(entry.path(), &observation);
+        if (observation.stamp != summary.stamp)
+          throw std::runtime_error("repo-original-packet-catalog-changed");
+      }
+      for (const auto& name : manifest->packetNames) {
+        if (incoming.count(name))
+          result.matchingPackets.insert(name);
+      }
+    }
+    observed.emplace(key, std::move(summary));
+  }
+  for (auto cached = m_manifestCollisionSummaries.begin();
+       cached != m_manifestCollisionSummaries.end();) {
+    if (!observed.count(cached->first))
+      cached = m_manifestCollisionSummaries.erase(cached);
+    else
+      ++cached;
+  }
+  result.recheck = [this, directory, observed = std::move(observed)] {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::size_t count = 0;
+    for (const auto& entry : fs::directory_iterator(directory)) {
+      if (entry.path().extension() != ".json" || !entry.is_regular_file())
+        continue;
+      ++count;
+      const auto old = observed.find(entry.path().filename().string());
+      if (old == observed.end())
+        throw std::runtime_error("repo-original-packet-catalog-changed");
+      const auto stamp = manifestStamp(entry.path());
+      if (old->second.reusable && stamp == old->second.stamp && isStableManifestStamp(stamp))
+        continue;
+      const auto manifest = loadManifestUnlocked(entry.path());
+      if (sha256Hex(toBytes(manifest->toJson())) != old->second.metadataDigest)
+        throw std::runtime_error("repo-original-packet-catalog-changed");
+    }
+    if (count != observed.size())
+      throw std::runtime_error("repo-original-packet-catalog-changed");
+  };
+  return result;
+}
+
 std::vector<RepoObjectManifest>
 FilesystemRepoStoreBackend::findPacketManifests(const std::string& canonical,
                                                const std::string& alternate,
