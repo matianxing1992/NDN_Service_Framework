@@ -18,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -26,6 +27,7 @@ namespace fixture = wan::fixture;
 namespace fs = std::filesystem;
 
 constexpr std::size_t MIB = 1U << 20;
+constexpr std::size_t MAX_EVIDENCE_ROW_BYTES = 64 * MIB;
 
 void
 require(bool condition, const std::string& failure)
@@ -89,27 +91,29 @@ readProviderTrace(const fs::path& path, const ndn::Name& producer, std::size_t b
   require(fs::file_size(path) <= byteLimit, "Provider timing exceeds fixture budget");
   ProviderTrace result;
   std::ifstream log(path);
-  std::string line;
-  while (std::getline(log, line)) {
+  std::vector<char> rowBuffer(MAX_EVIDENCE_ROW_BYTES + 1);
+  while (log.getline(rowBuffer.data(), rowBuffer.size())) {
+    const auto rowLength = static_cast<std::size_t>(log.gcount()) - (log.eof() ? 0 : 1);
+    const std::string_view line(rowBuffer.data(), rowLength);
     constexpr std::string_view LOAD = "NDNSF_DI_ONNX_SESSION_LOAD ";
     constexpr std::string_view CALL = "NDNSF_DI_ONNX_TIMING ";
     constexpr std::string_view OBJECT = "NDNSF_DI_DEPENDENCY_OBJECT ";
-    if (const auto at = line.find(LOAD); at != std::string::npos) {
-      result.cpuSession |= line.find(" provider=cpu ", at) != std::string::npos;
+    if (const auto at = line.find(LOAD); at != std::string_view::npos) {
+      result.cpuSession |= line.find(" provider=cpu ", at) != std::string_view::npos;
       continue;
     }
     const auto call = line.find(CALL);
     const auto object = line.find(OBJECT);
-    if (call == std::string::npos && object == std::string::npos) continue;
-    std::istringstream fields(line.substr(call != std::string::npos ?
-                                          call + CALL.size() : object + OBJECT.size()));
+    if (call == std::string_view::npos && object == std::string_view::npos) continue;
+    std::istringstream fields{std::string(line.substr(call != std::string_view::npos ?
+      call + CALL.size() : object + OBJECT.size()))};
     std::map<std::string, std::string> row;
     for (std::string field; fields >> field;) {
       const auto split = field.find('=');
       if (split != std::string::npos) row.emplace(field.substr(0, split), field.substr(split + 1));
     }
     const auto& session = row.at("session");
-    if (call != std::string::npos) {
+    if (call != std::string_view::npos) {
       if (session != "native-runtime-warmup") result.calls.emplace(session, row.at("role"));
       continue;
     }
@@ -126,7 +130,8 @@ readProviderTrace(const fs::path& path, const ndn::Name& producer, std::size_t b
       result.received[key].insert(name);
     }
   }
-  require(log.eof() && result.cpuSession && !result.calls.empty(), "missing real CPU ORT calls");
+  require(log.eof() && !log.bad(), "Provider timing log read failed or has an oversized row");
+  require(result.cpuSession && !result.calls.empty(), "missing real CPU ORT calls");
   return result;
 }
 
@@ -225,7 +230,8 @@ readDeployment(const NativeJson& state, const NativeJson& configuration, const f
     std::string line;
     std::size_t completed = 0;
     while (std::getline(stats, line)) {
-      require(line.size() <= 64 * MIB, "Provider statistics row exceeds fixture budget");
+      require(line.size() <= MAX_EVIDENCE_ROW_BYTES,
+              "Provider statistics row exceeds fixture budget");
       const auto row = nativeParseJson(line);
       require(row.at("schema") == "ndnsf-di-native-request-statistics-v1" &&
               row.at("provider") == provider && row.at("providerBootId") == bootId,
@@ -476,7 +482,10 @@ validateCheckpoint(const fs::path& operation, const fs::path& referenceFile,
   const auto deployment = state.at("deployment_id").get<std::string>();
   require(deployment.compare(0, 10, "wan-video-") == 0 &&
           workload.at("mode") == deployment.substr(10), "checkpoint layout binding");
-  auto observed = readDeployment(state, config, root, 2ULL << 30, 2ULL << 30);
+  const auto storageLimit = config.at("storage").at("max_bytes").get<std::size_t>();
+  require(storageLimit > 0 && state.at("storage_bytes").get<std::size_t>() <= storageLimit,
+          "checkpoint evidence exceeds deployment storage budget");
+  auto observed = readDeployment(state, config, root, storageLimit, 2ULL << 30);
   const auto& mode = workload.at("modes").at(deployment.substr(10));
   const auto& placement = requester.at("fixed_placement").at("role_providers");
   const fs::path clip = options.at("output_directory").get<std::string>();
