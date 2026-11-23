@@ -5630,6 +5630,7 @@ struct Spec175NativeTinyStreamResult
   bool planCommitted = false;
   bool timedOut = false;
   bool completed = false;
+  std::size_t completionCallbacks = 0;
   bool failed = false;
   bool cancelled = false;
   bool streamedContext = false;
@@ -6197,6 +6198,7 @@ runSpec175NativeTinyOneRoleCase(RequestStatisticsFault statisticsFault = Request
         result.finalPayload.assign(
           reinterpret_cast<const char*>(response.data()), response.size());
         result.completed = true;
+        ++result.completionCallbacks;
       },
       [&] (const StreamedInvocationError& error) {
         result.failed = true;
@@ -7647,6 +7649,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       result.finalPayload.assign(
         reinterpret_cast<const char*>(response.data()), response.size());
       result.completed = true;
+      ++result.completionCallbacks;
       trace("initial-complete");
     },
     [&] (const StreamedInvocationError& error) {
@@ -7697,6 +7700,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
             result.finalPayload.assign(
               reinterpret_cast<const char*>(response.data()), response.size());
             result.completed = true;
+            ++result.completionCallbacks;
             trace("replacement-complete");
           },
           [&] (const StreamedInvocationError& recoveryError) {
@@ -11554,8 +11558,10 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI03FourProviderEpochCoordinator)
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI04ReordersEventThreeAfterFour)
 {
-  const auto result = runSpec175NativeTinyTwoProviderCase(
-    "i04", Spec175NativeTinyFault::ReorderEvent3After4);
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = "i04";
+  options.fault = Spec175NativeTinyFault::ReorderEvent3After4;
+  const auto result = runSpec175NativeTinyMultiProviderCase(4, std::move(options));
   BOOST_TEST_MESSAGE("Spec175 I04 completed=" << result.completed
                     << " failed=" << result.failed
                     << " publicationReorders="
@@ -11567,11 +11573,30 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI04ReordersEventThreeAfterFour)
   BOOST_REQUIRE(!result.failed);
   BOOST_REQUIRE(!result.timedOut);
   BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.ackCandidates, 4U);
+  BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 4U);
+  BOOST_REQUIRE_EQUAL(result.providerFailures, 0U);
   BOOST_REQUIRE_EQUAL(result.publicationSuppressions, 1U);
   BOOST_REQUIRE_EQUAL(result.publicationReorders, 1U);
+  BOOST_REQUIRE_EQUAL(result.completionCallbacks, 1U);
   BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
-  BOOST_CHECK(result.events.front().find("\"tokenId\":4") != std::string::npos);
-  BOOST_CHECK(result.events.back().find("\"tokenId\":2") != std::string::npos);
+  const std::vector<std::uint64_t> expectedTokens{4, 5, 6, 7, 8, 9, 10, 2};
+  for (std::size_t index = 0; index < result.events.size(); ++index) {
+    const auto event = nativeParseJson(result.events[index]);
+    BOOST_CHECK_EQUAL(event.at("tokenEpoch").get<std::uint64_t>(), index + 1);
+    BOOST_CHECK_EQUAL(event.at("tokenId").get<std::uint64_t>(), expectedTokens[index]);
+  }
+  BOOST_CHECK(nativeParseJson(result.finalPayload).at("tokenIds") == expectedTokens);
+  BOOST_REQUIRE_EQUAL(result.decodeStateSnapshots.size(), 4U);
+  for (const auto& state : result.decodeStateSnapshots) {
+    BOOST_CHECK_EQUAL(state.commits, 8U);
+    BOOST_CHECK_EQUAL(state.hits, 7U);
+    BOOST_CHECK_EQUAL(state.misses, 0U);
+    BOOST_CHECK_EQUAL(state.entries, 0U);
+    BOOST_CHECK_EQUAL(state.pinnedEntries, 0U);
+    BOOST_CHECK_EQUAL(state.candidates, 0U);
+    BOOST_CHECK_EQUAL(state.cleanups, 1U);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI05SuppressesDuplicateEventFour)
