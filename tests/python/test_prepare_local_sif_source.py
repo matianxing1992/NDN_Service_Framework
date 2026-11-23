@@ -64,6 +64,7 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     for required in (
         "install_ndnsf_stack.sh", "scripts/configure_dependencies.py", "scripts/host_profile.py",
         "scripts/build-safe.sh", "scripts/build-storage.py", "scripts/ndnsf-di-workspace.py",
+        "scripts/host-build-jobs.sh",
         "scripts/stack_sources.py", "packaging/host-dependencies.lock.json",
         "packaging/host-sdk-dependencies.lock.json", "patches/nac-abe/series.json",
         "packaging/ndnsf-di-container/lib/allocation_topology.py",
@@ -75,7 +76,7 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
         "patches/openabe/series.json", "NDNSF-DistributedRepo/apps/DistributedRepoServer.cpp",
         "tools/ndn-svs/publication-latency.patch",
         "ndnsf-di/api.hpp", "ndnsf-di/provider.hpp",
-        "NDNSF-UAV-APP/tracking/tracking_worker.py", "examples/DI_NativeRequester.cpp",
+        "NDNSF-UAV-APP/shared/uav-person-backend.cpp", "examples/DI_NativeRequester.cpp",
     ):
         assert required in names
     assert not any(name.startswith("specs/") for name in names)

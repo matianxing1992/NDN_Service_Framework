@@ -165,30 +165,8 @@ def test_jobs_environment_and_override():
     assert shell(DEFINITIONS + '\nprintf "%s" "$JOBS"', "--jobs", "1", env=env).stdout == "1"
 
 
-def test_person_runtime_plan_does_not_create_environment(tmp_path):
-    destination = tmp_path / "person-cpu"
-    result = shell(SCRIPT.read_text(), "--person-runtime", str(destination), "--plan")
-    assert result.returncode == 0, result.stderr
-    assert "Person CPU runtime:" in result.stdout
-    assert not destination.exists()
 
 
-def test_person_runtime_requires_verified_wheel_before_creating_environment(tmp_path):
-    python = shutil.which("python3.10")
-    if python is None:
-        pytest.skip("CPython 3.10 is not installed")
-    destination = tmp_path / "person-cpu"
-    wheels = tmp_path / "wheels"
-    wheels.mkdir()
-    (wheels / "torchreid-1.4.0-py3-none-any.whl").write_bytes(b"untrusted wheel")
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts/install-person-runtime.sh"), str(destination)],
-        env=dict(os.environ, NDNSF_PERSON_PYTHON=python, NDNSF_PERSON_WHEELS=str(wheels)),
-        text=True, capture_output=True, timeout=10,
-    )
-    assert result.returncode != 0
-    assert "Missing hash-verified Torchreid" in result.stderr
-    assert not destination.exists()
 
 
 def test_installer_defaults_to_host_memory_policy():
@@ -207,21 +185,6 @@ def test_installer_defaults_to_host_memory_policy():
     assert result.stdout == expected
 
 
-def test_person_runtime_rejects_disposable_parent_environment(tmp_path):
-    python = shutil.which("python3.10")
-    if python is None:
-        pytest.skip("CPython 3.10 is not installed")
-    parent = tmp_path / "parent"
-    subprocess.run([python, "-m", "venv", "--without-pip", str(parent)], check=True)
-    destination = tmp_path / "person-cpu"
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts/install-person-runtime.sh"), str(destination)],
-        env=dict(os.environ, NDNSF_PERSON_PYTHON=str(parent / "bin/python")),
-        text=True, capture_output=True, timeout=10,
-    )
-    assert result.returncode != 0
-    assert "stable base interpreter" in result.stderr
-    assert not destination.exists()
 
 
 @pytest.mark.parametrize("version", ["1.71.0", "1.85.0", "1.90.0"])

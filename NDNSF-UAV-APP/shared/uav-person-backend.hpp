@@ -35,6 +35,10 @@ public:
   UavPersonModelBackend(const UavPersonModelBackend&) = delete;
   UavPersonModelBackend& operator=(const UavPersonModelBackend&) = delete;
 
+  /** Reject unsupported native execution profiles before opening model sessions. */
+  static void
+  validateProfile(const UavPersonTrackingProfile& profile);
+
   std::string
   processWindow(const UavPersonWindowContext& context,
                 const std::array<ndn::Buffer, 3>& admittedJpegs,

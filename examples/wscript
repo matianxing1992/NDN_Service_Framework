@@ -229,7 +229,6 @@ def build(bld):
                         '../NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp',
                         '../NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp',
                         '../NDNSF-UAV-APP/shared/uav-person-window-admission.cpp',
-                        '../NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp',
                         '../NDNSF-UAV-APP/tracking/uav-tracking-config.cpp',
                         '../NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
                         '../NDNSF-UAV-APP/shared/uav-person-published-frame.cpp',
@@ -262,20 +261,15 @@ def build(bld):
                     rpath=[bld.env.LIBDIR],
                     linkflags=['-Wl,-rpath,$ORIGIN/..'], install_path='${BINDIR}')
 
-        # Spec191's Python worker and display runner are installed beside the
-        # native tracking applications.  MiniNDN must never import either one
+        # Host observation and display tools are installed beside the native
+        # tracking applications. MiniNDN must never import these tools
         # from this checkout or from the build tree.
         bld.install_files(
             '${LIBEXECDIR}/ndnsf-uav/tracking',
             [bld.path.parent.find_node(path) for path in [
                 'NDNSF-UAV-APP/tracking/observation_source.py',
                 'NDNSF-UAV-APP/tracking/person_profile.py',
-                'NDNSF-UAV-APP/tracking/person_reid.py',
-                'NDNSF-UAV-APP/tracking/person_runtime.py',
-                'NDNSF-UAV-APP/tracking/requirements-person.lock',
-                'NDNSF-UAV-APP/tracking/byte_track_state.py',
                 'NDNSF-UAV-APP/tracking/observation_schema.py',
-                'NDNSF-UAV-APP/tracking/tracking_worker.py',
                 'NDNSF-UAV-APP/tracking/tracking_display.py',
                 'NDNSF-UAV-APP/tracking/display_clock.py',
                 'NDNSF-UAV-APP/tracking/motion_estimator.py',

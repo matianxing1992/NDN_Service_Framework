@@ -124,8 +124,8 @@ class PersonSourceTest(unittest.TestCase):
 
     def test_person_plan_keeps_prepared_identity_and_detects_input_tampering(self):
         # Weights and descriptor here test planning only; native inference is not exercised.
-        detector = self.root / 'detector.pt'
-        reid = self.root / 'reid.pth'
+        detector = self.root / 'detector.onnx'
+        reid = self.root / 'reid.onnx'
         detector.write_bytes(b'plan-detector-fixture')
         reid.write_bytes(b'plan-reid-fixture')
         profile = prepare_person_profile(ROOT / 'NDNSF-UAV-APP/configs/uav_person_tracking_demo.json',
@@ -134,7 +134,7 @@ class PersonSourceTest(unittest.TestCase):
         descriptor = self.output / 'private/config/person-computation.json'
         descriptor.write_text('{}')
         person = dict(profile=receipt['trackingProfile'], computationManifest=str(descriptor),
-                      reidModel=str(reid), workerPython=sys.executable)
+                      reidModel=str(reid))
         def installed_script(name):
             path = self.root / 'libexec' / name
             path.parent.mkdir(exist_ok=True)

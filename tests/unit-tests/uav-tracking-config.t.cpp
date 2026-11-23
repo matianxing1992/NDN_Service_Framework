@@ -31,14 +31,8 @@ void
 usePersonProfile(ConfigFixture& fixture, const std::string& profileBytes)
 {
   const auto profile = parseUavPersonTrackingProfile(profileBytes);
-  std::map<std::string, std::string> backend;
-  for (const auto* key : {"tracking_worker.py", "person_reid.py", "person_profile.py",
-                        "observation_schema.py", "motion_schema.py", "motion_estimator.py",
-                        "byte_track_state.py", "person_runtime.py", "requirements-person.lock",
-                        "bytetrack.yaml", "runtime/fingerprint", "runtime/torchreid-source"}) {
-    backend.emplace(key, ABC_DIGEST);
-  }
-  const auto computation = makeUavPersonComputationManifest(profile, backend,
+  const auto computation = makeUavPersonNativeComputationManifest(profile,
+    "bytetrack-ultralytics-v1", "onnxruntime-fixture",
     {{"executable:/opt/ndnsf/bin/UavDroneApp", ABC_DIGEST}});
   fixture.config["mode"] = "person";
   fixture.config["profile"] = writeAsset(fixture.root / "profile", profileBytes);
@@ -179,6 +173,19 @@ BOOST_FIXTURE_TEST_CASE(ProviderCatalogRejectsUnknownFieldsAndConflictingRoles, 
   };
   BOOST_CHECK_EQUAL(read().runs.size(), 1);
   const auto original = provider;
+  provider["runs"][0].erase("workerPython");
+  provider["runs"][0].erase("workerScript");
+  BOOST_CHECK_EQUAL(read().runs.size(), 1);
+  provider = original;
+  provider["runs"][0].erase("workerPython");
+  BOOST_CHECK_THROW(read(), std::invalid_argument);
+  provider = original;
+  provider["runs"][0]["workerPython"] = {{"path", "/var/tmp/python3"}, {"digest", ABC_DIGEST}};
+  provider["runs"][0]["workerScript"] = {{"path", "/var/tmp/worker.py"}, {"digest", ABC_DIGEST}};
+  BOOST_CHECK_EXCEPTION(read(), std::invalid_argument, [] (const auto& error) {
+    return std::string(error.what()).find("configuration is retired") != std::string::npos;
+  });
+  provider = original;
   provider["runs"][0].erase("requestTimeoutMs");
   BOOST_CHECK_THROW(read(), std::invalid_argument);
   provider = original;
@@ -229,17 +236,10 @@ BOOST_AUTO_TEST_CASE(VehicleComputeRequiresTheSameObservationContextAsItsSources
     BOOST_CHECK_THROW(validateTrackingProviderConfig(config), std::invalid_argument);
   }
   config.runs[0] = run;
-  config.runs[0].workerPython = {"/var/tmp/python3", ABC_DIGEST};
-  config.runs[0].workerScript = {"/var/tmp/tracking_worker.py", ABC_DIGEST};
-  BOOST_CHECK_THROW(validateTrackingProviderConfig(config), std::invalid_argument);
   config.runs[0].mode = TrackingMode::PERSON;
   config.runs[0].profile = {"/var/tmp/profile.json", ABC_DIGEST};
   config.runs[0].reidModel = {"/var/tmp/reid.onnx", ABC_DIGEST};
   config.runs[0].computationManifest = {"/var/tmp/computation.json", ABC_DIGEST};
-  BOOST_CHECK_NO_THROW(validateTrackingProviderConfig(config));
-  config.runs[0].workerScript = {};
-  BOOST_CHECK_THROW(validateTrackingProviderConfig(config), std::invalid_argument);
-  config.runs[0].workerPython = {};
   BOOST_CHECK_NO_THROW(validateTrackingProviderConfig(config));
 
   config.runs[0] = run;

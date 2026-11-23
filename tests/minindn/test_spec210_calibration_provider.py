@@ -89,8 +89,8 @@ def test_minindn_selected_provider_rejects_authorized_camera_calibration():
             f"ground station:\n{ground_station_log[-4000:]}")
         assert provider_log.count("SPEC210_EXTERNAL_CALIBRATION_ROLE_COMPLETE invocation=") >= 1
         assert "CALIBRATION reference is not owned by the selected Calibration-Provider" in compute_log
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-0" in compute_log
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-1" not in compute_log
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-0" in compute_log
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-1" not in compute_log
         assert ("SPEC191_TRACKING_SELECTED role=Calibration-Provider "
                 "provider=/example/uav/calibration-provider") in ground_station_log
         assert "SPEC191_TRACKING_WINDOW_RESULT window=0 status=success" in ground_station_log

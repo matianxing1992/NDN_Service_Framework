@@ -256,13 +256,19 @@ xyahFromTlwh(const Box& tlwh)
 double
 intersectionOverUnion(const Box& lhs, const Box& rhs)
 {
-  const double x1 = std::max(lhs[0], rhs[0]);
-  const double y1 = std::max(lhs[1], rhs[1]);
-  const double x2 = std::min(lhs[0] + lhs[2], rhs[0] + rhs[2]);
-  const double y2 = std::min(lhs[1] + lhs[3], rhs[1] + rhs[3]);
-  const double intersection = std::max(0.0, x2 - x1) * std::max(0.0, y2 - y1);
-  const double area = lhs[2] * lhs[3] + rhs[2] * rhs[3] - intersection;
-  return area <= 0 ? 0 : intersection / area;
+  // Stock matching casts xyxy coordinates and its IoU matrix to float32.
+  const std::array<float, 4> a{static_cast<float>(lhs[0]), static_cast<float>(lhs[1]),
+    static_cast<float>(lhs[0] + lhs[2]), static_cast<float>(lhs[1] + lhs[3])};
+  const std::array<float, 4> b{static_cast<float>(rhs[0]), static_cast<float>(rhs[1]),
+    static_cast<float>(rhs[0] + rhs[2]), static_cast<float>(rhs[1] + rhs[3])};
+  const float x1 = std::max(a[0], b[0]);
+  const float y1 = std::max(a[1], b[1]);
+  const float x2 = std::min(a[2], b[2]);
+  const float y2 = std::min(a[3], b[3]);
+  const float intersection = std::max(0.0F, x2 - x1) * std::max(0.0F, y2 - y1);
+  const float area = (b[2] - b[0]) * (b[3] - b[1]) +
+                     (a[2] - a[0]) * (a[3] - a[1]) - intersection;
+  return area <= 0 ? 0 : intersection / (area + 1e-7F);
 }
 
 std::vector<std::vector<double>>
@@ -272,8 +278,8 @@ iouDistance(const std::vector<Track>& tracks, const std::vector<Track>& detectio
     std::vector<double>(detections.size(), 1.0));
   for (size_t row = 0; row < tracks.size(); ++row) {
     for (size_t column = 0; column < detections.size(); ++column) {
-      costs[row][column] = 1.0 - intersectionOverUnion(tracks[row].tlwh(),
-                                                       detections[column].initialTlwh);
+      costs[row][column] = 1.0F - static_cast<float>(intersectionOverUnion(
+        tracks[row].tlwh(), detections[column].initialTlwh));
     }
   }
   return costs;
@@ -344,12 +350,24 @@ linearAssignment(const std::vector<std::vector<double>>& costs, double threshold
                   size_t columnCount)
 {
   Matching result;
-  const auto assignment = assign(costs);
+  std::vector<int> assignment(costs.size(), -1);
+  if (columnCount != 0) {
+    // One dummy column per row makes "unmatched" part of the optimization.
+    // A real match replaces its threshold cost; this is equivalent to charging
+    // threshold/2 to each unmatched row and column, as in stock cost_limit.
+    std::vector<std::vector<double>> bounded(costs.size(),
+      std::vector<double>(columnCount + costs.size(), threshold));
+    for (size_t row = 0; row < costs.size(); ++row) {
+      std::copy(costs[row].begin(), costs[row].end(), bounded[row].begin());
+    }
+    assignment = assign(bounded);
+  }
   std::vector<char> rowUsed(costs.size(), 0);
   std::vector<char> columnUsed(columnCount, 0);
   for (size_t row = 0; row < assignment.size(); ++row) {
     const int column = assignment[row];
-    if (column < 0 || costs[row][static_cast<size_t>(column)] > threshold) continue;
+    if (column < 0 || static_cast<size_t>(column) >= columnCount ||
+        costs[row][static_cast<size_t>(column)] > threshold) continue;
     result.matches.emplace_back(row, static_cast<size_t>(column));
     rowUsed[row] = 1;
     columnUsed[static_cast<size_t>(column)] = 1;
@@ -368,7 +386,9 @@ fuseScores(std::vector<std::vector<double>>& costs, const std::vector<Track>& de
 {
   for (auto& row : costs) {
     for (size_t column = 0; column < row.size(); ++column) {
-      row[column] = 1.0 - (1.0 - row[column]) * detections[column].score;
+      const float overlap = 1.0F - static_cast<float>(row[column]);
+      const float weighted = overlap * static_cast<float>(detections[column].score);
+      row[column] = 1.0F - weighted;
     }
   }
 }
@@ -506,12 +526,18 @@ UavByteTracker::update(const std::vector<Detection>& detections)
 
   std::vector<Track> unconfirmed;
   std::vector<Track> pool;
+  std::vector<uint64_t> previousOrder;
+  std::vector<uint64_t> previouslyLost;
   for (auto& track : m_tracked) {
+    previousOrder.push_back(track.trackId);
     if (track.isActivated) pool.push_back(std::move(track));
     else unconfirmed.push_back(std::move(track));
   }
   m_tracked.clear();
-  for (auto& track : m_lost) pool.push_back(std::move(track));
+  for (auto& track : m_lost) {
+    previouslyLost.push_back(track.trackId);
+    pool.push_back(std::move(track));
+  }
   m_lost.clear();
   for (auto& track : pool) predict(track);
 
@@ -566,7 +592,9 @@ UavByteTracker::update(const std::vector<Detection>& detections)
   std::vector<size_t> newDetectionIndices;
   std::vector<Track> keptUnconfirmed;
   if (!unconfirmed.empty() && !leftover.empty()) {
-    const auto unconfirmedMatch = linearAssignment(iouDistance(unconfirmed, leftover), 0.7, leftover.size());
+    auto unconfirmedCosts = iouDistance(unconfirmed, leftover);
+    if (m_config.fuseScore) fuseScores(unconfirmedCosts, leftover);
+    const auto unconfirmedMatch = linearAssignment(unconfirmedCosts, 0.7, leftover.size());
     std::vector<char> matched(unconfirmed.size(), 0);
     for (const auto& [row, column] : unconfirmedMatch.matches) {
       updateTrack(unconfirmed[row], detectionOf(leftover[column]));
@@ -597,24 +625,42 @@ UavByteTracker::update(const std::vector<Detection>& detections)
   }
 
   for (auto& track : pool) {
-    if (track.status == TrackStatus::LOST &&
+    if (std::find(previouslyLost.begin(), previouslyLost.end(), track.trackId) !=
+          previouslyLost.end() &&
         m_frameId - track.frameId > m_config.trackBuffer) {
       markRemoved(track);
+      removedThisFrame.push_back(track);
     }
   }
 
   std::vector<Track> nextTracked;
+  std::vector<Track> refound;
   std::vector<Track> nextLost;
   std::vector<Track> nextRemoved = m_removed;
   for (auto& track : pool) {
-    if (track.status == TrackStatus::TRACKED) nextTracked.push_back(std::move(track));
-    else if (track.status == TrackStatus::LOST) nextLost.push_back(std::move(track));
-    else nextRemoved.push_back(std::move(track));
+    if (track.status == TrackStatus::TRACKED) {
+      if (std::find(previouslyLost.begin(), previouslyLost.end(), track.trackId) !=
+          previouslyLost.end()) {
+        refound.push_back(std::move(track));
+      }
+      else nextTracked.push_back(std::move(track));
+    }
+    else nextLost.push_back(std::move(track));
   }
+  std::stable_sort(nextLost.begin(), nextLost.end(), [&] (const auto& a, const auto& b) {
+    return std::find(previouslyLost.begin(), previouslyLost.end(), a.trackId) <
+           std::find(previouslyLost.begin(), previouslyLost.end(), b.trackId);
+  });
   for (auto& track : keptUnconfirmed) {
     if (track.status == TrackStatus::TRACKED) nextTracked.push_back(std::move(track));
   }
+  std::stable_sort(nextTracked.begin(), nextTracked.end(), [&] (const auto& a, const auto& b) {
+    return std::find(previousOrder.begin(), previousOrder.end(), a.trackId) <
+           std::find(previousOrder.begin(), previousOrder.end(), b.trackId);
+  });
+  // Preserve stock's old tracked -> new activation -> re-found ordering.
   for (auto& track : newTracks) nextTracked.push_back(std::move(track));
+  for (auto& track : refound) nextTracked.push_back(std::move(track));
   for (auto& track : removedThisFrame) nextRemoved.push_back(std::move(track));
 
   auto dedupe = [] (std::vector<Track>& tracks) {
@@ -629,7 +675,9 @@ UavByteTracker::update(const std::vector<Detection>& detections)
   dedupe(nextTracked);
   dedupe(nextLost);
   removeByIds(nextLost, nextTracked);
-  removeByIds(nextLost, nextRemoved);
+  // Stock subtracts the previous history before appending this frame's removals.
+  // A newly expired track remains in lost for one update and can repeat in history.
+  removeByIds(nextLost, m_removed);
   removeDuplicates(nextTracked, nextLost);
   if (nextRemoved.size() > 1000) {
     nextRemoved.erase(nextRemoved.begin(),
@@ -712,7 +760,10 @@ UavByteTracker::restoreState(const std::string& stateJson)
     track.trackId = person_json::unsignedNumber(wire.at("trackId"));
     track.isActivated = person_json::boolean(wire.at("isActivated"));
     track.status = static_cast<TrackStatus>(person_json::unsignedNumber(wire.at("state"), 3));
-    if (track.status != expected) person_json::reject("restored track state");
+    if (track.status != expected &&
+        !(expected == TrackStatus::LOST && track.status == TrackStatus::REMOVED)) {
+      person_json::reject("restored track state");
+    }
     const auto& tlwh = wire.at("tlwh");
     for (size_t index = 0; index < 4; ++index) {
       track.initialTlwh[index] = person_json::finiteNumber(tlwh[index]);

@@ -7,7 +7,6 @@
 #include "NDNSF-UAV-APP/shared/UavTrackingResultVerifier.hpp"
 #include "NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.hpp"
 #include "NDNSF-UAV-APP/shared/uav-person-computation.hpp"
-#include "NDNSF-UAV-APP/shared/uav-tracking-worker-process.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndn-service-framework/utils.hpp"
@@ -106,14 +105,8 @@ UavPersonComputationManifest
 fixtureManifest(const UavPersonTrackingProfile& profile)
 {
   // Synthetic inventory declarations; no model or installed-artifact qualification.
-  std::map<std::string, std::string> backend;
-  for (const auto key : {"tracking_worker.py", "person_reid.py", "person_profile.py",
-                        "observation_schema.py", "motion_schema.py", "motion_estimator.py",
-                        "byte_track_state.py", "person_runtime.py", "requirements-person.lock",
-                        "bytetrack.yaml", "runtime/fingerprint", "runtime/torchreid-source"}) {
-    backend.emplace(key, "sha256:" + std::string(64, 'a'));
-  }
-  return makeUavPersonComputationManifest(profile, backend,
+  return makeUavPersonNativeComputationManifest(profile, "bytetrack-ultralytics-v1",
+    "onnxruntime-fixture",
     {{"executable:/fixture/UavTrackingNode", "sha256:" + std::string(64, 'b')}});
 }
 
@@ -138,14 +131,12 @@ struct AdmissionState
   UavPersonComputationManifest manifest = fixtureManifest(profile);
   UavPersonWindowContext context = windowContext();
   UavTrackingWorkerTransaction transactions{temporary.path / "transactions"};
-  std::filesystem::path input = temporary.path / "input.json";
-  std::filesystem::path output = temporary.path / "output.json";
   std::atomic<unsigned> handlerCalls{0};
   std::atomic<unsigned> contextAdmissions{0};
   std::atomic<unsigned> scopedAdmissions{0};
   std::atomic<unsigned> bindingRefusals{0};
   std::atomic<unsigned> executionCalls{0};
-  std::atomic<unsigned> childSuccesses{0};
+  std::atomic<unsigned> backendAdmissions{0};
   std::atomic<unsigned> commitCalls{0};
   std::atomic<unsigned> requestEnvelopes{0};
   std::atomic<unsigned> invalidEnvelopes{0};
@@ -201,22 +192,12 @@ struct AdmissionState
                           "reidInputDevice"}) {
       wire[key] = "cpu";
     }
-    {
-      std::ofstream stream(input, std::ios::binary);
-      stream << wire.dump();
-      stream.flush();
-      if (!stream) throw std::runtime_error("cannot write literal native backend input");
-    }
     ++executionCalls;
-    const auto child = runUavTrackingWorkerProcess(
-      {"/bin/cp", "--", input.string(), output.string()}, 2s, 4096,
-      [&authority] { return authority.hasCurrentWorkAuthority(); });
-    if (child.outcome != UavTrackingWorkerOutcome::SUCCESS || child.exitCode != 0) {
-      throw std::runtime_error("native admission child did not succeed");
+    if (!authority.hasCurrentWorkAuthority()) {
+      throw std::runtime_error("native person admission authority revoked");
     }
-    ++childSuccesses;
-    const auto backend = parseUavPersonBackendWindow(
-      readBounded(output, profile.limits.at("maxResultBytes")), context, profile);
+    const auto backend = parseUavPersonBackendWindow(wire.dump(), context, profile);
+    ++backendAdmissions;
     UavPersonTrackingEngine engine(profile);
     const auto decision = engine.processWindow(context, backend);
     std::array<std::string, 3> names;
@@ -740,14 +721,12 @@ checkAdmissionCase(const std::string& label, const std::string& wrongKey,
     BOOST_CHECK_EQUAL(state.scopedAdmissions.load(), 0);
     BOOST_CHECK_EQUAL(state.bindingRefusals.load(), 0);
     BOOST_CHECK_EQUAL(state.executionCalls.load(), 0);
-    BOOST_CHECK_EQUAL(state.childSuccesses.load(), 0);
+    BOOST_CHECK_EQUAL(state.backendAdmissions.load(), 0);
     BOOST_CHECK_EQUAL(state.commitCalls.load(), 0);
     BOOST_CHECK_EQUAL(state.responseCallbacks.load(), 0);
     BOOST_CHECK(!state.transactions.loadCommittedResult(
       state.context.windowId, state.context.computationDigest).has_value());
     BOOST_CHECK(!state.transactions.committedStatePath(state.context.windowId).has_value());
-    BOOST_CHECK(!std::filesystem::exists(state.input));
-    BOOST_CHECK(!std::filesystem::exists(state.output));
     BOOST_CHECK(!std::filesystem::exists(state.temporary.path / "transactions"));
     {
       std::lock_guard<std::mutex> lock(state.mutex);
@@ -781,13 +760,11 @@ checkAdmissionCase(const std::string& label, const std::string& wrongKey,
     BOOST_CHECK_EQUAL(state.responseCallbacks.load(), 0);
     BOOST_CHECK(!state.timedOut.load());
     BOOST_CHECK_EQUAL(state.executionCalls.load(), 0);
-    BOOST_CHECK_EQUAL(state.childSuccesses.load(), 0);
+    BOOST_CHECK_EQUAL(state.backendAdmissions.load(), 0);
     BOOST_CHECK_EQUAL(state.commitCalls.load(), 0);
     BOOST_CHECK(!state.transactions.loadCommittedResult(
       state.context.windowId, state.context.computationDigest).has_value());
     BOOST_CHECK(!state.transactions.committedStatePath(state.context.windowId).has_value());
-    BOOST_CHECK(!std::filesystem::exists(state.input));
-    BOOST_CHECK(!std::filesystem::exists(state.output));
     BOOST_CHECK(!std::filesystem::exists(state.temporary.path / "transactions"));
     environment.providerPubSub().unsubscribe(subscription);
     registration.close();
@@ -813,7 +790,7 @@ checkAdmissionCase(const std::string& label, const std::string& wrongKey,
       BOOST_CHECK_MESSAGE(state.responseStatus.load(), state.responseError);
       BOOST_CHECK_EQUAL(state.bindingRefusals.load(), 0);
       BOOST_CHECK_EQUAL(state.executionCalls.load(), 1);
-      BOOST_CHECK_EQUAL(state.childSuccesses.load(), 1);
+      BOOST_CHECK_EQUAL(state.backendAdmissions.load(), 1);
       BOOST_CHECK_EQUAL(state.commitCalls.load(), 1);
       BOOST_CHECK_EQUAL(state.responsePayload, std::string(committed->begin(), committed->end()));
       UavPersonTrackingEngine restored(state.profile);
@@ -833,12 +810,10 @@ checkAdmissionCase(const std::string& label, const std::string& wrongKey,
       BOOST_CHECK(!state.responseStatus.load());
       BOOST_CHECK_EQUAL(state.bindingRefusals.load(), 1);
       BOOST_CHECK_EQUAL(state.executionCalls.load(), 0);
-      BOOST_CHECK_EQUAL(state.childSuccesses.load(), 0);
+      BOOST_CHECK_EQUAL(state.backendAdmissions.load(), 0);
       BOOST_CHECK_EQUAL(state.commitCalls.load(), 0);
       BOOST_CHECK_EQUAL(state.refusal, "person request binding mismatch: " + wrongKey);
       BOOST_CHECK_EQUAL(state.responsePayload, state.refusal);
-      BOOST_CHECK(!std::filesystem::exists(state.input));
-      BOOST_CHECK(!std::filesystem::exists(state.output));
       BOOST_CHECK(!std::filesystem::exists(state.temporary.path / "transactions"));
     }
   }

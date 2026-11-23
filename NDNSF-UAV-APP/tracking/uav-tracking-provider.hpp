@@ -50,14 +50,6 @@ describeUavPersonNativeComputation(const std::filesystem::path& model,
                                    const std::filesystem::path& profile,
                                    const std::filesystem::path& reidModel);
 
-/** Legacy Python-worker computation description. */
-std::string
-describeUavPersonComputation(const std::filesystem::path& model,
-                             const std::filesystem::path& profile,
-                             const std::filesystem::path& reidModel,
-                             const std::filesystem::path& workerPython,
-                             const std::filesystem::path& workerScript);
-
 /** Native source factory used by MiniMUAS to inject its software camera. */
 struct UavTrackingSourceRequest
 {

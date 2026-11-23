@@ -800,8 +800,6 @@ class TrackingRunnerTest(unittest.TestCase):
             with patch("Experiments.UAV.run_multicamera_tracking_demo.DEFAULT_TRACKING_LIBEXEC",
                        scripts):
                 errors = preflight(plan, run=True, headless=True)["errors"]
-        self.assertNotIn(f"missing installed tracking script: {scripts / 'tracking_worker.py'}",
-                         errors)
         self.assertIn(f"missing installed tracking script: {scripts / 'observation_source.py'}",
                       errors)
 

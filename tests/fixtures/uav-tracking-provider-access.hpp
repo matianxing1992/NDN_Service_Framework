@@ -3,12 +3,11 @@
 
 #include "NDNSF-UAV-APP/tracking/uav-tracking-provider.hpp"
 #include "NDNSF-UAV-APP/tracking/uav-vehicle-tracking-engine.hpp"
-#include "NDNSF-UAV-APP/shared/uav-tracking-worker-process.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 namespace ndnsf::examples::uav {
 
-/** Test-only ownership probe; supplies an already READY real child, never a fake close. */
+/** Test-only access to native admission, artifact inspection and local model execution. */
 struct UavTrackingProviderTestAccess
 {
   static void verifyAssets(UavTrackingProvider& owner, const std::string& runId,
@@ -18,9 +17,6 @@ struct UavTrackingProviderTestAccess
 
   static ndn_service_framework::ServiceProvider::AckDecision
   acknowledge(UavTrackingProvider& owner, const ndn_service_framework::RequestMessage& request);
-
-  static void adoptIdleSession(UavTrackingProvider& owner,
-                               std::shared_ptr<UavTrackingWorkerSession> session);
 
   // Substitute only local model execution; admission and commit remain on the native path.
   using VehicleBackend = std::function<VehicleBackendWindow(

@@ -18,12 +18,12 @@ def main_plan(tmp_path, monkeypatch, name="run-1", epoch=42, prepared=False):
     monkeypatch.setattr(runner, 'TOPOLOGY', topology)
     binaries = tmp_path / 'installed'
     binaries.mkdir(exist_ok=True)
-    for binary_name in ('UavDroneApp', 'UavGroundStationApp', 'App_ServiceController', 'tracking_worker.py'):
+    for binary_name in ('UavDroneApp', 'UavGroundStationApp', 'App_ServiceController'):
         (binaries / binary_name).write_text('installed fixture ' + binary_name)
     monkeypatch.setattr(runner, '_installed_program', lambda name: str(binaries / name))
     monkeypatch.setattr(runner, '_installed_tracking_script', lambda name: binaries / name)
-    model, python, trust = [tmp_path / name for name in ('model.onnx', 'python3', 'trust.conf')]
-    for path in (model, python, trust):
+    model, trust = [tmp_path / name for name in ('model.onnx', 'trust.conf')]
+    for path in (model, trust):
         path.write_text(path.name)
     runner._write_uav_trust_schema(trust)
     output = tmp_path / name
@@ -31,7 +31,7 @@ def main_plan(tmp_path, monkeypatch, name="run-1", epoch=42, prepared=False):
         request_timeout_ms=180000, source_ids={f'UAV{i}': f'source-{i}' for i in range(1, 4)},
         source_epoch=epoch, observation_profile={'deliveryMode': 'replay', 'worldFrameId': 'simulated',
         'acquisitionKind': 'simulated'}, source_generations_path=output / 'private/config/generations.json',
-        trust_schema=trust, person_tracking=None, worker_python=python)
+        trust_schema=trust, person_tracking=None)
     plan = {**runner._main_plan_metadata(specs, output), 'processes': [s.public_dict() for s in specs]}
     plan.update(mode='headless', topology={'nodes': []}, settings={
         'nfdCsMaxPackets': 4096,

@@ -290,7 +290,6 @@
     "tests/unit-tests/uav-tracking-provider.t.cpp": "uav",
     "tests/unit-tests/uav-tracking-result-verifier.t.cpp": "uav",
     "tests/unit-tests/uav-tracking-session.t.cpp": "uav",
-    "tests/unit-tests/uav-tracking-worker-process.t.cpp": "uav",
     "tests/unit-tests/uav-tracking-worker-transaction.t.cpp": "uav",
     "tests/unit-tests/uav-two-lifecycle.t.cpp": "uav",
     "tests/unit-tests/uav-vehicle-tracking-engine.t.cpp": "uav",

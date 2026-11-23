@@ -47,27 +47,34 @@ struct UavPersonModelBackend::Impl
                static_cast<size_t>(profileValue.limits.at("maxPersonsPerFrame") + 1),
                detectorFormat)
   {
-    if (profile.requestedDevice != "cpu") {
-      throw std::invalid_argument("native person backend currently supports CPU only");
-    }
-    if (profile.reidPreprocessId != "osnet-rgb-256x128-imagenet-l2-v1") {
-      throw std::invalid_argument("native person backend supports the GAP ReID preprocess only");
-    }
   }
 };
+
+void
+UavPersonModelBackend::validateProfile(const UavPersonTrackingProfile& profile)
+{
+  if (profile.requestedDevice != "cpu") {
+    throw std::invalid_argument("native person backend currently supports CPU only");
+  }
+  if (profile.reidPreprocessId != "osnet-rgb-256x128-imagenet-l2-v1") {
+    throw std::invalid_argument("native person backend supports the GAP ReID preprocess only");
+  }
+  if (profile.detectorPreprocessId != "yolo-default640-stock-box-v1" &&
+      profile.detectorPreprocessId != "yolo-letterbox640-raw-box-v1") {
+    throw std::invalid_argument("unsupported native person detector preprocessing");
+  }
+}
 
 UavPersonModelBackend::UavPersonModelBackend(const UavPersonTrackingProfile& profile,
                                              const std::filesystem::path& detectorModel,
                                              const std::filesystem::path& reidModel,
                                              size_t reidBatchSize)
 {
+  validateProfile(profile);
   using Format = UavPersonDetectorSession::ModelFormat;
   auto detectorFormat = Format::PERSON_RAW;
   if (profile.detectorPreprocessId == "yolo-default640-stock-box-v1") {
     detectorFormat = Format::PERSON_STOCK;
-  }
-  else if (profile.detectorPreprocessId != "yolo-letterbox640-raw-box-v1") {
-    throw std::invalid_argument("unsupported native person detector preprocessing");
   }
   m_impl = std::make_unique<Impl>(profile, detectorModel, reidModel, reidBatchSize, detectorFormat);
 }
@@ -161,6 +168,11 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
       tracker.restoreState(previous.at("tracker").dump());
     }
     tracker.update(detections);
+    const auto trackerState = person_json::parseBounded(
+      tracker.stateJson(), profile.limits.at("maxSnapshotBytes"));
+    byte_track::checkTracker(trackerState,
+      profile.limits.at("maxBackendTracksPerCamera"),
+      byte_track::BackendStateFormat::COMPACT_CURRENT);
     // v3 state carries every current local track, including a newly born,
     // not-yet-activated track.  Emit the same owner set so engine admission
     // does not reject the window for a missing active stock detection.
@@ -233,7 +245,7 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
       {"lostByteTrackIds", std::move(lost)}});
     cameras[expected.cameraId] = Json{{"sourceId", expected.sourceId},
       {"sourceEpoch", expected.sourceEpoch}, {"trackerGeneration", expected.trackerGeneration},
-      {"tracker", person_json::parseBounded(tracker.stateJson(), profile.limits.at("maxSnapshotBytes"))}};
+      {"tracker", trackerState}};
   }
 
   const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(

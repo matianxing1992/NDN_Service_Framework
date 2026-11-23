@@ -1,5 +1,6 @@
 #include "tests/fixtures/uav-tracking-core-flow.hpp"
 #include "tests/fixtures/uav-tracking-provider-access.hpp"
+#include "tests/fixtures/uav-person-profile-golden.hpp"
 #include "tests/fixtures/test-resource-paths.hpp"
 
 #include <algorithm>
@@ -976,39 +977,6 @@ BOOST_FIXTURE_TEST_CASE(CommitAuthorityUsesTheCompleteDispatchFence, ProviderFix
   }
 }
 
-BOOST_FIXTURE_TEST_CASE(IdleChildShutdownDoesNotBlockTheHostFaceAndReapsItsChild, ProviderFixture)
-{
-  providerConfig.runs.clear();
-  capability = std::make_unique<UavTrackingProvider>(providerConfig);
-  auto session = std::make_shared<UavTrackingWorkerSession>(std::vector<std::string>{
-    "/bin/sh", "-c",
-    "trap '' TERM; read request; echo $$; echo READY; while :; do sleep 1; done"}, 4096);
-  const auto ready = session->exchange("start\n", "READY\n", std::chrono::milliseconds(2000),
-                                       [] { return true; });
-  BOOST_REQUIRE(ready.outcome == UavTrackingWorkerOutcome::SUCCESS);
-  const auto child = static_cast<pid_t>(std::stol(ready.stdoutText));
-  BOOST_REQUIRE(child > 1);
-  BOOST_REQUIRE_EQUAL(::kill(child, 0), 0);
-  UavTrackingProviderTestAccess::adoptIdleSession(*capability, std::move(session));
-  capability->stopAdmission();
-  capability->cancelActiveWork();
-  capability->cancelActiveWork();
-  auto callbackRan = std::make_shared<bool>(false);
-  auto childStillAlive = std::make_shared<bool>(false);
-  boost::asio::post(environment->userFace().getIoContext(), [=] {
-    *childStillAlive = ::kill(child, 0) == 0;
-    *callbackRan = true;
-  });
-  environment->pumpUntilWithAttributeAuthority([=] { return *callbackRan; });
-  BOOST_REQUIRE(*callbackRan);
-  BOOST_CHECK(*childStillAlive);
-  environment->pumpUntilWithAttributeAuthority([this] { return capability->isDrained(); });
-  BOOST_REQUIRE(capability->isDrained());
-  errno = 0;
-  BOOST_CHECK_EQUAL(::kill(child, 0), -1);
-  BOOST_CHECK_EQUAL(errno, ESRCH);
-}
-
 BOOST_FIXTURE_TEST_CASE(InitialAssetAndHandlerInspectionHonorsTheSynchronousAuthorityPredicate,
                         ProviderFixture)
 {
@@ -1423,6 +1391,48 @@ BOOST_FIXTURE_TEST_CASE(HeavySourceRejectsAnotherRunAndNextPreparedRunExecutes, 
   BOOST_CHECK_EQUAL(latest.presentation->runId, "run-2");
   BOOST_CHECK_EQUAL(latest.presentation->generation, 2);
   for (const auto& image : latest.presentation->frames) BOOST_CHECK_EQUAL(image.sourceEpoch, 2);
+}
+
+BOOST_FIXTURE_TEST_CASE(UnsupportedPersonProfileIsNotReadyBeforeAnyModelExecution, ProviderFixture)
+{
+  const auto asset = [&] (const char* name, const std::string& bytes) {
+    const auto path = root / name;
+    std::ofstream(path) << bytes;
+    return TrackingAssetReference{path, digestOf(bytes)};
+  };
+  auto profileWire = person_json::Json::parse(PERSON_PROFILE_GOLDEN);
+  profileWire["requestedDevice"] = "cuda:0";
+  profileWire["detectorDigest"] = digestOf("abc");
+  profileWire["reidDigest"] = digestOf("abc");
+  const auto profile = parseUavPersonTrackingProfile(profileWire.dump());
+  const auto manifest = makeUavPersonNativeComputationManifest(profile,
+    "bytetrack-ultralytics-v1", "onnxruntime-fixture",
+    {{"executable:/fixture/provider", digestOf("abc")}});
+  providerConfig.producerIdentity = definition.computeIdentity;
+  auto& run = providerConfig.runs.front();
+  run.mode = TrackingMode::PERSON;
+  run.role = TrackingProviderRole::COMPUTE;
+  run.cameraId.clear();
+  run.observationStreamDirectory.clear();
+  run.model = asset("model.onnx", "abc");
+  run.reidModel = run.model;
+  run.profile = asset("profile.json", profile.canonicalJson);
+  run.computationManifest = asset("computation.json", manifest.canonicalJson);
+  capability = std::make_unique<UavTrackingProvider>(providerConfig);
+  Fields fields{{"schema", "spec191-window-request-v1"}, {"tracking_request_timeout_ms", "10000"},
+    {"run_id", definition.runId}, {"mission_id", "tracking-" + definition.runId},
+    {"window_id", "window-0"}, {"observation_schema", "uav-observation-v2"},
+    {"source_epoch", "1"}};
+  for (size_t i = 0; i < 3; ++i) {
+    fields["source_uav" + std::to_string(i + 1) + "_id"] = definition.sources[i].sourceId;
+  }
+  nsf::RequestMessage request;
+  auto bytes = asFields(fields);
+  request.setPayload(bytes, bytes.size());
+  const auto decision = UavTrackingProviderTestAccess::acknowledge(*capability, request);
+  BOOST_CHECK(!decision.status);
+  BOOST_CHECK(decision.message.find("CPU only") != std::string::npos);
+  BOOST_CHECK(!std::filesystem::exists(providerConfig.ownedWorkspace / "person"));
 }
 
 BOOST_FIXTURE_TEST_CASE(BadAssetIsNotReadyWhileItsHostStillProcessesCallbacks, ProviderFixture)

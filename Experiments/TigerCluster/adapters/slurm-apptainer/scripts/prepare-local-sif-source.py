@@ -23,6 +23,7 @@ FILES = (
     "configure.sh",
     "scripts/build-safe.sh",
     "scripts/build-storage.py",
+    "scripts/host-build-jobs.sh",
     "scripts/ndnsf-di-workspace.py",
     "scripts/host_profile.py",
     "scripts/configure_dependencies.py",

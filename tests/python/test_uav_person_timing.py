@@ -68,6 +68,61 @@ class PersonTimingTests(unittest.TestCase):
         self.prepared["sourceFrameInputsDigest"] = "sha256:" + hashlib.sha256(raw).hexdigest()
         (self.root / "prepared-person-sources.json").write_text(json.dumps(self.prepared))
 
+    def native_backend(self):
+        self.logs["compute.log"] = [record for record in self.logs["compute.log"]
+                                     if record["event"] != "PERSON_BACKEND_COMPLETED"]
+        self.native("compute.log", "PERSON_BACKEND_COMPLETED", 3500000001,
+            {**self.scope, "backendKind": "native-onnx", "actualDevice": "cpu", "pid": 123,
+             "modelInitStartNs": 800000000, "modelInitEndNs": 900000000,
+             "inferenceStartNs": 3300000000, "inferenceEndNs": 3400000000})
+
+    def test_native_initialization_can_precede_the_window_without_fabricated_timestamps(self):
+        self.native_backend()
+        result = self.collect()
+        self.assertTrue(result["timingQualified"], result["errors"])
+        self.assertEqual(result["windows"][0]["modelInitStartNs"], 800000000)
+        self.assertEqual(result["summary"]["modelInitializationMs"]["count"], 1)
+        self.assertEqual(result["summary"]["modelInitializationMs"]["p50"], 100)
+
+    def test_native_cached_model_initialization_is_counted_once_per_lifetime(self):
+        self.native_backend()
+        self.plan["settings"]["windowCount"] = 2
+        self.prepared["windowCount"] = 2
+        for values in self.sampling["sampling"].values():
+            for key in ("captureTimeUs", "targetTimeUs"):
+                values[key].append(values[key][0] + 500000)
+            values["inputDigests"].append(values["inputDigests"][0])
+        self.write_sampling()
+        for records in self.logs.values():
+            for original in list(records):
+                if original["event"] == "replay-origin":
+                    continue
+                record = copy.deepcopy(original)
+                record["sequence"] = 2
+                record["windowId"] = "window-1"
+                record["monotonicNs"] += 5000000000
+                for key in ("inferenceStartNs", "inferenceEndNs"):
+                    if key in record:
+                        record[key] += 5000000000
+                for key in ("commonPtsUs", "ptsUs"):
+                    if key in record:
+                        record[key] += 500000
+                if "window" in record:
+                    record["window"] = 1
+                records.append(record)
+        result = self.collect()
+        self.assertTrue(result["timingQualified"], result["errors"])
+        self.assertEqual(result["completeFrameTimingRecords"], 6)
+        self.assertEqual(result["summary"]["modelWindowMs"]["count"], 2)
+        self.assertEqual(result["summary"]["modelInitializationMs"]["count"], 1)
+
+    def test_native_initialization_after_inference_is_rejected(self):
+        self.native_backend()
+        self.logs["compute.log"][-1]["modelInitEndNs"] = 3400000001
+        result = self.collect()
+        self.assertFalse(result["timingQualified"])
+        self.assertTrue(any("noncausal window" in error for error in result["errors"]))
+
     def test_actual_per_camera_media_pts_preserve_nominal_schedule(self):
         self.sampling["sampling"]["UAV2"]["captureTimeUs"] = [25025000]
         self.write_sampling()

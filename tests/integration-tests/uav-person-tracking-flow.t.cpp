@@ -5,7 +5,6 @@
 #include "NDNSF-UAV-APP/shared/UavTrackingResultVerifier.hpp"
 #include "NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.hpp"
 #include "NDNSF-UAV-APP/shared/uav-person-window-admission.hpp"
-#include "NDNSF-UAV-APP/shared/uav-tracking-worker-process.hpp"
 
 #include <array>
 #include <atomic>
@@ -122,11 +121,9 @@ struct FlowFixture
   UavPersonTrackingEngine engine;
   UavPersonWindowContext first = atWindow(1, 1000000);
   UavPersonWindowContext second = atWindow(2, 1500000);
-  std::filesystem::path input = temporary.path / "literal-backend.json";
-  std::filesystem::path output = temporary.path / "child-output.json";
   std::string firstResult;
   std::string firstState;
-  std::atomic<unsigned> childLaunchAttempts{0};
+  std::atomic<unsigned> backendAttempts{0};
 
   explicit FlowFixture(uint64_t retainedLimit = 120)
     : profile([retainedLimit] {
@@ -140,16 +137,10 @@ struct FlowFixture
   }
 
   std::string
-  copyFromChild(const Json& wire)
+  prepareBackend(const Json& wire)
   {
-    writeText(input, wire.dump());
-    std::filesystem::remove(output);
-    ++childLaunchAttempts;
-    const auto status = runUavTrackingWorkerProcess(
-      {"/bin/cp", "--", input.string(), output.string()}, 2s, 4096, [] { return true; });
-    BOOST_REQUIRE(status.outcome == UavTrackingWorkerOutcome::SUCCESS);
-    BOOST_REQUIRE_EQUAL(status.exitCode, 0);
-    return readBounded(output, profile.limits.at("maxResultBytes"));
+    ++backendAttempts;
+    return wire.dump();
   }
 
   Candidate
@@ -189,7 +180,7 @@ struct FlowFixture
   Candidate
   commitFirst()
   {
-    auto candidate = admit(first, copyFromChild(backendFor(first, profile.profileDigest)), engine);
+    auto candidate = admit(first, prepareBackend(backendFor(first, profile.profileDigest)), engine);
     BOOST_REQUIRE(transactions.commit(first.windowId, FIRST_INPUT, bufferOf(candidate.result),
       bufferOf(candidate.decision.candidateStateJson), [] { return true; }));
     firstResult = candidate.result;
@@ -225,7 +216,7 @@ checkIds(const Candidate& candidate)
 
 BOOST_AUTO_TEST_SUITE(UavPersonTrackingFlow)
 
-BOOST_AUTO_TEST_CASE(ChildCandidateCommitsRestoresAndReplaysImmutableNativeDecisions)
+BOOST_AUTO_TEST_CASE(NativeCandidateCommitsRestoresAndReplaysImmutableDecisions)
 {
   FlowFixture fixture;
   checkIds(fixture.commitFirst());
@@ -241,68 +232,33 @@ BOOST_AUTO_TEST_CASE(ChildCandidateCommitsRestoresAndReplaysImmutableNativeDecis
   BOOST_CHECK_THROW(fixture.transactions.loadCommittedResult(fixture.first.windowId, SECOND_INPUT),
                     std::runtime_error);
   const auto next = fixture.admit(fixture.second,
-    fixture.copyFromChild(backendFor(fixture.second)), restored);
+    fixture.prepareBackend(backendFor(fixture.second)), restored);
   checkIds(next);
   BOOST_REQUIRE(fixture.transactions.commit(fixture.second.windowId, SECOND_INPUT,
     bufferOf(next.result), bufferOf(next.decision.candidateStateJson), [] { return true; }));
   fixture.checkPredecessorUnchanged();
 }
 
-BOOST_AUTO_TEST_CASE(InvalidChildBindingsAndFinalRevocationPreserveCommittedState)
+BOOST_AUTO_TEST_CASE(InvalidBackendBindingsAndFinalRevocationPreserveCommittedState)
 {
   FlowFixture fixture;
   fixture.commitFirst();
   const auto previousEngine = fixture.engine.serializeState();
   auto invalid = backendFor(fixture.second);
   invalid["missionId"] = "wrong-mission";
-  BOOST_CHECK_THROW(fixture.admit(fixture.second, fixture.copyFromChild(invalid), fixture.engine),
+  BOOST_CHECK_THROW(fixture.admit(fixture.second, fixture.prepareBackend(invalid), fixture.engine),
                     std::invalid_argument);
   invalid = backendFor(fixture.second);
   invalid["frames"][0]["detections"][0]["embedding"] = {1.0};
-  BOOST_CHECK_THROW(fixture.admit(fixture.second, fixture.copyFromChild(invalid), fixture.engine),
+  BOOST_CHECK_THROW(fixture.admit(fixture.second, fixture.prepareBackend(invalid), fixture.engine),
                     std::invalid_argument);
   BOOST_CHECK_EQUAL(fixture.engine.serializeState(), previousEngine);
   const auto next = fixture.admit(fixture.second,
-    fixture.copyFromChild(backendFor(fixture.second)), fixture.engine);
+    fixture.prepareBackend(backendFor(fixture.second)), fixture.engine);
   BOOST_CHECK(!fixture.transactions.commit(fixture.second.windowId, SECOND_INPUT,
     bufferOf(next.result), bufferOf(next.decision.candidateStateJson), [] { return false; }));
   BOOST_CHECK(!fixture.transactions.loadCommittedResult(fixture.second.windowId, SECOND_INPUT));
   BOOST_CHECK(!fixture.transactions.committedStatePath(fixture.second.windowId));
-  fixture.checkPredecessorUnchanged();
-}
-
-BOOST_AUTO_TEST_CASE(CrashAndActiveCancellationReapChildBeforeFreshRecovery)
-{
-  FlowFixture fixture;
-  fixture.commitFirst();
-  writeText(fixture.input, backendFor(fixture.second).dump());
-  std::filesystem::remove(fixture.output);
-  const auto crashed = runUavTrackingWorkerProcess(
-    {"/bin/sh", "-c", "cp -- \"$1\" \"$2\"; exit 7", "synthetic-fixture",
-     fixture.input.string(), fixture.output.string()}, 2s, 4096, [] { return true; });
-  BOOST_CHECK(crashed.outcome == UavTrackingWorkerOutcome::CHILD_FAILURE);
-  BOOST_CHECK_EQUAL(crashed.exitCode, 7);
-  BOOST_REQUIRE(std::filesystem::is_regular_file(fixture.output));
-  const auto marker = fixture.temporary.path / "cancelled.pid";
-  pid_t leader = -1;
-  const auto cancelled = runUavTrackingWorkerProcess(
-    {"/bin/sh", "-c", "printf '%s\\n' $$ > \"$1\"; exec sleep 30", "synthetic-fixture",
-     marker.string()}, 2s, 4096, [&] {
-      std::ifstream stream(marker);
-      return !(stream >> leader) || leader <= 0;
-    });
-  BOOST_CHECK(cancelled.outcome == UavTrackingWorkerOutcome::CANCELLED);
-  BOOST_REQUIRE_GT(leader, 0);
-  BOOST_CHECK(!std::filesystem::exists("/proc/" + std::to_string(leader)));
-  BOOST_CHECK(!fixture.transactions.committedStatePath(fixture.second.windowId));
-  fixture.checkPredecessorUnchanged();
-  UavPersonTrackingEngine recovered(fixture.profile);
-  recovered.restoreState(fixture.firstState, fixture.second);
-  const auto next = fixture.admit(fixture.second,
-    fixture.copyFromChild(backendFor(fixture.second)), recovered);
-  checkIds(next);
-  BOOST_REQUIRE(fixture.transactions.commit(fixture.second.windowId, SECOND_INPUT,
-    bufferOf(next.result), bufferOf(next.decision.candidateStateJson), [] { return true; }));
   fixture.checkPredecessorUnchanged();
 }
 
@@ -312,7 +268,7 @@ BOOST_AUTO_TEST_CASE(ProfileAndRunCapacityPreserveCommittedPairsAndCachedReplay)
   checkIds(fixture.commitFirst());
   fixture.transactions.requireCapacity(fixture.second.windowId);
   const auto second = fixture.admit(fixture.second,
-    fixture.copyFromChild(backendFor(fixture.second, fixture.profile.profileDigest)), fixture.engine);
+    fixture.prepareBackend(backendFor(fixture.second, fixture.profile.profileDigest)), fixture.engine);
   BOOST_REQUIRE(fixture.transactions.commit(fixture.second.windowId, SECOND_INPUT,
     bufferOf(second.result), bufferOf(second.decision.candidateStateJson), [] { return true; }));
   const auto beforeEngine = fixture.engine.serializeState();
@@ -419,11 +375,9 @@ BOOST_AUTO_TEST_CASE(BusyPersonWindowAdmissionPreservesActiveCandidateAndRelease
   auto lease = admission.tryAcquire();
   BOOST_REQUIRE(lease.owns_lock());
   const auto candidate = fixture.admit(fixture.second,
-    fixture.copyFromChild(backendFor(fixture.second, fixture.profile.profileDigest)), fixture.engine);
+    fixture.prepareBackend(backendFor(fixture.second, fixture.profile.profileDigest)), fixture.engine);
   const auto beforeEngine = fixture.engine.serializeState();
-  const auto beforeInput = readBounded(fixture.input, 8 * 1024 * 1024);
-  const auto beforeOutput = readBounded(fixture.output, 8 * 1024 * 1024);
-  const auto beforeAttempts = fixture.childLaunchAttempts.load();
+  const auto beforeAttempts = fixture.backendAttempts.load();
   BOOST_REQUIRE_EQUAL(beforeAttempts, 2);
   const auto active = root / fixture.second.windowId;
   const auto third = atWindow(3, 2000000);
@@ -440,8 +394,8 @@ BOOST_AUTO_TEST_CASE(BusyPersonWindowAdmissionPreservesActiveCandidateAndRelease
         auto attempted = admission.tryAcquire();
         const bool admitted = attempted.owns_lock();
         if (admitted) {
-          // A broken admission owner must expose a real, bounded child attempt.
-          fixture.copyFromChild(backendFor(third, fixture.profile.profileDigest));
+          // A broken admission owner must expose an attempted backend candidate.
+          fixture.prepareBackend(backendFor(third, fixture.profile.profileDigest));
         }
         return std::make_pair(admitted, std::this_thread::get_id() != caller);
       });
@@ -451,10 +405,8 @@ BOOST_AUTO_TEST_CASE(BusyPersonWindowAdmissionPreservesActiveCandidateAndRelease
       BOOST_REQUIRE(ready);
       BOOST_CHECK(!observation.first);
       BOOST_CHECK(observation.second);
-      BOOST_CHECK_EQUAL(fixture.childLaunchAttempts.load(), beforeAttempts);
+      BOOST_CHECK_EQUAL(fixture.backendAttempts.load(), beforeAttempts);
       BOOST_CHECK_EQUAL(fixture.engine.serializeState(), beforeEngine);
-      BOOST_CHECK_EQUAL(readBounded(fixture.input, 8 * 1024 * 1024), beforeInput);
-      BOOST_CHECK_EQUAL(readBounded(fixture.output, 8 * 1024 * 1024), beforeOutput);
       for (const auto& [path, bytes] : activeFiles) {
         BOOST_CHECK_EQUAL(readBounded(path, 8 * 1024 * 1024), bytes);
       }
@@ -482,7 +434,7 @@ BOOST_AUTO_TEST_CASE(BusyPersonWindowAdmissionPreservesActiveCandidateAndRelease
     auto recovered = admission.tryAcquire();
     BOOST_REQUIRE(recovered.owns_lock());
     const auto cancelled = fixture.admit(third,
-      fixture.copyFromChild(backendFor(third, fixture.profile.profileDigest)), fixture.engine);
+      fixture.prepareBackend(backendFor(third, fixture.profile.profileDigest)), fixture.engine);
     BOOST_CHECK(!fixture.transactions.commit(third.windowId, FIRST_INPUT,
       bufferOf(cancelled.result), bufferOf(cancelled.decision.candidateStateJson),
       [] { return false; }));
@@ -505,7 +457,7 @@ BOOST_AUTO_TEST_CASE(BusyPersonWindowAdmissionPreservesActiveCandidateAndRelease
                                                                   SECOND_INPUT);
   BOOST_REQUIRE(unchanged.has_value());
   BOOST_CHECK_EQUAL(textOf(*unchanged), candidate.result);
-  BOOST_CHECK_EQUAL(fixture.childLaunchAttempts.load(), 3);
+  BOOST_CHECK_EQUAL(fixture.backendAttempts.load(), 3);
   for (const auto& [path, bytes] : committedFiles) {
     BOOST_CHECK_EQUAL(readBounded(path, 8 * 1024 * 1024), bytes);
   }

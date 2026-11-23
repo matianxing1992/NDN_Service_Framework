@@ -171,7 +171,8 @@ def collect_person_timing(run_root: Path, plan: Mapping[str, Any]) -> dict[str, 
                     not target <= _uint(actual) <= target + 100000):
                 raise ValueError("invalid frozen actual/target sampling PTS")
     windows = [{"windowId": f"window-{i}", "sequence": i + 1, "sourceEpoch": epoch,
-                **dict.fromkeys(WINDOW_EVENTS.values()), **dict.fromkeys(MODEL_POINTS), "workerPid": None} for i in range(count)]
+                **dict.fromkeys(WINDOW_EVENTS.values()), **dict.fromkeys(MODEL_POINTS),
+                "workerPid": None, "backendKind": None} for i in range(count)]
     frames = {(i + 1, camera): {"windowId": f"window-{i}", "sequence": i + 1,
               "cameraId": camera, "sourceId": sources[camera], "sourceEpoch": epoch,
               "commonPtsUs": sampling["sampling"][camera]["captureTimeUs"][i],
@@ -268,6 +269,12 @@ def collect_person_timing(run_root: Path, plan: Mapping[str, Any]) -> dict[str, 
                         raise ValueError("backend trace actor mismatch")
                     if value.get("actualDevice") != plan["personTracking"]["requestedDevice"]:
                         raise ValueError("backend device mismatch")
+                    if value.get("backendKind") is not None:
+                        if value["backendKind"] != "native-onnx" or not native:
+                            raise ValueError("native backend telemetry must come from its native owner")
+                        if windows[sequence - 1]["backendKind"] is not None:
+                            raise ValueError("duplicate native backend timing record")
+                        windows[sequence - 1]["backendKind"] = value["backendKind"]
                     for field in MODEL_POINTS:
                         put(windows[sequence - 1], field, value[field])
                     if "pid" in value:
@@ -289,11 +296,22 @@ def collect_person_timing(run_root: Path, plan: Mapping[str, Any]) -> dict[str, 
     metrics = {k: [] for k in ("e2eMs", "displayMs", "captureToDisplayMs", "replayLagMs",
                                "retrievalAndValidationMs", "admittedToWorkerMs", "workerMs",
                                "associationMs", "modelInitializationMs", "modelWindowMs")}
+    native_initializations = set()
     for window in windows:
-        values = [origin] + [window[k] for k in ("requestNs", "workerStartNs", *MODEL_POINTS,
-                  "workerEndNs", "associationStartNs", "associationEndNs", "committedNs")]
-        window["complete"] = all(v is not None for v in values)
-        if window["complete"] and values != sorted(values):
+        native_backend = window["backendKind"] == "native-onnx"
+        keys = (("requestNs", "workerStartNs", "inferenceStartNs", "inferenceEndNs",
+                 "workerEndNs", "associationStartNs", "associationEndNs", "committedNs")
+                if native_backend else
+                ("requestNs", "workerStartNs", *MODEL_POINTS, "workerEndNs",
+                 "associationStartNs", "associationEndNs", "committedNs"))
+        values = [origin] + [window[k] for k in keys]
+        window["complete"] = all(v is not None for v in values) and all(
+            window[k] is not None for k in MODEL_POINTS)
+        causal = values == sorted(values) if window["complete"] else False
+        if window["complete"] and native_backend:
+            causal = causal and (window["modelInitStartNs"] <= window["modelInitEndNs"] <=
+                                  window["inferenceStartNs"])
+        if window["complete"] and not causal:
             errors.append("noncausal window timing: " + window["windowId"])
             window["complete"] = False
         complete_windows += window["complete"]
@@ -302,6 +320,11 @@ def collect_person_timing(run_root: Path, plan: Mapping[str, Any]) -> dict[str, 
                                ("associationMs", "associationStartNs", "associationEndNs"),
                                ("modelInitializationMs", "modelInitStartNs", "modelInitEndNs"),
                                ("modelWindowMs", "inferenceStartNs", "inferenceEndNs")):
+                if native_backend and name == "modelInitializationMs":
+                    identity = (window["workerPid"], window[a], window[b])
+                    if identity in native_initializations:
+                        continue
+                    native_initializations.add(identity)
                 metrics[name].append((window[b] - window[a]) / 1000000)
     complete_frames = 0
     for (sequence, camera), frame in frames.items():
@@ -330,6 +353,7 @@ def collect_person_timing(run_root: Path, plan: Mapping[str, Any]) -> dict[str, 
     return {"schema": "uav-person-run-timing-v1", "clockDomain": DOMAIN,
             "runId": run_root.name, "missionId": run_root.name,
             "timeBasis": "GS-bootstrap-replay-origin-plus-common-media-offset",
+            "modelInitializationBasis": "unique native backend lifetimes; historical worker intervals per window",
             "plannedFrames": 3 * count, "plannedWindows": count,
             "completeFrameTimingRecords": complete_frames, "completeWindowTimingRecords": complete_windows,
             "timingQualified": not errors and complete_frames == 3 * count and complete_windows == count,
@@ -412,6 +436,9 @@ def validate_person_resources(resource: Mapping[str, Any], timing: Mapping[str, 
     model_coverage = []
     for window in timing["windows"]:
         pid, start, end = (window.get(k) for k in ("workerPid", "modelInitEndNs", "inferenceEndNs"))
+        native_backend = window.get("backendKind") == "native-onnx"
+        if native_backend:
+            start = window.get("inferenceStartNs")
         covered = False
         observation = "missing"
         worker_sample = None
@@ -442,15 +469,16 @@ def validate_person_resources(resource: Mapping[str, Any], timing: Mapping[str, 
             except (ValueError, KeyError, TypeError) as error:
                 errors.append("invalid model resource sample: " + window["windowId"] + ": " + str(error))
         elif (type(pid) is int and type(start) is int and type(end) is int and start <= end and
-                pid != roots.get("compute")):
+                ((native_backend and pid == roots.get("compute")) or
+                 (not native_backend and pid != roots.get("compute")))):
             for process in by_pid.get(pid, []):
-                if process["owner"] != "compute/descendant":
+                if process["owner"] != ("compute" if native_backend else "compute/descendant"):
                     continue
                 times = sample_times[process["identityId"]]
                 index = bisect_left(times, start)
                 if index < len(times) and times[index] <= end:
                     covered = True
-                    observation = "aggregate-poll"
+                    observation = "native-compute-poll" if native_backend else "aggregate-poll"
                     break
         model_coverage.append({"windowId": window["windowId"], "workerPid": pid,
                                "sampledWhileModelsLoaded": covered,
