@@ -13,6 +13,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
@@ -1385,6 +1386,8 @@ main(int argc, char** argv)
                              NATIVE_SOURCE_ENTRY_PROGRAM_CAPABILITY_V1,
                              NATIVE_SOURCE_ATTENTION_ENTRY_CAPABILITY_V1,
                              NATIVE_SOURCE_TENSOR_LAYOUT_CAPABILITY_V1};
+      if (options.offerBackend == "onnxruntime-cuda" && options.offerDevices.size() == 1)
+        config.capabilities.push_back(NATIVE_RESIDENT_CONVERSATION_CUDA_V1);
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
       {

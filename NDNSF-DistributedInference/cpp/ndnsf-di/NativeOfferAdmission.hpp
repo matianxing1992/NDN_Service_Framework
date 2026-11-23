@@ -14,6 +14,9 @@
 namespace ndn_service_framework { struct AckSelectionCandidate; }
 namespace ndnsf::di {
 class NativePreparedPlanningTemplate;
+inline constexpr const char* NATIVE_RESIDENT_CONVERSATION_CUDA_V1 =
+  "native-resident-conversation-cuda-v1";
+
 struct NativeOfferBindingContext {
   std::string requestId;
   std::uint64_t attempt = 0;
@@ -22,6 +25,10 @@ struct NativeOfferBindingContext {
   // Local, authenticated conversation placement preference, never admission
   // authority or evidence that the Provider still retains usable KV state.
   std::map<std::string, std::string> preferredProvidersByRole;
+  // Acquired from the authenticated pinned turn and its exact previous role
+  // contract. This is additional working memory for an already loaded CUDA
+  // runner. The Provider still has to admit the exact committed parent.
+  std::map<std::string, std::pair<std::string, std::uint64_t>> pinnedConversationDeviceBudget;
   std::string candidateSetDigest;
   std::string candidateArtifactSetDigest;
   std::vector<NativeJson> candidateArtifacts;

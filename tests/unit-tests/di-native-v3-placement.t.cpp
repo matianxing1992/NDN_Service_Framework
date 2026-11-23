@@ -558,6 +558,7 @@ BOOST_AUTO_TEST_CASE(ProductionGpuOfferFeedsAdmissionAndMemoryConstrainedPlaceme
   config.acceptedRoles = {input.roles.front().role};
   config.backends = {"onnxruntime-cuda"};
   config.devices = {"cuda:0"};
+  config.capabilities = {NATIVE_RESIDENT_CONVERSATION_CUDA_V1};
   config.signDigest = [] (const std::string&) { return "fixture-signature-pending"; };
   const auto request = nativeCanonicalJson(NativeJson{
     {"schema", "ndnsf-di-request-envelope-v2"}, {"placementProfile", "DI_PLACEMENT_V3"},
@@ -599,6 +600,24 @@ BOOST_AUTO_TEST_CASE(ProductionGpuOfferFeedsAdmissionAndMemoryConstrainedPlaceme
     else {
       BOOST_CHECK_THROW(NativePreSplitFirstPlacement().proposeRoles(
         input.context, input.ackDigest, input.roles, offers, 200), NativeNoFeasiblePlacement);
+      const auto& role = input.roles.front();
+      const NativeFixedProviderPlacement fixed(
+        std::map<std::string, std::string>{{role.role, config.provider}});
+      BOOST_CHECK_THROW(fixed.proposeRoles(input.context, input.ackDigest, input.roles, offers, 200),
+        NativeNoFeasiblePlacement);
+      auto pinned = input.context;
+      pinned.preferredProvidersByRole.emplace(role.role, config.provider);
+      pinned.pinnedConversationDeviceBudget.emplace(role.role, std::make_pair("cuda:0", freeMemory));
+      const auto proposal = fixed.proposeRoles(pinned, input.ackDigest, input.roles, offers, 200);
+      BOOST_CHECK_EQUAL(proposal.roles.front().requiredDeviceMemoryMb, role.requiredDeviceMemoryMb);
+      BOOST_CHECK_NO_THROW(validateNativeRolePlacement(proposal, input.roles, offers, 200));
+      pinned.pinnedConversationDeviceBudget.at(role.role).second = freeMemory + 1;
+      BOOST_CHECK_THROW(fixed.proposeRoles(pinned, input.ackDigest, input.roles, offers, 200),
+        NativeNoFeasiblePlacement);
+      pinned.pinnedConversationDeviceBudget.at(role.role).second = freeMemory;
+      pinned.preferredProvidersByRole.at(role.role) = "/provider/other";
+      BOOST_CHECK_THROW(fixed.proposeRoles(pinned, input.ackDigest, input.roles, offers, 200),
+        NativeNoFeasiblePlacement);
     }
   }
 }

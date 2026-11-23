@@ -3599,6 +3599,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           failInvocation("PROVIDER_CONVERSATION_STATE_MISSING");
           return;
         }
+        const auto& selected = selectionProjection->selectedRoleContract();
+        if (selected.backend == "onnxruntime-cuda" && selected.roleKind == "PIPELINE_RANGE") {
+          const auto runner = state->runtime.committedConversationRunner(*resolved, lookupNowMs);
+          const auto evidence = runner ? runner->executionEvidenceSnapshot() : std::nullopt;
+          if (!evidence || selected.deviceSet.size() != 1 ||
+              validateExpectedRuntimeReadiness(*evidence, false, selected.selectedRole,
+                selected.backend, selected.deviceSet.front(), selected.artifactDigest)) {
+            completeExecutionLease();
+            failInvocation("PROVIDER_CONVERSATION_CUDA_RUNNER_MISMATCH");
+            return;
+          }
+        }
         roleSpec.conversationStateBinding = std::move(*resolved);
         roleSpec.conversationStateLookupNowMs = lookupNowMs;
 
