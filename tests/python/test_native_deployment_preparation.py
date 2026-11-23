@@ -19,15 +19,20 @@ SPEC.loader.exec_module(prepare)
 
 
 class NativePreparationBoundaryTest(unittest.TestCase):
-    def test_role_permission_encodes_relative_role_as_one_name_component(self):
+    def test_role_permission_handles_flat_and_absolute_roles(self):
         policy = prepare.policy_text(
             dict(controller='/controller', authority='/authority', requester='/user',
                  provider='/provider'),
             dict(service='/infer', artifact_service='/grant'),
-            {'provider': ['umt5/single', '/dit/rank/0']}, None)
-        self.assertIn('/infer/ROLE/umt5%2Fsingle\n', policy)
+            {'provider': ['umt5-single', '/dit/rank/0']}, None)
+        self.assertIn('/infer/ROLE/umt5-single\n', policy)
         self.assertIn('/infer/ROLE/dit/rank/0\n', policy)
-        self.assertNotIn('/infer/ROLE/umt5/single', policy)
+        with self.assertRaisesRegex(ValueError, 'absolute Name or a safe single label'):
+            prepare.policy_text(
+                dict(controller='/controller', authority='/authority', requester='/user',
+                     provider='/provider'),
+                dict(service='/infer', artifact_service='/grant'),
+                {'provider': ['umt5/single']}, None)
 
     def test_pipeline_profiles_freeze_comparable_roles_and_workload(self):
         resources = ROOT / 'Experiments'

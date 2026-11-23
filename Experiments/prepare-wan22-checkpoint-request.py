@@ -35,15 +35,17 @@ def make_request(args):
     padded = (tokens + 127) // 128 * 128
     component = args.component
     if args.layout == 'single':
-        stages = [dict(id=component, roles=[component + '/single'])]
+        stages = [dict(id=component, roles=['/' + component + '/single'])]
     elif args.layout == 'tp':
-        stages = [dict(id=component, roles=[component + '/rank-0', component + '/rank-1'])]
+        stages = [dict(id=component, roles=['/' + component + '/rank-0',
+                                            '/' + component + '/rank-1'])]
     else:
         degrees = (1, 1)
         if component == 'dit':
             degrees = {'pp': (1, 1), 'pp-tp': (1, 2), 'tp-pp': (2, 1)}[args.layout]
         stages = [dict(id=component + '/' + name,
-                       roles=[component + '/' + name + '/rank-' + str(i) for i in range(degree)])
+                       roles=['/' + component + '/' + name + '/rank-' + str(i)
+                              for i in range(degree)])
                   for name, degree in zip(('front', 'back'), degrees)]
     sources = {row['file']: row for row in recipe['sources']}
 

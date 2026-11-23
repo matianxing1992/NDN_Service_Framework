@@ -18,7 +18,6 @@ import signal
 import stat
 import sys
 import tempfile
-from urllib.parse import quote
 
 from model_assets import contained_file, file_digest, read_json, validate_manifest
 from native_probe_validation_links import render_anchored_probe_validation_schema
@@ -170,13 +169,12 @@ def policy_text(identities, network, provider_roles, tp_base_role):
     def rule(kind, identity, services):
         return "{}-policy {{ for {} allow {{ {} }} }}".format(kind, identity, "\n".join(services))
     def role_permission(role):
-        if role.startswith('/'):
-            suffix = role
-        elif not role.strip('.'):
-            suffix = '/' + '...' + role
-        else:
-            suffix = '/' + quote(role, safe='')
-        return network["service"] + "/ROLE" + suffix
+        if role.startswith('/') and re.fullmatch(r'/[A-Za-z0-9/_.-]+', role):
+            return network["service"] + "/ROLE" + role
+        if re.fullmatch(r'[A-Za-z0-9_.-]+', role):
+            suffix = role if role.strip('.') else '...' + role
+            return network["service"] + "/ROLE/" + suffix
+        raise ValueError('Controller role requires an absolute Name or a safe single label')
     providers = [rule("provider", identities["repo"], repo_services)] if repo_services else []
     providers.append(rule("provider", identities["authority"], [network["artifact_service"]]))
     for actor, roles in provider_roles.items():
