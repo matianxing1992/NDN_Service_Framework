@@ -3423,14 +3423,21 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     };
     auto attempt = environment.beginRequest("repo-manifest-source-recovery", std::move(faults));
     const auto reset = ndn::make_scope_exit([&] { environment.resetRequest(attempt); });
+    std::atomic<unsigned> fetchedAttempts{0};
+    afterManifestFetch = [&](auto deadline) {
+      if (++fetchedAttempts == 1)
+        std::this_thread::sleep_until(deadline);
+    };
+    const auto resetFetch = ndn::make_scope_exit([&] { afterManifestFetch = {}; });
     environment.markRequestPublished(attempt);
     auto result = commitManifest(manifestInsert);
-    BOOST_REQUIRE_EQUAL(lifetimes.size(), 4U);
-    BOOST_CHECK(std::is_sorted(lifetimes.begin(), lifetimes.end()));
-    BOOST_CHECK(lifetimes.back() <= ndn::time::seconds(1));
+    BOOST_REQUIRE_GE(lifetimes.size(), 4U);
+    BOOST_CHECK(std::is_sorted(lifetimes.begin(), lifetimes.begin() + 4));
+    BOOST_CHECK(lifetimes[3] <= ndn::time::seconds(1));
+    BOOST_CHECK_EQUAL(fetchedAttempts.load(), 2U);
     return result;
   }();
-  BOOST_CHECK_GT(manifestInsertFetches.load(), fetchesBeforeAdmitted);
+  BOOST_CHECK_EQUAL(manifestInsertFetches.load(), fetchesBeforeAdmitted + 2);
   BOOST_CHECK_EQUAL(sourceWindow->peak(), 16U);
   BOOST_REQUIRE(admittedManifest.packetSet);
   BOOST_REQUIRE_EQUAL(admittedManifest.packetSet->lifecycleState, "COMMITTED");

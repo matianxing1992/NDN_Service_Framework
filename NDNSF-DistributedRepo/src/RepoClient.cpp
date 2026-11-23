@@ -1419,14 +1419,29 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   const auto provider = ndn::Name(target.providerIdentity);
   const auto servicePrefix = ndn::Name(target.servicePrefix);
   noteStage("prepare-producer");
-  const auto insertReply = requestTargetedReply(writer, provider,
-    makeRepoServiceName(servicePrefix, "INSERT"), encoded, remaining(), current,
-    "repo-original-publication-insert-timeout", "repo-original-publication-insert-not-confirmed: ");
-  const auto insertStatus = toString(insertReply);
-  const auto status = parseOperationStatusJson(insertStatus);
+  const auto sendInsert = [&] {
+    return toString(requestTargetedReply(writer, provider,
+      makeRepoServiceName(servicePrefix, "INSERT"), encoded, remaining(), current,
+      "repo-original-publication-insert-timeout", "repo-original-publication-insert-not-confirmed: "));
+  };
+  const auto matchesInsert = [&](const RepoOperationStatus& status) {
+    return status.operationId == request.operationId && status.operation == "INSERT" &&
+           ndn::Name(status.objectName) == ndn::Name(request.reference.objectName);
+  };
+  auto insertStatus = sendInsert();
+  auto status = parseOperationStatusJson(insertStatus);
   noteStage("insert");
-  if (status.operationId != request.operationId || status.operation != "INSERT" ||
-      status.state != "DONE" || ndn::Name(status.objectName) != ndn::Name(request.reference.objectName))
+  if (request.segmentManifestBinding && status.state == "FAILED" &&
+      status.message == detail::OWNED_MANIFEST_VALIDATION_DEADLINE && matchesInsert(status)) {
+    // A correlated failure can be replayed once using the still-live original
+    // publication. Re-enter through INSERT so the Repo checks the grant and proof.
+    if (!publication->proof || !publication->proof->isCurrent())
+      throw std::runtime_error("repo-manifest-root-trust-expired");
+    insertStatus = sendInsert();
+    status = parseOperationStatusJson(insertStatus);
+    noteStage("insert-retry");
+  }
+  if (!matchesInsert(status) || status.state != "DONE")
     throw std::runtime_error("repo-original-publication-insert-not-confirmed: " + status.message);
 
   detail::OwnedManifestQuery manifestQuery(request);

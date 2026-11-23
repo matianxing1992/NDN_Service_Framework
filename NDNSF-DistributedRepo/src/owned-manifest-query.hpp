@@ -5,6 +5,9 @@
 
 namespace ndnsf_distributed_repo::detail {
 
+inline constexpr char OWNED_MANIFEST_VALIDATION_DEADLINE[] =
+  "repo-original-packet-validation-deadline";
+
 /** Owner-bound MANIFEST selector without retransmitting the packet index.
  * An empty manifestSha256 requests the full manifest. Otherwise the Server
  * confirms that exact canonical manifest and returns its digest after admission.

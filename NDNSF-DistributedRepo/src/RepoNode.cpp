@@ -3131,10 +3131,15 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
     }
     const auto validationDeadline = std::chrono::steady_clock::now() +
       std::chrono::milliseconds(std::max(1, validationTimeoutMs));
-    const auto requireActive = [this, validationDeadline] {
-      if (m_ownedInsertStopping.load(std::memory_order_acquire) ||
-          std::chrono::steady_clock::now() >= validationDeadline) {
-        throw std::runtime_error("repo-original-packet-validation-deadline-or-shutdown");
+    const auto requireActive = [this, validationDeadline,
+                                isManifest = owned.segmentManifestBinding.has_value()] {
+      const bool stopping = m_ownedInsertStopping.load(std::memory_order_acquire);
+      if (stopping || std::chrono::steady_clock::now() >= validationDeadline) {
+        if (!isManifest)
+          throw std::runtime_error("repo-original-packet-validation-deadline-or-shutdown");
+        if (stopping)
+          throw std::runtime_error("repo-original-packet-insert-shutting-down");
+        throw std::runtime_error(detail::OWNED_MANIFEST_VALIDATION_DEADLINE);
       }
     };
     if (owned.segmentManifestBinding) {
