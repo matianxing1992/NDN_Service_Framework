@@ -1365,6 +1365,35 @@ BOOST_AUTO_TEST_CASE(GraphMetadataComesFromStructuralUsesAndFailsClosed)
     (fixture.directory / "model.onnx").string()).hostMetadataNodes.empty());
 }
 
+BOOST_AUTO_TEST_CASE(GraphMetadataKeepsOrtContribOperatorsOnCuda)
+{
+  GraphMetadataFixture fixture;
+  auto model = makeShapeMetadataModel();
+  auto* opset = model.add_opset_import();
+  opset->set_domain("com.microsoft");
+  opset->set_version(1);
+  auto* node = model.mutable_graph()->mutable_node(3);
+  node->set_domain("com.microsoft");
+  node->set_op_type("GroupQueryAttention");
+  node->add_output("");
+  node->add_output("");
+  auto inventory = detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model));
+  BOOST_REQUIRE_EQUAL(inventory.hostMetadataNodes.size(), 2);
+  BOOST_CHECK_EQUAL(inventory.modelNodes.at("identity"), "GroupQueryAttention");
+  BOOST_CHECK(inventory.optionalModelNodes.empty());
+
+  // A custom operator named Shape cannot establish trusted shape provenance.
+  model.mutable_graph()->mutable_node(0)->set_domain("com.microsoft");
+  inventory = detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model));
+  BOOST_CHECK(inventory.hostMetadataNodes.empty());
+  BOOST_CHECK_EQUAL(inventory.modelNodes.at("shape"), "Shape");
+
+  opset->set_version(2);
+  inventory = detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model));
+  BOOST_CHECK(inventory.hostMetadataNodes.empty());
+  BOOST_CHECK(inventory.modelNodes.empty());
+}
+
 BOOST_AUTO_TEST_CASE(GraphProfileRequiresCudaModelCoverageAndBoundedMetadata)
 {
   GraphMetadataFixture fixture;
