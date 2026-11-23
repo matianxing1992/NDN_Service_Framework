@@ -64,6 +64,8 @@ for index, attention in enumerate(attentions):
 
 position_branches = {}
 position_users = Counter()
+literal_aliases = {}
+literal_types = {}
 if family == "27b":
     # A physical role that owns GQA binds both raw generation inputs. Derive the
     # three text position planes alongside the rotary operators that consume them.
@@ -78,6 +80,16 @@ if family == "27b":
                          ("ndnsf_text_positions_repeats", [3, 1, 1])):
         initializer, = (value for value in graph.initializer if value.name == name)
         assert numpy_helper.to_array(initializer).tolist() == values
+    literals = {
+        value: node for value, node in producer.items()
+        if value.startswith("/model/constants/") and node.op_type == "Constant"
+    }
+    assert literals
+    for node in literals.values():
+        assert not node.domain and not node.input and len(node.output) == 1
+        attribute, = node.attribute
+        assert attribute.name == "value" and attribute.type == onnx.AttributeProto.TENSOR
+        assert attribute.t.data_location != TensorProto.EXTERNAL
 
 normalized = []
 attention_index = 0
@@ -111,6 +123,27 @@ for node in source_nodes:
                 derived.output[0] = wires[original.output[0]]
                 normalized.append(derived)
         copy.input[1] = position_branches[layer[1]][mrope]
+    if family == "27b":
+        owner = re.match(r"/model/layers\.\d+/", copy.name)
+        if owner:
+            # Preserve literal dimensions inside the consuming layer. A PP
+            # role should transfer activations, not exported constant values.
+            for index, value in enumerate(copy.input):
+                if value not in literals:
+                    continue
+                key = (owner[0], value)
+                if key not in literal_aliases:
+                    original = literals[value]
+                    literal = onnx.NodeProto()
+                    literal.CopyFrom(original)
+                    literal.name = owner[0] + "spec235_literal/" + value.removeprefix(
+                        "/model/constants/")
+                    alias = literal.name + "/output"
+                    literal.output[0] = alias
+                    literal_aliases[key] = alias
+                    literal_types[alias] = original.attribute[0].t
+                    normalized.append(literal)
+                copy.input[index] = literal_aliases[key]
     if (copy.domain, copy.op_type) == ("com.microsoft", "GroupQueryAttention"):
         assert re.match(r"/model/layers\.(\d+)/", copy.name)
         replacements, wires = cloned[attention_index]
@@ -147,6 +180,10 @@ for wires in branch_aliases:
             new_info = graph.value_info.add()
             new_info.CopyFrom(old_info)
             new_info.name = alias
+
+for alias, literal in literal_types.items():
+    if alias in live:
+        graph.value_info.append(helper.make_tensor_value_info(alias, literal.data_type, literal.dims))
 
 if family == "4b":
     # Preserve the declared FP32 logits without rounding the projection output to FP16.
