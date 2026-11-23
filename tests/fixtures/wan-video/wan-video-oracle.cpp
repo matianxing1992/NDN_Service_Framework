@@ -327,15 +327,28 @@ public:
     std::vector<float> actual(expected.size());
     std::memcpy(actual.data(), decoded[0].payload.data(), decoded[0].payload.size());
     double maximum = 0;
+    std::size_t failures = 0;
     for (std::size_t i = 0; i < expected.size(); ++i) {
       const auto error = std::abs(actual[i] - expected[i]);
-      require(std::isfinite(actual[i]) && std::isfinite(expected[i]) &&
-              error <= absolute + relative * std::abs(expected[i]),
-              "FP32 value differs from the FP64 oracle: " + phase + "/" + std::to_string(i));
+      if (!std::isfinite(actual[i]) || !std::isfinite(expected[i]))
+        throw std::runtime_error("nonfinite tensor value: " + phase + "/" + std::to_string(i));
+      if (error > absolute + relative * std::abs(expected[i])) {
+        ++failures;
+        if (m_firstNumericalFailure.empty())
+          m_firstNumericalFailure = phase + "/" + std::to_string(i);
+      }
       maximum = std::max(maximum, error);
     }
-    std::cout << phase << " max_abs=" << maximum << " cells=" << actual.size() << '\n';
+    std::cout << phase << " max_abs=" << maximum << " cells=" << actual.size()
+              << " out_of_tolerance=" << failures << '\n';
     return actual;
+  }
+
+  void
+  requireNumericalMatch() const
+  {
+    require(m_firstNumericalFailure.empty(),
+            "FP32 value differs from the independent oracle: " + m_firstNumericalFailure);
   }
 
   void
@@ -378,6 +391,7 @@ private:
   std::size_t m_index = 0;
   std::size_t m_total = 0;
   std::size_t m_byteLimit;
+  std::string m_firstNumericalFailure;
 };
 
 std::size_t
@@ -536,6 +550,7 @@ validateCheckpoint(const fs::path& operation, const fs::path& referenceFile,
   verifier.frames(std::vector<double>(rgb.begin(), rgb.end()), geometry, 24, true);
   require(point == reference.at("tensors").size() && child == receipts.size() &&
           observed.requests.empty(), "unmatched checkpoint trajectory records");
+  verifier.requireNumericalMatch();
   std::cout << deployment << " checkpoint trajectory verified, boot=" << state.at("boot_id") << '\n';
 }
 
@@ -622,6 +637,7 @@ validate(const fs::path& operation, const fs::path& fixtureFile)
   verifier.tensor("decode", "rgb", {1, 3, 9, 32, 32}, reference.rgb, 1e-6, 0, binding);
   verifier.frames(reference.rgb);
   require(child == receipts.size() && observed.requests.empty(), "unmatched child receipts");
+  verifier.requireNumericalMatch();
   std::cout << deployment << " verified, boot=" << state.at("boot_id") << '\n';
 }
 
