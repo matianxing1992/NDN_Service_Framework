@@ -1,25 +1,15 @@
 #include "RevocationState.hpp"
 
+#include <ndn-cxx/security/certificate.hpp>
+#include <ndn-cxx/util/sha256.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
+
 #include <algorithm>
 #include <array>
 #include <utility>
 
 namespace ndn_service_framework {
 namespace {
-
-bool
-sameWire(const PolicyStatusData& left, const PolicyStatusData& right)
-{
-  try {
-    const auto lhs = left.wireEncode();
-    const auto rhs = right.wireEncode();
-    return lhs.size() == rhs.size() &&
-           std::equal(lhs.begin(), lhs.end(), rhs.begin());
-  }
-  catch (const std::exception&) {
-    return false;
-  }
-}
 
 const char*
 transitionName(ProtectedTransition transition)
@@ -92,23 +82,71 @@ RevocationState::RevocationState(ndn::Name serviceName)
 
 bool
 RevocationState::acceptStatus(const PolicyStatusData& status, uint64_t nowMs,
-                              bool controllerSignatureValid)
+                              bool controllerSignatureValid, bool freshQuery,
+                              std::optional<PolicyLeaseBudget> budget)
 {
   if (!controllerSignatureValid || !status.validate(nowMs) ||
       (!m_serviceName.empty() && status.getServiceName() != m_serviceName))
     return false;
 
+  const auto remaining = budget ?
+    status.remainingLeaseMs(nowMs, budget->maxLeaseMs, budget->maxClockSkewMs) :
+    status.getValidUntilMs() - nowMs;
+  if (remaining == 0 || (budget && remaining > 300000))
+    return false;
+  const auto install = [&] {
+    m_status = status;
+    m_statusExpired = false;
+    m_wallDeadlineMs = nowMs + remaining;
+    m_steadyDeadline.reset();
+    if (budget) {
+      m_steadyDeadline = ndn::time::steady_clock::now() +
+        ndn::time::milliseconds(static_cast<int64_t>(remaining));
+    }
+  };
   if (m_hasStatus) {
     const auto relation = status.getControllerVersion().compare(
         m_status.getControllerVersion());
     if (relation < 0)
       return false;
-    if (relation == 0)
-      return sameWire(status, m_status);
+    if (relation == 0) {
+      if (!status.canReplaceSameVersion(m_status, freshQuery))
+        return false;
+      if (status.getValidUntilMs() == m_status.getValidUntilMs())
+        return remainingLeaseMs(nowMs) != 0;
+      install();
+      return true;
+    }
   }
 
-  m_status = status;
+  install();
   m_hasStatus = true;
+  invalidateAllFamilies();
+  return true;
+}
+
+uint64_t
+RevocationState::remainingLeaseMs(uint64_t nowMs) const
+{
+  if (!m_hasStatus || m_statusExpired || nowMs < m_status.getValidFromMs() ||
+      nowMs >= m_wallDeadlineMs)
+    return 0;
+  const auto wallRemaining = m_wallDeadlineMs - nowMs;
+  if (!m_steadyDeadline)
+    return wallRemaining;
+
+  const auto remaining = ndn::time::duration_cast<ndn::time::milliseconds>(
+    *m_steadyDeadline - ndn::time::steady_clock::now()).count();
+  return remaining > 0 ? std::min(wallRemaining, static_cast<uint64_t>(remaining)) : 0;
+}
+
+bool
+RevocationState::expireStatus(const ControllerVersion& version, uint64_t validUntilMs)
+{
+  if (!m_hasStatus || m_statusExpired || m_status.getControllerVersion() != version ||
+      m_status.getValidUntilMs() != validUntilMs)
+    return false;
+  m_statusExpired = true;
   invalidateAllFamilies();
   return true;
 }
@@ -133,7 +171,8 @@ RevocationState::currentStatus() const
 }
 
 bool
-RevocationState::isRevoked(const AuthorizationSubject& subject) const
+RevocationState::isRevoked(const AuthorizationSubject& subject,
+                           const std::string& signingDigest) const
 {
   for (const auto& target : m_status.getRevocations()) {
     switch (target.kind) {
@@ -142,9 +181,9 @@ RevocationState::isRevoked(const AuthorizationSubject& subject) const
         return true;
       break;
     case RevocationKind::CERTIFICATE:
-      if (sameCertificateDigest(target.certificateDigest, subject.certificateDigest) &&
-          (target.targetIdentity.empty() ||
-           target.targetIdentity == subject.identity))
+      if ((target.targetIdentity.empty() || target.targetIdentity == subject.identity) &&
+          (sameCertificateDigest(target.certificateDigest, subject.certificateDigest) ||
+           (!signingDigest.empty() && sameCertificateDigest(target.certificateDigest, signingDigest))))
         return true;
       break;
     case RevocationKind::SERVICE_AUTHORIZATION:
@@ -163,6 +202,33 @@ RevocationState::authorize(const AuthorizationSubject& subject,
                            ProtectedTransition transition,
                            uint64_t nowMs) const
 {
+  return evaluate(subject, transition, nowMs, {});
+}
+
+RevocationDecision
+RevocationState::authorizeLocalCredentials(const ndn::security::Certificate& recipient,
+                                           const ndn::security::Certificate& signer,
+                                           const ndn::Name& service, const ndn::Name& attribute,
+                                           ProtectedTransition transition, uint64_t nowMs) const
+{
+  if (recipient.getIdentity() != signer.getIdentity())
+    return {false, "local_credential_identity_mismatch"};
+  const auto digest = [] (const ndn::Block& wire) {
+    return "sha256:" + ndn::toHex(*ndn::util::Sha256::computeDigest(
+      ndn::span<const uint8_t>(wire.data(), wire.size())), false);
+  };
+  const auto& recipientWire = recipient.wireEncode();
+  const auto& signingWire = signer.wireEncode();
+  const AuthorizationSubject subject{recipient.getIdentity(), digest(recipientWire),
+                                     service, attribute};
+  return evaluate(subject, transition, nowMs,
+                  recipientWire == signingWire ? std::string{} : digest(signingWire));
+}
+
+RevocationDecision
+RevocationState::evaluate(const AuthorizationSubject& subject, ProtectedTransition transition,
+                          uint64_t nowMs, const std::string& signingDigest) const
+{
   if (!m_hasStatus)
     return {false, "no_authenticated_controller_status"};
   if (subject.identity.empty() || subject.certificateDigest.empty())
@@ -178,10 +244,9 @@ RevocationState::authorize(const AuthorizationSubject& subject,
       !hasCanonicalServiceAttribute(subject.serviceName,
                                     subject.authorizationAttribute))
     return {false, "incomplete_authorization_attribute"};
-  if (nowMs < m_status.getValidFromMs() ||
-      nowMs >= m_status.getValidUntilMs())
+  if (remainingLeaseMs(nowMs) == 0)
     return {false, "controller_status_expired"};
-  if (isRevoked(subject))
+  if (isRevoked(subject, signingDigest))
     return {false, std::string("revoked_before_") + transitionName(transition)};
   return {true, "authorized"};
 }

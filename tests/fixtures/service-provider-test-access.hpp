@@ -65,6 +65,12 @@ struct ServiceProviderTestAccess
     provider.m_testSigningKeyChain = &keyChain;
   }
 
+  /** CK names of the provider's most recent protected publication. */
+  static std::vector<ndn::Name> lastPublishedCkNames(ServiceProvider& provider)
+  {
+    return provider.m_lastPublishedCkNames;
+  }
+
   static void configureFaceBackedProducerValidator(ServiceProvider& provider,
     const std::string& trustSchemaPath, ndn::Face& face)
   {

@@ -1,4 +1,7 @@
 #include "ServiceUser.hpp"
+#include "CertificateBootstrap.hpp"
+#include "detail/controller-lease-budget.hpp"
+#include "detail/controller-version-floor.hpp"
 #include "detail/TargetedRequestRouting.hpp"
 #include "detail/ProtectedTargetedRequest.hpp"
 #include "detail/OriginalPacketFile.hpp"
@@ -3395,6 +3398,7 @@ namespace ndn_service_framework
         {
             std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
             m_policyStatusFetchInFlight.clear();
+            m_policyStatusExpiryEvents.clear();
         }
         if (m_securityProfiles) m_securityProfiles->close();
         if (m_largeDataKeyReleaseState) {
@@ -4624,7 +4628,7 @@ namespace ndn_service_framework
                pendingCall.hasResponse;
     }
 
-    void ServiceUser::finalizeTimedOutPendingCall(const ndn::Name& requestId)
+    void ServiceUser::finalizeTimedOutPendingCall(const ndn::Name& requestId, bool leaseExpired)
     {
         auto pendingCall = m_pendingCalls.find(requestId);
         if (pendingCall == m_pendingCalls.end()) {
@@ -4636,7 +4640,8 @@ namespace ndn_service_framework
         }
 
         pendingCall->second.timedOut = true;
-        querySelectionStatusForTimeoutDiagnostics(requestId, pendingCall->second);
+        if (!leaseExpired)
+            querySelectionStatusForTimeoutDiagnostics(requestId, pendingCall->second);
         auto timeoutHandler = pendingCall->second.timeoutHandler;
         auto statusTimeoutHandler = pendingCall->second.statusTimeoutHandler;
         std::vector<SelectionExecutionStatus> selectionStatuses;
@@ -4658,12 +4663,14 @@ namespace ndn_service_framework
                 unknown.requestId = requestId;
                 unknown.selectionDigest = item.second;
                 unknown.state = SelectionExecutionState::Unknown;
-                unknown.message = "no status response received before timeout";
+                unknown.message = leaseExpired ? "Controller policy lease expired" :
+                    "no status response received before timeout";
                 unknown.updatedAtUs = nowMicroseconds();
                 selectionStatuses.push_back(std::move(unknown));
             }
         }
-        erasePendingCallWithTrace(requestId, pendingCall, "timeout");
+        erasePendingCallWithTrace(requestId, pendingCall,
+                                  leaseExpired ? "controller_policy_lease_expired" : "timeout");
 
         if (statusTimeoutHandler) {
             statusTimeoutHandler(requestId, selectionStatuses);
@@ -5689,7 +5696,7 @@ namespace ndn_service_framework
         fetchPolicyManifestFromController(controllerPrefix);
 
         const auto prepared = prepareControllerControlQuery(controllerPrefix, "USER-PERMISSIONS",
-            encodeControlQueryParameters({identity, ndn::Name(), 0, 0}), 1);
+            encodeControlQueryParameters({identity, ndn::Name(), 0, 0, identityCert.getFullName()}), 1);
         if (!prepared) return;
         const auto interest = *prepared;
         const auto interestName = interest.getName();
@@ -5718,31 +5725,45 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         const std::vector<ndn::Name>& providers)
     {
-        if (serviceName.empty()) {
-            return false;
+        return checkRequestBootstrap(serviceName, providers, false) == RequestBootstrapState::READY;
+    }
+
+    ServiceUser::RequestBootstrapState
+    ServiceUser::checkRequestBootstrap(const ndn::Name& serviceName,
+                                       const std::vector<ndn::Name>& providers,
+                                       bool queryMissingStatus)
+    {
+        if (serviceName.empty())
+            return RequestBootstrapState::WAITING;
+        if (m_isLocalMock)
+            return RequestBootstrapState::READY;
+
+        ndn::Name controller;
+        bool hasLiveStatus = false;
+        {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            controller = m_controllerPrefix;
+            const auto found = m_revocationStates.find(serviceName.toUri());
+            const auto now = nowMilliseconds();
+            if (found != m_revocationStates.end() && found->second.remainingLeaseMs(now) != 0) {
+                const auto decision = found->second.authorizeLocalCredentials(
+                    identityCert, signingCert, serviceName, makeUserAuthorizationAttribute(serviceName),
+                    ProtectedTransition::DISCOVERY, now);
+                if (decision.reason == "revoked_before_discovery")
+                    return RequestBootstrapState::REVOKED;
+                hasLiveStatus = decision.allowed;
+            }
         }
-        // LocalMock fixtures deliberately install their own authorization and
-        // crypto boundary. Calling this predicate must not replace the
-        // fixture's existing BeginCollaboration checks with a synthetic
-        // production bootstrap.
-        if (m_isLocalMock) {
-            return true;
+        if (!controller.empty() && !hasLiveStatus) {
+            // A cold Requester may have never held permission for this service.
+            // The regular permission refresh cannot discover its status in that case.
+            if (queryMissingStatus)
+                fetchPolicyStatusFromController(controller, serviceName);
+            return RequestBootstrapState::WAITING;
         }
-        if (!activeNacConsumer().readyForDecryption() ||
-            !hasUserPermissionForRequest(providers, serviceName)) {
-            return false;
-        }
-        // A configured runtime must also have an accepted service-scoped
-        // ControllerVersion before it publishes a protected Request. A
-        // controller-free production user is not a supported DI path, but
-        // retaining the empty-prefix branch keeps the predicate consistent
-        // with ServiceUser's existing compatibility semantics.
-        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
-        if (m_controllerPrefix.empty()) {
-            return true;
-        }
-        const auto it = m_revocationStates.find(serviceName.toUri());
-        return it != m_revocationStates.end() && it->second.hasCurrentStatus();
+        return activeNacConsumer().readyForDecryption() &&
+               hasUserPermissionForRequest(providers, serviceName) ?
+            RequestBootstrapState::READY : RequestBootstrapState::WAITING;
     }
 
     void ServiceUser::applyPermissionResponse(const PermissionResponse& response)
@@ -5941,17 +5962,21 @@ namespace ndn_service_framework
     }
 
     bool ServiceUser::installControllerStatus(const PolicyStatusData& status,
-                                              bool controllerSignatureValid)
+                                              bool controllerSignatureValid,
+                                              bool freshQuery)
     {
         const auto serviceKey = status.getServiceName().toUri();
-        if (serviceKey.empty()) {
+        if (serviceKey.empty() ||
+            !detail::meetsControllerVersionFloor(status.getControllerVersion())) {
             return false;
         }
         bool accepted = false;
         bool versionChanged = false;
+        bool leaseChanged = false;
         bool protectedVersionAdvanced = false;
         bool abeGenerationChanged = true;
         bool grantOnlyDkeyRefresh = false;
+        bool localAuthorityRevoked = false;
         // Controller status and protected serving share one linearization
         // interval.  The commit mutex is acquired first by both status and
         // durable publication finalization; no Face/FileLock work occurs in
@@ -5980,8 +6005,12 @@ namespace ndn_service_framework
                 stagedState->currentStatus().getAbePublicParametersName() : ndn::Name();
             const auto previousAbeDigest = stagedState->hasCurrentStatus() ?
                 stagedState->currentStatus().getAbePublicParametersDigest() : std::string();
+            leaseChanged = !previousVersion || *previousVersion != status.getControllerVersion() ||
+                stagedState->currentStatus().getValidUntilMs() != status.getValidUntilMs();
+            const auto budget = m_isLocalMock ? std::nullopt :
+                std::optional<PolicyLeaseBudget>{detail::controllerLeaseBudget()};
             if (!stagedState->acceptStatus(status, nowMilliseconds(),
-                                           controllerSignatureValid)) {
+                                           controllerSignatureValid, freshQuery, budget)) {
                 return false;
             }
 
@@ -5995,7 +6024,7 @@ namespace ndn_service_framework
             }
             if (!stagedCoordinator->installCurrentStatus(
                     status, nowMilliseconds(), controllerSignatureValid,
-                    m_policyStatusFetchInFlight.count(serviceKey) != 0)) {
+                    m_policyStatusFetchInFlight.count(serviceKey) != 0, freshQuery)) {
                 return false;
             }
 
@@ -6014,6 +6043,13 @@ namespace ndn_service_framework
             accepted = true;
             versionChanged = !previousVersion ||
                 status.getControllerVersion().compare(*previousVersion) > 0;
+            if (versionChanged && !status.getRevocations().empty()) {
+                const auto& state = m_revocationStates.at(serviceKey);
+                localAuthorityRevoked = !state.authorizeLocalCredentials(
+                    identityCert, signingCert, status.getServiceName(),
+                    makeUserAuthorizationAttribute(status.getServiceName()),
+                    ProtectedTransition::STREAM_EVENT, nowMilliseconds()).allowed;
+            }
             // First status installation preserves the existing bootstrap
             // invalidation behavior, but it is not a protected-material
             // retirement transition.  Only a strictly newer service-scoped
@@ -6076,6 +6112,8 @@ namespace ndn_service_framework
         protectedFence.unlock();
         protectedCommit.unlock();
         if (accepted) {
+            if (leaseChanged)
+                scheduleControllerStatusExpiry(status);
             if (protectedVersionAdvanced) {
                 // Reference pruning is deliberately outside the in-memory
                 // fence and never makes status installation fail.  A stale
@@ -6103,7 +6141,7 @@ namespace ndn_service_framework
                 invalidateControllerScopedCaches(status.getServiceName(),
                                                   status.getControllerVersion(),
                                                   abeGenerationChanged, &status,
-                                                  grantOnlyDkeyRefresh);
+                                                  grantOnlyDkeyRefresh, false, localAuthorityRevoked);
             }
             else if (grantOnlyDkeyRefresh) {
                 // Reverse-order grant-only install: the status channel (a
@@ -6270,7 +6308,10 @@ namespace ndn_service_framework
                                                      content.value_size()));
                         ok = parsed && status.wireDecode(block);
                     }
-                    if (!ok || status.getServiceName() != serviceName ||
+                    const auto declared = status.getControllerCertificate();
+                    if (!ok || !matchesConfiguredControllerSigner(validatedData, controllerIdentity,
+                                                                  &declared) ||
+                        status.getServiceName() != serviceName ||
                         status.getControllerVersion() != expectedVersion ||
                         !status.validate(nowMilliseconds()) ||
                         !installControllerStatus(status, true)) {
@@ -6314,49 +6355,17 @@ namespace ndn_service_framework
     }
 
     namespace {
-      /** True when this status withdraws this user's signing certificate, which ends its streams like an identity
-       *  revocation does - the certificate is what the Provider authenticates, and it is no longer admitted. */
-      bool controllerChangeRevokesCertificate(const PolicyStatusData& status,
-                                              const ndn::security::Certificate& certificate)
-      {
-        if (certificate.getName().empty())
-          return false;
-        // Same digest the Controller uses for revocation targets: hash the canonical encoded certificate block.
-        const auto wire = certificate.wireEncode();
-        ndn::util::Sha256 sha;
-        sha << std::string(reinterpret_cast<const char*>(wire.data()), wire.size());
-        const auto digest = "sha256:" + sha.toString();
-        for (const auto& revocation : status.getRevocations()) {
-          if (!revocation.certificateDigest.empty() && revocation.certificateDigest == digest)
-            return true;
-        }
-        return false;
-      }
-
-      /** True when this status withdraws the identity itself, which ends every stream it was admitted for. */
-      bool controllerChangeRevokesIdentity(const PolicyStatusData& status, const ndn::Name& identity)
-      {
-        for (const auto& revocation : status.getRevocations()) {
-          if (revocation.targetIdentity.size() > 0 && revocation.targetIdentity == identity &&
-              revocation.kind != RevocationKind::SERVICE_AUTHORIZATION)
-            return true;
-        }
-        return false;
-      }
-
-      /** True when this status withdraws the given provider, either directly or by withdrawing the whole service. */
+      /** Match a withdrawal against the selected Provider's identity and service role. */
       bool controllerChangeAffectsProvider(const PolicyStatusData& status,
                                            const ndn::Name& provider, const ndn::Name& service)
       {
         for (const auto& revocation : status.getRevocations()) {
-          if (revocation.kind == RevocationKind::SERVICE_AUTHORIZATION &&
-              revocation.serviceName == service) {
-            if (revocation.targetIdentity == provider)
-              return true;
-            // A withdrawal without a target identity names the service itself.
-            if (revocation.targetIdentity.empty())
-              return true;
-          }
+          if (revocation.targetIdentity == provider &&
+              (revocation.kind == RevocationKind::IDENTITY ||
+               (revocation.kind == RevocationKind::SERVICE_AUTHORIZATION &&
+                revocation.serviceName == service &&
+                revocation.authorizationAttribute == ndn::Name("/SERVICE").append(service))))
+            return true;
         }
         return false;
       }
@@ -6367,97 +6376,82 @@ namespace ndn_service_framework
         const ControllerVersion& version,
         bool abeGenerationChanged,
         const PolicyStatusData* status,
-        bool grantOnlyDkeyRefresh)
+        bool grantOnlyDkeyRefresh, bool leaseExpired, bool localAuthorityRevoked)
     {
         if (serviceName.empty() || !version.isValid()) {
             return;
         }
-        // An invocation stream that is already running waits for a terminal event.  If the authority
-        // that admitted it just changed, no such event is coming, so fail it here instead of letting the
-        // caller sit until its deadline.
-        {
-            std::vector<std::shared_ptr<StreamedInvocationSharedState>> affected;
-            for (auto it = m_streamStates.begin(); it != m_streamStates.end();) {
-                if (it->second->serviceName != serviceName) {
-                    ++it;
-                    continue;
-                }
-                // A change that revokes one provider must not end another provider's stream: the caller would see a
-                // failure for an execution that was never withdrawn. An unscoped stream has no provider to compare
-                // and stays conservative.
-                if (!it->second->providerName.empty() && status != nullptr &&
-                    !controllerChangeRevokesIdentity(*status, identity) &&
-                    !controllerChangeRevokesCertificate(*status, signingCert) &&
-                    !controllerChangeAffectsProvider(*status, it->second->providerName, serviceName)) {
-                    ++it;
-                    continue;
-                }
-                affected.push_back(it->second);
-                it = m_streamStates.erase(it);
-            }
-            for (auto& state : affected) {
-                std::function<void(const StreamedInvocationError&)> onError;
-                {
-                    std::lock_guard<std::mutex> lock(state->mutex);
-                    // A stream that already reported its outcome is terminal: ending it again would deliver a second
-                    // terminal event, and the caller has no way to tell which one is real.
-                    if (state->status == StreamedInvocationStatus::Completed ||
-                        state->status == StreamedInvocationStatus::Failed ||
-                        state->status == StreamedInvocationStatus::Cancelled)
-                        continue;
-                    state->status = StreamedInvocationStatus::Failed;
-                    onError = state->onError;
-                }
-                if (onError) {
-                    onError({StreamedInvocationErrorCode::Unauthorized,
-                             "stream failed because the Controller authority advanced for " +
-                               serviceName.toUri()});
-                }
-            }
-        }
-
         if (m_securityProfiles) m_securityProfiles->invalidate();
         m_profileReaderObservations.clear();
-        // Snapshot affected requests before evicting credentials.  An
-        // ordinary unary request must remain until its original deadline so
-        // the public timeout callback still receives a terminal outcome when
-        // an in-flight response is rejected under the newer status.  Streams
-        // are different: their consumer can report Unauthorized immediately,
-        // after which the pending request may be cleaned up.
-        std::vector<ndn::Name> affectedRequests;
-        for (const auto& item : m_pendingCalls) {
-            if (item.second.serviceName == serviceName) {
-                affectedRequests.push_back(item.first);
-            }
+        std::set<ndn::Name> affectedRequests;
+        for (const auto& [id, pending] : m_pendingCalls) {
+            if (pending.serviceName == serviceName)
+                affectedRequests.insert(id);
         }
+        // A Targeted call can already own a handle while waiting for bootstrap.
+        for (const auto& [id, state] : m_streamStates) {
+            if (state->serviceName == serviceName)
+                affectedRequests.insert(id);
+        }
+        std::vector<std::function<void()>> streamNotifications;
+        const auto withdrawn = [&](const ndn::Name& provider) {
+            return status && !provider.empty() &&
+                   controllerChangeAffectsProvider(*status, provider, serviceName);
+        };
         for (const auto& requestId : affectedRequests) {
             auto pending = m_pendingCalls.find(requestId);
-            if (pending == m_pendingCalls.end()) {
+            const auto state = m_streamStates.find(requestId);
+            if (state != m_streamStates.end() ||
+                (pending != m_pendingCalls.end() && pending->second.streamOptions)) {
+                // Only a named target or an actual selected member ties a provider
+                // withdrawal to this call. A discovery candidate is not a selection.
+                if (!leaseExpired && !localAuthorityRevoked &&
+                    !(state != m_streamStates.end() && withdrawn(state->second->providerName)) &&
+                    !(pending != m_pendingCalls.end() &&
+                      (withdrawn(pending->second.selectedProvider) ||
+                       std::any_of(pending->second.selectionRequiredProviders.begin(),
+                                   pending->second.selectionRequiredProviders.end(), withdrawn)))) {
+                    continue;
+                }
+                std::function<void(const StreamedInvocationError&)> onError;
+                if (state != m_streamStates.end()) {
+                    const auto shared = state->second;
+                    m_streamStates.erase(state);
+                    std::lock_guard<std::mutex> lock(shared->mutex);
+                    if (shared->status != StreamedInvocationStatus::Completed &&
+                        shared->status != StreamedInvocationStatus::Failed &&
+                        shared->status != StreamedInvocationStatus::Cancelled) {
+                        shared->status = StreamedInvocationStatus::Failed;
+                        onError = shared->onError;
+                    }
+                }
+                const auto node = m_streamConsumers.extract(requestId);
+                auto consumer = node.empty() ? nullptr : node.mapped();
+                disarmStreamInactivityTimer(requestId);
+                m_streamEventKeysPending.erase(requestId);
+                if (pending != m_pendingCalls.end()) {
+                    erasePendingCallWithTrace(requestId, pending,
+                        leaseExpired ? "controller_policy_lease_expired" : "controller_version_changed");
+                }
+                // Both reject() and the application handler may synchronously re-enter
+                // ServiceUser. Deliver after all old request owners have been detached.
+                if (consumer || onError) {
+                    StreamedInvocationError error{StreamedInvocationErrorCode::Unauthorized,
+                        (leaseExpired ? "Controller policy lease expired for " :
+                            "stream failed because the Controller authority advanced for ") +
+                            serviceName.toUri(), requestId};
+                    streamNotifications.emplace_back(
+                        [consumer = std::move(consumer), onError = std::move(onError), error] {
+                            if (consumer) consumer->reject(error.code, error.message);
+                            if (onError) onError(error);
+                        });
+                }
+            }
+            else if (pending == m_pendingCalls.end()) {
                 continue;
             }
-
-            if (pending->second.streamOptions) {
-                auto consumer = m_streamConsumers.find(requestId);
-                if (consumer != m_streamConsumers.end()) {
-                    consumer->second->reject(
-                        StreamedInvocationErrorCode::Unauthorized,
-                        "stream request rejected by Controller version change");
-                    m_streamConsumers.erase(consumer);
-                }
-                disarmStreamInactivityTimer(requestId);
-                auto state = m_streamStates.find(requestId);
-                if (state != m_streamStates.end()) {
-                    std::lock_guard<std::mutex> lock(state->second->mutex);
-                    state->second->status = StreamedInvocationStatus::Failed;
-                }
-                erasePendingCallWithTrace(requestId, pending,
-                                          "controller_version_changed");
-                m_streamEventKeysPending.erase(requestId);
-                m_streamStates.erase(requestId);
-                {
-                    std::lock_guard<std::mutex> lock(m_streamInactivityMutex);
-                    m_streamInactivityEpochs.erase(requestId);
-                }
+            else if (leaseExpired) {
+                finalizeTimedOutPendingCall(requestId, true);
             }
             else {
                 // Keep the PendingCall and deadline alive, but remove every
@@ -6488,6 +6482,16 @@ namespace ndn_service_framework
                 pending->second.selectionAssignmentPayloads.clear();
                 pending->second.collaborationScopeKeys.clear();
                 pending->second.collaborationAssignments.clear();
+                // D1 wants a revocation to end the call, not to leave it waiting for its own deadline: a caller that
+                // only ever sees a timeout cannot tell withdrawal from a slow Provider. A caller that registered the
+                // status handler gets that terminal now; one that did not keeps the older deadline behaviour.
+                if (pending->second.statusTimeoutHandler) {
+                    auto handler = pending->second.statusTimeoutHandler;
+                    erasePendingCallWithTrace(requestId, pending,
+                        "controller_revocation");
+                    handler(requestId, {});
+                    continue;
+                }
             }
             {
                 std::lock_guard<std::mutex> lock(m_verifiedCollaborationMutex);
@@ -6521,10 +6525,15 @@ namespace ndn_service_framework
         refreshNacDkeyForControllerStatus(serviceName, version,
                                           abeGenerationChanged,
                                           grantOnlyDkeyRefresh);
-        if (abeGenerationChanged) {
-            activeNacProducer().clearCache();
+        auto& producer = activeNacProducer();
+        const bool producerParametersChanged = status != nullptr &&
+            !status->getAbePublicParametersName().empty() &&
+            (producer.getPublicParamsDataName() != status->getAbePublicParametersName() ||
+             producer.getPublicParamsDigest() != status->getAbePublicParametersDigest());
+        if (abeGenerationChanged || producerParametersChanged) {
+            producer.clearCache();
             if (status != nullptr) {
-                activeNacProducer().refreshPublicParameters(
+                producer.refreshPublicParameters(
                     status->getAbePublicParametersName(),
                     status->getAbePublicParametersDigest());
             }
@@ -6581,6 +6590,8 @@ namespace ndn_service_framework
                          "retained-grant-only-same-generation")
                      << " runtimeFamilies=targeted-token,selection-binding,nonce,in-flight-request"
                      << " stateFamilies=abe,message-key,replay");
+        for (const auto& notify : streamNotifications)
+            notify();
     }
 
     void ServiceUser::refreshNacDkeyForControllerStatus(
@@ -6627,6 +6638,37 @@ namespace ndn_service_framework
         }
     }
 
+    void ServiceUser::scheduleControllerStatusExpiry(const PolicyStatusData& status)
+    {
+        const auto service = status.getServiceName();
+        const auto serviceKey = service.toUri();
+        const auto version = status.getControllerVersion();
+        const auto expiry = status.getValidUntilMs();
+        std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+        const auto current = m_revocationStates.find(serviceKey);
+        if (current == m_revocationStates.end() || current->second.currentVersion() != version ||
+            current->second.currentStatus().getValidUntilMs() != expiry) {
+            return;
+        }
+        const auto remaining = current->second.remainingLeaseMs(nowMilliseconds());
+        const auto delay = std::min<uint64_t>(remaining, std::numeric_limits<int64_t>::max());
+        m_policyStatusExpiryEvents[serviceKey] = m_scheduler.schedule(
+            ndn::time::milliseconds(delay), [this, service, serviceKey, version, expiry] {
+                {
+                    std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+                    const auto current = m_revocationStates.find(serviceKey);
+                    if (current == m_revocationStates.end() ||
+                        !current->second.expireStatus(version, expiry)) {
+                        return;
+                    }
+                    m_policyStatusExpiryEvents.erase(serviceKey);
+                }
+                NDN_LOG_WARN("NDNSF_POLICY_LEASE_EXPIRED role=user service=" << service
+                             << " version=" << version.toString() << " expiryMs=" << expiry);
+                invalidateControllerScopedCaches(service, version, false, nullptr, false, true);
+            });
+    }
+
     void ServiceUser::scheduleControllerStatusRefresh(
         const ndn::Name& serviceName, const PolicyStatusData& status)
     {
@@ -6636,38 +6678,38 @@ namespace ndn_service_framework
 
         ndn::Name controllerPrefix;
         const auto serviceKey = serviceName.toUri();
-        const auto now = nowMilliseconds();
         const auto revalidationPeriodMs = policyRevalidationPeriodMs();
         const auto expiry = status.getValidUntilMs();
-        const auto remaining = expiry > now ? expiry - now : 0;
-        const auto lead = remaining == 0 ? 0 :
-            std::min<uint64_t>(60000, std::max<uint64_t>(1000, remaining / 4));
-        // The revalidation knob (default 0 = off) replaces the far-future
-        // near-expiry delay with a fixed period so the production scheduled
-        // refresh path discovers a controller-side change inside a bounded
-        // MiniNDN window.  Each completed fetch re-arms the next period in
-        // the fire handler below, because the single-flight version guard
-        // would otherwise suppress every same-version re-arm after the
-        // first fire.
-        const auto delay = revalidationPeriodMs > 0 ? revalidationPeriodMs :
-            (remaining > lead ? remaining - lead : 0);
         const auto version = status.getControllerVersion();
+        uint64_t delay;
         {
             std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
             controllerPrefix = m_controllerPrefix;
             if (controllerPrefix.empty()) {
                 return;
             }
-            const auto scheduled = m_policyStatusRefreshScheduled.find(serviceKey);
-            if (scheduled != m_policyStatusRefreshScheduled.end() &&
-                scheduled->second.compare(version) >= 0) {
+            const auto state = m_revocationStates.find(serviceKey);
+            if (state == m_revocationStates.end() || state->second.currentVersion() != version ||
+                state->second.currentStatus().getValidUntilMs() != expiry) {
                 return;
             }
-            m_policyStatusRefreshScheduled[serviceKey] = version;
+            const auto remaining = state->second.remainingLeaseMs(nowMilliseconds());
+            const auto lead = std::min<uint64_t>(60000,
+                std::max<uint64_t>(1000, remaining / 4));
+            const auto nearExpiry = remaining > lead ? remaining - lead : 0;
+            delay = revalidationPeriodMs > 0 ?
+                std::min(revalidationPeriodMs, nearExpiry) : nearExpiry;
+            const auto scheduled = m_policyStatusRefreshScheduled.find(serviceKey);
+            if (scheduled != m_policyStatusRefreshScheduled.end() &&
+                (scheduled->second.first.compare(version) > 0 ||
+                 (scheduled->second.first == version && scheduled->second.second >= expiry))) {
+                return;
+            }
+            m_policyStatusRefreshScheduled[serviceKey] = {version, expiry};
         }
 
         m_scheduler.schedule(ndn::time::milliseconds(delay),
-            [this, serviceName, serviceKey, version, lead, revalidationPeriodMs] {
+            [this, serviceName, serviceKey, version, expiry, revalidationPeriodMs] {
                 ndn::Name prefix;
                 bool shouldFetch = false;
                 bool rearmForPeriodicRefresh = false;
@@ -6675,20 +6717,15 @@ namespace ndn_service_framework
                     std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
                     const auto scheduled = m_policyStatusRefreshScheduled.find(serviceKey);
                     if (scheduled == m_policyStatusRefreshScheduled.end() ||
-                        scheduled->second != version) {
+                        scheduled->second != std::make_pair(version, expiry)) {
                         return;
                     }
                     prefix = m_controllerPrefix;
                     const auto coordinator = m_policyRefreshCoordinators.find(serviceKey);
                     if (coordinator != m_policyRefreshCoordinators.end()) {
-                        // The coordinator admits a scheduled refresh only near
-                        // status expiry; under the knob the status is still far
-                        // from expiry, so pass an unbounded lead and let the
-                        // revalidation fetch proceed.
+                        // This timer already uses the installed lease's local deadline.
                         const auto result = coordinator->second.startScheduledRefresh(
-                            nowMilliseconds(),
-                            revalidationPeriodMs > 0
-                                ? std::numeric_limits<uint64_t>::max() / 2 : lead);
+                            nowMilliseconds(), std::numeric_limits<uint64_t>::max());
                         shouldFetch = result.outcome ==
                             PolicyRefreshCoordinator::Outcome::FETCH_STARTED;
                         rearmForPeriodicRefresh = revalidationPeriodMs > 0 &&
@@ -6703,7 +6740,7 @@ namespace ndn_service_framework
                     if (rearmForPeriodicRefresh) {
                         const auto current = m_policyStatusRefreshScheduled.find(serviceKey);
                         if (current != m_policyStatusRefreshScheduled.end() &&
-                            current->second == version) {
+                            current->second == std::make_pair(version, expiry)) {
                             // Drop the armed version so the receipt of this
                             // fetch re-arms the next periodic revalidation;
                             // the single-flight guard above would otherwise
@@ -6961,18 +6998,11 @@ namespace ndn_service_framework
 
     bool ServiceUser::authorizeControllerTransition(
         const ndn::Name& serviceName,
-        ProtectedTransition transition) const
+        ProtectedTransition transition, bool requireNacProducerBinding) const
     {
         if (serviceName.empty()) {
             return false;
         }
-
-        const auto certificateWire = identityCert.wireEncode();
-        const auto certificateDigest = sha256DigestString(ndn::Buffer(
-            certificateWire.data(), certificateWire.data() + certificateWire.size()));
-        const AuthorizationSubject subject{
-            identityCert.getIdentity(), certificateDigest, serviceName,
-            makeUserAuthorizationAttribute(serviceName)};
 
         std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
         const auto it = m_revocationStates.find(serviceName.toUri());
@@ -6983,10 +7013,11 @@ namespace ndn_service_framework
             // Once permissions were obtained from a Controller, a missing
             // per-service signed status is fail-closed.  The empty-prefix
             // branch is only for controller-free LocalMock/unit callers.
-            return m_controllerPrefix.empty();
+            return m_controllerPrefix.empty() && (!requireNacProducerBinding || m_isLocalMock);
         }
-        const auto decision = it->second.authorize(subject, transition,
-                                                   nowMilliseconds());
+        const auto decision = it->second.authorizeLocalCredentials(
+            identityCert, signingCert, serviceName, makeUserAuthorizationAttribute(serviceName),
+            transition, nowMilliseconds());
         NDN_LOG_INFO("NDNSF_CONTROLLER_GATE_DECISION service=" << serviceName.toUri()
                      << " allowed=" << decision.allowed
                      << " reason=" << decision.reason);
@@ -6995,6 +7026,20 @@ namespace ndn_service_framework
                          << serviceName << " transition="
                          << static_cast<int>(transition)
                          << " reason=" << decision.reason);
+        }
+        if (decision.allowed && requireNacProducerBinding) {
+            const auto& status = it->second.currentStatus();
+            const auto& name = status.getAbePublicParametersName();
+            const auto& digest = status.getAbePublicParametersDigest();
+            if (m_isLocalMock && name.empty())
+                return true;
+            const auto& producer = m_testNacProducer ? *m_testNacProducer : nacProducer;
+            if (name.empty() || digest.empty() || producer.getPublicParamsDataName() != name ||
+                producer.getPublicParamsDigest() != digest) {
+                NDN_LOG_WARN("NDNSF_NAC_PRODUCER_PARAMETERS_NOT_READY service=" << serviceName
+                             << " expected=" << name);
+                return false;
+            }
         }
         return decision.allowed;
     }
@@ -8574,7 +8619,12 @@ namespace ndn_service_framework
             envelope.setMessageType(messageType);
             envelope.setNonce(blobIdentity.nonce);
 
+            std::optional<ControllerVersion> wrappingVersion;
             measureCall(KEY_WRAP, [&] { onIo([&] {
+            if (!authorizeControllerTransition(ctx.serviceName, ProtectedTransition::DISCOVERY,
+                                               true))
+                throw std::runtime_error("NAC_PRODUCER_AUTHORITY_NOT_READY");
+            wrappingVersion = getControllerVersion(ctx.serviceName);
             if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
                 std::tie(wrappedContentData, wrappedCkData) =
                     (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
@@ -8619,6 +8669,14 @@ namespace ndn_service_framework
             }
             }); });
             wrappedKeyReferenceHeld = true;
+            const auto requirePublicationAuthority = [&] {
+                onIo([&] {
+                    if (getControllerVersion(ctx.serviceName) != wrappingVersion ||
+                        !authorizeControllerTransition(ctx.serviceName,
+                                                       ProtectedTransition::DISCOVERY, true))
+                        throw std::runtime_error("NAC_PRODUCER_AUTHORITY_NOT_READY");
+                });
+            };
 
             const std::string adText = encryptedDataName.toUri(ndn::name::UriFormat::CANONICAL) + "|" +
                                        messageType + "|" + ctx.serviceName.toUri(ndn::name::UriFormat::CANONICAL);
@@ -8859,6 +8917,7 @@ namespace ndn_service_framework
                         commitOptions.packetWireBytes = rootWire.size() +
                             publication->originalPackets->storageBytes() - segmentCount * 2 * sizeof(std::uint64_t);
                         std::uint64_t next = 0;
+                        requirePublicationAuthority();
                         ownerCommitMayHaveStarted = ownerRecoverable;
                         publication->rangeSource = rangeStore->commitOriginalDataPackets(result.manifestName,
                             commitOptions, [&]() -> std::optional<std::pair<ndn::Name, std::vector<std::uint8_t>>> {
@@ -8907,6 +8966,7 @@ namespace ndn_service_framework
                         result.servingLease = std::make_shared<unsigned char>(0);
                         publication->servingLease = result.servingLease;
                     }
+                    requirePublicationAuthority();
                     if (durable) {
                         std::lock_guard<std::mutex> commitFence(
                             m_protectedReferenceCommitMutex);
@@ -9165,6 +9225,7 @@ namespace ndn_service_framework
 
             auto& signingKeyChain =
                 m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+            requirePublicationAuthority();
             std::unique_lock<std::mutex> stagingLock(_cache_mutex, std::defer_lock);
             if (activePut) {
                 // Keep the capacity reservation and all staging inserts in one
@@ -10262,27 +10323,28 @@ namespace ndn_service_framework
         // so a revoked User kept waiting for a terminal event that no Provider would produce. When no
         // status for this service has been installed yet there is nothing to judge against, so one is
         // requested instead of refusing a first call that the Controller would allow.
+        ndn::Name controller;
+        bool hasStatus;
         {
             std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
             const auto status = m_revocationStates.find(serviceName.toUri());
-            const auto prefix = m_controllerPrefix;
-            if (status == m_revocationStates.end() && !prefix.empty()) {
-                NDN_LOG_INFO("NDNSF_CONTROLLER_STATUS_MISSING service=" << serviceName.toUri()
-                             << " action=request");
-                // Nothing to judge against yet: ask for this service's status so the next call - and
-                // the periodic revalidation armed by its arrival - can see a revocation.
-                m_scheduler.schedule(ndn::time::milliseconds(0),
-                    [this, prefix, serviceName] {
-                        fetchPolicyStatusFromController(prefix, serviceName, 1, std::nullopt);
-                    });
-            }
-            if (status != m_revocationStates.end() && status->second.hasCurrentStatus() &&
-                !authorizeControllerTransition(serviceName, ProtectedTransition::DISCOVERY)) {
-                if (onError) onError({StreamedInvocationErrorCode::Unauthorized,
-                                      "request rejected by Controller status for " +
-                                        serviceName.toUri()});
-                return nullptr;
-            }
+            hasStatus = status != m_revocationStates.end() && status->second.hasCurrentStatus();
+            controller = m_controllerPrefix;
+        }
+        if (!hasStatus && !controller.empty()) {
+            NDN_LOG_INFO("NDNSF_CONTROLLER_STATUS_MISSING service=" << serviceName.toUri()
+                         << " action=request");
+            m_scheduler.schedule(ndn::time::milliseconds(0),
+                [this, controller, serviceName] {
+                    fetchPolicyStatusFromController(controller, serviceName, 1, std::nullopt);
+                });
+        }
+        if (hasStatus &&
+            !authorizeControllerTransition(serviceName, ProtectedTransition::DISCOVERY)) {
+            if (onError) onError({StreamedInvocationErrorCode::Unauthorized,
+                                  "request rejected by Controller status for " +
+                                    serviceName.toUri()});
+            return nullptr;
         }
 
         RequestMessage requestMessage;
@@ -15317,12 +15379,15 @@ namespace ndn_service_framework
         const std::weak_ptr<detail::PolicyStatusFetch> owner = m_permissionsFetch;
         const auto expectedController = extractPermissionControllerIdentity(interest, currentControllerIdentityForControl());
         if (!expectedController || data.getName() != interest.getName()) return;
+        const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
+        if (!query) return;
         validator->validateWithConfiguredTrustSchema(
             data,
-            [this, owner, expectedController](const ndn::Data& validatedData) {
+            [this, owner, expectedController, recipient = query->recipientCertificate](const ndn::Data& validatedData) {
                 if (owner.expired()) return;
                 if (expectedController &&
-                    !isSignedByIdentity(validatedData, *expectedController)) {
+                    (!isSignedByIdentity(validatedData, *expectedController) ||
+                     !matchesConfiguredControllerSigner(validatedData, *expectedController))) {
                     NDN_LOG_ERROR("PermissionResponse Data signer mismatch: "
                                   << validatedData.getName()
                                   << " expectedController=" << expectedController->toUri());
@@ -15331,6 +15396,9 @@ namespace ndn_service_framework
                 EncryptedPermissionResponse encryptedResponse;
                 if (decodeEncryptedPermissionResponseFromDataContent(validatedData, encryptedResponse)) {
                     try {
+                        if (!recipient.empty() && (identityCert.getFullName() != recipient ||
+                            ndn::Name(encryptedResponse.getRecipientCertName()) != recipient.getPrefix(-1)))
+                            return;
                         auto& responseKeyChain = m_testSigningKeyChain ?
                             *m_testSigningKeyChain : m_keyChain;
                         auto response =
@@ -15491,7 +15559,8 @@ namespace ndn_service_framework
             [this, owner, expectedController](const ndn::Data& validatedData) {
                 if (owner.expired()) return;
                 if (expectedController &&
-                    !isSignedByIdentity(validatedData, *expectedController)) {
+                    (!isSignedByIdentity(validatedData, *expectedController) ||
+                     !matchesConfiguredControllerSigner(validatedData, *expectedController))) {
                     NDN_LOG_ERROR("PolicyManifest Data signer mismatch: "
                                   << validatedData.getName()
                                   << " expectedController=" << expectedController->toUri());
@@ -15791,9 +15860,10 @@ namespace ndn_service_framework
                 bool controllerCertificateMatches = !expectedController;
                 if (expectedController && ok) {
                     try {
+                        const auto declared = status.getControllerCertificate();
                         controllerCertificateMatches =
-                            ndn::security::extractIdentityFromCertName(
-                                status.getControllerCertificate()) == *expectedController;
+                            ndn::security::extractIdentityFromCertName(declared) == *expectedController &&
+                            matchesConfiguredControllerSigner(validatedData, *expectedController, &declared);
                     }
                     catch (const std::exception&) {
                         controllerCertificateMatches = false;
@@ -15817,7 +15887,7 @@ namespace ndn_service_framework
                     !exactNameMatches ||
                     !status.validate(nowMilliseconds()) ||
                     !controllerCertificateMatches ||
-                    !installControllerStatus(status, true)) {
+                    !installControllerStatus(status, true, true)) {
                     NDN_LOG_ERROR("PolicyStatus rejected: " << validatedData.getName());
                     retryValidationFailure();
                     return;
@@ -18267,6 +18337,11 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 return;
             }
         }
+        if (!authorizeControllerTransition(serviceName, ProtectedTransition::DISCOVERY, true)) {
+            if (onPublished) onPublished(false, "NAC_PRODUCER_AUTHORITY_NOT_READY");
+            return;
+        }
+        const auto wrappingVersion = getControllerVersion(serviceName);
         auto key = m_hybridMessageCrypto.getOrCreateSendKey(
             serviceName, senderPrefix, accessAttribute, messageType, m_hybridCryptoCounters);
 
@@ -18362,6 +18437,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         const bool inlineCrypto = plaintext.size() <= HybridMessageCrypto::INLINE_CRYPTO_MAX_BYTES;
         auto encryptAndPost = [this, messageName, requestId, serviceName, messageType, onPublished,
                                selectionProvider, expectedSelectionContext, expectedControllerVersion,
+                               wrappingVersion,
                                keyId = key.keyId, epochId = key.epochId,
                                keyBytes = key.key, ad = std::move(ad),
                                plaintext = std::move(plaintext),
@@ -18392,6 +18468,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
             *publish =
                 [this, messageName, requestId, serviceName, messageType, onPublished,
                  selectionProvider, expectedSelectionContext, expectedControllerVersion,
+                 wrappingVersion,
                  keyId, epochId, aesStartUs, aesEndUs, wrappedKeyAttached,
                  ciphertextBytes, error = std::move(error),
                  buffer = std::move(buffer), weakPublish, cryptoReported = false]() mutable {
@@ -18410,6 +18487,12 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                   << " messageName=" << messageName.toUri()
                                   << " reason=" << error);
                     if (onPublished) onPublished(false, error);
+                    return;
+                }
+                if (getControllerVersion(serviceName) != wrappingVersion ||
+                    !authorizeControllerTransition(serviceName, ProtectedTransition::DISCOVERY,
+                                                   true)) {
+                    if (onPublished) onPublished(false, "NAC_PRODUCER_AUTHORITY_NOT_READY");
                     return;
                 }
                 if (!cryptoReported) {
@@ -19381,10 +19464,10 @@ void ServiceUser::finishRequestAckOnEventLoop(
             expectedProgressOperationId,
             std::move(expectedProgressBindings));
         consumer->setAuthorizationCallback(
-            [this, serviceName] {
-                return authorizeControllerTransition(
-                    serviceName, ProtectedTransition::STREAM_EVENT);
-        });
+            [this, serviceName, version = binding.controllerVersion] {
+                return isAcceptableControllerVersion(serviceName, version) &&
+                       authorizeControllerTransition(serviceName, ProtectedTransition::STREAM_EVENT);
+            });
         *consumerSlot = consumer;
         consumer->start();
         m_streamConsumers[requestId] = consumer;

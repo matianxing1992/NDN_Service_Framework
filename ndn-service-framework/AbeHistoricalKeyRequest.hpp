@@ -1,11 +1,15 @@
 #ifndef NDNSF_ABE_HISTORICAL_KEY_REQUEST_HPP
 #define NDNSF_ABE_HISTORICAL_KEY_REQUEST_HPP
 
+#include "ControllerVersion.hpp"
+
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/interest.hpp>
@@ -13,7 +17,11 @@
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/signing-info.hpp>
 
+namespace ndn { class Face; class PendingInterestHandle; }
+
 namespace ndn_service_framework {
+
+class PolicyStatusData;
 
 /** A historical decryption key a consumer asks a Controller to mint.
  *
@@ -40,12 +48,179 @@ struct HistoricalKeyRequest
   ndn::Name ckName;
   std::string policy;
   std::vector<uint8_t> ckEvidence;
+  std::vector<uint8_t> publicationEvidence;
   ndn::Name recipientCertificate;
   uint64_t mintedAtMs = 0;
   uint64_t expiresAtMs = 0;
+  /** Authority state authorizing this read, distinct from the retired material. */
+  ControllerVersion currentControllerVersion;
 
   bool operator==(const HistoricalKeyRequest& other) const;
 };
+
+/** Original Producer's immutable mapping of a historical publication.
+ *
+ * The object digest covers the ordered concatenation of the original Data
+ * packet wires, including signatures, with exact segment names under objectName.
+ * The CK FullName carries the implicit digest of the original CK packet.
+ */
+struct HistoricalPublication
+{
+  ndn::Name controller;
+  ndn::Name producer;
+  ndn::Name service;
+  ndn::Name objectName;
+  ndn::Name ckFullName;
+  ndn::Name publicParametersName;
+  uint64_t generation = 0;
+  uint64_t epoch = 0;
+  uint64_t policyGeneration = 0;
+  uint64_t policyEpoch = 0;
+  uint64_t segments = 0;
+  std::string policy;
+  std::string objectDigest;
+  std::string publicParametersDigest;
+};
+
+/** Create the original Producer's signed, content-addressed mapping Data. */
+ndn::Data
+makeHistoricalPublicationData(const HistoricalPublication& publication, ndn::KeyChain& keyChain,
+                              const ndn::security::SigningInfo& signing);
+
+/** Bind a signed publication to the unmodified CK and ordered Producer packets. */
+ndn::Data
+makeHistoricalPublicationData(const PolicyStatusData& status, const std::string& attribute,
+                              const ndn::Data& ck,
+                              const std::vector<std::shared_ptr<ndn::Data>>& segments,
+                              const ndn::security::Certificate& producer,
+                              const ndn::security::Certificate& controller,
+                              ndn::KeyChain& keyChain, uint64_t nowMs);
+
+/** Parse and check the mapping's identity. Callers must validate its Producer signature. */
+std::optional<HistoricalPublication>
+decodeHistoricalPublication(const ndn::Data& data);
+
+/** Create a Controller receipt after admitting the Producer for this service.
+ *
+ * The receipt names the exact signed publication and uses the currently
+ * authorized publication version and its recorded material.
+ */
+ndn::Data
+makeHistoricalPublicationReceipt(const ndn::Data& publication,
+                                 const ndn::security::Certificate& producerCertificate,
+                                 const PolicyStatusData& currentStatus,
+                                 const ndn::security::Certificate& controllerCertificate,
+                                 ndn::KeyChain& keyChain, uint64_t nowMs);
+
+/** Verify an original receipt with a signer already trusted for this historical purpose. */
+bool
+verifyHistoricalPublicationReceipt(const ndn::Data& receipt, const ndn::Data& publication,
+                                   const ndn::security::Certificate& receiptSigner);
+
+struct HistoricalPublicationReceipt
+{
+  ndn::Name publicationFullName;
+  ControllerVersion version;
+};
+
+/** A receipt for a publication protected by an Authority-signed grant instead of a content key.
+ *
+ * The DI family never mints a CK, so the CK receipt cannot describe it. This one binds the published
+ * object to the grant digest the recipient was given, under the same controller version rules.
+ */
+struct HistoricalGrantReceipt
+{
+  ndn::Name publicationFullName;
+  std::string grantDigest;          // "sha256:<hex>" of the Authority-signed grant body
+  ndn::Name recipient;              // identity the grant was issued to
+  std::string service;              // service whose permission the Controller verified
+  ControllerVersion version;
+};
+
+/** A Producer's request for a grant-based historical receipt.
+ *
+ * Parallel to HistoricalPublication, which is CK-shaped: this one names the publication wire, the
+ * Authority-signed grant digest and the recipient, plus the Controller version in force when the
+ * publication was committed.
+ */
+struct HistoricalGrantReceiptRequest
+{
+  ndn::Name controllerPrefix;
+  std::string publicationWire;      // the signed publication Data, as it was committed
+  std::string grantDigest;          // "sha256:<hex>" of the Authority-signed grant body
+  ndn::Name recipient;
+  std::string service;              // service the publication belongs to; the Controller checks it
+  ControllerVersion currentControllerVersion;
+};
+
+/** Canonical body of a grant receipt request; its digest names the request. */
+std::string
+encodeHistoricalGrantReceiptRequest(const HistoricalGrantReceiptRequest& request);
+
+bool
+decodeHistoricalGrantReceiptRequest(const std::string& body,
+                                    HistoricalGrantReceiptRequest& request);
+
+/** Ask the Controller for a grant-based receipt for a publication this Producer just committed.
+ *
+ * Parallel to requestHistoricalPublicationReceipt, which carries a CK: the grant request names the
+ * publication wire, the Authority-signed grant digest, the recipient and the service. The request is
+ * a signed control-RPC Interest under the same operation the Controller already accepts. */
+/** Build the signed Interest that asks for a grant receipt; exposed so the request shape can be
+ *  asserted without a Face. */
+ndn::Interest
+makeHistoricalGrantReceiptRequestInterest(const HistoricalGrantReceiptRequest& request,
+                                          const ndn::security::Certificate& producer,
+                                          ndn::KeyChain& keyChain);
+
+ndn::PendingInterestHandle
+requestHistoricalGrantReceipt(ndn::Face& face, ndn::KeyChain& keyChain,
+                              const HistoricalGrantReceiptRequest& request,
+                              const ndn::security::Certificate& producer,
+                              const ndn::security::Certificate& controller,
+                              uint32_t lifetimeMs,
+                              std::function<void(std::optional<ndn::Name>)> onComplete);
+
+/** Build the canonical grant receipt for a publication the caller just committed. */
+ndn::Data
+makeHistoricalGrantReceipt(const ndn::Name& controller, const ndn::Name& publicationFullName,
+                           const std::string& grantDigest, const ndn::Name& recipient,
+                           const std::string& service, const ControllerVersion& version,
+                           const ndn::security::Certificate& controllerCertificate,
+                           ndn::KeyChain& keyChain);
+
+/** Decode the canonical grant receipt; the caller authenticates the signature or witnessed wire. */
+std::optional<HistoricalGrantReceipt>
+decodeHistoricalGrantReceipt(const ndn::Data& receipt, const ndn::Name& controller);
+
+/** Decode the canonical receipt. The caller must authenticate its signature or witnessed wire. */
+std::optional<HistoricalPublicationReceipt>
+decodeHistoricalPublicationReceipt(const ndn::Data& receipt, const ndn::Name& controller);
+
+/** Name a bounded Controller request carrying the original signed publication wire. */
+ndn::Interest
+makeHistoricalPublicationRequest(const ndn::Data& publication, ndn::KeyChain& keyChain,
+                                 const ndn::security::Certificate& producerCertificate);
+
+/** Authenticate the receipt pointer returned for this exact publication request. */
+std::optional<ndn::Name>
+verifyHistoricalPublicationAcknowledgement(const ndn::Interest& interest, const ndn::Data& reply,
+                                          const ndn::Data& publication,
+                                          const ndn::security::Certificate& controllerCertificate);
+
+/** Request a receipt on the caller's Face. The returned handle owns cancellation. */
+ndn::PendingInterestHandle
+requestHistoricalPublicationReceipt(ndn::Face& face, ndn::KeyChain& keyChain,
+                                    const ndn::Data& publication,
+                                    const ndn::security::Certificate& producer,
+                                    const ndn::security::Certificate& controller,
+                                    uint32_t lifetimeMs,
+                                    std::function<void(std::optional<ndn::Name>)> onComplete);
+
+/** Require the exact publication scope and original CK wire claimed in the request. */
+bool
+historicalPublicationMatches(const HistoricalPublication& publication,
+                             const HistoricalKeyRequest& request, const ndn::Data& ck);
 
 /** Canonical body of a request; its digest names the request. */
 std::string
@@ -71,8 +246,8 @@ makeHistoricalKeyRequestName(const ndn::Name& controllerPrefix,
 /** Build and sign the Interest that carries a request.
  *
  * The body travels as the Interest parameters, so the signature covers it together with the name.
- * The caller supplies the signing parameters; a consumer signs with the certificate the request
- * names as the recipient, which is the only certificate the Controller will mint for.
+ * The caller supplies the signing parameters. A distinct recipient must be named
+ * by its complete certificate FullName and belong to the same authorized identity.
  */
 void
 signHistoricalKeyRequest(ndn::Interest& interest, const HistoricalKeyRequest& request,
@@ -115,6 +290,7 @@ struct HistoricalKeyReply
   uint64_t generation = 0;
   uint64_t epoch = 0;
   uint64_t expiresAtMs = 0;
+  ControllerVersion currentControllerVersion;
 };
 
 /** Verify a reply against the request the consumer actually sent.
@@ -164,10 +340,19 @@ using HistoricalKeyAuthorizationCheck =
 class HistoricalKeyBroker
 {
 public:
+  enum class Failure
+  {
+    NONE,
+    REQUEST_REJECTED,
+    NOT_AUTHORIZED,
+    KEY_UNAVAILABLE,
+  };
+
   struct Material
   {
     std::string publicParameters;
     std::string masterSecret;
+    ndn::Name publicParametersName;
   };
 
   using SignerLookup = std::function<bool(const ndn::Name&, ndn::security::Certificate&)>;
@@ -199,17 +384,19 @@ public:
   /** The same decisions, for a caller that has already validated the signature.
    *
    * The Controller validates through its trust anchors, which is asynchronous; it hands the result
-   * here so there is still one place that decides freshness, replay and which generation to mint
-   * from.
+   * here, along with a separately validated recipient when it differs from the signer.
    */
   std::optional<ndn::Data>
   answerValidated(const ndn::Interest& interest, const ndn::Name& controllerPrefix, uint64_t nowMs,
-                  const ndn::security::Certificate& signer);
+                  const ndn::security::Certificate& signer,
+                  const ndn::security::Certificate* resolvedRecipient = nullptr,
+                  Failure* failure = nullptr);
 
 private:
   std::optional<ndn::Data>
   finish(const HistoricalKeyRequest& request, uint64_t nowMs, const ndn::Name& replyName,
-                  const ndn::security::Certificate& recipient);
+         const ndn::security::Certificate& signer, const ndn::security::Certificate& recipient,
+         Failure* failure = nullptr);
 
   HistoricalKeyAuthorizationCheck m_authorizationCheck;
   SignerLookup m_signerLookup;

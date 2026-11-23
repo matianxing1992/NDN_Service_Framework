@@ -1,10 +1,15 @@
 #include "ControllerGenerationStore.hpp"
 
+#include "AbeHistoricalAuthorization.hpp"
+#include "AbeHistoricalKeyRequest.hpp"
 #include "SealedField.hpp"
 
 #include <ndn-cxx/name.hpp>
+#include <ndn-cxx/util/random.hpp>
+#include <ndn-cxx/util/scope.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 #include <openssl/crypto.h>
+#include <openssl/hmac.h>
 
 #include <algorithm>
 #include <array>
@@ -16,6 +21,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -48,6 +54,10 @@ constexpr char ABE_HISTORY_MAGIC[] = "NDNSFCS6";
 // CS8 is CS6 plus the version the material was generated for, which the digest covers. A store whose material has no
 // version keeps writing CS6, so an older binary still reads it and a newer one reads both.
 constexpr char ABE_HISTORY_VERSIONED_MAGIC[] = "NDNSFCS8";
+constexpr char ABE_PUBLIC_PACKET_MAGIC[] = "NDNSFCSA";
+// CS9 authenticates the complete inner state. The inner format still seals the master secrets.
+constexpr char AUTHENTICATED_STATE_MAGIC[] = "NDNSFCS9";
+constexpr char WITNESS_STATE_MAGIC[] = "NDNSFCSA";
 // CS5 = CS4 without a live generation: the archive outlives the current material, so a
 // failed rotation that left no material must not silently drop it.
 // CS7 keeps the same entry layout as CS6 but carries no live material, so the two writers stay
@@ -62,6 +72,86 @@ constexpr size_t STATE_MAGIC_SIZE = sizeof(STATE_MAGIC) - 1;
 constexpr char LOCK_MAGIC[] = "NDNSF-FLOCK-1";
 constexpr size_t MAX_LEASE_BYTES = 16384;
 constexpr size_t MAX_ABE_FIELD_BYTES = 1U << 20;
+constexpr size_t MAX_AUTHENTICATED_STATE_BYTES = 64U << 20;
+constexpr size_t STATE_MAC_BYTES = 32;
+constexpr std::string_view CHECKPOINT_MAGIC = "NDNSF-CONTROLLER-CHECKPOINT-v1\n";
+
+std::optional<std::string>
+readPrivateGrantFile(const std::filesystem::path& path, size_t limit);
+
+void
+writePrivateGrantFile(const std::filesystem::path& path, const std::string& bytes, uint64_t fence);
+
+std::string
+uniqueTemporaryPath(const std::filesystem::path& path, uint64_t fence)
+{
+  return path.string() + ".tmp." + std::to_string(fence) + "." +
+         std::to_string(ndn::random::generateSecureWord64());
+}
+
+void
+syncStateDirectory(const std::filesystem::path& path)
+{
+  const auto parent = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
+  const int fd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0)
+    throw ControllerGenerationStore::CommitUncertain("cannot open Controller state directory");
+  const int result = ::fsync(fd);
+  ::close(fd);
+  if (result != 0)
+    throw ControllerGenerationStore::CommitUncertain("cannot flush Controller state directory");
+}
+
+bool
+isPrivateLease(int fd, const std::filesystem::path& path)
+{
+  struct stat opened{}, visible{};
+  return fd >= 0 && ::fstat(fd, &opened) == 0 && ::lstat(path.c_str(), &visible) == 0 &&
+         S_ISREG(opened.st_mode) && opened.st_nlink == 1 && opened.st_uid == ::geteuid() &&
+         (opened.st_mode & 0077) == 0 && opened.st_dev == visible.st_dev &&
+         opened.st_ino == visible.st_ino;
+}
+
+std::string
+readStateBytes(int fd, size_t size, off_t offset)
+{
+  if (size > MAX_AUTHENTICATED_STATE_BYTES)
+    throw std::runtime_error("Controller generation state exceeds its byte limit");
+  std::string bytes(size, '\0');
+  for (size_t read = 0; read < bytes.size();) {
+    const auto count = ::pread(fd, bytes.data() + read, bytes.size() - read,
+                               offset + static_cast<off_t>(read));
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      throw std::runtime_error("cannot read authenticated Controller generation state");
+    read += static_cast<size_t>(count);
+  }
+  return bytes;
+}
+
+std::array<unsigned char, STATE_MAC_BYTES>
+stateMac(const std::vector<uint8_t>& secretKey, const std::string& keyId,
+         const std::string& owner, std::string_view inner)
+{
+  if (secretKey.size() != 32 || owner.empty())
+    throw std::runtime_error("Controller generation authentication key or owner unavailable");
+  std::string context = "ndnsf/controller/state-v9/";
+  context += std::to_string(owner.size()) + "/" + owner + "/" + keyId;
+  std::array<unsigned char, STATE_MAC_BYTES> macKey{};
+  std::array<unsigned char, STATE_MAC_BYTES> mac{};
+  const auto* derived = HMAC(EVP_sha256(), secretKey.data(), static_cast<int>(secretKey.size()),
+                            reinterpret_cast<const unsigned char*>(context.data()),
+                            context.size(), macKey.data(), nullptr);
+  const auto* authenticated = derived ?
+    HMAC(EVP_sha256(), macKey.data(), static_cast<int>(macKey.size()),
+         reinterpret_cast<const unsigned char*>(inner.data()), inner.size(), mac.data(), nullptr) :
+    nullptr;
+  OPENSSL_cleanse(macKey.data(), macKey.size());
+  if (authenticated == nullptr)
+    throw std::runtime_error("cannot authenticate Controller generation state");
+  return mac;
+}
 
 class PrivateFileInputBuffer : public std::streambuf
 {
@@ -98,6 +188,15 @@ protected:
 private:
   int m_fd;
   std::array<char, 8192> m_buffer{};
+};
+
+class StateSnapshotBuffer : public std::streambuf
+{
+public:
+  explicit StateSnapshotBuffer(std::string& bytes)
+  {
+    setg(bytes.data(), bytes.data(), bytes.data() + bytes.size());
+  }
 };
 
 struct LeaseRecord
@@ -169,12 +268,14 @@ writeString(int fd, const std::string& value)
 }
 
 void
-readStringInto(std::istream& stream, std::string& value, size_t limit)
+readStringInto(std::istream& stream, std::string& value, size_t limit, bool allowEmpty = false)
 {
   const auto length = readU64(stream);
-  if (length == 0 || length > limit)
+  if ((!allowEmpty && length == 0) || length > limit)
     throw std::runtime_error("invalid Controller ABE state field length");
   value.assign(static_cast<size_t>(length), '\0');
+  if (length == 0)
+    return;
   stream.read(&value[0], static_cast<std::streamsize>(value.size()));
   if (stream.gcount() != static_cast<std::streamsize>(value.size()))
     throw std::runtime_error("truncated Controller ABE state");
@@ -191,13 +292,16 @@ isDigest(const std::string& value)
 }
 
 bool
-isValidAbeMaterial(const ControllerGenerationStore::AbeMaterial& material)
+isValidAbeMaterial(const ControllerGenerationStore::AbeMaterial& material, bool checkSecret = true)
 {
   return !material.owner.empty() && material.owner.size() <= MAX_LEASE_BYTES - 64 &&
     material.owner.find_first_of("\r\n\t ") == std::string::npos &&
     isDigest(material.signingKeyDigest) && isDigest(material.policyDigest) &&
     !material.publicParameters.empty() && material.publicParameters.size() <= MAX_ABE_FIELD_BYTES &&
-    !material.masterSecret.empty() && material.masterSecret.size() <= MAX_ABE_FIELD_BYTES;
+    (!checkSecret || (!material.masterSecret.empty() &&
+                      material.masterSecret.size() <= MAX_ABE_FIELD_BYTES)) &&
+    material.publicParametersPacket.size() <= ndn::MAX_NDN_PACKET_SIZE &&
+    (material.publicParametersPacket.empty() || material.publicParametersVersion != 0);
 }
 
 std::string
@@ -219,21 +323,33 @@ abeMaterialDigest(const ControllerGenerationStore::AbeMaterial& material)
     hash << std::to_string(material.version.controllerGenerationTimestamp);
     hash << std::to_string(material.version.controllerEpoch);
   }
+  if (material.publicParametersVersion != 0) {
+    hash << ":" + std::to_string(material.publicParametersVersion);
+    hash << std::to_string(material.publicParametersPacket.size()) + ":";
+    hash << material.publicParametersPacket;
+  }
   return "sha256:" + hash.toString();
 }
 
 std::string
-abeHistoryDigest(const ControllerGenerationStore::AbeHistoryEntry& entry)
+abeHistoryDigest(const ControllerGenerationStore::AbeHistoryEntry& entry, bool bound = true)
 {
   ndn::util::Sha256 hash;
   hash << std::string("NDNSF-CONTROLLER-ABE-HISTORY-V1");
   hash << std::to_string(entry.generationTimestamp);
   hash << std::to_string(entry.epoch);
-  for (const auto* field : {&entry.publicParametersName, &entry.publicParametersWireDigest,
-                            &entry.publicParameters, &entry.masterSecret}) {
-    hash << (std::to_string(field->size()) + ":");
-    hash << *field;
+  const auto append = [&hash] (const std::string& field) {
+    hash << (std::to_string(field.size()) + ":");
+    hash << field;
+  };
+  if (bound) {
+    append(entry.publicParametersName);
+    append(entry.publicParametersWireDigest);
+    if (!entry.publicParametersPacket.empty())
+      append(entry.publicParametersPacket);
   }
+  append(entry.publicParameters);
+  append(entry.masterSecret);
   return "sha256:" + hash.toString();
 }
 
@@ -277,6 +393,8 @@ ControllerGenerationStore::AbeMaterial::operator=(const AbeMaterial& other)
     signingKeyDigest = other.signingKeyDigest;
     policyDigest = other.policyDigest;
     publicParameters = other.publicParameters;
+    publicParametersPacket = other.publicParametersPacket;
+    publicParametersVersion = other.publicParametersVersion;
     masterSecret = other.masterSecret;
     // The version is part of the material's identity: without it a reloaded state cannot tell which version the keys
     // were generated for, and the publication check that depends on it is skipped.
@@ -301,6 +419,7 @@ ControllerGenerationStore::AbeHistoryEntry::operator=(const AbeHistoryEntry& oth
     generationTimestamp = other.generationTimestamp;
     epoch = other.epoch;
     publicParameters = other.publicParameters;
+    publicParametersPacket = other.publicParametersPacket;
     masterSecret = other.masterSecret;
     publicParametersName = other.publicParametersName;
     publicParametersWireDigest = other.publicParametersWireDigest;
@@ -330,6 +449,14 @@ ControllerGenerationStore::~ControllerGenerationStore()
 std::unique_ptr<ControllerGenerationStore>
 ControllerGenerationStore::openDefault(
   const std::string& identity, const std::filesystem::path& legacyStatePath)
+{
+  return openDefault(identity, legacyStatePath, {}, {});
+}
+
+std::unique_ptr<ControllerGenerationStore>
+ControllerGenerationStore::openDefault(
+  const std::string& identity, const std::filesystem::path& legacyStatePath,
+  std::vector<uint8_t> sealKey, std::string sealKeyId, bool requireAuthentication)
 {
   const ndn::Name name(identity);
   if (name.empty() || !legacyStatePath.is_absolute())
@@ -365,6 +492,7 @@ ControllerGenerationStore::openDefault(
     }
   }
   auto store = std::make_unique<ControllerGenerationStore>(path);
+  store->setSecretSeal(std::move(sealKey), std::move(sealKeyId), requireAuthentication);
   if (!store->acquireWriterImpl(owner, true))
     throw std::runtime_error("Controller generation writer unavailable or identity differs: " +
                              path.string());
@@ -383,6 +511,19 @@ ControllerGenerationStore::acquireWriterImpl(const std::string& owner, bool requ
   if (owner.empty() || owner.size() > MAX_LEASE_BYTES - 64 || m_lockFd >= 0 ||
       owner.find_first_of("\r\n\t ") != std::string::npos)
     return false;
+  int checkpointFd = -1;
+  auto closeCheckpoint = ndn::make_scope_exit([&] {
+    if (checkpointFd >= 0)
+      ::close(checkpointFd);
+  });
+  if (!m_checkpointPath.empty()) {
+    const auto checkpointLock = m_checkpointPath.string() + ".lock";
+    checkpointFd = ::open(checkpointLock.c_str(),
+      O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+    if (!isPrivateLease(checkpointFd, checkpointLock) ||
+        ::flock(checkpointFd, LOCK_EX | LOCK_NB) != 0)
+      return false;
+  }
   int fd = ::open(m_lockPath.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
   const bool created = fd >= 0;
   if (fd < 0 && errno == EEXIST)
@@ -410,7 +551,7 @@ ControllerGenerationStore::acquireWriterImpl(const std::string& owner, bool requ
   if (requireSameOwner) {
     try {
       // Validate under the old lease before replacing its owner/fence record.
-      loadState();
+      loadState(owner);
     }
     catch (...) {
       ::close(fd);
@@ -418,6 +559,7 @@ ControllerGenerationStore::acquireWriterImpl(const std::string& owner, bool requ
     }
   }
   m_lockFd = fd;
+  m_checkpointFd = std::exchange(checkpointFd, -1);
   m_owner = owner;
   m_fence = nextFence.fetch_add(1);
   const auto contents = std::string(LOCK_MAGIC) + "\n" + m_owner + "\n" +
@@ -435,6 +577,9 @@ bool
 ControllerGenerationStore::ownsWriter() const
 {
   if (m_owner.empty() || m_fence == 0 || m_lockFd < 0)
+    return false;
+  if (!m_checkpointPath.empty() && !isPrivateLease(m_checkpointFd,
+                                                   m_checkpointPath.string() + ".lock"))
     return false;
   struct stat info{};
   struct stat pathInfo{};
@@ -460,7 +605,10 @@ ControllerGenerationStore::releaseWriter()
   // existing contender still holds the old descriptor.
   if (m_lockFd >= 0)
     ::close(m_lockFd);
+  if (m_checkpointFd >= 0)
+    ::close(m_checkpointFd);
   m_lockFd = -1;
+  m_checkpointFd = -1;
   m_owner.clear();
   m_fence = 0;
 }
@@ -475,18 +623,61 @@ ControllerGenerationStore::requireWriter() const
 std::optional<ControllerVersion>
 ControllerGenerationStore::load() const
 {
-  struct stat info{};
-  if (::lstat(m_statePath.c_str(), &info) != 0 && errno == ENOENT)
+  const auto version = loadState().version;
+  if (!version.isValid())
     return std::nullopt;
-  return loadState().version;
+  return version;
 }
 
 ControllerGenerationStore::PersistedState
-ControllerGenerationStore::loadState() const
+ControllerGenerationStore::loadState(const std::string& verifiedOwner, StateReadScope scope,
+                                     ControllerVersion target) const
 {
-  const int fd = ::open(m_statePath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (m_checkpointPath.empty())
+    return readState(m_statePath, verifiedOwner, {}, scope, target);
+  requireWriter();
+  const auto checkpoint = readPrivateGrantFile(m_checkpointPath,
+                                                CHECKPOINT_MAGIC.size() + STATE_MAC_BYTES);
+  if (!checkpoint)
+    return readState(m_statePath, verifiedOwner, {}, scope, target);
+  if (checkpoint->size() != CHECKPOINT_MAGIC.size() + STATE_MAC_BYTES ||
+      checkpoint->compare(0, CHECKPOINT_MAGIC.size(), CHECKPOINT_MAGIC) != 0)
+    throw std::runtime_error("invalid Controller recovery checkpoint");
+  const std::string_view expected = std::string_view(*checkpoint).substr(CHECKPOINT_MAGIC.size());
+  try {
+    return readState(m_statePath, verifiedOwner, expected, scope, target);
+  }
+  catch (const std::runtime_error&) {
+    // Public and per-generation reads cannot drive full-state recovery.
+    if (scope != StateReadScope::ALL)
+      throw;
+    // A crash after the checkpoint commit can leave the matching state staged.
+    const auto staged = m_statePath.string() + ".prepared";
+    PersistedState recovered;
+    try {
+      // Promotion validates the complete recovery candidate before changing the state path.
+      recovered = readState(staged, verifiedOwner, expected, StateReadScope::ALL, {});
+    }
+    catch (const std::runtime_error&) {
+      throw std::runtime_error("Controller recovery checkpoint has no matching state");
+    }
+    requireWriter();
+    if (::rename(staged.c_str(), m_statePath.c_str()) != 0)
+      throw CommitUncertain("cannot promote the Controller recovery candidate");
+    syncStateDirectory(m_statePath);
+    return recovered;
+  }
+}
+
+ControllerGenerationStore::PersistedState
+ControllerGenerationStore::readState(const std::filesystem::path& path,
+                                    const std::string& verifiedOwner,
+                                    std::string_view expectedMac, StateReadScope scope,
+                                    const ControllerVersion& target) const
+{
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (fd < 0) {
-    if (errno == ENOENT)
+    if (errno == ENOENT && expectedMac.empty() && m_importDigest.empty())
       return {};
     throw std::runtime_error("cannot open Controller generation state");
   }
@@ -500,29 +691,99 @@ ControllerGenerationStore::loadState() const
   std::istream state(&buffer);
   state.exceptions(std::ios::badbit);
 
+  std::string importedBytes;
+  auto cleanse = ndn::make_scope_exit([&] {
+    OPENSSL_cleanse(importedBytes.data(), importedBytes.size());
+  });
+  if (!m_checkpointPath.empty() && expectedMac.empty()) {
+    if (m_importDigest.empty() || info.st_size <= 0 ||
+        info.st_size > static_cast<off_t>(MAX_AUTHENTICATED_STATE_BYTES))
+      throw std::runtime_error("Controller recovery checkpoint is missing for existing state");
+    importedBytes = readStateBytes(fd, static_cast<size_t>(info.st_size), 0);
+    if (m_importDigest != "sha256:" + sha256Hex(importedBytes))
+      throw std::runtime_error("Controller recovery import digest mismatch");
+  }
+  StateSnapshotBuffer importedBuffer(importedBytes);
+  std::istream imported(&importedBuffer);
+  auto* input = importedBytes.empty() ? &state : &imported;
   char magic[STATE_MAGIC_SIZE] = {};
-  state.read(magic, STATE_MAGIC_SIZE);
-  if (state.gcount() != static_cast<std::streamsize>(STATE_MAGIC_SIZE))
+  input->read(magic, STATE_MAGIC_SIZE);
+  if (input->gcount() != static_cast<std::streamsize>(STATE_MAGIC_SIZE))
     throw std::runtime_error("truncated Controller generation state");
 
+  std::istringstream verified;
+  std::istream* inner = input;
+  const bool bindsWitness = std::equal(std::begin(magic), std::end(magic), WITNESS_STATE_MAGIC);
+  std::optional<GrantWitnessRef> witness;
+  if (bindsWitness || std::equal(std::begin(magic), std::end(magic), AUTHENTICATED_STATE_MAGIC)) {
+    constexpr auto overhead = static_cast<off_t>(STATE_MAGIC_SIZE + STATE_MAC_BYTES);
+    if ((info.st_mode & 0077) != 0 ||
+        info.st_size < overhead + static_cast<off_t>(STATE_MAGIC_SIZE) ||
+        info.st_size > static_cast<off_t>(MAX_AUTHENTICATED_STATE_BYTES))
+      throw std::runtime_error("invalid authenticated Controller generation state size or mode");
+    auto bytes = importedBytes.empty() ?
+      readStateBytes(fd, static_cast<size_t>(info.st_size) - STATE_MAGIC_SIZE, STATE_MAGIC_SIZE) :
+      importedBytes.substr(STATE_MAGIC_SIZE);
+    const size_t length = bytes.size() - STATE_MAC_BYTES;
+    const auto mac = stateMac(m_secretKey, m_secretKeyId,
+                              verifiedOwner.empty() ? m_owner : verifiedOwner,
+                              std::string_view(bytes.data(), length));
+    if (CRYPTO_memcmp(bytes.data() + length, mac.data(), mac.size()) != 0)
+      throw std::runtime_error("Controller generation state authentication failed");
+    if (!expectedMac.empty() && CRYPTO_memcmp(expectedMac.data(), mac.data(), mac.size()) != 0)
+      throw std::runtime_error("Controller generation state differs from the recovery checkpoint");
+    bytes.resize(length);
+    // Authenticate the layout discriminator along with the witness-bearing state.
+    if (bindsWitness && bytes.compare(0, STATE_MAGIC_SIZE, WITNESS_STATE_MAGIC) != 0)
+      throw std::runtime_error("invalid Controller grant witness state marker");
+    verified.str(std::move(bytes));
+    if (bindsWitness) {
+      verified.ignore(STATE_MAGIC_SIZE);
+      witness.emplace();
+      readStringInto(verified, witness->signerDigest, 71);
+      readStringInto(verified, witness->wireDigest, 71);
+      if (!isDigest(witness->signerDigest) || !isDigest(witness->wireDigest))
+        throw std::runtime_error("invalid Controller grant witness commitment");
+    }
+    verified.read(magic, STATE_MAGIC_SIZE);
+    inner = &verified;
+  }
+  else if (scope != StateReadScope::ALL || !expectedMac.empty() ||
+           (m_requireAuthentication && importedBytes.empty())) {
+    throw std::runtime_error("Controller requires authenticated state or a pinned legacy import");
+  }
+  // Scoped readers have authenticated the whole container above. They validate the
+  // plaintext-dependent entry digest only for a secret they actually open.
+  auto result = decodeState(*inner, std::string_view(magic, STATE_MAGIC_SIZE),
+                            info.st_mode, verifiedOwner, scope, target);
+  result.grantWitness = std::move(witness);
+  return result;
+}
+
+ControllerGenerationStore::PersistedState
+ControllerGenerationStore::decodeState(std::istream& state, std::string_view magic, unsigned int mode,
+                                      const std::string& verifiedOwner, StateReadScope scope,
+                                      const ControllerVersion& target) const
+{
   PersistedState result;
-  const bool hasMaterialVersion = std::equal(std::begin(magic), std::end(magic),
-                                             ABE_HISTORY_VERSIONED_MAGIC);
-  const bool hasHistory = hasMaterialVersion ||
-    std::equal(std::begin(magic), std::end(magic), ABE_HISTORY_MAGIC);
-  const bool hasLegacyHistory = std::equal(std::begin(magic), std::end(magic),
-                                           LEGACY_HISTORY_MAGIC) ||
-    std::equal(std::begin(magic), std::end(magic), LEGACY_HISTORY_ONLY_MAGIC);
-  const bool legacyHistoryOnly = std::equal(std::begin(magic), std::end(magic),
-                                            LEGACY_HISTORY_ONLY_MAGIC);
+  const bool openAll = scope == StateReadScope::ALL;
+  const bool hasPublishedPackets = magic == ABE_PUBLIC_PACKET_MAGIC;
+  const bool hasMaterialVersion = hasPublishedPackets || magic == ABE_HISTORY_VERSIONED_MAGIC;
+  const bool hasHistory = hasMaterialVersion || magic == ABE_HISTORY_MAGIC;
+  const bool legacyHistoryOnly = magic == LEGACY_HISTORY_ONLY_MAGIC;
+  const bool hasLegacyHistory = magic == LEGACY_HISTORY_MAGIC || legacyHistoryOnly;
+  if (hasLegacyHistory && !openAll)
+    throw std::runtime_error("Controller archive requires full legacy migration");
   // A history-only record carries no live material, so it must not be parsed as if it did.
-  const bool hasAbeMaterial = hasHistory || (hasLegacyHistory && !legacyHistoryOnly) ||
-    std::equal(std::begin(magic), std::end(magic), ABE_STATE_MAGIC);
-  const bool hasHistoryOnly = std::equal(std::begin(magic), std::end(magic), HISTORY_ONLY_MAGIC);
-  if (hasAbeMaterial && (info.st_mode & 0077) != 0)
+  const auto hasAbeMaterial = hasPublishedPackets ? readU64(state) :
+    static_cast<uint64_t>(hasHistory || (hasLegacyHistory && !legacyHistoryOnly) ||
+                          magic == ABE_STATE_MAGIC);
+  if (hasAbeMaterial > 1)
+    throw std::runtime_error("invalid Controller ABE material marker");
+  const bool hasHistoryOnly = magic == HISTORY_ONLY_MAGIC;
+  if (hasAbeMaterial && (mode & 0077) != 0)
     throw std::runtime_error("Controller ABE state must be private");
-  if (hasAbeMaterial || hasHistoryOnly || hasLegacyHistory ||
-      std::equal(std::begin(magic), std::end(magic), STATE_MAGIC)) {
+  if (hasAbeMaterial || hasHistoryOnly || hasLegacyHistory || magic == STATE_MAGIC) {
     result.version.controllerGenerationTimestamp = readU64(state);
     result.version.controllerEpoch = readU64(state);
     const auto count = readU64(state);
@@ -556,7 +817,12 @@ ControllerGenerationStore::loadState() const
       readStringInto(state, material.policyDigest, 71);
       readStringInto(state, material.publicParameters, MAX_ABE_FIELD_BYTES);
       readStringInto(state, material.masterSecret, MAX_ABE_FIELD_BYTES);
-      if (isSealedField(material.masterSecret)) {
+      if (!openAll) {
+        if (!isSealedField(material.masterSecret))
+          throw std::runtime_error("unsealed Controller ABE material");
+        material.masterSecret.clear();
+      }
+      else if (isSealedField(material.masterSecret)) {
         std::string opened;
         if (m_secretKey.empty() || !openField(m_secretKey, material.masterSecret,
                                               materialSealContext(), opened))
@@ -569,9 +835,14 @@ ControllerGenerationStore::loadState() const
         if (!material.version.isValid())
           throw std::runtime_error("invalid Controller ABE material version");
       }
+      if (hasPublishedPackets) {
+        material.publicParametersVersion = readU64(state);
+        readStringInto(state, material.publicParametersPacket, ndn::MAX_NDN_PACKET_SIZE, true);
+      }
       std::string checksum;
       readStringInto(state, checksum, 71);
-      if (!isValidAbeMaterial(material) || checksum != abeMaterialDigest(material))
+      if (!isValidAbeMaterial(material, openAll) || !isDigest(checksum) ||
+          (openAll && checksum != abeMaterialDigest(material)))
         throw std::runtime_error("invalid Controller ABE state");
       if (!hasHistory && !hasLegacyHistory &&
           state.peek() != std::char_traits<char>::eof())
@@ -598,9 +869,20 @@ ControllerGenerationStore::loadState() const
         AbeHistoryEntry entry;
         entry.generationTimestamp = readU64(state);
         entry.epoch = readU64(state);
+        const bool selected = scope == StateReadScope::ONE_HISTORICAL_SECRET &&
+          ControllerVersion{entry.generationTimestamp, entry.epoch} == target;
+        if (selected && !result.abeHistory.empty())
+          throw std::runtime_error("duplicate historical Controller generation");
+        const bool openEntry = openAll || selected;
         readStringInto(state, entry.publicParameters, MAX_ABE_FIELD_BYTES);
         readStringInto(state, entry.masterSecret, MAX_ABE_FIELD_BYTES);
-        if (isSealedField(entry.masterSecret)) {
+        const bool sealed = isSealedField(entry.masterSecret);
+        if (!openAll && !sealed)
+          throw std::runtime_error("unsealed Controller ABE archive entry");
+        if (!openEntry) {
+          entry.masterSecret.clear();
+        }
+        else if (sealed) {
           std::string opened;
           if (m_secretKey.empty() ||
               !openField(m_secretKey, entry.masterSecret,
@@ -630,10 +912,14 @@ ControllerGenerationStore::loadState() const
             result.abeHistory.push_back(std::move(entry));
             continue;
           }
-          if (entry.generationTimestamp == 0 || entry.publicParameters.empty())
+          const auto& owner = verifiedOwner.empty() ? m_owner : verifiedOwner;
+          if (owner.empty() || entry.generationTimestamp == 0 || entry.publicParameters.empty() ||
+              entry.masterSecret.empty() || entry.digest != abeHistoryDigest(entry, false) ||
+              entry.generationTimestamp >
+                (std::numeric_limits<uint64_t>::max() - entry.epoch) / 1000ULL)
             throw std::runtime_error("invalid legacy archived Controller ABE generation");
           entry.publicParametersWireDigest = "sha256:" + sha256Hex(entry.publicParameters);
-          ndn::Name original(m_owner);
+          ndn::Name original(owner);
           original.append("PUBPARAMS").append("KP-ABE")
             .appendVersion(entry.generationTimestamp * 1000ULL + entry.epoch);
           entry.publicParametersName = original.toUri(ndn::name::UriFormat::CANONICAL);
@@ -642,12 +928,16 @@ ControllerGenerationStore::loadState() const
         else {
           readStringInto(state, entry.publicParametersName, MAX_LEASE_BYTES - 64);
           readStringInto(state, entry.publicParametersWireDigest, 71);
+          if (hasPublishedPackets)
+            readStringInto(state, entry.publicParametersPacket, ndn::MAX_NDN_PACKET_SIZE, true);
           readStringInto(state, entry.digest, 71);
           readStringInto(state, entry.reason, MAX_LEASE_BYTES - 64);
-          if (entry.generationTimestamp == 0 || entry.digest != abeHistoryDigest(entry))
+          if (entry.generationTimestamp == 0 || !isDigest(entry.digest) ||
+              (openEntry && entry.digest != abeHistoryDigest(entry)))
             throw std::runtime_error("invalid archived Controller ABE generation");
         }
-        result.abeHistory.push_back(std::move(entry));
+        if (scope != StateReadScope::ONE_HISTORICAL_SECRET || selected)
+          result.abeHistory.push_back(std::move(entry));
       }
     }
   if (state.peek() != std::char_traits<char>::eof())
@@ -725,12 +1015,49 @@ parseAttributeSnapshot(const std::string& text)
 } // namespace
 
 void
-ControllerGenerationStore::setSecretSeal(std::vector<uint8_t> key, std::string keyId)
+ControllerGenerationStore::setSecretSeal(std::vector<uint8_t> key, std::string keyId,
+                                          bool requireAuthentication)
 {
   if (!key.empty() && key.size() != 32)
     throw std::invalid_argument("the Controller secret key must be 32 bytes");
+  if ((requireAuthentication || m_requireAuthentication || !m_checkpointPath.empty()) &&
+      (key.empty() || keyId.empty()))
+    throw std::invalid_argument("Controller authenticated state requires a seal key and ID");
+  m_requireAuthentication = m_requireAuthentication || requireAuthentication;
   m_secretKey = std::move(key);
   m_secretKeyId = std::move(keyId);
+}
+
+void
+ControllerGenerationStore::setRecoveryCheckpoint(std::filesystem::path path,
+                                                 std::string importDigest,
+                                                 std::string witnessImportDigest)
+{
+  if (m_lockFd >= 0 || m_secretKey.empty() || m_secretKeyId.empty() ||
+      !path.is_absolute() || !m_statePath.is_absolute() || path.filename().empty() ||
+      path.filename() == "." || path.filename() == ".." ||
+      (!importDigest.empty() && !isDigest(importDigest)) ||
+      (!witnessImportDigest.empty() && !isDigest(witnessImportDigest)))
+    throw std::invalid_argument("invalid Controller recovery checkpoint configuration");
+  const auto parent = std::filesystem::canonical(path.parent_path());
+  const auto stateParent = std::filesystem::canonical(m_statePath.parent_path());
+  const auto isPrivateDirectory = [] (const auto& directory) {
+    struct stat info{};
+    return ::stat(directory.c_str(), &info) == 0 && S_ISDIR(info.st_mode) &&
+           info.st_uid == ::geteuid() && (info.st_mode & 0022) == 0;
+  };
+  const auto common = std::mismatch(stateParent.begin(), stateParent.end(),
+                                    parent.begin(), parent.end());
+  if (common.first == stateParent.end() || common.second == parent.end() ||
+      !isPrivateDirectory(parent) || !isPrivateDirectory(stateParent))
+    throw std::invalid_argument("Controller recovery checkpoint needs an independent private directory");
+  m_checkpointPath = parent / path.filename();
+  std::transform(importDigest.begin(), importDigest.end(), importDigest.begin(),
+                 [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::transform(witnessImportDigest.begin(), witnessImportDigest.end(), witnessImportDigest.begin(),
+                 [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  m_importDigest = std::move(importDigest);
+  m_witnessImportDigest = std::move(witnessImportDigest);
 }
 
 void
@@ -807,6 +1134,24 @@ ControllerGenerationStore::loadAbeHistory() const
   return loadState().abeHistory;
 }
 
+std::vector<ControllerGenerationStore::AbeHistoryEntry>
+ControllerGenerationStore::loadAbePublicHistory() const
+{
+  return loadState({}, StateReadScope::PUBLIC_HISTORY).abeHistory;
+}
+
+std::optional<ControllerGenerationStore::AbeHistoryEntry>
+ControllerGenerationStore::loadAbeHistoryEntry(const ControllerVersion& version) const
+{
+  requireWriter();
+  if (!version.isValid())
+    throw std::invalid_argument("invalid historical Controller generation");
+  const auto entries = loadState({}, StateReadScope::ONE_HISTORICAL_SECRET, version).abeHistory;
+  if (entries.empty())
+    return std::nullopt;
+  return entries.front();
+}
+
 namespace {
 
 /** One file per identity and version, named so a lookup needs no index. */
@@ -818,6 +1163,143 @@ grantRecordName(const std::string& identity, uint64_t generation, uint64_t epoch
   return digest.toString() + "." + std::to_string(generation) + "." + std::to_string(epoch);
 }
 
+constexpr size_t MAX_GRANT_RECORD_BYTES = ndn::MAX_NDN_PACKET_SIZE;
+constexpr size_t MAX_GRANT_RECORDS = 65536;
+constexpr size_t MAX_HISTORICAL_REPLIES = 4096;
+constexpr size_t MAX_HISTORICAL_PUBLICATION_RECEIPTS = 65536;
+constexpr size_t MAX_GRANT_WITNESS_BYTES =
+  (MAX_GRANT_RECORDS + MAX_HISTORICAL_PUBLICATION_RECEIPTS) * 32 + 4096;
+
+std::optional<std::string>
+readPrivateGrantFile(const std::filesystem::path& path, size_t limit)
+{
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (fd < 0) {
+    if (errno == ENOENT)
+      return std::nullopt;
+    throw std::runtime_error("cannot open private Controller grant file");
+  }
+  PrivateFileInputBuffer buffer(fd);
+  struct stat info{};
+  if (::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_nlink != 1 ||
+      info.st_uid != ::geteuid() || (info.st_mode & 0077) != 0 ||
+      info.st_size <= 0 || static_cast<uint64_t>(info.st_size) > limit)
+    throw std::runtime_error("invalid private Controller grant file");
+  std::istream input(&buffer);
+  std::string bytes(static_cast<size_t>(info.st_size), '\0');
+  if (!input.read(bytes.data(), static_cast<std::streamsize>(bytes.size())) ||
+      input.peek() != std::char_traits<char>::eof() || input.bad())
+    throw std::runtime_error("Controller grant file changed during read");
+  return bytes;
+}
+
+void
+writePrivateGrantFile(const std::filesystem::path& path, const std::string& bytes, uint64_t fence)
+{
+  const auto temporary = uniqueTemporaryPath(path, fence);
+  int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (fd < 0)
+    throw std::runtime_error("cannot create private Controller grant file");
+  try {
+    writeAll(fd, bytes.data(), bytes.size());
+    if (::fsync(fd) != 0)
+      throw std::runtime_error("cannot flush Controller grant file");
+    const int result = ::close(fd);
+    fd = -1;
+    if (result != 0 || ::rename(temporary.c_str(), path.c_str()) != 0)
+      throw std::runtime_error("cannot publish Controller grant file");
+    const auto parent = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
+    const int dir = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir < 0)
+      throw std::runtime_error("cannot open Controller grant directory");
+    const int flushed = ::fsync(dir);
+    ::close(dir);
+    if (flushed != 0)
+      throw std::runtime_error("cannot flush Controller grant directory");
+  }
+  catch (...) {
+    if (fd >= 0)
+      ::close(fd);
+    ::unlink(temporary.c_str());
+    throw;
+  }
+}
+
+std::filesystem::path
+grantWitnessPath(const std::filesystem::path& state, const std::string& signerDigest)
+{
+  if (!isDigest(signerDigest))
+    throw std::invalid_argument("invalid Controller grant witness signer");
+  return state.string() + ".grant-witness." + signerDigest.substr(7);
+}
+
+std::filesystem::path
+historicalReplyDirectory(const std::filesystem::path& state)
+{
+  return state.string() + ".historical-replies";
+}
+
+std::string
+historicalReplyPrefix(const ControllerVersion& version)
+{
+  if (!version.isValid())
+    throw std::invalid_argument("invalid Controller historical reply version");
+  return std::to_string(version.controllerGenerationTimestamp) + "." +
+         std::to_string(version.controllerEpoch) + ".";
+}
+
+std::string
+historicalReplyFilename(const std::string& prefix, const ndn::Name& requestName)
+{
+  if (requestName.empty())
+    throw std::invalid_argument("missing Controller historical reply name");
+  const auto& wire = requestName.wireEncode();
+  return prefix + sha256Hex(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()));
+}
+
+bool
+isPrivateHistoricalDirectory(const std::filesystem::path& directory)
+{
+  struct stat info{};
+  if (::lstat(directory.c_str(), &info) != 0) {
+    if (errno == ENOENT)
+      return false;
+    throw std::runtime_error("cannot inspect Controller historical evidence directory");
+  }
+  if (!S_ISDIR(info.st_mode) || info.st_uid != ::geteuid() || (info.st_mode & 0077) != 0)
+    throw std::runtime_error("invalid Controller historical evidence directory");
+  return true;
+}
+
+bool
+isHistoricalReplyFilename(std::string_view name)
+{
+  const auto first = name.find('.');
+  if (first == std::string_view::npos || first == 0)
+    return false;
+  const auto second = name.find('.', first + 1);
+  if (second == std::string_view::npos || second == first + 1)
+    return false;
+  const auto isNumber = [] (std::string_view value) {
+    return std::all_of(value.begin(), value.end(), [] (char c) {
+      return c >= '0' && c <= '9';
+    });
+  };
+  return isNumber(name.substr(0, first)) &&
+         isNumber(name.substr(first + 1, second - first - 1)) &&
+         isDigest("sha256:" + std::string(name.substr(second + 1)));
+}
+
+std::filesystem::path
+historicalPublicationReceiptPath(const std::filesystem::path& state,
+                                 const ndn::Name& publicationFullName)
+{
+  if (publicationFullName.empty() || !publicationFullName[-1].isImplicitSha256Digest())
+    throw std::invalid_argument("historical publication receipt requires a FullName");
+  return std::filesystem::path(state.string() + ".historical-publications") /
+         historicalReplyFilename("", publicationFullName);
+}
+
 } // namespace
 
 void
@@ -825,7 +1307,8 @@ ControllerGenerationStore::recordGrant(const std::string& identity, uint64_t gen
                                        uint64_t epoch, const std::string& signedContent)
 {
   requireWriter();
-  if (identity.empty() || generation == 0 || signedContent.empty())
+  if (identity.empty() || generation == 0 || signedContent.empty() ||
+      signedContent.size() > MAX_GRANT_RECORD_BYTES)
     throw std::invalid_argument("invalid Controller grant record");
   const auto directory = grantRecordDirectory();
   std::error_code error;
@@ -833,44 +1316,275 @@ ControllerGenerationStore::recordGrant(const std::string& identity, uint64_t gen
   if (error)
     throw std::runtime_error("cannot create Controller grant record directory");
   std::filesystem::permissions(directory, std::filesystem::perms::owner_all,
-                              std::filesystem::perm_options::add, error);
-  const auto path = directory / grantRecordName(identity, generation, epoch);
-  const auto temporary = path.string() + ".tmp." + std::to_string(m_fence);
-  const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-  if (fd < 0)
-    throw std::runtime_error("cannot create private Controller grant record");
-  try {
-    writeAll(fd, signedContent.data(), signedContent.size());
-    if (::fsync(fd) != 0)
-      throw std::runtime_error("cannot flush Controller grant record");
-    if (::close(fd) != 0)
-      throw std::runtime_error("cannot close Controller grant record");
-    if (::rename(temporary.c_str(), path.c_str()) != 0)
-      throw std::runtime_error("cannot publish Controller grant record");
+                               std::filesystem::perm_options::replace);
+  writePrivateGrantFile(directory / grantRecordName(identity, generation, epoch),
+                        signedContent, m_fence);
+}
+
+void
+ControllerGenerationStore::recordHistoricalReply(const ControllerVersion& version,
+                                                  const ndn::Name& requestName,
+                                                  const std::string& signedWire)
+{
+  requireWriter();
+  const auto prefix = historicalReplyPrefix(version);
+  const auto directory = historicalReplyDirectory(m_statePath);
+  const auto target = directory / historicalReplyFilename(prefix, requestName);
+  if (signedWire.empty() || signedWire.size() > ndn::MAX_NDN_PACKET_SIZE)
+    throw std::invalid_argument("invalid Controller historical reply size");
+  const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(
+    reinterpret_cast<const uint8_t*>(signedWire.data()), signedWire.size()))};
+  if (packet.getName() != requestName)
+    throw std::invalid_argument("Controller historical reply does not match request name");
+  if (!isPrivateHistoricalDirectory(directory)) {
+    if (::mkdir(directory.c_str(), 0700) != 0)
+      throw std::runtime_error("cannot create Controller historical reply directory");
+    syncStateDirectory(directory);
   }
-  catch (...) {
-    ::close(fd);
-    ::unlink(temporary.c_str());
-    throw;
+  if (const auto previous = readPrivateGrantFile(target, ndn::MAX_NDN_PACKET_SIZE)) {
+    if (*previous != signedWire)
+      throw std::runtime_error("immutable Controller historical reply conflict");
+    return;
+  }
+  size_t current = 0;
+  size_t observed = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+    if (++observed > MAX_HISTORICAL_REPLIES * 2)
+      throw std::runtime_error("Controller historical reply directory bound exceeded");
+    const auto name = entry.path().filename().string();
+    if (!isHistoricalReplyFilename(name) || !std::filesystem::is_regular_file(entry.symlink_status()))
+      continue;
+    if (name.compare(0, prefix.size(), prefix) == 0)
+      ++current;
+    else
+      std::filesystem::remove(entry.path());
+  }
+  if (current >= MAX_HISTORICAL_REPLIES)
+    throw std::runtime_error("Controller historical reply capacity exhausted");
+  try {
+    writePrivateGrantFile(target, signedWire, m_fence);
+  }
+  catch (const std::exception&) {
+    throw CommitUncertain("cannot confirm Controller historical reply durability");
+  }
+}
+
+std::optional<std::string>
+ControllerGenerationStore::loadHistoricalReply(const ControllerVersion& version,
+                                                const ndn::Name& requestName) const
+{
+  requireWriter();
+  const auto directory = historicalReplyDirectory(m_statePath);
+  if (!isPrivateHistoricalDirectory(directory))
+    return std::nullopt;
+  return readPrivateGrantFile(
+    directory / historicalReplyFilename(historicalReplyPrefix(version), requestName),
+    ndn::MAX_NDN_PACKET_SIZE);
+}
+
+void
+ControllerGenerationStore::recordHistoricalPublicationReceipt(
+    const ndn::Name& publicationFullName, const std::string& signedWire)
+{
+  requireWriter();
+  if (signedWire.empty() || signedWire.size() > ndn::MAX_NDN_PACKET_SIZE)
+    throw std::invalid_argument("invalid historical publication receipt size");
+  const auto target = historicalPublicationReceiptPath(m_statePath, publicationFullName);
+  const auto directory = target.parent_path();
+  if (!isPrivateHistoricalDirectory(directory)) {
+    if (::mkdir(directory.c_str(), 0700) != 0)
+      throw std::runtime_error("cannot create Controller historical publication receipt directory");
+    syncStateDirectory(directory);
+  }
+  if (const auto previous = readPrivateGrantFile(target, ndn::MAX_NDN_PACKET_SIZE)) {
+    if (*previous != signedWire)
+      throw std::runtime_error("immutable Controller historical publication receipt conflict");
+    return;
+  }
+  size_t count = 0;
+  for (const auto& ignored : std::filesystem::directory_iterator(directory)) {
+    (void)ignored;
+    if (++count >= MAX_HISTORICAL_PUBLICATION_RECEIPTS)
+      throw std::runtime_error("Controller historical publication receipt capacity exhausted");
+  }
+  try {
+    writePrivateGrantFile(target, signedWire, m_fence);
+  }
+  catch (const std::exception&) {
+    throw CommitUncertain("cannot confirm historical publication receipt durability");
+  }
+}
+
+// The derived path requires the name to end in the publication's implicit digest, so the marker goes
+// in front of it: the CK receipt's own name and path stay byte-identical.
+static ndn::Name
+grantReceiptKey(const ndn::Name& publicationFullName)
+{
+  ndn::Name keyed(publicationFullName.getPrefix(-1));
+  keyed.append("GRANT-RECEIPT");
+  keyed.append(publicationFullName[-1]);
+  return keyed;
+}
+
+void
+ControllerGenerationStore::recordHistoricalGrantReceipt(
+    const ndn::Name& publicationFullName, const std::string& signedWire)
+{
+  // Same directory and durability rules as the CK receipt, distinct derived name.
+  recordHistoricalPublicationReceipt(grantReceiptKey(publicationFullName), signedWire);
+}
+
+std::optional<std::string>
+ControllerGenerationStore::loadHistoricalGrantReceipt(
+    const ndn::Name& publicationFullName) const
+{
+  return loadHistoricalPublicationReceipt(grantReceiptKey(publicationFullName));
+}
+
+std::optional<std::string>
+ControllerGenerationStore::loadHistoricalPublicationReceipt(
+    const ndn::Name& publicationFullName) const
+{
+  requireWriter();
+  const auto target = historicalPublicationReceiptPath(m_statePath, publicationFullName);
+  if (!isPrivateHistoricalDirectory(target.parent_path()))
+    return std::nullopt;
+  return readPrivateGrantFile(target, ndn::MAX_NDN_PACKET_SIZE);
+}
+
+void
+ControllerGenerationStore::visitHistoricalPublicationReceipts(
+    const std::function<void(const std::string&, const ControllerVersion&)>& visitor) const
+{
+  requireWriter();
+  const auto directory = std::filesystem::path(m_statePath.string() + ".historical-publications");
+  if (!isPrivateHistoricalDirectory(directory))
+    return;
+  const ndn::Name owner(m_owner);
+  size_t count = 0;
+  for (const auto& item : std::filesystem::directory_iterator(directory)) {
+    if (++count > MAX_HISTORICAL_PUBLICATION_RECEIPTS)
+      throw std::runtime_error("Controller historical publication receipt scan exceeds its limit");
+    const auto wire = readPrivateGrantFile(item.path(), ndn::MAX_NDN_PACKET_SIZE);
+    if (!wire)
+      continue;
+    std::optional<HistoricalPublicationReceipt> receipt;
+    std::optional<HistoricalGrantReceipt> grantReceipt;
+    try {
+      const ndn::Block block(ndn::span<const uint8_t>(
+        reinterpret_cast<const uint8_t*>(wire->data()), wire->size()));
+      if (block.size() != wire->size())
+        continue;
+      const ndn::Data stored(block);
+      // A publication may be receipted under either protection scheme, and both are admission
+      // evidence for the generation they name, so the handover witness must see both.
+      receipt = decodeHistoricalPublicationReceipt(stored, owner);
+      if (!receipt)
+        grantReceipt = decodeHistoricalGrantReceipt(stored, owner);
+    }
+    catch (const std::exception&) {
+      continue;
+    }
+    if (receipt && item.path() == historicalPublicationReceiptPath(m_statePath,
+                                                                   receipt->publicationFullName))
+      visitor(*wire, receipt->version);
+    else if (grantReceipt &&
+             item.path() == historicalPublicationReceiptPath(
+                               m_statePath, grantReceiptKey(grantReceipt->publicationFullName)))
+      visitor(*wire, grantReceipt->version);
   }
 }
 
 std::optional<std::string>
 ControllerGenerationStore::loadGrant(const std::string& identity, uint64_t generation,
-                                     uint64_t epoch) const
+                                    uint64_t epoch) const
 {
   requireWriter();
   if (identity.empty() || generation == 0)
     return std::nullopt;
-  const auto path = grantRecordDirectory() / grantRecordName(identity, generation, epoch);
-  std::ifstream input(path, std::ios::binary);
-  if (!input)
+  return readPrivateGrantFile(grantRecordDirectory() / grantRecordName(identity, generation, epoch),
+                              MAX_GRANT_RECORD_BYTES);
+}
+
+void
+ControllerGenerationStore::visitGrantRecords(
+    const std::function<void(const std::string&)>& visitor) const
+{
+  requireWriter();
+  const auto directory = grantRecordDirectory();
+  if (!std::filesystem::exists(directory))
+    return;
+  size_t count = 0;
+  for (const auto& item : std::filesystem::directory_iterator(directory)) {
+    if (++count > MAX_GRANT_RECORDS)
+      throw std::runtime_error("Controller grant record scan exceeds its limit");
+    const auto name = item.path().filename().string();
+    if (std::count(name.begin(), name.end(), '.') != 2)
+      continue;
+    if (const auto wire = readPrivateGrantFile(item.path(), MAX_GRANT_RECORD_BYTES)) {
+      try {
+        const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(
+          reinterpret_cast<const uint8_t*>(wire->data()), wire->size())));
+        const auto& value = data.getContent();
+        const auto record = decodeHistoricalGrantRecord(
+          {reinterpret_cast<const char*>(value.value()), value.value_size()});
+        if (!record || name != grantRecordName(
+              record->identity.toUri(ndn::name::UriFormat::CANONICAL),
+              record->version.controllerGenerationTimestamp, record->version.controllerEpoch))
+          continue;
+      }
+      catch (const std::exception&) {
+        continue;
+      }
+      visitor(*wire);
+    }
+  }
+}
+
+ControllerGenerationStore::GrantWitnessRef
+ControllerGenerationStore::storeGrantWitness(const std::string& signerDigest,
+                                             const std::string& wire)
+{
+  requireWriter();
+  if (m_secretKey.empty() || wire.empty() || wire.size() > MAX_GRANT_WITNESS_BYTES)
+    throw std::invalid_argument("invalid Controller grant witness size");
+  const auto digest = sha256Hex(wire);
+  writePrivateGrantFile(grantWitnessPath(m_statePath, signerDigest).string() + "." + digest,
+                        wire, m_fence);
+  return {signerDigest, "sha256:" + digest};
+}
+
+std::optional<std::string>
+ControllerGenerationStore::getGrantWitnessSigner() const
+{
+  const auto committed = loadState().grantWitness;
+  return committed ? std::optional<std::string>(committed->signerDigest) : std::nullopt;
+}
+
+std::optional<std::string>
+ControllerGenerationStore::loadGrantWitness(const std::string& signerDigest) const
+{
+  requireWriter();
+  const auto committed = loadState().grantWitness;
+  const auto path = grantWitnessPath(m_statePath, signerDigest);
+  if (!committed) {
+    const auto legacy = readPrivateGrantFile(path, MAX_GRANT_WITNESS_BYTES);
+    if (!m_witnessImportDigest.empty()) {
+      if (!legacy || "sha256:" + sha256Hex(*legacy) != m_witnessImportDigest)
+        throw std::runtime_error("Controller grant witness import digest mismatch");
+    }
+    else if (legacy && !m_checkpointPath.empty()) {
+      throw std::runtime_error("unbound Controller grant witness requires trusted migration");
+    }
+    return legacy;
+  }
+  if (committed->signerDigest != signerDigest)
     return std::nullopt;
-  std::ostringstream buffer;
-  buffer << input.rdbuf();
-  if (buffer.str().empty())
-    return std::nullopt;
-  return buffer.str();
+  const auto wire = readPrivateGrantFile(path.string() + "." + committed->wireDigest.substr(7),
+                                         MAX_GRANT_WITNESS_BYTES);
+  if (!wire || "sha256:" + sha256Hex(*wire) != committed->wireDigest)
+    throw std::runtime_error("Controller grant witness differs from committed state");
+  return wire;
 }
 
 void
@@ -881,7 +1595,8 @@ ControllerGenerationStore::recordAbeHistory(const AbeHistoryEntry& entry, size_t
     throw std::invalid_argument("invalid Controller ABE history retention");
   if (entry.generationTimestamp == 0 || entry.publicParameters.empty() ||
       entry.masterSecret.empty() || entry.publicParametersName.empty() ||
-      !isDigest(entry.publicParametersWireDigest))
+      !isDigest(entry.publicParametersWireDigest) ||
+      entry.publicParametersPacket.size() > ndn::MAX_NDN_PACKET_SIZE)
     throw std::invalid_argument("invalid archived Controller ABE generation");
   AbeHistoryEntry archived = entry;
   archived.digest = abeHistoryDigest(archived);
@@ -899,7 +1614,7 @@ ControllerGenerationStore::recordAbeHistory(const AbeHistoryEntry& entry, size_t
   if (state.abeHistory.size() > retention)
     state.abeHistory.erase(state.abeHistory.begin(),
                            state.abeHistory.end() - static_cast<std::ptrdiff_t>(retention));
-  persist(state.version, state.revocations, state.abeMaterial, state.abeHistory);
+  persist(state.version, state.revocations, state.abeMaterial, state.abeHistory, state.grantWitness);
 }
 
 std::optional<ControllerGenerationStore::AbeMaterial>
@@ -913,7 +1628,7 @@ ControllerGenerationStore::loadAbeMaterial() const
 }
 
 void
-ControllerGenerationStore::storeAbeMaterial(const AbeMaterial& material)
+ControllerGenerationStore::storeAbeMaterial(const AbeMaterial& material, bool commitNextEpoch)
 {
   requireWriter();
   if (!isValidAbeMaterial(material) || material.owner != m_owner)
@@ -921,8 +1636,18 @@ ControllerGenerationStore::storeAbeMaterial(const AbeMaterial& material)
   auto current = loadState();
   if (!current.version.isValid() || (current.abeMaterial && current.abeMaterial->owner != m_owner))
     throw std::runtime_error("Controller ABE state identity mismatch");
+  if (commitNextEpoch) {
+    if (!current.abeMaterial || !current.abeMaterial->rotationRequired ||
+        material.rotationRequired ||
+        material.version.controllerGenerationTimestamp != current.version.controllerGenerationTimestamp ||
+        current.version.controllerEpoch == std::numeric_limits<uint64_t>::max() ||
+        material.version.controllerEpoch != current.version.controllerEpoch + 1)
+      throw std::runtime_error("Controller ABE rotation does not match the pending epoch");
+    current.version = material.version;
+  }
   current.abeMaterial = material;
-  persist(current.version, current.revocations, current.abeMaterial, current.abeHistory);
+  persist(current.version, current.revocations, current.abeMaterial, current.abeHistory,
+          current.grantWitness);
 }
 
 void
@@ -930,22 +1655,46 @@ ControllerGenerationStore::persist(
     const ControllerVersion& version,
     const std::vector<RevocationTarget>& revocations,
     const std::optional<AbeMaterial>& abeMaterial,
-    const std::vector<AbeHistoryEntry>& abeHistory) const
+    const std::vector<AbeHistoryEntry>& abeHistory,
+    const std::optional<GrantWitnessRef>& grantWitness) const
 {
   requireWriter();
   if (!version.isValid())
     throw std::invalid_argument("invalid Controller version");
-  const auto temporary = m_statePath.string() + ".tmp." + std::to_string(m_fence);
+  const auto temporary = m_checkpointPath.empty() ?
+    m_statePath.string() + ".tmp." + std::to_string(m_fence) :
+    uniqueTemporaryPath(m_statePath, m_fence);
   const int fd = ::open(temporary.c_str(),
-                        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+                        O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
   if (fd < 0)
     throw std::runtime_error("cannot create private Controller generation state");
+  std::array<unsigned char, STATE_MAC_BYTES> mac{};
   try {
     const char* magic = abeMaterial
       ? (abeHistory.empty() ? ABE_STATE_MAGIC : ABE_HISTORY_MAGIC)
       : (abeHistory.empty() ? STATE_MAGIC : HISTORY_ONLY_MAGIC);
     const bool versionedMaterial = abeMaterial.has_value() && abeMaterial->version.isValid();
-    writeAll(fd, versionedMaterial ? ABE_HISTORY_VERSIONED_MAGIC : magic, STATE_MAGIC_SIZE);
+    const bool hasPublishedPackets = (abeMaterial && abeMaterial->publicParametersVersion != 0) ||
+      std::any_of(abeHistory.begin(), abeHistory.end(),
+                  [] (const auto& entry) { return !entry.publicParametersPacket.empty(); });
+    if (hasPublishedPackets && abeMaterial && !versionedMaterial)
+      throw std::runtime_error("published Controller ABE material requires a valid version");
+    if (grantWitness) {
+      if (m_secretKey.empty() ||
+          !isDigest(grantWitness->signerDigest) || !isDigest(grantWitness->wireDigest))
+        throw std::runtime_error("invalid Controller grant witness commitment");
+      writeAll(fd, WITNESS_STATE_MAGIC, STATE_MAGIC_SIZE);
+      writeAll(fd, WITNESS_STATE_MAGIC, STATE_MAGIC_SIZE);
+      writeString(fd, grantWitness->signerDigest);
+      writeString(fd, grantWitness->wireDigest);
+    }
+    else if (!m_secretKey.empty()) {
+      writeAll(fd, AUTHENTICATED_STATE_MAGIC, STATE_MAGIC_SIZE);
+    }
+    writeAll(fd, hasPublishedPackets ? ABE_PUBLIC_PACKET_MAGIC :
+                (versionedMaterial ? ABE_HISTORY_VERSIONED_MAGIC : magic), STATE_MAGIC_SIZE);
+    if (hasPublishedPackets)
+      writeU64(fd, abeMaterial.has_value() ? 1 : 0);
     writeU64(fd, version.controllerGenerationTimestamp);
     writeU64(fd, version.controllerEpoch);
     writeU64(fd, revocations.size());
@@ -969,6 +1718,10 @@ ControllerGenerationStore::persist(
         writeU64(fd, abeMaterial->version.controllerGenerationTimestamp);
         writeU64(fd, abeMaterial->version.controllerEpoch);
       }
+      if (hasPublishedPackets) {
+        writeU64(fd, abeMaterial->publicParametersVersion);
+        writeString(fd, abeMaterial->publicParametersPacket);
+      }
       writeString(fd, abeMaterialDigest(*abeMaterial));
     }
     // A CS8 record always carries the history block, so the reader has one layout to follow: the versioned material
@@ -987,10 +1740,22 @@ ControllerGenerationStore::persist(
                       historySealContext(entry.generationTimestamp, entry.epoch)));
         writeString(fd, entry.publicParametersName);
         writeString(fd, entry.publicParametersWireDigest);
+        if (hasPublishedPackets)
+          writeString(fd, entry.publicParametersPacket);
         writeString(fd, entry.digest);
         writeString(fd, entry.reason);
       }
-      }
+    }
+    if (!m_secretKey.empty()) {
+      const auto end = ::lseek(fd, 0, SEEK_CUR);
+      if (end < static_cast<off_t>(STATE_MAGIC_SIZE) ||
+          end > static_cast<off_t>(MAX_AUTHENTICATED_STATE_BYTES - STATE_MAC_BYTES))
+        throw std::runtime_error("invalid Controller generation state length");
+      const auto bytes = readStateBytes(fd, static_cast<size_t>(end) - STATE_MAGIC_SIZE,
+                                        STATE_MAGIC_SIZE);
+      mac = stateMac(m_secretKey, m_secretKeyId, m_owner, bytes);
+      writeAll(fd, reinterpret_cast<const char*>(mac.data()), mac.size());
+    }
     if (::fsync(fd) != 0)
       throw std::runtime_error("cannot flush Controller generation state");
   }
@@ -1004,31 +1769,39 @@ ControllerGenerationStore::persist(
     std::filesystem::remove(temporary);
     throw std::runtime_error("cannot flush Controller generation state");
   }
-  std::error_code ec;
-  std::filesystem::rename(temporary, m_statePath, ec);
-  if (ec) {
+  const auto staged = m_checkpointPath.empty() ? m_statePath :
+    std::filesystem::path(m_statePath.string() + ".prepared");
+  if (::rename(temporary.c_str(), staged.c_str()) != 0) {
     std::filesystem::remove(temporary);
     throw std::runtime_error("cannot atomically replace Controller generation state");
   }
-  const auto parent = m_statePath.parent_path().empty() ? std::filesystem::path(".") :
-                                                        m_statePath.parent_path();
-  const int dirFd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (dirFd < 0)
-    throw CommitUncertain("cannot open Controller state directory for flush");
-  const int flushResult = ::fsync(dirFd);
-  ::close(dirFd);
-  if (flushResult != 0)
-    throw CommitUncertain("cannot flush Controller state directory");
+  if (!m_checkpointPath.empty()) {
+    syncStateDirectory(staged);
+    auto checkpoint = std::string(CHECKPOINT_MAGIC);
+    checkpoint.append(reinterpret_cast<const char*>(mac.data()), mac.size());
+    try {
+      requireWriter();
+      writePrivateGrantFile(m_checkpointPath, checkpoint, m_fence);
+    }
+    catch (const std::exception&) {
+      throw CommitUncertain("cannot commit independent Controller recovery checkpoint");
+    }
+    // From here the old active file cannot pass the independently durable checkpoint.
+    if (::rename(staged.c_str(), m_statePath.c_str()) != 0)
+      throw CommitUncertain("cannot activate the Controller recovery candidate");
+  }
+  syncStateDirectory(m_statePath);
 }
 
 ControllerVersion
 ControllerGenerationStore::startGeneration(
-    uint64_t nowMs, const std::vector<RevocationTarget>& revocations)
+    uint64_t nowMs, const std::vector<RevocationTarget>& revocations,
+    const std::optional<GrantWitnessRef>& witness)
 {
   requireWriter();
   if (nowMs == 0)
     throw std::invalid_argument("Controller generation timestamp must be nonzero");
-  const auto previous = loadState();
+  auto previous = loadState();
   if (previous.abeMaterial && previous.abeMaterial->owner != m_owner)
     throw std::runtime_error("Controller ABE state identity mismatch");
   uint64_t generation = nowMs;
@@ -1036,9 +1809,23 @@ ControllerGenerationStore::startGeneration(
     if (previous.version.controllerGenerationTimestamp == std::numeric_limits<uint64_t>::max())
       throw std::overflow_error("Controller generation timestamp overflow");
     generation = std::max(generation, previous.version.controllerGenerationTimestamp + 1);
+    // Older writers stored the live material beside the publication version.
+    // Carry that version into the new layout before advancing authority.
+    if (previous.abeMaterial && !previous.abeMaterial->version.isValid())
+      previous.abeMaterial->version = previous.version;
   }
   const ControllerVersion version{generation, 1};
-  persist(version, revocations, previous.abeMaterial, previous.abeHistory);
+  if (witness) {
+    if (!isDigest(witness->wireDigest))
+      throw std::invalid_argument("invalid Controller grant witness digest");
+    const auto path = grantWitnessPath(m_statePath, witness->signerDigest).string() + "." +
+                      witness->wireDigest.substr(7);
+    const auto wire = readPrivateGrantFile(path, MAX_GRANT_WITNESS_BYTES);
+    if (!wire || "sha256:" + sha256Hex(*wire) != witness->wireDigest)
+      throw std::runtime_error("Controller grant witness candidate is missing or corrupted");
+    previous.grantWitness = witness;
+  }
+  persist(version, revocations, previous.abeMaterial, previous.abeHistory, previous.grantWitness);
   return version;
 }
 
@@ -1065,7 +1852,7 @@ ControllerGenerationStore::advanceEpoch(
   if (previous.abeMaterial &&
       (requireAbeRotationOnRestart || !sameRevocations(previous.revocations, revocations)))
     previous.abeMaterial->rotationRequired = true;
-  persist(version, revocations, previous.abeMaterial, previous.abeHistory);
+  persist(version, revocations, previous.abeMaterial, previous.abeHistory, previous.grantWitness);
   return version;
 }
 
@@ -1085,7 +1872,7 @@ ControllerGenerationStore::recordRevocations(
   if (state.abeMaterial)
     state.abeMaterial->rotationRequired = requireAbeRotationOnRestart ||
       !sameRevocations(state.revocations, revocations);
-  persist(state.version, revocations, state.abeMaterial, state.abeHistory);
+  persist(state.version, revocations, state.abeMaterial, state.abeHistory, state.grantWitness);
   return state.version;
 }
 

@@ -8,6 +8,9 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
+#include <ndn-cxx/util/scope.hpp>
+#include <ndn-cxx/util/time-custom-clock.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -440,7 +443,10 @@ BOOST_AUTO_TEST_CASE(NormalServiceOnlyRequestPublishesOrderedEventsAndOneResult)
   BOOST_CHECK_EQUAL(handle->metrics().deliveredEvents, 3);
 }
 
-BOOST_AUTO_TEST_CASE(StreamEventAfterUserRevocationIsRejectedBeforeDelivery)
+enum class StreamWithdrawal { USER, SELECTED_PROVIDER, OTHER_PROVIDER };
+
+static void
+checkStreamWithdrawal(StreamWithdrawal withdrawal)
 {
   BootstrapProfile profile;
   profile.serviceName = ndn::Name("/Spec175/Stream/Revocation");
@@ -467,9 +473,10 @@ BOOST_AUTO_TEST_CASE(StreamEventAfterUserRevocationIsRejectedBeforeDelivery)
   prepareStreamCrypto(environment, serviceName);
 
   std::atomic<bool> handlerCalled{false};
-  std::atomic<bool> firstEventDelivered{false};
+  std::atomic<bool> releaseProducer{false};
   std::atomic<bool> revocationAttempted{false};
   std::atomic<bool> statusInstalled{false};
+  bool failedDuringInstall = false;
   environment.provider().addStreamingHandler<ndn::Buffer, ndn::Buffer, ndn::Buffer>(
       serviceName,
       [&] (const ndn::Buffer&, StreamedResponseWriter<ndn::Buffer, ndn::Buffer>& writer) {
@@ -477,12 +484,12 @@ BOOST_AUTO_TEST_CASE(StreamEventAfterUserRevocationIsRejectedBeforeDelivery)
         if (!writer.publish(ndn::Buffer(reinterpret_cast<const uint8_t*>("event-1"), 7))) {
           return;
         }
-        // Let the User callback install the newer Controller status after the
-        // first event is actually delivered.  The remaining events then
-        // exercise the active-stream revocation cut-point deterministically.
-        for (int round = 0; round < 200 && !firstEventDelivered.load(); ++round) {
+        // Keep the old Producer alive across the User's status installation.
+        for (int round = 0; round < 2000 && !releaseProducer.load(); ++round) {
           std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+        if (!releaseProducer.load())
+          return;
         for (const char* payload : {"event-2", "event-3"}) {
           if (!writer.publish(ndn::Buffer(reinterpret_cast<const uint8_t*>(payload), 7))) {
             return;
@@ -505,20 +512,32 @@ BOOST_AUTO_TEST_CASE(StreamEventAfterUserRevocationIsRejectedBeforeDelivery)
       [&] (const ndn::Buffer& event) {
         events.emplace_back(reinterpret_cast<const char*>(event.data()), event.size());
         if (events.size() == 1 && !revocationAttempted.exchange(true)) {
-          auto revoked = current;
-          auto version = current.getControllerVersion();
-          ++version.controllerEpoch;
-          revoked.setControllerVersion(version);
-          RevocationTarget target;
-          target.kind = RevocationKind::IDENTITY;
-          target.targetIdentity = environment.user().getName();
-          revoked.addRevocation(target);
-          statusInstalled = environment.user().installControllerStatus(revoked);
-          firstEventDelivered = true;
+          environment.user().postToIo([&] {
+            auto revoked = current;
+            auto version = current.getControllerVersion();
+            ++version.controllerEpoch;
+            revoked.setControllerVersion(version);
+            RevocationTarget target;
+            target.kind = RevocationKind::IDENTITY;
+            if (withdrawal == StreamWithdrawal::USER)
+              target.targetIdentity = environment.user().getName();
+            else if (withdrawal == StreamWithdrawal::SELECTED_PROVIDER)
+              target.targetIdentity = environment.provider().getName();
+            else
+              target.targetIdentity = ndn::Name("/Spec175/UnselectedProvider");
+            revoked.addRevocation(target);
+            statusInstalled = environment.user().installControllerStatus(revoked);
+            failedDuringInstall = !errors.empty();
+            releaseProducer = true;
+          });
         }
       },
       [&] (const ndn::Buffer&) { completed = true; },
-      [&] (const StreamedInvocationError& error) { errors.push_back(error); });
+      [&] (const StreamedInvocationError& error) {
+        errors.push_back(error);
+        if (withdrawal != StreamWithdrawal::OTHER_PROVIDER)
+          environment.user().cancelStreamRequest(error.requestId);
+      });
   BOOST_REQUIRE(handle);
   const auto terminal = [&] {
     return handle->status() == StreamedInvocationStatus::Completed ||
@@ -530,12 +549,24 @@ BOOST_AUTO_TEST_CASE(StreamEventAfterUserRevocationIsRejectedBeforeDelivery)
 
   BOOST_CHECK(handlerCalled);
   BOOST_CHECK(statusInstalled);
+  BOOST_CHECK_EQUAL(failedDuringInstall, withdrawal != StreamWithdrawal::OTHER_PROVIDER);
   BOOST_REQUIRE_EQUAL(events.size(), 1U);
   BOOST_CHECK_EQUAL(events.front(), "event-1");
   BOOST_CHECK(!completed);
   BOOST_REQUIRE_EQUAL(errors.size(), 1U);
   BOOST_CHECK(errors.front().code == StreamedInvocationErrorCode::Unauthorized);
   BOOST_CHECK(handle->status() == StreamedInvocationStatus::Failed);
+}
+
+BOOST_AUTO_TEST_CASE(StreamEventAfterUserRevocationIsRejectedBeforeDelivery)
+{
+  checkStreamWithdrawal(StreamWithdrawal::USER);
+}
+
+BOOST_AUTO_TEST_CASE(SelectedProviderWithdrawalAndStaleEventHaveDistinctBoundaries)
+{
+  checkStreamWithdrawal(StreamWithdrawal::SELECTED_PROVIDER);
+  checkStreamWithdrawal(StreamWithdrawal::OTHER_PROVIDER);
 }
 
 BOOST_AUTO_TEST_CASE(TargetedStreamRevocationStopsBeforeBootstrap)
@@ -700,6 +731,42 @@ BOOST_AUTO_TEST_CASE(StreamEventAfterProviderRevocationIsRejectedAtPublication)
 
 BOOST_AUTO_TEST_CASE(NormalStreamRetriesOneSuppressedEventFromProviderIms)
 {
+  // Bootstrap runs on real time. During the request only the test advances
+  // NDN timers; a descheduled Provider cannot lose an unrelated prefetch.
+  class InterestClock final : public ndn::time::CustomSteadyClock
+  {
+  public:
+    using Clock = ndn::time::steady_clock;
+
+    Clock::time_point
+    getNow() const override
+    {
+      const auto ticks = m_ticks.load();
+      if (ticks >= 0) return Clock::time_point(Clock::duration(ticks));
+      const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - m_hostStart);
+      return m_ndnStart + ndn::time::nanoseconds(elapsed.count());
+    }
+
+    std::string getSince() const override { return " since steady clock epoch"; }
+
+    Clock::duration
+    toWaitDuration(Clock::duration d) const override
+    {
+      return m_ticks.load() < 0 ? d : std::min(d, Clock::duration(ndn::time::milliseconds(1)));
+    }
+
+    void freeze() { m_ticks.store(getNow().time_since_epoch().count()); }
+    void advance(ndn::time::milliseconds step) { m_ticks += Clock::duration(step).count(); }
+
+  private:
+    const Clock::time_point m_ndnStart = Clock::now();
+    const std::chrono::steady_clock::time_point m_hostStart = std::chrono::steady_clock::now();
+    std::atomic<Clock::rep> m_ticks{-1};
+  };
+  const auto clock = std::make_shared<InterestClock>();
+  ndn::time::setCustomClocks(clock);
+  const auto restoreClock = ndn::make_scope_exit([] { ndn::time::setCustomClocks(); });
   BootstrapProfile profile;
   profile.serviceName = ndn::Name("/Spec175/Stream/Retry");
   NdnsfIntegrationEnvironment environment(profile);
@@ -734,11 +801,11 @@ BOOST_AUTO_TEST_CASE(NormalStreamRetriesOneSuppressedEventFromProviderIms)
   retryFault.dropStreamInterestCount = 1;
   auto requestScope = environment.beginRequest("stream-retry", retryFault);
   installEncryptedRequestPublisher(environment, serviceName, &requestScope);
-  std::atomic<bool> suppressNext{true};
   std::atomic<size_t> suppressed{0};
+  const auto producer = environment.provider().getName();
   environment.provider().setStreamPublicationInterceptorForTest(
-      [&] (const ndn::Data&) {
-        if (suppressNext.exchange(false)) {
+      [&] (const ndn::Data& data) {
+        if (inspectEventCursorForTest(data.getName(), producer) == 1) {
           ++suppressed;
           return false;
         }
@@ -752,6 +819,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamRetriesOneSuppressedEventFromProviderIms)
   std::vector<std::string> events;
   std::string result;
   std::vector<StreamedInvocationError> errors;
+  clock->freeze();
   auto handle = environment.user().RequestServiceStreaming<ndn::Buffer,
                                                             ndn::Buffer,
                                                             ndn::Buffer>(
@@ -769,8 +837,34 @@ BOOST_AUTO_TEST_CASE(NormalStreamRetriesOneSuppressedEventFromProviderIms)
     return status == StreamedInvocationStatus::Completed ||
            status == StreamedInvocationStatus::Failed;
   };
+  const auto countCursor = [&](const auto& packets, uint64_t cursor) {
+    return std::count_if(packets.begin(), packets.end(), [&](const auto& packet) {
+      return inspectEventCursorForTest(packet.getName(), producer) == cursor;
+    });
+  };
+  const auto& replies = environment.providerFace().sentData;
+  environment.pumpUntil([&] {
+    if (environment.bridgeStats().droppedStreamInterests != 0 || terminal()) return true;
+    clock->advance(ndn::time::milliseconds(5));
+    return false;
+  });
+  BOOST_REQUIRE_EQUAL(environment.bridgeStats().droppedStreamInterests, 1);
+  const auto healthyRepliesArrived = [&] {
+    return countCursor(replies, 2) && countCursor(replies, 3) && countCursor(replies, 4);
+  };
+  environment.pumpUntil([&] { return healthyRepliesArrived() || terminal(); });
+  BOOST_REQUIRE(healthyRepliesArrived());
+  BOOST_REQUIRE_EQUAL(countCursor(replies, 1), 0);
+  // The inline bridge has delivered all three healthy replies to the User
+  // Face. Expire the actual pending Interest for cursor 1 and let the normal
+  // timeout callback fetch its retained Data. Give the final Response its
+  // scheduling ticks only after the recovery reply crosses the bridge.
+  clock->advance(ndn::time::milliseconds(options.interestLifetimeMs + 1));
   for (int round = 0; round < 8 && !terminal(); ++round) {
-    environment.pumpUntil(terminal);
+    environment.pumpUntil([&] {
+      if (countCursor(replies, 1) != 0) clock->advance(ndn::time::milliseconds(1));
+      return terminal();
+    });
   }
 
   BOOST_CHECK(handlerCalled);
@@ -783,6 +877,8 @@ BOOST_AUTO_TEST_CASE(NormalStreamRetriesOneSuppressedEventFromProviderIms)
   BOOST_CHECK(handle->status() == StreamedInvocationStatus::Completed);
   BOOST_CHECK_EQUAL(handle->metrics().deliveredEvents, 3);
   BOOST_CHECK_EQUAL(handle->metrics().retryCount, 1);
+  BOOST_CHECK_EQUAL(countCursor(environment.userFace().sentInterests, 1), 2);
+  BOOST_CHECK_EQUAL(countCursor(replies, 1), 1);
   BOOST_CHECK_EQUAL(suppressed.load(), 1);
 
   environment.provider().setStreamPublicationInterceptorForTest({});

@@ -31,6 +31,7 @@
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/logger.hpp>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -1872,15 +1873,47 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
     control.requireActive();
     return NativeRequestCatalog::load(spec.catalogConfigurationJson, std::move(source), control);
   };
-    const auto acquireOperationLifetime = [weakOwner =
-      std::weak_ptr<detail::CoreRuntimeOwner>(owner)] {
-      auto currentOwner = weakOwner.lock();
-      if (!currentOwner)
-        throw std::runtime_error("MODEL_REPO_CORE_OWNER_UNAVAILABLE");
-      return detail::makeCoreIoOperationLifetime(std::move(currentOwner));
-    };
-    auto io = nativeStoredModelRepositoryIo(serviceUser, repository, deadline, current, true,
-                                           acquireOperationLifetime);
+  const auto acquireOperationLifetime = [weakOwner =
+    std::weak_ptr<detail::CoreRuntimeOwner>(owner)] {
+    auto currentOwner = weakOwner.lock();
+    if (!currentOwner)
+      throw std::runtime_error("MODEL_REPO_CORE_OWNER_UNAVAILABLE");
+    return detail::makeCoreIoOperationLifetime(std::move(currentOwner));
+  };
+  auto io = nativeStoredModelRepositoryIo(serviceUser, repository, deadline, current, true,
+                                         acquireOperationLifetime);
+  io.signProducerProof = [owner, serviceUser, current, deadline,
+                          repoName = ndn::Name(repository.repoNode)](
+    const ndn::Name& name, const std::vector<std::uint8_t>& content) {
+    current();
+    if (serviceUser->isOnIoThread() || content.size() > ndn::MAX_NDN_PACKET_SIZE)
+      throw std::runtime_error("MODEL_REPO_PRODUCER_PROOF_SIGNING_INVALID");
+    ndn::Data proof(name);
+    proof.setContent(ndn::span<const std::uint8_t>(content));
+    if (!nativeIsStoredModelProducerProof(serviceUser->getName(), repoName, proof) ||
+        owner->requesterCertificate.getIdentity() != serviceUser->getName())
+      throw std::runtime_error("MODEL_REPO_PRODUCER_PROOF_SIGNING_INVALID");
+    using Wire = std::vector<std::uint8_t>;
+    auto task = std::make_shared<std::packaged_task<Wire()>>(
+      [owner, current, proof = std::move(proof)]() mutable {
+        current();
+        if (!owner->requesterCertificate.getValidityPeriod().isValid())
+          throw std::runtime_error("MODEL_REPO_PRODUCER_PROOF_CERTIFICATE_EXPIRED");
+        const auto signer = ndn::security::signingByCertificate(owner->requesterCertificate);
+        owner->keyChain->sign(proof, signer);
+        const auto& wire = proof.wireEncode();
+        if (wire.size() > ndn::MAX_NDN_PACKET_SIZE)
+          throw std::runtime_error("MODEL_REPO_PRODUCER_PROOF_WIRE_BUDGET");
+        return Wire(wire.begin(), wire.end());
+      });
+    auto signedWire = task->get_future();
+    const auto lease = serviceUser->postToIoWithFace(
+      [task, lifetime = detail::makeCoreIoOperationLifetime(owner)](ndn::Face&) { (*task)(); });
+    if (signedWire.wait_until(deadline) != std::future_status::ready)
+      throw std::runtime_error("MODEL_REPO_PRODUCER_PROOF_SIGNING_DEADLINE");
+    current();
+    return signedWire.get();
+  };
   const NativeStoredModelHandleOutput output{handlePath, *fileProtection};
   const auto publication = nativePublishStoredPreparedModel(*owner->keyChain,
     serviceUser->getName(), ndn::Name(repository.repoNode), legacyJournalPrefix, loadCatalog,

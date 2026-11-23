@@ -68,7 +68,23 @@ struct NativeStoredModelPacketIo
   /** One scheduler for the whole publication scope. When present, every commit in the
    *  scope shares its three-commit cap and its drain instead of each call owning a copy. */
   std::shared_ptr<ndnsf_distributed_repo::RepoCommitPipeline> commitPipeline;
+  /** Sign with the actual publication owner and return the exact signed Data wire. */
+  std::function<std::vector<std::uint8_t>(const ndn::Name&, const std::vector<std::uint8_t>&)>
+    signProducerProof;
+  /** Retrieve one exact proof and validate signer trust and Producer namespace authority. */
+  std::function<std::vector<std::uint8_t>(const ndn::Name&, const ndn::Name&)> fetchProducerProof;
 };
+
+inline constexpr char NATIVE_STORED_MODEL_PRODUCER_PROOF_CONTENT[] =
+  "ndnsf-di-stored-model-producer-proof-v1";
+
+ndn::Name
+nativeStoredModelProducerProofName(const NativeStoredModelReference& reference);
+
+/** Recognize the proof format before signing or admitting it. Validate trust separately. */
+bool
+nativeIsStoredModelProducerProof(const ndn::Name& producer, const ndn::Name& repository,
+                                 const ndn::Data& proof);
 
 /** Own at most three asynchronous original-packet commits on one caller thread.
  * Tasks must honor their supplied cancellation check. Observers record verified

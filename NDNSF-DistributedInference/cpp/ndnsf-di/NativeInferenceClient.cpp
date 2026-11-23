@@ -2420,7 +2420,8 @@ void commitConversationTurn(
   }
 }
 
-void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation);
+void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+                      bool queryMissingStatus = true);
 
 bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
                       std::uint64_t sourceAttempt,
@@ -2538,11 +2539,12 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   return true;
 }
 
-void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation)
+void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+                      bool queryMissingStatus)
 {
   const auto sourceAttempt = operation->attempt;
   const auto coreRequestId = operation->coreRequestId;
-  operation->user->postToIo([operation, sourceAttempt, coreRequestId] {
+  operation->user->postToIo([operation, sourceAttempt, coreRequestId, queryMissingStatus] {
     try {
       {
         std::lock_guard<std::mutex> lock(operation->mutex);
@@ -2556,9 +2558,15 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       // turn a normal bootstrap race into a misleading begin failure. Retry
       // through the operation owner rather than sleeping or blocking the Face
       // I/O thread. The original request deadline remains the only budget.
-      if (operation->runtime && !operation->user->isRequestBootstrapReady(
-            ndn::Name(operation->runtime->contract.serviceName),
-            operation->options.providerNames)) {
+      using BootstrapState = ndn_service_framework::ServiceUser::RequestBootstrapState;
+      const auto bootstrap = operation->runtime ? operation->user->checkRequestBootstrap(
+        ndn::Name(operation->runtime->contract.serviceName), operation->options.providerNames,
+        queryMissingStatus) : BootstrapState::READY;
+      if (bootstrap == BootstrapState::REVOKED)
+        throw NativeDiError("NATIVE_REQUEST_AUTHORITY_WITHDRAWN", "authorization", "bootstrap",
+          "Controller withdrew Requester authority for " + operation->runtime->contract.serviceName,
+          operation->requestId, sourceAttempt);
+      if (bootstrap == BootstrapState::WAITING) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= operation->deadline)
           throw NativeDiError("NATIVE_REQUEST_BOOTSTRAP_TIMEOUT", "authorization",
@@ -2577,7 +2585,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                   operation->attempt != sourceAttempt)
                 return;
             }
-            beginCoreRequest(operation);
+            beginCoreRequest(operation, false);
           });
         bool retainRetry = false;
         {

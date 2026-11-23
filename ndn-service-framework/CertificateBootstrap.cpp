@@ -140,6 +140,31 @@ verifyControllerSignature(const ndn::Data& packet, const ndn::Name& controller,
 
 } // namespace
 
+bool
+matchesConfiguredControllerSigner(const ndn::Data& data, const ndn::Name& identity,
+                                  const ndn::Name* declaredCertificate)
+{
+  const char* path = std::getenv("NDNSF_CONTROLLER_CERT_FILE");
+  if (path == nullptr || *path == '\0') {
+    return true;
+  }
+  try {
+    const auto certificate = ndn::io::load<ndn::security::Certificate>(path);
+    const auto& info = data.getSignatureInfo();
+    if (!certificate || !certificate->isValid() || certificate->getIdentity() != identity ||
+        (declaredCertificate && *declaredCertificate != certificate->getName()) ||
+        !info.hasKeyLocator() || info.getKeyLocator().getType() != ndn::tlv::Name) {
+      return false;
+    }
+    const auto& locator = info.getKeyLocator().getName();
+    return (locator == certificate->getKeyName() || locator == certificate->getName()) &&
+           ndn::security::verifySignature(data, certificate->getPublicKey());
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
 ndn::Block
 CertificateBootstrapRequest::wireEncode() const
 {

@@ -16,6 +16,9 @@
 
 #include <boost/asio/signal_set.hpp>
 
+#include <unistd.h>
+
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -220,8 +223,16 @@ main(int argc, char* argv[])
         return 0;
       if (!ready())
         throw std::runtime_error("Repo permission/decryption readiness deadline exceeded");
-      std::cout << "NDNSF_REPO_READY identity="
-                << config.providerIdentity.toUri(ndn::name::UriFormat::CANONICAL) << std::endl;
+      // The deployment launcher combines stdout and stderr in one log. Frame the
+      // record in one write so a concurrent diagnostic cannot absorb the marker.
+      const auto record = "\nNDNSF_REPO_READY identity=" +
+        config.providerIdentity.toUri(ndn::name::UriFormat::CANONICAL) + '\n';
+      ssize_t written;
+      do {
+        written = ::write(STDOUT_FILENO, record.data(), record.size());
+      } while (written < 0 && errno == EINTR);
+      if (written != static_cast<ssize_t>(record.size()))
+        throw std::runtime_error("cannot write Repo readiness record");
     }
     if (!stopping)
       face.processEvents();

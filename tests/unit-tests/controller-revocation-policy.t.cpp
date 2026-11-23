@@ -3,6 +3,7 @@
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
 #include "ndn-service-framework/ControllerVersion.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"
+#include "ndn-service-framework/PolicyRefreshCoordinator.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndn-service-framework/RevocationState.hpp"
 
@@ -201,6 +202,53 @@ BOOST_AUTO_TEST_CASE(PolicyStatusWirePreservesValidityTimestamps)
   BOOST_CHECK(!decoded.validate(validUntil));
 }
 
+BOOST_AUTO_TEST_CASE(PolicyStatusSeparatesAbeMaterialFromPolicyAndPacketVersions)
+{
+  auto status = makeStatus(ControllerVersion{1561, 3});
+  const auto parameters = ndn::Name("/controller/PUBPARAMS/KP-ABE").appendVersion(900);
+  status.setAbePublicParametersName(parameters);
+  status.setAbePublicParametersDigest("sha256:" + std::string(64, 'a'));
+
+  PolicyStatusData decoded;
+  BOOST_REQUIRE(decoded.wireDecode(status.wireEncode()));
+  BOOST_CHECK(!decoded.getAbeMaterialVersion().isValid());
+
+  const ControllerVersion material{1561, 1};
+  status.setAbeMaterialVersion(material);
+  BOOST_REQUIRE(decoded.wireDecode(status.wireEncode()));
+  BOOST_CHECK(decoded.getControllerVersion() == status.getControllerVersion());
+  BOOST_CHECK(decoded.getAbeMaterialVersion() == material);
+  BOOST_CHECK(decoded.getAbePublicParametersName() == parameters);
+
+  auto renewal = decoded;
+  renewal.setValidity(1000, 3100);
+  BOOST_CHECK(renewal.canReplaceSameVersion(decoded, true));
+  renewal.setAbeMaterialVersion(ControllerVersion{1561, 2});
+  BOOST_CHECK(!renewal.canReplaceSameVersion(decoded, true));
+  renewal.setAbeMaterialVersion(ControllerVersion{1561, 4});
+  BOOST_CHECK(!renewal.validate(1100));
+}
+
+BOOST_AUTO_TEST_CASE(RevocationStateBindsLeaseToReceiverBudget)
+{
+  const auto version = ControllerVersion{1562, 3};
+  auto status = makeStatus(version);
+  status.setValidity(1000, 6000);
+  RevocationState state(status.getServiceName());
+  const PolicyLeaseBudget budget{5000, 250};
+
+  auto oversized = status;
+  oversized.setValidity(1000, 6001);
+  BOOST_CHECK(!state.acceptStatus(oversized, 1100, true, true, budget));
+  BOOST_CHECK(!state.hasCurrentStatus());
+  BOOST_REQUIRE(state.acceptStatus(status, 1100, true, true, budget));
+  BOOST_CHECK_EQUAL(state.remainingLeaseMs(5750), 0);
+  const auto remaining = state.remainingLeaseMs(1000);
+  BOOST_TEST(remaining > 0);
+  BOOST_REQUIRE(state.acceptStatus(status, 1000, true, true, budget));
+  BOOST_TEST(state.remainingLeaseMs(1000) <= remaining);
+}
+
 BOOST_AUTO_TEST_CASE(PolicyStatusBindsAbeGenerationAsAnExactPair)
 {
   auto status = makeStatus(ControllerVersion{1561, 1});
@@ -373,6 +421,50 @@ BOOST_AUTO_TEST_CASE(EqualVersionConflictingStatusCannotReplaceAuthority)
   const AuthorizationSubject alice{
       ndn::Name("/user/alice"), "sha256:alice", ndn::Name("/ObjectDetection/YOLOv8"), {}};
   BOOST_CHECK(state.authorize(alice, ProtectedTransition::DISCOVERY, 1000).allowed);
+}
+
+BOOST_AUTO_TEST_CASE(SameVersionLeaseRenewalRequiresFreshValidatedQuery)
+{
+  const auto initial = makeStatus(ControllerVersion{1650, 1});
+  RevocationState state(initial.getServiceName());
+  PolicyRefreshCoordinator refresh(initial.getServiceName());
+  BOOST_REQUIRE(state.acceptStatus(initial, 1000));
+  BOOST_REQUIRE(refresh.installCurrentStatus(initial, 1000));
+  state.clearInvalidationEvidence();
+
+  auto extended = initial;
+  extended.setValidity(2500, 4600);
+  BOOST_CHECK(!state.acceptStatus(extended, 2900));
+  BOOST_CHECK(!refresh.installCurrentStatus(extended, 2900));
+  BOOST_CHECK(!state.acceptStatus(extended, 2900, false, true));
+  BOOST_CHECK(!refresh.installCurrentStatus(extended, 2900, false, false, true));
+  const AuthorizationSubject user{
+    ndn::Name("/user/alice"), "sha256:alice", initial.getServiceName(), {}};
+  BOOST_CHECK(!state.authorize(user, ProtectedTransition::DISCOVERY, 3000).allowed);
+  BOOST_REQUIRE(state.expireStatus(initial.getControllerVersion(), 3000));
+  BOOST_CHECK(!state.authorize(user, ProtectedTransition::DISCOVERY, 2000).allowed);
+  BOOST_CHECK(!state.acceptStatus(initial, 2000, true, true));
+  state.clearInvalidationEvidence();
+
+  BOOST_REQUIRE(state.acceptStatus(extended, 2950, true, true));
+  BOOST_REQUIRE(refresh.installCurrentStatus(extended, 2950, true, false, true));
+  BOOST_CHECK_EQUAL(state.invalidatedCacheCount(), 0);
+  BOOST_CHECK(state.currentVersion() == initial.getControllerVersion());
+  BOOST_CHECK(!state.expireStatus(initial.getControllerVersion(), 3000));
+  BOOST_CHECK_EQUAL(refresh.currentExpiryMs(), 4600);
+  BOOST_CHECK(!state.acceptStatus(initial, 2950, true, true));
+  BOOST_CHECK(!refresh.installCurrentStatus(initial, 2950, true, false, true));
+  BOOST_CHECK(state.authorize(user, ProtectedTransition::DISCOVERY, 4599).allowed);
+  BOOST_CHECK(!state.authorize(user, ProtectedTransition::DISCOVERY, 4600).allowed);
+
+  auto conflicting = makeStatus(initial.getControllerVersion(), {identityRevocation("/user/alice")});
+  conflicting.setValidity(4000, 6700);
+  BOOST_CHECK(!state.acceptStatus(conflicting, 4300, true, true));
+  BOOST_CHECK(!refresh.installCurrentStatus(conflicting, 4300, true, false, true));
+
+  BOOST_REQUIRE(state.expireStatus(initial.getControllerVersion(), 4600));
+  BOOST_CHECK(!state.expireStatus(initial.getControllerVersion(), 4600));
+  BOOST_CHECK(!state.authorize(user, ProtectedTransition::DISCOVERY, 4400).allowed);
 }
 
 BOOST_AUTO_TEST_CASE(PolicyStatusWireRejectsMalformedRevocationTargets)

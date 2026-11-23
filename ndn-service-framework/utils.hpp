@@ -25,6 +25,7 @@ namespace ndn_service_framework
         ndn::Name service;
         uint64_t generation = 0;
         uint64_t epoch = 0;
+        ndn::Name recipientCertificate{};
     };
     ndn::Block encodeControlQueryParameters(const ControlQueryParameters& query);
     std::optional<ControlQueryParameters> decodeControlQueryParameters(const ndn::Block& parameters);

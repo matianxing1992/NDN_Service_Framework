@@ -749,7 +749,7 @@ private:
 };
 
 int
-run(int argc, char** argv)
+run(int argc, char** argv, bool& drainFailed)
 {
   if (argc == 6 && std::string_view(argv[1]) == "--import-legacy-handle") {
     const auto protection = nativeFileProtectionKeyFromEnvironment();
@@ -1019,6 +1019,33 @@ run(int argc, char** argv)
       throw std::invalid_argument("kv_handoff requires live compatible-Provider placement");
   }
   auto runtime = Runtime::open(std::move(runtimeConfig));
+  struct RuntimeGuard
+  {
+    Runtime& runtime;
+    bool& drainFailed;
+    bool attempted = false;
+
+    bool
+    close(std::chrono::milliseconds timeout) noexcept
+    {
+      attempted = true;
+      drainFailed = true;
+      runtime.close();
+      try {
+        drainFailed = !runtime.drain(timeout);
+      }
+      catch (...) {
+        // A drain exception cannot replace the request's terminal error.
+      }
+      return !drainFailed;
+    }
+
+    ~RuntimeGuard()
+    {
+      if (!attempted)
+        close(std::chrono::seconds(5));
+    }
+  } runtimeGuard{*runtime, drainFailed};
   logSpec220PreparationStage("runtime-open.complete");
   std::shared_ptr<const PlacementStrategy> requestPlacementStrategy;
   if (!prepareOnly && !requestPlacementStrategyId.empty()) {
@@ -1034,8 +1061,7 @@ run(int argc, char** argv)
           storedPrivateHandle, prepareOptions.timeout, legacyJournalPrefix)
       : user.publishStoredModel("default", *storedModelRepository, storedPreparationState,
           storedPrivateHandle, prepareOptions.timeout);
-    runtime->close();
-    if (!runtime->drain(std::chrono::seconds(5)))
+    if (!runtimeGuard.close(std::chrono::seconds(5)))
       throw std::runtime_error("NATIVE_PREPARATION_DRAIN_TIMEOUT");
     std::cout << nativeCanonicalJson(NativeJson{
       {"type", "ndnsf-di-stored-model-preparation"}, {"status", "PUBLISHED"},
@@ -1074,8 +1100,7 @@ run(int argc, char** argv)
   if (prepareOnly) {
     const auto receipt = preparedView->receipt();
     preparedView.reset();
-    runtime->close();
-    if (!runtime->drain(std::chrono::seconds(5)))
+    if (!runtimeGuard.close(std::chrono::seconds(5)))
       throw std::runtime_error("NATIVE_PREPARATION_DRAIN_TIMEOUT");
     NativeJson result{
       {"type", "ndnsf-di-native-preparation"}, {"status", "PREPARED"},
@@ -1469,8 +1494,7 @@ run(int argc, char** argv)
       while (true) {
         if (interrupted) {
           handle.cancel();
-          runtime->close();
-          if (!runtime->drain(std::chrono::seconds(6)))
+          if (!runtimeGuard.close(std::chrono::seconds(6)))
             throw std::runtime_error("NATIVE_REQUEST_CANCEL_DRAIN_TIMEOUT");
           std::cout << "NATIVE_REQUEST_CANCEL_DRAINED request=" << handle.id() << std::endl;
           throw std::runtime_error("NATIVE_REQUEST_INTERRUPTED");
@@ -1562,10 +1586,11 @@ run(int argc, char** argv)
     conversation->close();
     conversation.reset();
   }
-  runtime->close();
-  (void)runtime->drain(std::chrono::seconds(5));
+  const bool drained = runtimeGuard.close(std::chrono::seconds(5));
   if (statisticsWriteFailed)
     throw std::runtime_error("NATIVE_STATISTICS_WRITE_FAILED");
+  if (!drained)
+    throw std::runtime_error("NATIVE_RUNTIME_DRAIN_INCOMPLETE");
   return 0;
 }
 
@@ -1574,18 +1599,33 @@ run(int argc, char** argv)
 int
 main(int argc, char** argv)
 {
+  bool drainFailed = false;
+  int exitCode = 1;
   try {
-    return run(argc, argv);
+    return run(argc, argv, drainFailed);
   }
   catch (const DiError& error) {
+    exitCode = interrupted ? 130 : 1;
     std::cerr << "NATIVE_REQUEST_STAGE_FAILED code=" << error.code()
               << " boundary=" << error.boundary() << '\n';
     std::cerr << error.code() << " domain=" << error.domain()
               << " boundary=" << error.boundary() << " message=" << error.what() << '\n';
-    return interrupted ? 130 : 1;
+    if (diagnosticOutputEnabled() && !error.requestId().empty()) {
+      const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+      std::cerr << "NDNSF_DI_REQUEST_TERMINAL " << nativeCanonicalJson(NativeJson{
+        {"requestId", error.requestId()}, {"attemptEpoch", error.attempt()},
+        {"epochMs", epochMs}, {"code", error.code()}, {"boundary", error.boundary()},
+        {"message", error.what()}
+      }) << std::endl;
+    }
   }
   catch (const std::exception& error) {
     std::cerr << "NATIVE_REQUESTER_FAILED: " << error.what() << '\n';
-    return 1;
   }
+  if (drainFailed) {
+    std::cerr << "NATIVE_RUNTIME_DRAIN_INCOMPLETE" << std::endl;
+    return 2;
+  }
+  return exitCode;
 }

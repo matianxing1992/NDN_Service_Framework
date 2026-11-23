@@ -72,7 +72,7 @@ def secure_random(path):
         stream.write(os.urandom(32))
 
 
-def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid"):
+def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid", historical=False):
     checkout = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(checkout / "Experiments"))
     from NDNSF_DI_Qwen06B_Native_Minindn import digest_bytes as digest, make_external_key
@@ -108,6 +108,13 @@ def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid"):
                    resources=dict(cpus=2 if kind == "provider" else 1), parameters={})
               for name, kind, node in actor_nodes]
     providers = actors[4:]
+    historical_producer = None
+    historical_service = namespace + "/HistoricalRead"
+    if historical:
+        historical_producer = dict(id="historical-producer", kind="provider",
+                                   identity=namespace + "/historical-producer", node="h242relay",
+                                   resources=dict(cpus=1), parameters={})
+        actors.append(historical_producer)
     environments, certificates, trust = prepare_identities(root, prefix, namespace, group, actors)
     by_id = {actor["id"]: actor for actor in actors}
 
@@ -119,13 +126,20 @@ def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid"):
                    (by_id["repo"]["identity"], repo_operations)]
     policy_rows += [(actor["identity"], [service, service + "/ROLE" + role])
                     for role, actor in zip(roles, providers)]
+    user_policy_rows = [(by_id["requester"]["identity"], [service, grant_service, *repo_operations])]
+    if historical_producer is not None:
+        policy_rows.append((historical_producer["identity"], [service, historical_service]))
+        user_policy_rows[0][1].append(historical_service)
+        user_policy_rows.append((historical_producer["identity"], [historical_service, *repo_operations]))
+
+    def policy_entries(kind, rows):
+        return "\n".join(f"{kind}-policy {{\nfor {identity}\nallow {{\n" +
+                         "\n".join(services) + "\n}\n}" for identity, services in rows)
+
     policy.write_text(
         "name " + by_id["controller"]["identity"] + "/NDNSF/ControllerPolicy/v1\n" +
-        "provider-policies {\n" + "\n".join(
-            "provider-policy {\nfor " + identity + "\nallow {\n" + "\n".join(services) + "\n}\n}"
-            for identity, services in policy_rows) +
-        "\n}\nuser-policies {\nuser-policy {\nfor " + by_id["requester"]["identity"] +
-        "\nallow {\n" + "\n".join([service, grant_service, *repo_operations]) + "\n}\n}\n}\n",
+        "provider-policies {\n" + policy_entries("provider", policy_rows) +
+        "\n}\nuser-policies {\n" + policy_entries("user", user_policy_rows) + "\n}\n",
         encoding="utf-8")
 
     key_root = root / "grant-keys"
@@ -193,10 +207,12 @@ def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid"):
     repo_identity = by_id["repo"]["identity"]
     requester = by_id["requester"]["identity"]
     security_digest = digest(policy.read_bytes())
-    keyring = root / "file-keyring"
-    keyring.parent.mkdir(parents=True, exist_ok=True)
-    keyring.write_text("spec242-protection " + os.urandom(32).hex() + "\n")
-    keyring.chmod(0o600)
+    # Only the Controller owns its ABE-state seal. Only the Requester opens the model handle.
+    for actor_id, key_id in (("controller", "controller-abe"), ("requester", "spec242-protection")):
+        keyring = root / (actor_id + ".keyring")
+        with open(keyring, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
+            stream.write(key_id + " " + os.urandom(32).hex() + "\n")
+        by_id[actor_id]["file_keyring"] = str(keyring)
     options_file = str(bundle / "generation.json")
     turns = [dict(input_file=str(bundle / input_name), options_file=options_file,
                   output_file=str(root / f"output-{i}.json"),
@@ -211,15 +227,12 @@ def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid"):
                      "topology_sha256": digest(topology.read_bytes())},
         "nodes": [dict(id=node, host=node, cpus=3, nfd=dict(mode="managed", address="127.0.0.1",
                          port=6363, socket=str(root / (node + ".sock"))))
-                  for node in ["h242relay", *(actor["node"] for actor in actors)]],
+                  for node in dict.fromkeys(["h242relay", *(actor["node"] for actor in actors)])],
         "actors": actors,
         "network": dict(group=group, service=service, artifact_service=grant_service,
                         repo_service=repo_service, routes=[]),
         "security": dict(controller_certificate=certificates["controller"],
-                         controller_policy=str(policy), trust_schema=str(trust),
-                         # A model preparation refuses to publish without a file-protection key, so the fixture has to
-                         # provide one: the runtime will not write an unsealed handle or a plain master secret.
-                         file_keyring=str(keyring)),
+                         controller_policy=str(policy), trust_schema=str(trust)),
         "storage": {**{key + "_root": str(root / key) for key in
                        ("cache", "repo", "scratch", "state", "evidence")}, "max_bytes": 128 << 20},
         "model": dict(manifest=str(manifest), plan=str(plan), tokenizer=str(bundle / "tokenizer.json")),
@@ -258,6 +271,12 @@ def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid"):
                 canonical_source_digest=source["digest"],
                 model_content_digest=catalog["model"]["content_digest"],
                 model_name=catalog["model"]["model_name"])}), max_grant_ttl_ms=600000)}
+    if historical_producer is not None:
+        recovery = root / "recovery"
+        recovery.mkdir(mode=0o700)
+        config["security"].update(
+            controller_recovery_checkpoint=str(recovery / "controller.checkpoint"),
+            controller_recovery_bootstrap=True)
     write_json(root / "deployment.json", config)
     print(root / "deployment.json")
 
@@ -270,7 +289,9 @@ if __name__ == "__main__":
     parser.add_argument("--journal-root", required=True, type=Path,
                         help="Durable target filesystem directory for the native journal")
     parser.add_argument("--scenario", choices=("hybrid", "tp3"), default="hybrid")
+    parser.add_argument("--historical", action="store_true",
+                        help="Provision a separate Producer and reader scopes for rollover testing")
     args = parser.parse_args()
     prepare_deployment(args.output.resolve(), args.prefix.resolve(strict=True),
                        args.release_manifest.resolve(strict=True), args.journal_root.resolve(),
-                       args.scenario)
+                       args.scenario, historical=args.historical)

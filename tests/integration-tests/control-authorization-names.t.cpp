@@ -16,9 +16,14 @@
 #include <ndn-cxx/security/validator-null.hpp>
 #include "ndn-service-framework/AbeHistoricalContent.hpp"
 #include "ndn-service-framework/AbeHistoricalKey.hpp"
+#include "ndn-service-framework/AbeHistoricalKeyRequest.hpp"
+#include "ndn-service-framework/historical-object-publisher.hpp"
+#include "ndn-service-framework/detail/nac-consumer-transport.hpp"
 #include <nac-abe/algo/abe-support.hpp>
 #include <nac-abe/attribute-authority.hpp>
 #include <ndn-cxx/util/io.hpp>
+#include <ndn-cxx/util/sha256.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
 #include <ndn-cxx/util/time-unit-test-clock.hpp>
 #include <ndn-cxx/lp/nack.hpp>
 #include <openssl/sha.h>
@@ -184,34 +189,11 @@ namespace {
 std::optional<ndn::Buffer>
 abeTlvField(const ndn::Block& block, std::uint32_t wanted)
 {
-  const std::vector<uint8_t> bytes(block.value_begin(), block.value_end());
-  std::size_t offset = 0;
-  const auto readNumber = [&bytes, &offset] (std::uint32_t& value) {
-    if (offset >= bytes.size())
-      return false;
-    const auto first = bytes[offset++];
-    if (first < 0xfd) {
-      value = first;
-      return true;
-    }
-    const std::size_t extra = first == 0xfd ? 2 : first == 0xfe ? 4 : 8;
-    if (bytes.size() - offset < extra)
-      return false;
-    value = 0;
-    for (std::size_t i = 0; i < extra; ++i)
-      value = (value << 8) | bytes[offset++];
-    return true;
-  };
-  while (offset < bytes.size()) {
-    std::uint32_t type = 0;
-    std::uint32_t length = 0;
-    if (!readNumber(type) || !readNumber(length) || bytes.size() - offset < length)
-      return std::nullopt;
-    if (type == wanted)
-      return ndn::Buffer(bytes.data() + offset, length);
-    offset += length;
-  }
-  return std::nullopt;
+  block.parse();
+  const auto found = block.find(wanted);
+  if (found == block.elements_end())
+    return std::nullopt;
+  return ndn::Buffer(found->value_begin(), found->value_end());
 }
 
 using namespace ndn_service_framework;
@@ -251,7 +233,111 @@ void pump(boost::asio::io_context& io, const std::function<bool()>& finished,
 }
 }
 
-BOOST_AUTO_TEST_SUITE(NamingControlAuthorization)
+BOOST_AUTO_TEST_SUITE(NamingControlAuthorization, *boost::unit_test::fixture<ControllerSealFixture>())
+
+BOOST_AUTO_TEST_CASE(DurableApplicationObjectRequiresAuthenticatedReceiptBeforeCommit)
+{
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  const auto producer = keys.createIdentity(ndn::Name("/publication/producer")).getDefaultKey()
+                          .getDefaultCertificate();
+  const auto controller = keys.createIdentity(ndn::Name("/publication/authority")).getDefaultKey()
+                            .getDefaultCertificate();
+  ndn::DummyClientFace face(keys);
+  const ndn::Name service("/test-service");
+  const ndn::Name prefix = ndn::Name(producer.getIdentity()).append("OBJECT");
+  const auto paramName = ndn::Name(controller.getIdentity()).append(ndn::nacabe::PUBLIC_PARAMS)
+                          .append(ndn::nacabe::ABE_TYPE_KP_ABE).appendVersion(7);
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto paramWire = params.toBuffer();
+  ndn::util::Sha256 hash;
+  hash << ndn::span<const uint8_t>(paramWire);
+  const auto clockMs = [] {
+    return ndn::time::duration_cast<ndn::time::milliseconds>(
+      ndn::time::system_clock::now().time_since_epoch()).count();
+  };
+  const auto now = clockMs();
+  PolicyStatusData status;
+  status.setServiceName(service);
+  status.setControllerCertificate(controller.getName());
+  status.setControllerVersion({static_cast<uint64_t>(now), 2});
+  status.setAbeMaterialVersion({static_cast<uint64_t>(now), 1});
+  status.setAbePublicParametersName(paramName);
+  status.setAbePublicParametersDigest("sha256:" + ndn::toHex(*hash.computeDigest(), false));
+  status.setPolicyDigest("sha256:" + std::string(64, 'a'));
+  bool wrongSigner = true;
+  ndn::Name expectedReceipt;
+  ndn::signal::ScopedConnection answer = face.onSendInterest.connect([&] (const ndn::Interest& i) {
+    ndn::Data response(i.getName());
+    auto signer = controller;
+    if (i.getName() == paramName)
+      response.setContent(paramWire);
+    else if (i.getName().toUri().find("POLICY-STATUS") != std::string::npos) {
+      const auto issued = clockMs();
+      status.setValidity(issued - 1, issued + 4500);
+      response.setContent(status.wireEncode());
+    }
+    else {
+      const auto& body = i.getApplicationParameters();
+      const ndn::Data mapping(ndn::Block(ndn::span<const uint8_t>(body.value(), body.value_size())));
+      const auto receipt = makeHistoricalPublicationReceipt(mapping, producer, status, controller,
+                                                            keys, clockMs());
+      expectedReceipt = receipt.getFullName();
+      response.setContent(expectedReceipt.wireEncode());
+      if (wrongSigner)
+        signer = producer;
+    }
+    keys.sign(response, ndn::security::signingByCertificate(signer));
+    face.receive(response);
+  });
+  const ndn::Buffer bytes(170, 0x41);
+  size_t commits = 0;
+  const auto publish = [&] {
+    publishHistoricalObject(face, keys, producer, controller, service, prefix, bytes,
+      [&] (const HistoricalObjectPublication& object) {
+        ++commits;
+        BOOST_CHECK(object.receiptFullName == expectedReceipt);
+        const auto binding = decodeHistoricalPublication(object.mapping);
+        BOOST_REQUIRE(binding);
+        BOOST_CHECK(binding->ckFullName == object.ck.getFullName());
+        const auto ckRoot = object.ck.getName().getPrefix(-1);
+        BOOST_REQUIRE(detail::isNacCkLocator(ckRoot, producer.getIdentity()));
+        BOOST_CHECK(object.ck.getName()[-1] == ndn::name::Component::fromSegment(0));
+        BOOST_REQUIRE(object.ck.getFinalBlock());
+        BOOST_CHECK(*object.ck.getFinalBlock() == ndn::name::Component::fromSegment(0));
+        BOOST_CHECK_EQUAL(binding->policy, "/PERMISSION/test-service");
+        BOOST_REQUIRE_GT(object.segments.size(), 1U);
+        BOOST_REQUIRE_EQUAL(binding->segments, object.segments.size());
+        std::string encrypted;
+        for (size_t i = 0; i < object.segments.size(); ++i) {
+          const auto& packet = *object.segments[i];
+          BOOST_CHECK(packet.getName() == ndn::Name(binding->objectName).appendSegment(i));
+          const auto& content = packet.getContent();
+          encrypted.append(reinterpret_cast<const char*>(content.value()), content.value_size());
+        }
+        HistoricalCkContent ck;
+        HistoricalPayloadContent payload;
+        const auto& content = object.ck.getContent();
+        BOOST_REQUIRE(parseHistoricalCkContent(
+          std::string(reinterpret_cast<const char*>(content.value()), content.value_size()), ck));
+        BOOST_REQUIRE(parseHistoricalPayloadContent(encrypted, payload));
+        auto key = abe.kpPrvKeyGen(params, master, binding->policy);
+        const auto plain = decryptHistoricalPayload(std::string(paramWire.begin(), paramWire.end()),
+                                                    ck, payload, key.toBuffer());
+        BOOST_REQUIRE(plain);
+        BOOST_CHECK_EQUAL(*plain, std::string(bytes.begin(), bytes.end()));
+      }, 64);
+  };
+  BOOST_CHECK_EXCEPTION(publish(), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()) == "Controller did not acknowledge the historical publication";
+  });
+  BOOST_CHECK_EQUAL(commits, 0U);
+  wrongSigner = false;
+  BOOST_REQUIRE_NO_THROW(publish());
+  BOOST_CHECK_EQUAL(commits, 1U);
+}
 
 BOOST_AUTO_TEST_CASE(StatusQueryLifetimePreservesOtherRpcAndClockSkewBoundaries)
 {
@@ -1130,7 +1216,7 @@ BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuth
   size_t authorizations = 0, successes = 0, errors = 0;
   std::string failure;
   bool serveRogue = false;
-  const ndn::Buffer expected{1, 2, 3};
+  const ndn::Buffer expected(513, 0x5a);
   ndn::signal::ScopedConnection serveCertificates = consumerFace.onSendInterest.connect(
     [&](const ndn::Interest& interest) {
       for (const auto& certificate : certificates) {
@@ -1173,6 +1259,36 @@ BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuth
     ndn::security::signingByCertificate(producerCertificate));
   BOOST_REQUIRE(!dataPackets.empty());
   BOOST_REQUIRE(!originalCk.empty());
+  // Use the SDK's original packets and standard CK locator in the history
+  // path. The multi-attribute CK used elsewhere in this test must not match.
+  const ndn::Name historicalService("/HELLO");
+  const std::string historicalAttribute("/PERMISSION/HELLO");
+  const auto [historyData, historyCk] = producer.produce(ndn::Name("/NDNSF/OBJECT/history"),
+    std::vector<std::string>{historicalAttribute}, expected,
+    ndn::security::signingByCertificate(producerCertificate));
+  BOOST_REQUIRE(!historyData.empty());
+  BOOST_REQUIRE_EQUAL(historyCk.size(), 1U);
+  PolicyStatusData status;
+  status.setServiceName(historicalService);
+  status.setControllerVersion({700, 3});
+  status.setAbeMaterialVersion({700, 1});
+  status.setControllerCertificate(authorityCertificate.getName());
+  status.setAbePublicParametersName(producer.getPublicParamsDataName());
+  status.setAbePublicParametersDigest(producer.getPublicParamsDigest());
+  status.setPolicyDigest("sha256:" + std::string(64, 'a'));
+  status.setValidity(1000, 6000);
+  const auto publication = makeHistoricalPublicationData(status, historicalAttribute,
+    *historyCk.front(), historyData, producerCertificate, authorityCertificate, keys, 1001);
+  const auto binding = decodeHistoricalPublication(publication);
+  BOOST_REQUIRE(binding);
+  BOOST_CHECK(binding->ckFullName == historyCk.front()->getFullName());
+  BOOST_CHECK_EQUAL(binding->segments, historyData.size());
+  const auto receipt = makeHistoricalPublicationReceipt(publication, producerCertificate,
+    status, authorityCertificate, keys, 1001);
+  BOOST_CHECK(verifyHistoricalPublicationReceipt(receipt, publication, authorityCertificate));
+  BOOST_CHECK_THROW(makeHistoricalPublicationData(status, historicalAttribute,
+    *originalCk.front(), historyData, producerCertificate, authorityCertificate, keys, 1001),
+    std::invalid_argument);
   const auto encoded = mergeDataContents(dataPackets);
   const ndn::Block cipher(ndn::span<const uint8_t>(encoded.data(), encoded.size()));
   const auto dataName = dataPackets.front()->getName().getPrefix(-1);
@@ -1206,12 +1322,12 @@ BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuth
     const auto sizeField = abeTlvField(payloadContent, 0x025B);
     BOOST_REQUIRE(content);
     BOOST_REQUIRE(sizeField);
-    BOOST_REQUIRE_EQUAL(sizeField->size(), 1u);
+    BOOST_REQUIRE_EQUAL(sizeField->size(), 2u);
     ndn::nacabe::algo::CipherText rebuilt;
     rebuilt.m_contentKey = std::make_shared<ndn::nacabe::algo::ContentKey>(
       std::string(), *wrapped);
     rebuilt.m_content = *content;
-    rebuilt.m_plainTextSize = (*sizeField)[0];
+    rebuilt.m_plainTextSize = ndn::readNonNegativeInteger(payloadContent.get(0x025B));
     // Mint the key the policy allows directly from the authority's own material (HAVE_TESTS exposes
     // it), which is the same key the Consumer received over the network.
     const auto dkey = ndn::nacabe::algo::ABESupport::getInstance().kpPrvKeyGen(
@@ -1230,7 +1346,26 @@ BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuth
     BOOST_REQUIRE(ndn_service_framework::parseHistoricalPayloadContent(payloadText, parsedPayload));
     BOOST_CHECK(parsedCk.wrappedKey == std::string(reinterpret_cast<const char*>(wrapped->data()),
                                                    wrapped->size()));
-    BOOST_CHECK(parsedPayload.plainTextSize == (*sizeField)[0]);
+    BOOST_CHECK_EQUAL(parsedPayload.plainTextSize, expected.size());
+    const auto asText = [] (const ndn::Block& block) {
+      return std::string(block.begin(), block.end());
+    };
+    auto duplicateCk = ckContent;
+    duplicateCk.push_back(ckContent.get(0x0259));
+    duplicateCk.encode();
+    BOOST_CHECK(!ndn_service_framework::parseHistoricalCkContent(asText(duplicateCk), parsedCk));
+    auto missingKeyName = payloadContent;
+    missingKeyName.remove(ndn::tlv::Name);
+    missingKeyName.encode();
+    BOOST_CHECK(!ndn_service_framework::parseHistoricalPayloadContent(
+      asText(missingKeyName), parsedPayload));
+    auto duplicateSize = payloadContent;
+    duplicateSize.push_back(payloadContent.get(0x025B));
+    duplicateSize.encode();
+    BOOST_CHECK(!ndn_service_framework::parseHistoricalPayloadContent(
+      asText(duplicateSize), parsedPayload));
+    BOOST_CHECK(!ndn_service_framework::parseHistoricalPayloadContent(
+      payloadText + '\0', parsedPayload));
     const auto paramsWire = authority.getPublicParametersWire();
     const std::string paramsText(reinterpret_cast<const char*>(paramsWire.data()),
                                  paramsWire.size());
@@ -1312,7 +1447,7 @@ BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuth
     ndn::nacabe::algo::CipherText rebuilt;
     rebuilt.m_contentKey = std::make_shared<ndn::nacabe::algo::ContentKey>(std::string(), *wrapped);
     rebuilt.m_content = *content;
-    rebuilt.m_plainTextSize = (*sizeField)[0];
+    rebuilt.m_plainTextSize = ndn::readNonNegativeInteger(payloadContent.get(0x025B));
 
     auto archivedParams = ndn::nacabe::algo::PublicParams{};
     archivedParams.fromBuffer(ndn::Buffer(

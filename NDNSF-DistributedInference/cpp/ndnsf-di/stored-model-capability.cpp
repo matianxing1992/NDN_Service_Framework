@@ -10,6 +10,7 @@
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/segmenter.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -675,6 +676,34 @@ decodeOriginal(const Bytes& wire)
   return ndn::Data(block);
 }
 
+constexpr std::string_view PRODUCER_PROOF_CONTENT =
+  NATIVE_STORED_MODEL_PRODUCER_PROOF_CONTENT;
+
+ndn::Data
+decodeProducerProof(const NativeStoredModelReference& reference, const Bytes& wire)
+{
+  const auto proof = decodeOriginal(wire);
+  require(proof.getName() == nativeStoredModelProducerProofName(reference) &&
+          nativeIsStoredModelProducerProof(reference.producer, reference.repository, proof) &&
+          proof.getSignatureType() != ndn::tlv::DigestSha256 &&
+          proof.getKeyLocator().has_value());
+  return proof;
+}
+
+void
+requireProducerProof(const NativeStoredModelReference& reference,
+                     const NativeStoredModelPacketIo& io)
+{
+  if (io.fetchProducerProof) {
+    const auto name = nativeStoredModelProducerProofName(reference);
+    const auto wire = io.fetchProducerProof(name, reference.producer);
+    io.requireCurrent();
+    if (wire.empty())
+      throw std::runtime_error("DI_STORED_MODEL_PRODUCER_PROOF_MISSING");
+    (void)decodeProducerProof(reference, wire);
+  }
+}
+
 NativeJson
 indexedObjectJson(const NativeStoredModelIndexedObject& entry)
 {
@@ -810,7 +839,8 @@ public:
         (void)uploadGroupingVersion(savedContext, "tailUploadGroupingVersion");
         savedContext.erase("tailUploadGroupingVersion");
         require(nativeCanonicalJson(m_metadata) == text && m_metadata.is_object() &&
-          m_metadata.size() == 7 && m_metadata.at("schema") == "ndnsf-di-model-preparation-v1" &&
+          m_metadata.size() == 7U + m_metadata.contains("producerProofWire") &&
+          m_metadata.at("schema") == "ndnsf-di-model-preparation-v1" &&
           savedContext == context);
         validate();
         if (authenticated || legacySealed) {
@@ -992,6 +1022,25 @@ public:
     m_metadata["tail"] = groups;
     m_metadata["ready"] = true;
     validate();
+    save();
+  }
+
+  Bytes
+  producerProofWire() const
+  {
+    if (!m_metadata.contains("producerProofWire"))
+      return {};
+    const auto& text = m_metadata.at("producerProofWire").get_ref<const std::string&>();
+    require(!text.empty() && text.size() <= 2 * ndn::MAX_NDN_PACKET_SIZE);
+    const auto wire = ndn::fromHex(text);
+    return Bytes(wire->begin(), wire->end());
+  }
+
+  void
+  saveProducerProof(const Bytes& wire)
+  {
+    require(!m_metadata.contains("producerProofWire"));
+    m_metadata["producerProofWire"] = ndn::toHex({wire.data(), wire.size()}, false);
     save();
   }
 
@@ -1447,7 +1496,57 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
     pipeline.finish();
 }
 
+void
+commitProducerProof(const NativeStoredModelReference& reference, const NativeStoredModelPacketIo& io,
+                    NativeStoredModelPublication& publication, PreparationJournal* journal)
+{
+  auto wire = journal ? journal->producerProofWire() : Bytes{};
+  const bool needsSignature = wire.empty();
+  if (needsSignature) {
+    const Bytes content(PRODUCER_PROOF_CONTENT.begin(), PRODUCER_PROOF_CONTENT.end());
+    wire = io.signProducerProof(nativeStoredModelProducerProofName(reference), content);
+    io.requireCurrent();
+  }
+  auto proof = std::make_shared<ndn::Data>(decodeProducerProof(reference, wire));
+  if (journal && needsSignature)
+    journal->saveProducerProof(wire);
+  commitPackets({proof}, io, publication);
+}
+
 } // namespace
+
+ndn::Name
+nativeStoredModelProducerProofName(const NativeStoredModelReference& reference)
+{
+  reference.validate();
+  require(reference.rootName[-1] == ndn::name::Component("root"));
+  // The signature covers the complete Name, including the exact root and original wire digest.
+  return ndn::Name(reference.rootName).append("producer-proof")
+    .append(ndn::name::Component(reference.rootWireDigest));
+}
+
+bool
+nativeIsStoredModelProducerProof(const ndn::Name& producer, const ndn::Name& repository,
+                                 const ndn::Data& proof)
+{
+  const auto& name = proof.getName();
+  const auto& content = proof.getContent();
+  if (name.size() < 3 || name[-2] != ndn::name::Component("producer-proof") ||
+      name[-1].type() != ndn::tlv::GenericNameComponent ||
+      proof.getContentType() != ndn::tlv::ContentType_Blob || proof.getFinalBlock() ||
+      content.value_size() != PRODUCER_PROOF_CONTENT.size() ||
+      !std::equal(content.value_begin(), content.value_end(), PRODUCER_PROOF_CONTENT.begin())) {
+    return false;
+  }
+  const std::string digest(name[-1].value_begin(), name[-1].value_end());
+  const NativeStoredModelReference reference{producer, repository, name.getPrefix(-2), digest};
+  try {
+    return name == nativeStoredModelProducerProofName(reference);
+  }
+  catch (const std::runtime_error&) {
+    return false;
+  }
+}
 
 bool
 nativeStoredModelSemanticPrefix(const ndn::Name& publicationPrefix)
@@ -1572,7 +1671,9 @@ nativePreflightStoredModelPublication(ndn::KeyChain& keyChain, const ndn::Name& 
   keyChain.sign(root, ndn::security::signingWithSha256());
   require(root.wireEncode().size() <= ndn::MAX_NDN_PACKET_SIZE &&
           root.wireEncode().size() <= MAX_PUBLICATION_BYTES - wireBytes);
-  return wireBytes + root.wireEncode().size();
+  require(ndn::MAX_NDN_PACKET_SIZE <= MAX_PUBLICATION_BYTES - wireBytes -
+                                     root.wireEncode().size());
+  return wireBytes + root.wireEncode().size() + ndn::MAX_NDN_PACKET_SIZE;
 }
 
 NativeStoredModelPublication
@@ -1653,6 +1754,7 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   require(!producer.empty() && (!publicationPrefix.empty() || !preparationState.empty()));
   require(!importLegacyJournal || (!publicationPrefix.empty() && !preparationState.empty()));
   require(output == nullptr || !preparationState.empty());
+  require(static_cast<bool>(io.signProducerProof) == static_cast<bool>(io.fetchProducerProof));
   auto prefix = publicationPrefix;
   if (!prefix.empty()) requirePublicationPrefix(producer, prefix);
   io.requireCurrent();
@@ -1689,6 +1791,15 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
     handle = journal->handle();
     prefix = journal->prefix();
     if (journal->ready()) {
+      if (importLegacyJournal && io.signProducerProof) {
+        // Explicit owner migration: confirm the original Data before attesting to it.
+        require(static_cast<bool>(io.fetch));
+        const auto original = io.fetch({handle.rootName});
+        require(original.size() == 1);
+        (void)nativeAdmitStoredModelRoot(handle, decodeOriginal(original.front()));
+        commitProducerProof(handle, io, publication, journal.get());
+      }
+      requireProducerProof(handle, io);
       journal->exportHandle();
       publication.objectCount = journal->objectCount();
       io.requireCurrent();
@@ -1788,6 +1899,8 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   handle.rootWireDigest = digest(rootWire.data(), rootWire.size());
   handle.validate();
   (void)nativeAdmitStoredModelRoot(handle, *root);
+  if (io.signProducerProof)
+    commitProducerProof(handle, io, publication, journal.get());
   commitPackets({root}, io, publication, tailVersion, tailObserver);
   io.requireCurrent();
   if (journal) {
@@ -1804,6 +1917,7 @@ nativeLoadStoredModelCatalog(const NativeStoredModelReference& publication,
   publication.validate();
   require(io.fetch && io.requireCurrent);
   io.requireCurrent();
+  requireProducerProof(publication, io);
   const auto roots = io.fetch({publication.rootName});
   io.requireCurrent();
   require(roots.size() == 1);

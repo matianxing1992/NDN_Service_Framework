@@ -100,7 +100,7 @@ struct NativeStoredModelRoot
   std::uint32_t segmentCount = 0;
 };
 
-/** Pin exact root wire and Producer before admitting any public object references. */
+/** Verify the pinned root wire. Producer signer authority is checked separately. */
 NativeStoredModelRoot
 nativeAdmitStoredModelRoot(const NativeStoredModelReference& reference, const ndn::Data& root);
 

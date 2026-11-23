@@ -13,6 +13,11 @@
 #include "ndn-service-framework/RevocationState.hpp"
 #include "ndn-service-framework/utils.hpp"
 
+#ifdef NDNSF_TEST_REPO_REOPEN
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
+#endif
+
 #include <cstdint>
 #include <array>
 #include <filesystem>
@@ -20,16 +25,22 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <stdexcept>
 
 #include <ndn-cxx/util/dummy-client-face.hpp>
 #include <ndn-cxx/util/random.hpp>
+#include <ndn-cxx/util/scope.hpp>
+#include <ndn-cxx/util/segmenter.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/sha256.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
+#include <ndn-cxx/util/time-unit-test-clock.hpp>
 
 #include <ndn-cxx/encoding/block-helpers.hpp>
 
 #include <nac-abe/algo/abe-support.hpp>
+#include <openssl/hmac.h>
 
 namespace ndn_service_framework::test {
 namespace {
@@ -146,6 +157,373 @@ applyHistoricalScope(HistoricalKeyRequest& request)
 }
 } // namespace
 
+BOOST_AUTO_TEST_CASE(GrantReceiptRequestSurvivesBinaryPublicationWire)
+{
+  // The publication wire is binary TLV and may contain 0x0A; a line-oriented body would truncate it.
+  HistoricalGrantReceiptRequest request;
+  request.controllerPrefix = ndn::Name("/controller/grants");
+  request.grantDigest = "sha256:" + std::string(64, 'b');
+  request.recipient = ndn::Name("/user/reader");
+  request.service = "svc-b";
+  request.currentControllerVersion = ControllerVersion{1000, 4};
+  request.publicationWire = std::string("line-one\nline-two\n\nline-four\x0a\x00tail", 30);
+
+  const auto body = encodeHistoricalGrantReceiptRequest(request);
+  HistoricalGrantReceiptRequest decoded;
+  BOOST_REQUIRE(decodeHistoricalGrantReceiptRequest(body, decoded));
+  BOOST_CHECK_EQUAL(decoded.publicationWire.size(), request.publicationWire.size());
+  BOOST_CHECK(decoded.publicationWire == request.publicationWire);
+}
+
+BOOST_AUTO_TEST_CASE(GrantReceiptRequestRoundTripsAndBindsItsName)
+{
+  HistoricalGrantReceiptRequest request;
+  request.controllerPrefix = ndn::Name("/controller/grants");
+  request.grantDigest = "sha256:" + std::string(64, 'e');
+  request.recipient = ndn::Name("/user/reader");
+  request.service = "svc-e";
+  request.currentControllerVersion = ControllerVersion{1000, 3};
+  request.publicationWire = "{\"publication\":\"wire\",\n\"second\":\"line\"}";
+
+  const auto body = encodeHistoricalGrantReceiptRequest(request);
+  HistoricalGrantReceiptRequest decoded;
+  BOOST_REQUIRE(decodeHistoricalGrantReceiptRequest(body, decoded));
+  BOOST_CHECK(decoded.controllerPrefix == request.controllerPrefix);
+  BOOST_CHECK_EQUAL(decoded.grantDigest, request.grantDigest);
+  BOOST_CHECK_EQUAL(decoded.service, request.service);
+  BOOST_CHECK(decoded.recipient == request.recipient);
+  BOOST_CHECK(decoded.currentControllerVersion == request.currentControllerVersion);
+  BOOST_CHECK_EQUAL(decoded.publicationWire, request.publicationWire);
+
+}
+
+BOOST_AUTO_TEST_CASE(CkAndGrantReceiptsCoexistForOnePublication)
+{
+  DefaultGenerationFiles files;
+  const std::string owner = "/controller/authority";
+  const std::vector<uint8_t> key(32, 0xc7);
+  ndn::Name publication("/provider/NDNSF/OBJECT/coexist");
+  publication.appendImplicitSha256Digest(std::vector<uint8_t>(32, 0x5a));
+  const std::string ckWire = "ck-receipt-wire";
+  const std::string grantWire = "grant-receipt-wire";
+  {
+    ControllerGenerationStore store(files.legacy);
+    store.setSecretSeal(key, "controller-abe");
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    store.recordHistoricalPublicationReceipt(publication, ckWire);
+    store.recordHistoricalGrantReceipt(publication, grantWire);
+    // Recording the same publication twice must not overwrite the other kind.
+    BOOST_CHECK(store.loadHistoricalPublicationReceipt(publication) ==
+                std::optional<std::string>(ckWire));
+    BOOST_CHECK(store.loadHistoricalGrantReceipt(publication) ==
+                std::optional<std::string>(grantWire));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(HandoverWitnessScanSeesGrantReceipts)
+{
+  // The scan used to decode only CK receipts, so a grant-receipted publication was invisible to the
+  // handover witness even though it carries the same admission evidence.
+  DefaultGenerationFiles files;
+  const std::string owner = "/controller/authority";
+  const std::vector<uint8_t> key(32, 0xe1);
+  const auto controllerDir = files.root / "witness-controller";
+  std::filesystem::create_directory(controllerDir);
+  ndn::KeyChain controller("pib-sqlite3:" + controllerDir.string(),
+                           "tpm-file:" + controllerDir.string(), false);
+  const ndn::Name controllerIdentity(owner);
+  controller.createIdentity(controllerIdentity, ndn::RsaKeyParams());
+  const auto controllerCert = controller.getPib().getIdentity(controllerIdentity)
+    .getDefaultKey().getDefaultCertificate();
+  ndn::Name publication("/provider/NDNSF/OBJECT/witnessed");
+  publication.appendImplicitSha256Digest(std::vector<uint8_t>(32, 0x77));
+  const ControllerVersion version{1000, 5};
+  const auto receipt = makeHistoricalGrantReceipt(
+    controllerIdentity, publication, "sha256:" + std::string(64, 'a'),
+    ndn::Name("/user/reader"), "/svc/witness", version, controllerCert, controller);
+  const auto& wire = receipt.wireEncode();
+  const std::string signedWire(reinterpret_cast<const char*>(wire.data()), wire.size());
+
+  ControllerGenerationStore store(files.legacy);
+  store.setSecretSeal(key, "controller-abe");
+  BOOST_REQUIRE(store.acquireWriter(owner));
+  store.recordHistoricalGrantReceipt(publication, signedWire);
+  size_t visited = 0;
+  ControllerVersion seen{};
+  store.visitHistoricalPublicationReceipts(
+    [&] (const std::string& stored, const ControllerVersion& stamped) {
+      if (stored == signedWire) {
+        ++visited;
+        seen = stamped;
+      }
+    });
+  BOOST_CHECK_EQUAL(visited, 1U);
+  BOOST_CHECK(seen == version);
+}
+
+BOOST_AUTO_TEST_CASE(SealedStoreAuthenticatesAuthorizationStateBeforeRecovery)
+{
+  DefaultGenerationFiles files;
+  const std::string owner = "/controller/authority";
+  const std::vector<uint8_t> key(32, 0xb5);
+  RevocationTarget revoked;
+  revoked.kind = RevocationKind::IDENTITY;
+  revoked.targetIdentity = ndn::Name("/revoked/user");
+  {
+    ControllerGenerationStore store(files.legacy);
+    store.setSecretSeal(key, "controller-abe");
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    const auto version = store.startGeneration(1000);
+    ControllerGenerationStore::AbeMaterial material;
+    material.owner = owner;
+    material.signingKeyDigest = "sha256:" + std::string(64, 'a');
+    material.policyDigest = "sha256:" + std::string(64, 'b');
+    material.publicParameters = "fixture-public-parameters";
+    material.masterSecret = "fixture-exclusive-master-secret";
+    material.version = version;
+    store.storeAbeMaterial(material);
+    BOOST_CHECK(store.recordRevocations({revoked}, true) == version);
+  }
+  const auto original = readGenerationFile(files.legacy);
+  BOOST_REQUIRE_EQUAL(original.substr(0, 8), "NDNSFCS9");
+  BOOST_REQUIRE_GT(original.size(), 32U);
+  const auto first = original.find("revoked");
+  BOOST_REQUIRE_NE(first, std::string::npos);
+  const auto ownerOffset = original.find(owner);
+  BOOST_REQUIRE_NE(ownerOffset, std::string::npos);
+  BOOST_REQUIRE_GT(ownerOffset, 8U);
+  BOOST_CHECK_EQUAL(original.find("fixture-exclusive-master-secret"), std::string::npos);
+  {
+    ControllerGenerationStore store(files.legacy);
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    BOOST_CHECK_THROW(store.load(), std::runtime_error);
+    store.setSecretSeal(key, "other-key-id");
+    BOOST_CHECK_THROW(store.load(), std::runtime_error);
+    store.setSecretSeal(std::vector<uint8_t>(32, 0xc6), "controller-abe");
+    BOOST_CHECK_THROW(store.load(), std::runtime_error);
+    store.setSecretSeal(key, "controller-abe");
+    BOOST_REQUIRE_EQUAL(store.loadRevocations().size(), 1U);
+    for (const auto offset : {std::size_t{23}, first, ownerOffset - 9, original.size() - 1}) {
+      auto changed = original;
+      changed[offset] ^= 1;
+      std::ofstream(files.legacy, std::ios::binary | std::ios::trunc) << changed;
+      BOOST_CHECK_EXCEPTION(store.loadRevocations(), std::runtime_error,
+        [] (const auto& error) {
+          return std::string_view(error.what()) ==
+                 "Controller generation state authentication failed";
+        });
+      BOOST_CHECK_THROW(store.startGeneration(2000), std::runtime_error);
+      BOOST_CHECK_EQUAL(readGenerationFile(files.legacy), changed);
+    }
+    std::ofstream(files.legacy, std::ios::binary | std::ios::trunc) << original;
+  }
+  {
+    ControllerGenerationStore store(files.legacy);
+    store.setSecretSeal(key, "controller-abe");
+    BOOST_REQUIRE(store.acquireWriter("/controller/other"));
+    BOOST_CHECK_THROW(store.load(), std::runtime_error);
+  }
+  {
+    ControllerGenerationStore store(files.legacy);
+    store.setSecretSeal(key, "controller-abe");
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    const auto restored = store.loadRevocations();
+    BOOST_REQUIRE_EQUAL(restored.size(), 1U);
+    BOOST_CHECK(restored.front().targetIdentity == revoked.targetIdentity);
+    const auto material = store.loadAbeMaterial();
+    BOOST_REQUIRE(material);
+    BOOST_CHECK(material->rotationRequired);
+    BOOST_CHECK_EQUAL(material->masterSecret, "fixture-exclusive-master-secret");
+  }
+}
+
+BOOST_AUTO_TEST_CASE(IndependentCheckpointRecoversOnlyCommittedState)
+{
+  DefaultGenerationFiles files;
+  const auto stateDirectory = files.root / "state";
+  const auto checkpointDirectory = files.root / "checkpoint";
+  std::filesystem::create_directory(stateDirectory);
+  std::filesystem::create_directory(checkpointDirectory);
+  std::filesystem::permissions(stateDirectory, std::filesystem::perms::owner_all);
+  std::filesystem::permissions(checkpointDirectory, std::filesystem::perms::owner_all);
+  const auto state = stateDirectory / "authority";
+  const auto staged = state.string() + ".prepared";
+  const auto checkpoint = checkpointDirectory / "committed";
+  const std::vector<uint8_t> key(32, 0xb5);
+  const auto open = [&] {
+    auto store = std::make_unique<ControllerGenerationStore>(state);
+    store->setSecretSeal(key, "controller-abe");
+    store->setRecoveryCheckpoint(checkpoint);
+    BOOST_REQUIRE(store->acquireWriter("/controller/authority"));
+    return store;
+  };
+  RevocationTarget withdrawn;
+  withdrawn.kind = RevocationKind::IDENTITY;
+  withdrawn.targetIdentity = ndn::Name("/withdrawn/user");
+  const auto write = [] (const auto& path, const std::string& bytes) {
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes;
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                       std::filesystem::perms::owner_write);
+  };
+  ControllerVersion version;
+  std::string before, beforeCheckpoint;
+  {
+    const auto store = open();
+    BOOST_CHECK(!store->load());
+    version = store->startGeneration(1000);
+    ControllerGenerationStore competitor(stateDirectory / "different-state");
+    competitor.setSecretSeal(key, "controller-abe");
+    competitor.setRecoveryCheckpoint(checkpoint);
+    BOOST_CHECK(!competitor.acquireWriter("/controller/authority"));
+    before = readGenerationFile(state);
+    beforeCheckpoint = readGenerationFile(checkpoint);
+    BOOST_CHECK(store->recordRevocations({withdrawn}) == version);
+  }
+  const auto after = readGenerationFile(state);
+  const auto afterCheckpoint = readGenerationFile(checkpoint);
+  BOOST_REQUIRE_NE(afterCheckpoint, beforeCheckpoint);
+
+  // A valid but older active copy loses a same-version withdrawal.
+  write(state, before);
+  {
+    const auto store = open();
+    BOOST_CHECK_THROW(store->load(), std::runtime_error);
+    BOOST_CHECK_THROW(store->startGeneration(1001), std::runtime_error);
+    BOOST_CHECK_EQUAL(readGenerationFile(state), before);
+  }
+  // Before the checkpoint is committed, the newer staged copy has no authority.
+  write(staged, after);
+  write(checkpoint, beforeCheckpoint);
+  {
+    const auto store = open();
+    BOOST_CHECK(store->load() == version);
+    BOOST_CHECK(store->loadRevocations().empty());
+    BOOST_CHECK_EQUAL(readGenerationFile(state), before);
+  }
+  // After its independent commit, a matching staged copy must survive loss of active.
+  write(checkpoint, afterCheckpoint);
+  std::filesystem::remove(state);
+  {
+    const auto store = open();
+    BOOST_CHECK(store->load() == version);
+    const auto records = store->loadRevocations();
+    BOOST_REQUIRE_EQUAL(records.size(), 1U);
+    BOOST_CHECK(records.front().targetIdentity == withdrawn.targetIdentity);
+    BOOST_CHECK_EQUAL(readGenerationFile(state), after);
+    BOOST_CHECK(!std::filesystem::exists(staged));
+  }
+  std::filesystem::remove(checkpoint);
+  {
+    const auto store = open();
+    BOOST_CHECK_THROW(store->load(), std::runtime_error);
+    BOOST_CHECK_EQUAL(readGenerationFile(state), after);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(IndependentCheckpointBindsExactGrantWitness)
+{
+  DefaultGenerationFiles files;
+  const auto stateDirectory = files.root / "state";
+  const auto checkpointDirectory = files.root / "checkpoint";
+  for (const auto& directory : {stateDirectory, checkpointDirectory}) {
+    std::filesystem::create_directory(directory);
+    std::filesystem::permissions(directory, std::filesystem::perms::owner_all);
+  }
+  const auto state = stateDirectory / "authority";
+  const auto checkpoint = checkpointDirectory / "committed";
+  const std::string signer = "sha256:" + std::string(64, 'a');
+  const std::string otherSigner = "sha256:" + std::string(64, 'b');
+  const auto open = [&] {
+    auto store = std::make_unique<ControllerGenerationStore>(state);
+    store->setSecretSeal(std::vector<uint8_t>(32, 0xb5), "controller-abe");
+    store->setRecoveryCheckpoint(checkpoint);
+    BOOST_REQUIRE(store->acquireWriter("/controller/authority"));
+    return store;
+  };
+  std::filesystem::path activeWitness;
+  std::filesystem::path nextWitness;
+  {
+    auto store = open();
+    store->startGeneration(1000);
+    const auto current = store->storeGrantWitness(signer, "committed witness");
+    BOOST_CHECK(!store->getGrantWitnessSigner());
+    BOOST_CHECK(!store->loadGrantWitness(signer));
+    store->startGeneration(1001, {}, current);
+    activeWitness = state.string() + ".grant-witness." + signer.substr(7) + "." +
+                    current.wireDigest.substr(7);
+    const auto other = store->storeGrantWitness(otherSigner, "uncommitted witness");
+    nextWitness = state.string() + ".grant-witness." + otherSigner.substr(7) + "." +
+                  other.wireDigest.substr(7);
+    store->advanceEpoch();
+  }
+  {
+    auto store = open();
+    BOOST_CHECK(store->getGrantWitnessSigner() == signer);
+    const auto wire = store->loadGrantWitness(signer);
+    BOOST_REQUIRE(wire);
+    BOOST_CHECK_EQUAL(*wire, "committed witness");
+    BOOST_CHECK(!store->loadGrantWitness(otherSigner));
+    std::filesystem::rename(nextWitness, activeWitness);
+    BOOST_CHECK_THROW(store->loadGrantWitness(signer), std::runtime_error);
+    std::filesystem::remove(activeWitness);
+    BOOST_CHECK_THROW(store->loadGrantWitness(signer), std::runtime_error);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(IndependentCheckpointImportsOnlyPinnedLegacyBytes)
+{
+  DefaultGenerationFiles files;
+  const auto stateDirectory = files.root / "state";
+  const auto checkpointDirectory = files.root / "checkpoint";
+  std::filesystem::create_directory(stateDirectory);
+  std::filesystem::create_directory(checkpointDirectory);
+  std::filesystem::permissions(stateDirectory, std::filesystem::perms::owner_all);
+  std::filesystem::permissions(checkpointDirectory, std::filesystem::perms::owner_all);
+  const auto state = stateDirectory / "authority";
+  const auto checkpoint = checkpointDirectory / "committed";
+  const std::string owner = "/controller/authority";
+  {
+    ControllerGenerationStore store(state);
+    store.setSecretSeal(std::vector<uint8_t>(32, 0xb5), "controller-abe");
+    store.setRecoveryCheckpoint(checkpoint, "sha256:" + std::string(64, '0'));
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    BOOST_CHECK_THROW(store.load(), std::runtime_error);
+    BOOST_CHECK_THROW(store.startGeneration(1000), std::runtime_error);
+    BOOST_CHECK(!std::filesystem::exists(state));
+    BOOST_CHECK(!std::filesystem::exists(checkpoint));
+  }
+  {
+    ControllerGenerationStore legacy(state);
+    BOOST_REQUIRE(legacy.acquireWriter(owner));
+    legacy.startGeneration(1000);
+  }
+  const auto before = readGenerationFile(state);
+  {
+    ControllerGenerationStore store(state);
+    BOOST_CHECK_THROW(store.setRecoveryCheckpoint(checkpoint), std::invalid_argument);
+    store.setSecretSeal(std::vector<uint8_t>(32, 0xb5), "controller-abe");
+    BOOST_CHECK_THROW(store.setRecoveryCheckpoint(stateDirectory / "checkpoint"),
+                      std::invalid_argument);
+    store.setRecoveryCheckpoint(checkpoint, "sha256:" + std::string(64, '0'));
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    BOOST_CHECK_THROW(store.load(), std::runtime_error);
+    BOOST_CHECK_EQUAL(readGenerationFile(state), before);
+    BOOST_CHECK(!std::filesystem::exists(checkpoint));
+  }
+  {
+    ControllerGenerationStore store(state);
+    store.setSecretSeal(std::vector<uint8_t>(32, 0xb5), "controller-abe");
+    ndn::util::Sha256 sha;
+    sha << before;
+    store.setRecoveryCheckpoint(checkpoint, "sha256:" + sha.toString());
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    BOOST_CHECK(store.load().has_value());
+    store.startGeneration(1001);
+    BOOST_CHECK_EQUAL(readGenerationFile(state).substr(0, 8), "NDNSFCS9");
+    BOOST_CHECK(std::filesystem::exists(checkpoint));
+  }
+}
+
 BOOST_AUTO_TEST_CASE(AbeMaterialPersistsAndMarksRotationBeforeRestart)
 {
   DefaultGenerationFiles files;
@@ -198,7 +576,13 @@ BOOST_AUTO_TEST_CASE(LegacyArchiveEntriesMigrateToTheBoundLayout)
   // A Controller upgrading from it derives both from what the file holds instead of refusing it.
   DefaultGenerationFiles files;
   const auto statePath = files.root / "migrated.state";
-  const auto lockPath = std::filesystem::path(statePath.string() + ".lock");
+  const std::string owner = "/8=controller/8=a";
+  const std::string parameters = "legacy-params";
+  const std::string secret = "legacy-secret";
+  ndn::util::Sha256 oldDigest;
+  oldDigest << "NDNSF-CONTROLLER-ABE-HISTORY-V1" << "1002" << "3";
+  oldDigest << std::to_string(parameters.size()) + ":" << parameters;
+  oldDigest << std::to_string(secret.size()) + ":" << secret;
   auto putU64 = [] (std::ostream& out, uint64_t value) {
     for (int shift = 56; shift >= 0; shift -= 8)
       out.put(static_cast<char>((value >> shift) & 0xff));
@@ -217,24 +601,34 @@ BOOST_AUTO_TEST_CASE(LegacyArchiveEntriesMigrateToTheBoundLayout)
     putU64(state, 1);                 // one archived generation, pre-CS6 layout
     putU64(state, 1002);
     putU64(state, 3);
-    putString(state, std::string("legacy-params", 13));
-    putString(state, std::string("legacy-secret", 13));
-    putString(state, "sha256:" + std::string(64, 'a'));
+    putString(state, parameters);
+    putString(state, secret);
+    putString(state, "sha256:" + oldDigest.toString());
     putString(state, "rotation");
-  }
-  {
-    std::ofstream lock(lockPath);
-    lock << "lock";
   }
   std::filesystem::permissions(statePath, std::filesystem::perms::owner_read |
                                            std::filesystem::perms::owner_write);
   ControllerGenerationStore store(statePath);
+  BOOST_REQUIRE(store.acquireWriter(owner));
   // The store needs its owner identity to derive the name the generation published under.
   const auto history = store.loadAbeHistory();
   BOOST_REQUIRE_EQUAL(history.size(), 1u);
   BOOST_CHECK_EQUAL(history.front().publicParameters, std::string("legacy-params", 13));
   BOOST_CHECK_EQUAL(history.front().masterSecret, std::string("legacy-secret", 13));
   BOOST_CHECK_EQUAL(history.front().publicParametersWireDigest.size(), 71u);
+  ndn::Name original(owner);
+  original.append("PUBPARAMS").append("KP-ABE").appendVersion(1002003);
+  BOOST_CHECK_EQUAL(ndn::Name(history.front().publicParametersName), original);
+  // Change the archived bytes without changing the original writer's digest.
+  {
+    std::fstream state(statePath, std::ios::in | std::ios::out | std::ios::binary);
+    const std::string before{std::istreambuf_iterator<char>(state), {}};
+    const auto at = before.find(secret);
+    BOOST_REQUIRE(at != std::string::npos);
+    state.seekp(static_cast<std::streamoff>(at));
+    state.put('X');
+  }
+  BOOST_CHECK_THROW(store.loadAbeHistory(), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(IntermediateArchiveLayoutStaysReadable)
@@ -1155,6 +1549,29 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersOnceForTheNamedCertificateAndTheKeyWorks)
                            ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
                                                       userCert.getName()));
   BOOST_CHECK(!broker.answer(strangerInterest, controllerIdentity, 1'000'000));
+
+  const auto signingCert = requester.createKey(requester.getPib().getIdentity(requesterIdentity),
+    ndn::EcKeyParams()).getDefaultCertificate();
+  const auto& signingWire = signingCert.wireEncode();
+  ndn::util::Sha256 digest;
+  digest << ndn::span<const uint8_t>(signingWire.data(), signingWire.size());
+  const auto signerDigest = "sha256:" + digest.toString();
+  broker.setAuthorizationCheck([&] (const ndn::Name& identity, uint64_t, uint64_t,
+                                     const std::string&, const std::string& actualSignerDigest) {
+    return identity == requesterIdentity && actualSignerDigest == signerDigest;
+  });
+  auto split = request;
+  split.recipientCertificate = userCert.getFullName();
+  ndn::Interest splitInterest;
+  signHistoricalKeyRequest(splitInterest, split, requester,
+                           ndn::security::signingByCertificate(signingCert));
+  BOOST_CHECK(!broker.answerValidated(splitInterest, controllerIdentity, 1'000'000,
+                                     signingCert, &controllerCert));
+  const auto splitReply = broker.answerValidated(splitInterest, controllerIdentity, 1'000'000,
+                                                 signingCert, &userCert);
+  BOOST_REQUIRE(splitReply);
+  BOOST_REQUIRE(verifyHistoricalKeyReply(*splitReply, split, 1'000'000, accepted));
+  BOOST_CHECK(unsealHistoricalKeyReply(accepted, requester.getTpm(), userCert.getName(), opened));
 }
 
 BOOST_AUTO_TEST_CASE(SignedHistoricalKeyRequestCoversNameAndBody)
@@ -1212,6 +1629,7 @@ BOOST_AUTO_TEST_CASE(AttributeSnapshotsRoundTripPerGeneration)
   auto bootstrap = ControllerGenerationStore::openDefault("/controller/a", files.legacy);
   BOOST_REQUIRE(bootstrap);
   const auto path = bootstrap->statePath();
+  bootstrap->releaseWriter();
   ControllerGenerationStore store(path);
 
   const std::map<std::string, std::set<std::string>> first{
@@ -1271,15 +1689,23 @@ BOOST_AUTO_TEST_CASE(HistoricalCkNameMustBindTheAskedAttribute)
   BOOST_CHECK(!historicalCkBindsAttribute(ndn::Name("/producer/p1/KEY/other"), producer, service,
                                           attribute));
   BOOST_CHECK(!historicalCkBindsAttribute(ndn::Name(), producer, service, attribute));
+
+  auto unrelatedName = makeProducerDataPrefix(producer, "OBJECT");
+  unrelatedName.append("SERVICE").append(scope);
+  BOOST_CHECK(!historicalCkBindsAttribute(unrelatedName, producer, service, attribute));
+  auto extraSuffix = ckName;
+  extraSuffix.append("not-a-ck-component");
+  BOOST_CHECK(!historicalCkBindsAttribute(extraSuffix, producer, service, attribute));
 }
 
 BOOST_AUTO_TEST_CASE(ControllerStateSealsArchivedMasterSecrets)
 {
   DefaultGenerationFiles files;
-  auto bootstrap = ControllerGenerationStore::openDefault("/controller/a", files.legacy);
+  const std::vector<uint8_t> key(32, 0x11);
+  auto bootstrap = ControllerGenerationStore::openDefault("/controller/a", files.legacy, key,
+                                                          "test-key");
   BOOST_REQUIRE(bootstrap);
   const auto path = bootstrap->statePath();
-  bootstrap->releaseWriter();
 
   ControllerGenerationStore::AbeHistoryEntry archived;
   archived.generationTimestamp = 1002;
@@ -1290,13 +1716,9 @@ BOOST_AUTO_TEST_CASE(ControllerStateSealsArchivedMasterSecrets)
   archived.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
   archived.reason = "rotation";
 
-  {
-    ControllerGenerationStore store(path);
-    BOOST_REQUIRE(store.acquireWriter("/controller/a"));
-    store.startGeneration(1000);
-    store.setSecretSeal(std::vector<uint8_t>(32, 0x11), "test-key");
-    store.recordAbeHistory(archived);
-  }
+  bootstrap->startGeneration(1000);
+  bootstrap->recordAbeHistory(archived);
+  bootstrap.reset();
   std::string bytes;
   {
     std::ifstream input(path, std::ios::binary);
@@ -1307,21 +1729,100 @@ BOOST_AUTO_TEST_CASE(ControllerStateSealsArchivedMasterSecrets)
 
   // The same key reads it back; without the key the store refuses instead of returning ciphertext.
   {
-    ControllerGenerationStore store(path);
-    store.setSecretSeal(std::vector<uint8_t>(32, 0x11), "test-key");
-    const auto history = store.loadAbeHistory();
+    auto store = ControllerGenerationStore::openDefault("/controller/a", files.legacy, key,
+                                                        "test-key");
+    BOOST_CHECK(store->ownsWriter());
+    const auto history = store->loadAbeHistory();
     BOOST_REQUIRE_EQUAL(history.size(), 1u);
     BOOST_CHECK_EQUAL(history.front().masterSecret, archived.masterSecret);
   }
   {
-    ControllerGenerationStore store(path);
-    BOOST_CHECK_THROW(store.loadAbeHistory(), std::runtime_error);
+    BOOST_CHECK_THROW(ControllerGenerationStore::openDefault("/controller/a", files.legacy),
+                      std::runtime_error);
   }
   {
-    ControllerGenerationStore store(path);
-    store.setSecretSeal(std::vector<uint8_t>(32, 0x22), "other-key");
-    BOOST_CHECK_THROW(store.loadAbeHistory(), std::runtime_error);
+    BOOST_CHECK_THROW(ControllerGenerationStore::openDefault(
+      "/controller/a", files.legacy, std::vector<uint8_t>(32, 0x22), "test-key"),
+      std::runtime_error);
   }
+}
+
+BOOST_AUTO_TEST_CASE(HistoricalArchiveOpensOnlyTheRequestedMasterSecret)
+{
+  DefaultGenerationFiles files;
+  const std::string owner = "/controller/archive-view";
+  const std::string keyId = "archive-view";
+  const std::vector<uint8_t> key(32, 0x5a);
+  ControllerGenerationStore store(files.legacy);
+  store.setSecretSeal(key, keyId, true);
+  BOOST_REQUIRE(store.acquireWriter(owner));
+  store.startGeneration(1000);
+
+  ControllerGenerationStore::AbeHistoryEntry entry;
+  entry.generationTimestamp = 1002;
+  entry.epoch = 1;
+  entry.publicParameters = "first-public-parameters";
+  entry.masterSecret = "first-private-master";
+  entry.publicParametersName = owner + "/PUBPARAMS/KP-ABE/v=1002";
+  entry.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
+  entry.reason = "rotation";
+  store.recordAbeHistory(entry);
+  entry.generationTimestamp = 1003;
+  entry.publicParameters = "second-public-parameters";
+  entry.masterSecret = "second-private-master";
+  entry.publicParametersName = owner + "/PUBPARAMS/KP-ABE/v=1003";
+  store.recordAbeHistory(entry);
+
+  // Break the first field's AEAD, preserving the authenticated outer container in the fixture.
+  // A reader that attempts to decode all secrets before selecting one will fail here.
+  std::fstream state(files.legacy, std::ios::in | std::ios::out | std::ios::binary);
+  std::string bytes((std::istreambuf_iterator<char>(state)), std::istreambuf_iterator<char>());
+  const std::string marker = "ndnsf-sealed-1:";
+  const auto sealed = bytes.find(marker);
+  BOOST_REQUIRE(sealed != std::string::npos);
+  BOOST_REQUIRE(bytes.size() > sealed + marker.size() + 32);
+  auto& firstCipherByte = bytes[sealed + marker.size()];
+  firstCipherByte = firstCipherByte == 'A' ? 'B' : 'A';
+  const auto write = [&] {
+    state.seekp(0);
+    state.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    state.flush();
+    BOOST_REQUIRE(state.good());
+  };
+  write();
+  BOOST_CHECK_THROW(store.loadAbePublicHistory(), std::runtime_error);
+  BOOST_CHECK_THROW(store.loadAbeHistoryEntry({1003, 1}), std::runtime_error);
+
+  constexpr size_t magicSize = 8;
+  std::array<unsigned char, 32> macKey{};
+  std::array<unsigned char, 32> mac{};
+  const auto context = "ndnsf/controller/state-v9/" + std::to_string(owner.size()) +
+                       "/" + owner + "/" + keyId;
+  BOOST_REQUIRE_EQUAL(bytes.substr(0, magicSize), "NDNSFCS9");
+  BOOST_REQUIRE(HMAC(EVP_sha256(), key.data(), key.size(),
+                     reinterpret_cast<const unsigned char*>(context.data()), context.size(),
+                     macKey.data(), nullptr));
+  BOOST_REQUIRE(HMAC(EVP_sha256(), macKey.data(), macKey.size(),
+                     reinterpret_cast<const unsigned char*>(bytes.data() + magicSize),
+                     bytes.size() - magicSize - mac.size(), mac.data(), nullptr));
+  bytes.replace(bytes.size() - mac.size(), mac.size(),
+                reinterpret_cast<const char*>(mac.data()), mac.size());
+  write();
+  state.close();
+
+  const auto publicHistory = store.loadAbePublicHistory();
+  BOOST_REQUIRE_EQUAL(publicHistory.size(), 2);
+  for (const auto& archived : publicHistory)
+    BOOST_CHECK(archived.masterSecret.empty());
+  BOOST_CHECK_EQUAL(publicHistory.front().publicParameters, "first-public-parameters");
+  const auto selected = store.loadAbeHistoryEntry({1003, 1});
+  BOOST_REQUIRE(selected);
+  BOOST_CHECK_EQUAL(selected->masterSecret, "second-private-master");
+  BOOST_CHECK(!store.loadAbeHistoryEntry({1004, 1}));
+  BOOST_CHECK_THROW(store.loadAbeHistoryEntry({1002, 1}), std::runtime_error);
+  BOOST_CHECK_THROW(store.loadAbeHistory(), std::runtime_error);
+  store.releaseWriter();
+  BOOST_CHECK_THROW(store.loadAbeHistoryEntry({1003, 1}), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(SealedFieldsRoundTripAndRefuseTampering)
@@ -1446,8 +1947,16 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyRequestEvidenceIsTamperEvident)
   // Re-decoding what was encoded has to give back the same name, or a legitimate request could not be matched either.
   HistoricalKeyRequest decoded;
   BOOST_REQUIRE(decodeHistoricalKeyRequest(encodeHistoricalKeyRequest(request), decoded));
-  BOOST_CHECK(decoded.ckEvidence == request.ckEvidence);
+  BOOST_CHECK(decoded == request);
+  BOOST_CHECK(!(swapped == request));
   BOOST_CHECK_EQUAL(makeHistoricalKeyRequestName(prefix, decoded), withEvidence);
+
+  auto overflowingGeneration = encodeHistoricalKeyRequest(request);
+  const auto generationOffset = overflowingGeneration.find("generation 1002");
+  BOOST_REQUIRE(generationOffset != std::string::npos);
+  overflowingGeneration.replace(generationOffset, sizeof("generation 1002") - 1,
+                                "generation 18446744073709551616");
+  BOOST_CHECK(!decodeHistoricalKeyRequest(overflowingGeneration, decoded));
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalReadClientDiscoversParametersThroughTheIndex)
@@ -1515,46 +2024,95 @@ BOOST_AUTO_TEST_CASE(HistoricalReadClientFetchesVerifiesUnsealsAndDecrypts)
   const std::string publicParameters(reinterpret_cast<const char*>(paramsWire.data()),
                                      paramsWire.size());
 
-  // A real protected object: the content key and the payload, as a Producer would publish them.
-  const auto contentKey = abe.kpContentKeyGen(params, {"/PERMISSION/A"});
-  const ndn::Buffer plaintext{1, 2, 3};
-  const auto cipher = abe.encrypt(contentKey, plaintext);
-  const std::string ckWrapped(reinterpret_cast<const char*>(contentKey->m_encAesKey.data()),
-                              contentKey->m_encAesKey.size());
-  const std::string content(cipher.m_content.begin(), cipher.m_content.end());
+  const ndn::Name producerName("/producer/p1");
+  const ndn::Name serviceName("/service/inference");
+  const ndn::Name payloadName("/producer/p1/payload");
+  const auto ckName = makeHistoricalCkName(producerName, serviceName, "/PERMISSION/A");
+  const auto producer = keys.keyChain.createIdentity(producerName, ndn::RsaKeyParams());
+  const auto producerCert = producer.getDefaultKey().getDefaultCertificate();
+  const auto controller = keys.keyChain.createIdentity(ndn::Name("/controller/a"), ndn::RsaKeyParams());
+  const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
+  const auto signing = ndn::security::signingByCertificate(producerCert);
 
-  // Serve what the client will fetch through a dummy face.
+  const auto contentKey = abe.kpContentKeyGen(params, {"/PERMISSION/A"});
+  const ndn::Buffer plaintext(513, 0x5a);
+  const auto cipher = abe.encrypt(contentKey, plaintext);
+  const auto ckContent = contentKey->makeCKContent();
+  ndn::Data ck(ckName);
+  ck.setContent(ndn::Buffer(ckContent.begin(), ckContent.end()));
+  keys.keyChain.sign(ck, signing);
+
+  auto payload = cipher.makeDataContent();
+  payload.push_back(ckName.wireEncode());
+  payload.encode();
+  ndn::Segmenter segmenter(keys.keyChain, signing);
+  const auto segments = segmenter.segment(
+    ndn::span<const uint8_t>(payload.data(), payload.size()), payloadName, 256,
+    ndn::time::milliseconds(0));
+  BOOST_REQUIRE_GT(segments.size(), 1U);
+
+  ndn::util::Sha256 objectDigest;
+  for (const auto& packet : segments) {
+    const auto& wire = packet->wireEncode();
+    objectDigest << ndn::span<const uint8_t>(wire.data(), wire.size());
+  }
+  const ndn::Name publicParametersName("/controller/a/PUBPARAMS/KP-ABE/v=1002003");
+  HistoricalPublication mapping{
+    controllerCert.getIdentity(), producerName, serviceName, payloadName, ck.getFullName(),
+    publicParametersName, 1002, 3, 1007, 8, segments.size(), "/PERMISSION/A",
+    "sha256:" + ndn::toHex(*objectDigest.computeDigest(), false),
+    "sha256:" + digestHexOf(publicParameters)};
+  auto proof = makeHistoricalPublicationData(mapping, keys.keyChain, signing);
+  BOOST_REQUIRE(decodeHistoricalPublication(proof));
+  auto renamedProof = proof;
+  renamedProof.setName(ndn::Name(proof.getName()).append("alias"));
+  BOOST_CHECK(!decodeHistoricalPublication(renamedProof));
+
+  bool inconsistentFinalBlock = true;
+  bool substitutePayload = false;
+  bool substituteCk = false;
   auto face = std::make_shared<ndn::DummyClientFace>(ndn::DummyClientFace::Options{});
-  face->setInterestFilter(ndn::Name("/producer/p1"),
-    [face, ckWrapped, content, &keys] (const ndn::InterestFilter&, const ndn::Interest& interest) {
-      const auto name = interest.getName();
-      ndn::Data data(name);
-      if (name.toUri().find("/KEY/") != std::string::npos) {
-        // CK envelope: outer TLV 0x15 with field 0x0259 holding the wrapped key.
-        const auto wrappedSpan = ndn::span<const uint8_t>(
-          reinterpret_cast<const uint8_t*>(ckWrapped.data()), ckWrapped.size());
-        ndn::Block outer(0x15);
-        outer.push_back(ndn::encoding::makeBinaryBlock(0x0259, wrappedSpan));
-        outer.encode();
-        data.setContent(ndn::Buffer(outer.begin(), outer.end()));
+  face->setInterestFilter(producerName,
+    [face, &keys, &ck, &segments, &inconsistentFinalBlock, &signing, &proof,
+     &substitutePayload, &substituteCk]
+    (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      if (interest.getName() == proof.getName()) {
+        face->put(proof);
+        return;
       }
-      else {
-        const auto contentSpan = ndn::span<const uint8_t>(
-          reinterpret_cast<const uint8_t*>(content.data()), content.size());
-        const uint8_t sizeByte = 3;
-        ndn::Block outer(0x15);
-        outer.push_back(ndn::encoding::makeBinaryBlock(0x025A, contentSpan));
-        outer.push_back(ndn::encoding::makeBinaryBlock(0x025B, ndn::span<const uint8_t>(&sizeByte, 1)));
-        outer.encode();
-        data.setContent(ndn::Buffer(outer.begin(), outer.end()));
+      if (interest.getName() == ck.getName()) {
+        auto packet = ck;
+        if (substituteCk) {
+          packet.setFreshnessPeriod(ndn::time::milliseconds(1));
+          keys.keyChain.sign(packet, signing);
+        }
+        face->put(packet);
+        return;
       }
-      keys.keyChain.sign(data, ndn::security::signingByCertificate(keys.certificate));
-      face->put(data);
+      for (const auto& packet : segments) {
+        if (interest.getName() != packet->getName())
+          continue;
+        if ((inconsistentFinalBlock || substitutePayload) &&
+            packet->getName()[-1].toSegment() == 1) {
+          ndn::Data changed(*packet);
+          if (inconsistentFinalBlock)
+            changed.setFinalBlock(segments.front()->getName()[-1]);
+          else
+            changed.setFreshnessPeriod(ndn::time::milliseconds(1));
+          keys.keyChain.sign(changed, signing);
+          face->put(changed);
+        }
+        else {
+          face->put(*packet);
+        }
+        return;
+      }
     });
   // The Controller answers the historical key request from the archived material.
   HistoricalKeyBroker::Material material;
   material.publicParameters = publicParameters;
   material.masterSecret = master.m_msk;
+  material.publicParametersName = publicParametersName;
   HistoricalKeyBroker broker(
     [&keys] (const ndn::Name& name, ndn::security::Certificate& out) {
       if (name != keys.certificate.getName())
@@ -1568,67 +2126,342 @@ BOOST_AUTO_TEST_CASE(HistoricalReadClientFetchesVerifiesUnsealsAndDecrypts)
       out = material;
       return true;
     },
-    [&keys] (ndn::Data& data) {
-      keys.keyChain.sign(data, ndn::security::signingByCertificate(keys.certificate));
+    [&keys, &controllerCert] (ndn::Data& data) {
+      keys.keyChain.sign(data, ndn::security::signingByCertificate(controllerCert));
     });
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&, const std::string&) {
-    return true;
-  });
+  broker.setAuthorizationCheck(
+    [] (const ndn::Name&, uint64_t generation, uint64_t epoch, const std::string&,
+        const std::string&) { return generation == 1007 && epoch == 8; });
+  ControllerGenerationStore::AbeHistoryEntry archived;
+  archived.generationTimestamp = mapping.generation;
+  archived.epoch = mapping.epoch;
+  archived.publicParameters = publicParameters;
+  archived.publicParametersName = publicParametersName.toUri();
+  archived.publicParametersWireDigest = mapping.publicParametersDigest;
+  const auto signArchive = [&] (ndn::Data& data) {
+    keys.keyChain.sign(data, ndn::security::signingByCertificate(controllerCert));
+  };
+  ControllerVersion currentVersion{1009, 1};
+  ndn::Data archiveProof;
+  BOOST_REQUIRE(buildHistoricalPublicParametersData(archived, controllerCert.getIdentity(),
+    signArchive, archiveProof, currentVersion.controllerGenerationTimestamp));
+  archived.publicParametersName = ndn::Name(publicParametersName).append("wrong").toUri();
+  ndn::Data wrongArchiveProof;
+  BOOST_REQUIRE(buildHistoricalPublicParametersData(archived, controllerCert.getIdentity(),
+    signArchive, wrongArchiveProof, currentVersion.controllerGenerationTimestamp));
+  BOOST_REQUIRE(archiveProof.getName() == wrongArchiveProof.getName());
+  bool substituteArchive = false;
+  bool expireDuringArchive = false;
+  std::shared_ptr<ndn::time::UnitTestSystemClock> expireAtConfirmation;
+  std::size_t archiveRequests = 0;
+  const auto serveArchive = [&] (ndn::Face& replyFace, const ndn::Interest& interest) {
+    BOOST_CHECK(interest.getName() == archiveProof.getName());
+    BOOST_CHECK(!interest.getCanBePrefix());
+    if (interest.getName() == archiveProof.getName()) {
+      ++archiveRequests;
+      if (expireDuringArchive)
+        expireAtConfirmation->advance(ndn::time::milliseconds(5001));
+      replyFace.put(substituteArchive ? wrongArchiveProof : archiveProof);
+    }
+  };
+  const auto archivePrefix = archiveProof.getName().getPrefix(controllerCert.getIdentity().size() + 3);
+  auto archiveFilter = face->setInterestFilter(archivePrefix,
+    [&] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      serveArchive(*face, interest);
+    });
   ndn::Name dkeyPrefix("/controller/a/NDNSF/HISTORY/DKEY");
-  face->setInterestFilter(dkeyPrefix,
-    [face, &broker] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+  ndn::Name policyPrefix("/controller/a/NDNSF/RPC/POLICY-STATUS");
+  bool rotateAfterIssue = false;
+  bool issuedForExpiryTest = false;
+  bool confirmedAfterExpiry = false;
+  std::size_t policyRequests = 0;
+  const auto servePolicy = [&] (ndn::Face& replyFace, const ndn::Interest& interest) {
+    ++policyRequests;
+    if (expireAtConfirmation && issuedForExpiryTest) {
+      expireAtConfirmation->advance(ndn::time::milliseconds(5001));
+      confirmedAfterExpiry = true;
+    }
+    const auto now = ndn::time::duration_cast<ndn::time::milliseconds>(
+      ndn::time::system_clock::now().time_since_epoch()).count();
+    PolicyStatusData status;
+    status.setServiceName(serviceName);
+    status.setControllerVersion(currentVersion);
+    status.setControllerCertificate(controllerCert.getName());
+    status.setPolicyDigest("sha256:" + std::string(64, 'a'));
+    status.setValidity(now, now + 5000);
+    ndn::Data reply(interest.getName());
+    reply.setContent(status.wireEncode());
+    keys.keyChain.sign(reply, ndn::security::signingByCertificate(controllerCert));
+    replyFace.put(reply);
+  };
+  auto policyFilter = face->setInterestFilter(policyPrefix,
+    [&] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      servePolicy(*face, interest);
+    });
+  unsigned keyRequests = 0;
+  std::string keyRefusal;
+  bool invalidDenialSigner = false;
+  bool dropKey = false;
+  const auto serveKey = [&] (ndn::Face& replyFace, const ndn::Interest& interest) {
+      ++keyRequests;
+      if (dropKey)
+        return;
+      if (!keyRefusal.empty()) {
+        ndn::Data denial(interest.getName());
+        denial.setContent("NDNSF-HISTORICAL-DKEY-DENIED-v1\n" + keyRefusal + "\n");
+        keys.keyChain.sign(denial, ndn::security::signingByCertificate(
+          invalidDenialSigner ? producerCert : controllerCert));
+        replyFace.put(denial);
+        return;
+      }
       // The client mints its request from the real clock, so the responder must judge it the same way.
       const auto now = static_cast<uint64_t>(ndn::time::duration_cast<ndn::time::milliseconds>(
         ndn::time::system_clock::now().time_since_epoch()).count());
       const auto reply = broker.answer(interest, ndn::Name("/controller/a"), now);
-      if (reply)
-        face->put(*reply);
+      if (reply) {
+        replyFace.put(*reply);
+        issuedForExpiryTest = expireAtConfirmation != nullptr;
+        if (rotateAfterIssue)
+          ++currentVersion.controllerEpoch;
+      }
+  };
+  face->setInterestFilter(dkeyPrefix,
+    [&face, &serveKey] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      serveKey(*face, interest);
     });
 
   HistoricalReadRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
   request.generation = 1002;
   request.epoch = 3;
-  request.objectName = ndn::Name("/object/protected");
-  request.producerName = ndn::Name("/producer/p1");
-  request.serviceName = ndn::Name("/service/inference");
-  request.ckName = makeHistoricalCkName(request.producerName, request.serviceName,
-                                        "/PERMISSION/A");
-  request.payloadName = ndn::Name("/producer/p1/payload");
+  request.objectName = payloadName;
+  request.producerName = producerName;
+  request.serviceName = serviceName;
+  request.ckName = ckName;
+  request.payloadName = payloadName;
+  request.publicationName = proof.getName();
   request.policy = "/PERMISSION/A";
   request.recipientCertificate = keys.certificate;
-  request.producerCertificate = keys.certificate;
-  request.controllerCertificate = keys.certificate;
-  request.publicParameters = publicParameters;
+  request.producerCertificate = producerCert;
+  request.controllerCertificate = controllerCert;
   request.fetchTimeoutMs = 1000;
 
+  substituteArchive = true;
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request));
+  BOOST_CHECK_EQUAL(archiveRequests, 1U);
+  BOOST_CHECK_EQUAL(keyRequests, 0U);
+  substituteArchive = false;
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request));
+  BOOST_CHECK_EQUAL(keyRequests, 0U);
+  inconsistentFinalBlock = false;
+  substitutePayload = true;
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request));
+  BOOST_CHECK_EQUAL(keyRequests, 0U);
+  substitutePayload = false;
+  substituteCk = true;
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request));
+  BOOST_CHECK_EQUAL(keyRequests, 0U);
+  substituteCk = false;
+  auto limited = request;
+  limited.maxPayloadBytes = 1;
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, limited));
+  BOOST_CHECK_EQUAL(keyRequests, 0U);
+  limited = request;
+  limited.totalTimeoutMs = 0;
+  const auto sentBefore = face->sentInterests.size();
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, limited));
+  BOOST_CHECK_EQUAL(face->sentInterests.size(), sentBefore);
+  BOOST_CHECK_EQUAL(keyRequests, 0U);
+  rotateAfterIssue = true;
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request));
+  BOOST_CHECK_EQUAL(keyRequests, 1U);
+  rotateAfterIssue = false;
+  const auto beforePositivePolicy = policyRequests;
   const auto read = readHistoricalObject(*face, keys.keyChain, request);
   BOOST_REQUIRE(read);
+  BOOST_CHECK_EQUAL(policyRequests - beforePositivePolicy, 2U);
+  BOOST_CHECK_GT(archiveRequests, 1U);
   BOOST_CHECK_EQUAL(read->size(), plaintext.size());
   BOOST_CHECK(std::equal(read->begin(), read->end(), plaintext.begin()));
+
+#ifdef NDNSF_TEST_REPO_REOPEN
+  // Commit and close the writer before creating a fresh Repo and requester Face.
+  // The reopened Repo can only serve committed originals admitted by its catalog.
+  namespace repo = ndnsf_distributed_repo;
+  const ndn::Name repoRoute("/repo/provider");
+  const auto openRepo = [&] {
+    repo::StorageCapability capability;
+    capability.repoNode = "/repo/a";
+    capability.repoMode = "persistent";
+    capability.freeBytes = 4U << 20;
+    return std::make_shared<repo::RepoNode>(ndn::Name("/SERVICE/repo"), capability,
+      std::make_shared<repo::FilesystemRepoStoreBackend>((files.root / "objects").string(),
+        capability.freeBytes, 1024, "historical-read",
+        repo::FilesystemRecoveryPolicy::KEEP_UNCONFIRMED),
+      capability.repoNode, repoRoute.toUri(), (files.root / "catalog.sqlite3").string());
+  };
+  repo::RepoUserStorageInsertRequest insert;
+  insert.operationId = "historical-publication";
+  insert.generation = 1;
+  auto& reference = insert.reference;
+  reference.objectName = proof.getName().toUri();
+  reference.dataPrefix = producerName.toUri();
+  auto& index = reference.packetSetMetadata.emplace();
+  index.objectName = reference.objectName;
+  index.objectType = "original-packet-set";
+  std::vector<std::vector<uint8_t>> originals;
+  ndn::util::Sha256 packetSetDigest;
+  const auto append = [&] (const ndn::Data& original) {
+    index.packetNames.push_back(original.getName().toUri());
+    const auto& wire = original.wireEncode();
+    originals.emplace_back(wire.begin(), wire.end());
+    packetSetDigest << ndn::span<const uint8_t>(wire.data(), wire.size());
+    index.size += wire.size();
+  };
+  append(proof);
+  append(ck);
+  for (const auto& segment : segments)
+    append(*segment);
+  reference.expectedSha256 = index.sha256 = ndn::toHex(*packetSetDigest.computeDigest(), false);
+  reference.expectedSize = index.size;
+  {
+    auto writer = openRepo();
+    const auto until = ndn::time::duration_cast<ndn::time::milliseconds>(
+      ndn::time::system_clock::now().time_since_epoch()).count() + 60000;
+    const repo::RepoUserStorageGrantRequest grant{1, "historical-test-grant",
+      producerName.toUri(), reference.objectName, static_cast<uint64_t>(until)};
+    const auto body = grant.toJson();
+    const auto response = writer->handleUserStorageGrant({body.begin(), body.end()},
+      keys.certificate.getIdentity().toUri());
+    const auto granted = repo::RepoUserStorageGrantReply::fromJson({response.begin(), response.end()});
+    insert.storageBinding = {1, keys.certificate.getIdentity().toUri(),
+      grant.grantId, granted.grant.ownerEpoch};
+    const auto status = writer->insertWirePackets(insert, originals, producerName.toUri());
+    BOOST_REQUIRE_MESSAGE(status.state == "DONE", status.message);
+  }
+
+  boost::asio::io_context network;
+  ndn::DummyClientFace coldReader(network);
+  ndn::DummyClientFace repoFace(network, ndn::DummyClientFace::Options{true, true});
+  ndn::DummyClientFace controllerFace(network);
+  auto restarted = openRepo();
+  restarted->registerOriginalDataServing(repoFace);
+  const auto readyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!restarted->isOriginalDataServingReady() &&
+         std::chrono::steady_clock::now() < readyDeadline)
+    repoFace.processEvents(ndn::time::milliseconds(10));
+  BOOST_REQUIRE(restarted->isOriginalDataServingReady());
+  coldReader.linkTo(repoFace);
+  coldReader.linkTo(controllerFace);
+  auto coldArchiveFilter = controllerFace.setInterestFilter(archivePrefix,
+    [&] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      serveArchive(controllerFace, interest);
+    });
+  auto coldPolicyFilter = controllerFace.setInterestFilter(policyPrefix,
+    [&] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      servePolicy(controllerFace, interest);
+    });
+  auto keyFilter = controllerFace.setInterestFilter(dkeyPrefix,
+    [&] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      BOOST_CHECK(interest.getForwardingHint().empty());
+      serveKey(controllerFace, interest);
+    });
+  std::size_t routed = 0;
+  auto routeCheck = coldReader.onSendInterest.connect([&] (const ndn::Interest& interest) {
+    if (producerName.isPrefixOf(interest.getName())) {
+      BOOST_CHECK(!interest.getCanBePrefix());
+      BOOST_REQUIRE_EQUAL(interest.getForwardingHint().size(), 1U);
+      BOOST_CHECK_EQUAL(interest.getForwardingHint().front(), repoRoute);
+      ++routed;
+    }
+  });
+  request.originalDataForwardingHint = repoRoute;
+  const auto beforeColdPolicy = policyRequests;
+  const auto reopenedRead = readHistoricalObject(coldReader, keys.keyChain, request);
+  BOOST_REQUIRE(reopenedRead);
+  BOOST_CHECK_EQUAL(policyRequests - beforeColdPolicy, 2U);
+  BOOST_CHECK_EQUAL(*reopenedRead, *read);
+  BOOST_CHECK_EQUAL(routed, originals.size());
+  BOOST_REQUIRE_EQUAL(repoFace.sentData.size(), originals.size());
+  for (size_t i = 0; i < originals.size(); ++i) {
+    const auto& wire = repoFace.sentData[i].wireEncode();
+    BOOST_CHECK_EQUAL_COLLECTIONS(wire.begin(), wire.end(), originals[i].begin(), originals[i].end());
+  }
+#endif
+  HistoricalReadFailure failure;
+  keyRefusal = "publication-receipt-required";
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request, failure));
+  BOOST_CHECK(failure == HistoricalReadFailure::EVIDENCE_REQUIRED);
+  invalidDenialSigner = true;
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request, failure));
+  BOOST_CHECK(failure == HistoricalReadFailure::KEY_REPLY_INVALID);
+  invalidDenialSigner = false;
+  keyRefusal = "not-authorised";
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request, failure));
+  BOOST_CHECK(failure == HistoricalReadFailure::NOT_AUTHORIZED);
+  keyRefusal = "key-unavailable";
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request, failure));
+  BOOST_CHECK(failure == HistoricalReadFailure::KEY_UNAVAILABLE);
+  keyRefusal.clear();
+  auto shortRead = request;
+  shortRead.totalTimeoutMs = 1000;
+  dropKey = true;
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, shortRead, failure));
+  BOOST_CHECK(failure == HistoricalReadFailure::KEY_TIMEOUT);
+  dropKey = false;
+  // A signed current status can outlive the earlier, request-bound reply.
+  // Advancing only the wall clock leaves the operation's steady timeout open.
+  const auto resetClock = ndn::make_scope_exit([] { ndn::time::setCustomClocks(); });
+  expireAtConfirmation = std::make_shared<ndn::time::UnitTestSystemClock>();
+  const auto clockOrigin = ndn::time::system_clock::now().time_since_epoch();
+  expireAtConfirmation->setNow(clockOrigin + ndn::time::milliseconds(1));
+  ndn::time::setCustomClocks(nullptr, expireAtConfirmation);
+  expireDuringArchive = true;
+  const auto beforeExpiryKeys = keyRequests;
+  const auto beforeExpiryPolicy = policyRequests;
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request));
+  BOOST_CHECK_EQUAL(keyRequests, beforeExpiryKeys);
+  BOOST_CHECK_EQUAL(policyRequests - beforeExpiryPolicy, 1U);
+  expireDuringArchive = false;
+  expireAtConfirmation->setNow(clockOrigin + ndn::time::milliseconds(2));
+  BOOST_CHECK(!readHistoricalObject(*face, keys.keyChain, request));
+  BOOST_CHECK(issuedForExpiryTest);
+  BOOST_CHECK(confirmedAfterExpiry);
 }
 
-BOOST_AUTO_TEST_CASE(GrantRecordCoversOnlyTheServiceItLists)
+BOOST_AUTO_TEST_CASE(GrantRecordBindsIdentityVersionAndService)
 {
+  const ndn::Name identity("/user/reader");
   const std::string record =
-    "NDNSF-GRANT-v1\n"
-    "identity /user/reader\n"
-    "generation 1000\n"
-    "epoch 1\n"
+    "NDNSF-GRANT-v1\nidentity " + identity.toUri(ndn::name::UriFormat::CANONICAL) + "\n"
+    "generation 1000\nepoch 1\n"
     "granted /Spec225/DI/Infer\n"
     "granted /HELLO\n";
-  BOOST_CHECK(historicalGrantRecordCoversPolicy(record, "/PERMISSION/Spec225/DI/Infer"));
-  BOOST_CHECK(historicalGrantRecordCoversPolicy(record, "/PERMISSION/HELLO"));
+  BOOST_CHECK(historicalGrantRecordCoversPolicy(record, identity, 1000, 1,
+                                               "/PERMISSION/Spec225/DI/Infer"));
+  BOOST_CHECK(historicalGrantRecordCoversPolicy(record, identity, 1000, 1, "/PERMISSION/HELLO"));
+  BOOST_CHECK(historicalGrantRecordCoversPolicy(record, identity, 1000, 1, "/PERMISSION/8=HELLO"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, identity, 1000, 1, "/PERMISSION/32=HELLO"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, ndn::Name("/user/other"), 1000, 1,
+                                                "/PERMISSION/HELLO"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, identity, 1001, 1, "/PERMISSION/HELLO"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, identity, 1000, 2, "/PERMISSION/HELLO"));
   // A service the record does not list is not granted, whatever else it contains.
-  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, "/PERMISSION/Other"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, identity, 1000, 1, "/PERMISSION/Other"));
   // A record without its schema line proves nothing.
   const std::string noSchema =
     "identity /user/reader\ngeneration 1000\nepoch 1\ngranted /HELLO\n";
-  BOOST_CHECK(!historicalGrantRecordCoversPolicy(noSchema, "/PERMISSION/HELLO"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(noSchema, identity, 1000, 1, "/PERMISSION/HELLO"));
   // Only a plain permission attribute names a service.
-  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, "/SERVICE/HELLO"));
-  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, "/PERMISSION/"));
-  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, "HELLO"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, identity, 1000, 1, "/SERVICE/HELLO"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, identity, 1000, 1, "/PERMISSION/"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, identity, 1000, 1, "HELLO"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record + "unexpected\n", identity, 1000, 1,
+                                                "/PERMISSION/HELLO"));
+  BOOST_CHECK(historicalGrantRecordCoversPolicy(record + "granted /HELLO\n", identity, 1000, 1,
+                                               "/PERMISSION/HELLO"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record.substr(0, record.size() - 1),
+                                                identity, 1000, 1, "/PERMISSION/HELLO"));
 }
 
 BOOST_AUTO_TEST_CASE(GrantRecordsRoundTripPerIdentityAndVersion)
@@ -1648,6 +2481,44 @@ BOOST_AUTO_TEST_CASE(GrantRecordsRoundTripPerIdentityAndVersion)
   // The record is versioned: another version is a different record, not a fallback to this one.
   BOOST_CHECK(!store->loadGrant(identity, 1000, 2));
   BOOST_CHECK(!store->loadGrant("/user/other", 1000, 1));
+}
+
+BOOST_AUTO_TEST_CASE(HistoricalTerminalRetainsFirstWireAcrossStoreReopen)
+{
+  DefaultGenerationFiles files;
+  const auto state = files.root / "state.bin";
+  const ndn::Name name("/controller/history/dkey/example");
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:", false);
+  const auto cert = keys.createIdentity(ndn::Name("/controller")).getDefaultKey()
+    .getDefaultCertificate();
+  const auto wire = [&](const std::string& value) {
+    ndn::Data data(name);
+    data.setContent(value);
+    keys.sign(data, ndn::security::signingByCertificate(cert));
+    const auto& block = data.wireEncode();
+    return std::string(reinterpret_cast<const char*>(block.data()), block.size());
+  };
+  const auto original = wire("encrypted reply");
+  const auto conflict = wire("changed reply");
+  ControllerVersion version;
+  {
+    ControllerGenerationStore writer(state);
+    BOOST_REQUIRE(writer.acquireWriter("owner"));
+    version = writer.startGeneration(1000);
+    writer.recordHistoricalReply(version, name, original);
+    writer.recordHistoricalReply(version, name, original);
+    BOOST_CHECK_THROW(writer.recordHistoricalReply(version, name, conflict), std::runtime_error);
+  }
+  ControllerGenerationStore reopened(state);
+  BOOST_REQUIRE(reopened.acquireWriter("owner"));
+  const auto found = reopened.loadHistoricalReply(version, name);
+  BOOST_REQUIRE(found);
+  BOOST_CHECK(*found == original);
+  const auto next = reopened.startGeneration(1001);
+  BOOST_CHECK(!reopened.loadHistoricalReply(next, name));
+  const ndn::Name another("/controller/history/dkey/another");
+  BOOST_CHECK_THROW(reopened.recordHistoricalReply(next, another, original),
+                    std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalProofRoundTripsThroughItsEnvelope)
@@ -2723,6 +3594,50 @@ BOOST_AUTO_TEST_CASE(ForwarderDeliversNoKeyToAStrangerOrAnExpiredRequest)
                                                       userCert.getName()));
   expiredInterest.setInterestLifetime(ndn::time::milliseconds(3000));
   BOOST_CHECK(!fetch(expiredInterest));
+}
+
+BOOST_AUTO_TEST_CASE(GrantReceiptBindsPublicationGrantAndRecipient)
+{
+  const auto root = ndn::security::Certificate().getName();   // unused placeholder guard
+  (void)root;
+  DefaultGenerationFiles files;
+  const auto controllerDir = files.root / "grant-receipt-controller";
+  std::filesystem::create_directory(controllerDir);
+  ndn::KeyChain controller("pib-sqlite3:" + controllerDir.string(),
+                           "tpm-file:" + controllerDir.string(), false);
+  const ndn::Name controllerIdentity("/controller/grants");
+  controller.createIdentity(controllerIdentity, ndn::RsaKeyParams());
+  const auto controllerCert = controller.getPib().getIdentity(controllerIdentity).getDefaultKey()
+    .getDefaultCertificate();
+
+  ndn::Name publication("/provider/NDNSF/OBJECT/x");
+  publication.appendImplicitSha256Digest(std::vector<uint8_t>(32, 0xaa));
+  const std::string grantDigest = "sha256:" + std::string(64, 'c');
+  const ndn::Name recipient("/user/reader");
+  const ControllerVersion version{1000, 2};
+
+  const auto receipt = makeHistoricalGrantReceipt(controllerIdentity, publication, grantDigest,
+                                                  recipient, "svc", version, controllerCert,
+                                                  controller);
+  const auto decoded = decodeHistoricalGrantReceipt(receipt, controllerIdentity);
+  BOOST_REQUIRE(decoded);
+  BOOST_CHECK_EQUAL(decoded->publicationFullName, publication);
+  BOOST_CHECK_EQUAL(decoded->grantDigest, grantDigest);
+  BOOST_CHECK_EQUAL(decoded->service, "svc");
+  BOOST_CHECK_EQUAL(decoded->recipient, recipient);
+  BOOST_CHECK(decoded->version == version);
+  BOOST_CHECK(ndn::security::verifySignature(receipt, controllerCert.getPublicKey()));
+
+  // A different grant digest must not decode against the same wire.
+  auto changed = receipt;
+  auto content = std::string(ndn::readString(changed.getContent()));
+  content.replace(content.find(grantDigest), grantDigest.size(),
+                  "sha256:" + std::string(64, 'd'));
+  changed.setContent(ndn::makeStringBlock(ndn::tlv::Content, content));
+  BOOST_CHECK(!decodeHistoricalGrantReceipt(changed, controllerIdentity));
+
+  // A receipt named by another controller does not decode for this one.
+  BOOST_CHECK(!decodeHistoricalGrantReceipt(receipt, ndn::Name("/controller/other")));
 }
 
 BOOST_AUTO_TEST_CASE(ArchivedResponderAnswersARealInterest)

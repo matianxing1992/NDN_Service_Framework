@@ -8,6 +8,7 @@
 
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include <openssl/sha.h>
 #include <boost/test/unit_test.hpp>
 
@@ -132,6 +133,7 @@ struct PacketRepository
   std::vector<ndn::Name> reads;
   std::size_t sourceReads = 0;
   std::size_t confirmations = 0;
+  bool hasProducerProof = false;
   std::vector<NativeStoredModelInput> source{
     {"catalog", Bytes{'c', 'a', 't'}}, {"manifest", Bytes{'r', 'o', 'o', 't'}},
     {"layer0", Bytes(20000, 0x73)}};
@@ -152,7 +154,10 @@ struct PacketRepository
         for (const auto& wire : wires) {
           const ndn::Data data{ndn::Block(ndn::span<const std::uint8_t>(wire))};
           names += data.getName().toUri(ndn::name::UriFormat::CANONICAL).size();
-          BOOST_CHECK_EQUAL(data.getSignatureType(), ndn::tlv::DigestSha256);
+          if (!hasProducerProof || !nativeIsStoredModelProducerProof(
+                ndn::Name("/preparer"), ndn::Name("/repo"), data)) {
+            BOOST_CHECK_EQUAL(data.getSignatureType(), ndn::tlv::DigestSha256);
+          }
           BOOST_CHECK_LE(wire.size(), ndn::MAX_NDN_PACKET_SIZE);
           const auto existing = packets.find(data.getName());
           if (existing != packets.end() && existing->second != wire)
@@ -1309,6 +1314,116 @@ BOOST_AUTO_TEST_CASE(PreparationResumesRootReplyLossWithoutRepublishingCompleted
   repository.groups.erase(resumed.handle.rootName);
   BOOST_CHECK_THROW(repository.publish(nullptr, file.path), std::exception);
   BOOST_CHECK_EQUAL(repository.sourceReads, sourceReads);
+}
+
+BOOST_AUTO_TEST_CASE(ProducerProofRetryAndExplicitAttestationOfOldJournal)
+{
+  PacketRepository repository;
+  PrivateFile file;
+  const auto original = repository.publish(nullptr, file.path);
+  const auto originalPackets = repository.packets;
+  repository.hasProducerProof = true;
+  const ndn::Name owner("/preparer");
+  ndn::KeyChain keys{"pib-memory:", "tpm-memory:"};
+  const auto cert = keys.createIdentity(owner).getDefaultKey().getDefaultCertificate();
+  const auto other = keys.createIdentity(ndn::Name("/other")).getDefaultKey().getDefaultCertificate();
+  const auto proofName = nativeStoredModelProducerProofName(original.handle);
+  auto signingCert = cert;
+  unsigned signatures = 0;
+  auto port = repository.io();
+  port.signProducerProof = [&] (const ndn::Name& name, const Bytes& content) {
+    ndn::Data proof(name);
+    proof.setContent(ndn::span<const std::uint8_t>(content));
+    keys.sign(proof, ndn::security::signingByCertificate(signingCert));
+    ++signatures;
+    const auto& wire = proof.wireEncode();
+    return Bytes(wire.begin(), wire.end());
+  };
+  port.fetchProducerProof = [&] (const ndn::Name& name, const ndn::Name& producer) -> Bytes {
+    BOOST_CHECK(producer == owner);
+    const auto it = repository.packets.find(name);
+    if (it == repository.packets.end())
+      return {};
+    const ndn::Data proof{ndn::Block(ndn::span<const std::uint8_t>(it->second))};
+    if (!ndn::security::verifySignature(proof, cert))
+      throw std::runtime_error("untrusted Producer proof");
+    return it->second;
+  };
+  BOOST_CHECK_THROW(nativeLoadStoredModelCatalog(original.handle, port), std::runtime_error);
+  BOOST_CHECK(repository.reads.empty());
+  BOOST_CHECK_THROW(repository.publish(&port, file.path), std::runtime_error);
+  BOOST_CHECK_EQUAL(signatures, 0);
+
+  const auto ring = file.directory / "ring";
+  writeKeyRing(ring, {{"active", std::string(64, 'a')}});
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  struct RingCleanup { ~RingCleanup() { ::unsetenv("NDNSF_FILE_KEYRING"); } } cleanup;
+  auto loseReply = port;
+  loseReply.commit = [&](NativeStoredModelPacketIo::PacketWires wires, const std::string& digest) {
+    port.commit(std::move(wires), digest);
+    throw std::runtime_error("lost proof reply");
+  };
+  const auto sourceReads = repository.sourceReads;
+  BOOST_CHECK_THROW(repository.publish(&loseReply, file.path, "/preparer/models/v=1", true),
+                    std::runtime_error);
+  BOOST_CHECK_EQUAL(signatures, 1);
+  const auto migrated = repository.publish(&port, file.path, "/preparer/models/v=1", true);
+  BOOST_CHECK_EQUAL(signatures, 1);
+  BOOST_CHECK_EQUAL(repository.sourceReads, sourceReads);
+  BOOST_CHECK_EQUAL(migrated.handle.rootWireDigest, original.handle.rootWireDigest);
+  BOOST_CHECK(migrated.handle.masterKey == original.handle.masterKey);
+  BOOST_CHECK_EQUAL(repository.packets.size(), originalPackets.size() + 1);
+  for (const auto& [name, wire] : originalPackets)
+    BOOST_CHECK(repository.packets.at(name) == wire);
+  const auto catalog = nativeLoadStoredModelCatalog(original.handle, port);
+  BOOST_CHECK_EQUAL(catalog.objects().size(), 3);
+
+  const auto admittedProof = repository.packets.at(proofName);
+  signingCert = other;
+  const std::string_view marker(NATIVE_STORED_MODEL_PRODUCER_PROOF_CONTENT);
+  repository.packets[proofName] = port.signProducerProof(proofName, Bytes(marker.begin(),
+                                                                        marker.end()));
+  repository.reads.clear();
+  BOOST_CHECK_THROW(nativeLoadStoredModelCatalog(original.handle, port), std::runtime_error);
+  BOOST_CHECK(repository.reads.empty());
+  signingCert = cert;
+  repository.packets[proofName] = port.signProducerProof(
+    ndn::Name(proofName).append("foreign"), Bytes(marker.begin(), marker.end()));
+  BOOST_CHECK_THROW(nativeLoadStoredModelCatalog(original.handle, port), std::runtime_error);
+  BOOST_CHECK(repository.reads.empty());
+  repository.packets[proofName] = admittedProof;
+  const auto priorWrites = repository.writes.size();
+  const auto reopened = repository.publish(&port, file.path);
+  BOOST_CHECK_EQUAL(reopened.handle.rootWireDigest, original.handle.rootWireDigest);
+  BOOST_CHECK_EQUAL(repository.writes.size(), priorWrites);
+}
+
+BOOST_AUTO_TEST_CASE(NewModelCommitsSignedProducerProofBeforeRoot)
+{
+  PacketRepository repository;
+  repository.hasProducerProof = true;
+  auto port = repository.io();
+  ndn::KeyChain keys{"pib-memory:", "tpm-memory:"};
+  const auto cert = keys.createIdentity(ndn::Name("/preparer")).getDefaultKey().getDefaultCertificate();
+  port.signProducerProof = [&](const ndn::Name& name, const Bytes& content) {
+    ndn::Data proof(name);
+    proof.setContent(ndn::span<const std::uint8_t>(content));
+    keys.sign(proof, ndn::security::signingByCertificate(cert));
+    const auto& wire = proof.wireEncode();
+    return Bytes(wire.begin(), wire.end());
+  };
+  port.fetchProducerProof = [&](const ndn::Name& name, const ndn::Name&) {
+    const auto& wire = repository.packets.at(name);
+    const ndn::Data proof{ndn::Block(ndn::span<const std::uint8_t>(wire))};
+    BOOST_REQUIRE(ndn::security::verifySignature(proof, cert));
+    return wire;
+  };
+  const auto published = repository.publish(&port);
+  BOOST_REQUIRE_GE(repository.writes.size(), 2);
+  BOOST_CHECK(repository.writes[repository.writes.size() - 2] ==
+              nativeStoredModelProducerProofName(published.handle));
+  BOOST_CHECK(repository.writes.back() == published.handle.rootName);
+  BOOST_CHECK_EQUAL(nativeLoadStoredModelCatalog(published.handle, port).objects().size(), 3);
 }
 
 BOOST_AUTO_TEST_CASE(PreparationRejectsChangedSourcePrivateStateAndMissingSpool)

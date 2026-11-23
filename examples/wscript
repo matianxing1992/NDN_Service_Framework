@@ -11,12 +11,38 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}' if bld.env.INSTALL_EXPERIMENT_FIXTURES else None)
     runtime_libdir = Utils.subst_vars('${LIBDIR}', bld.env)
+    if bld.env.WITH_TESTS or bld.env.INSTALL_EXPERIMENT_FIXTURES:
+        bld.program(name='ndnsf-policy-lease-probe',
+                    target='ndnsf-policy-lease-probe',
+                    source=['../tests/minindn/controller-rollover/lease-requester.cpp'],
+                    includes=['..'], rpath=[runtime_libdir],
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                    install_path='${BINDIR}' if bld.env.INSTALL_EXPERIMENT_FIXTURES else None)
     bld.program(name='App_ServiceController',
                 target='App_ServiceController',
                 source=['App_ServiceController.cpp'],
                 rpath=[runtime_libdir],
                 includes=['..'],
                 use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path='${BINDIR}')
+
+    if 'repo' in bld.env.NDNSF_COMPONENTS:
+        historical_use = ('ndn-service-framework ndnsf-distributed-repo '
+                          'NDN_CXX NDN_SVS BOOST NAC-ABE OPENSSL sqlite3')
+        bld.objects(name='historical-publisher-main',
+                    source=['HistoricalFixture.cpp'],
+                    includes=['..', '../NDNSF-DistributedRepo/include'],
+                    use=historical_use)
+        publisher_names = ['ndnsf-historical-publish']
+        if 'di' in bld.env.NDNSF_COMPONENTS:
+            publisher_names.append('ndnsf-historical-fixture')
+        for name in publisher_names:
+            bld(features='cxx cxxprogram',
+                name=name,
+                target=name,
+                rpath=[runtime_libdir],
+                use='historical-publisher-main ' + historical_use,
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}')
 
@@ -428,17 +454,6 @@ def build(bld):
                     install_path='${BINDIR}')
 
         # Native qualification is part of the installed DI closure.
-        # Native fixture that publishes one ABE-protected object for the historical-read acceptance.
-        if 'di' in bld.env.NDNSF_COMPONENTS:
-            bld.program(name='ndnsf-historical-fixture',
-                        target='ndnsf-historical-fixture',
-                        source=['HistoricalFixture.cpp'],
-                        rpath=[runtime_libdir],
-                        includes=['..', '../NDNSF-DistributedRepo/include'],
-                        use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE OPENSSL',
-                        linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                        install_path='${BINDIR}')
-
         # Native acceptance probe for reading an object whose generation the Controller retired.
         if 'di' in bld.env.NDNSF_COMPONENTS:
             bld.program(name='ndnsf-historical-read-probe',

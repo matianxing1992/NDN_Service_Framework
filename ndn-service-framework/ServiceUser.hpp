@@ -607,11 +607,20 @@ namespace ndn_service_framework{
             bool isRequestBootstrapReady(
                 const ndn::Name& serviceName,
                 const std::vector<ndn::Name>& providers = {});
+            enum class RequestBootstrapState { WAITING, READY, REVOKED };
+            /** Check target-scoped bootstrap on the Face thread. When requested,
+             * start the bounded Controller query if no live status is installed.
+             * REVOKED requires a live, authenticated withdrawal of this requester.
+             */
+            RequestBootstrapState checkRequestBootstrap(
+                const ndn::Name& serviceName, const std::vector<ndn::Name>& providers,
+                bool queryMissingStatus);
             void applyPermissionResponse(const PermissionResponse& response);
             /** Install a Controller-signed policy status after the enclosing
              * Data has passed the configured trust validator. */
             bool installControllerStatus(const PolicyStatusData& status,
-                                         bool controllerSignatureValid = true);
+                                         bool controllerSignatureValid = true,
+                                         bool freshQuery = false);
             /** Persist an accepted Controller status Data (opt-in durable
              * mode, FR-039); no-op when the store is disabled. */
             void persistAcceptedControllerStatus(
@@ -1497,6 +1506,7 @@ namespace ndn_service_framework{
             void scheduleControllerStatusRefresh(
                 const ndn::Name& serviceName,
                 const PolicyStatusData& status);
+            void scheduleControllerStatusExpiry(const PolicyStatusData& status);
             // Bounded DKEY re-arm retries for a LocalMock whose immediate
             // refresh was deferred (no fixture-owned Consumer).  The retry
             // fires only while the Face is pumped and stops as soon as the
@@ -1522,7 +1532,7 @@ namespace ndn_service_framework{
             #endif
             bool authorizeControllerTransition(
                 const ndn::Name& serviceName,
-                ProtectedTransition transition) const;
+                ProtectedTransition transition, bool requireNacProducerBinding = false) const;
             void adoptControllerVersion(const ControllerVersion& version);
             /**
              * Evict per-service authorization material after an authenticated
@@ -1537,7 +1547,8 @@ namespace ndn_service_framework{
                 const ControllerVersion& version,
                 bool abeGenerationChanged = true,
                 const PolicyStatusData* status = nullptr,
-                bool grantOnlyDkeyRefresh = false);
+                bool grantOnlyDkeyRefresh = false, bool leaseExpired = false,
+                bool localAuthorityRevoked = false);
             /**
              * Retire only protected publications older than a strictly newer
              * service-scoped ControllerVersion.  The caller holds the
@@ -2006,7 +2017,8 @@ namespace ndn_service_framework{
             bool collaborationAckRoleCoverageSatisfied(const ndn::Name& requestId,
                                                        const PendingCall& pendingCall) const;
             void scheduleRequestTimeout(const ndn::Name& requestId, int timeoutMs);
-            void finalizeTimedOutPendingCall(const ndn::Name& requestId);
+            void finalizeTimedOutPendingCall(const ndn::Name& requestId,
+                                             bool leaseExpired = false);
             void scheduleSelectionStatusQuery(const ndn::Name& requestId,
                                               const ndn::Name& providerName,
                                               const std::string& selectionDigest);
@@ -2241,8 +2253,9 @@ namespace ndn_service_framework{
             std::map<std::string, std::shared_ptr<detail::PolicyStatusFetch>>
                 m_policyStatusFetchInFlight;
             uint64_t m_nextPolicyStatusFetchTicket = 0;
-            std::map<std::string, ControllerVersion>
+            std::map<std::string, std::pair<ControllerVersion, uint64_t>>
                 m_policyStatusRefreshScheduled;
+            std::map<std::string, ndn::scheduler::ScopedEventId> m_policyStatusExpiryEvents;
             /** Counts policy-status ticks so the permission refresh runs on a bounded fraction of them. */
             uint64_t m_permissionRefreshTicks = 0;
             // A grant-only PermissionResponse can add a service while the

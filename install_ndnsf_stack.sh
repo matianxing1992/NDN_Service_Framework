@@ -4169,7 +4169,8 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
   fi
   if (( NDNSF_INSTALL_REPO )); then
     native_runtime_programs+=("$RUNTIME_PREFIX/bin/NDNSF_RepoPacketServer"
-      "$RUNTIME_PREFIX/bin/DistributedRepoServer")
+      "$RUNTIME_PREFIX/bin/DistributedRepoServer"
+      "$RUNTIME_PREFIX/bin/ndnsf-historical-publish")
   fi
   if (( NDNSF_INSTALL_UAV )); then
     for tracking_file in bin/UavTrackingNode lib/libndnsf-uav-tracking.so \

@@ -1,56 +1,22 @@
 #include "AbeHistoricalContent.hpp"
 
-#include <cstring>
-
+#include <ndn-cxx/encoding/block-helpers.hpp>
+#include <ndn-cxx/name.hpp>
 #include <nac-abe/algo/abe-support.hpp>
 
 namespace ndn_service_framework {
 namespace {
 
-bool
-readVarNumber(const std::string& bytes, std::size_t& offset, uint32_t& value)
+ndn::Block
+parseEnvelope(const std::string& content)
 {
-  if (offset >= bytes.size())
-    return false;
-  const auto first = static_cast<uint8_t>(bytes[offset++]);
-  if (first < 0xfd) {
-    value = first;
-    return true;
-  }
-  const std::size_t extra = first == 0xfd ? 2 : first == 0xfe ? 4 : 8;
-  if (bytes.size() - offset < extra)
-    return false;
-  value = 0;
-  for (std::size_t i = 0; i < extra; ++i)
-    value = (value << 8) | static_cast<uint8_t>(bytes[offset++]);
-  return true;
-}
-
-/** Walk the top-level TLV of `bytes` and return the value of the first field of `wanted`. */
-bool
-findField(const std::string& bytes, uint32_t wanted, std::string& value)
-{
-  std::size_t offset = 0;
-  std::uint32_t type = 0;
-  std::uint32_t length = 0;
-  if (!readVarNumber(bytes, offset, type) || !readVarNumber(bytes, offset, length) ||
-      bytes.size() - offset < length)
-    return false;
-  const std::string body = bytes.substr(offset, length);
-  std::size_t inner = 0;
-  while (inner < body.size()) {
-    std::uint32_t fieldType = 0;
-    std::uint32_t fieldLength = 0;
-    if (!readVarNumber(body, inner, fieldType) || !readVarNumber(body, inner, fieldLength) ||
-        body.size() - inner < fieldLength)
-      return false;
-    if (fieldType == wanted) {
-      value = body.substr(inner, fieldLength);
-      return true;
-    }
-    inner += fieldLength;
-  }
-  return false;
+  const auto bytes = ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(content.data()),
+                                             content.size());
+  ndn::Block envelope(bytes);
+  if (envelope.type() != ndn::tlv::Content || envelope.size() != bytes.size())
+    throw ndn::tlv::Error("expected one complete encrypted Content block");
+  envelope.parse();
+  return envelope;
 }
 
 } // namespace
@@ -58,28 +24,41 @@ findField(const std::string& bytes, uint32_t wanted, std::string& value)
 bool
 parseHistoricalCkContent(const std::string& content, HistoricalCkContent& parsed)
 {
-  std::string wrapped;
-  if (!findField(content, 0x0259, wrapped) || wrapped.empty())
+  try {
+    const auto envelope = parseEnvelope(content);
+    if (envelope.elements_size() != 1)
+      return false;
+    const auto& wrapped = envelope.get(ndn::nacabe::TLV_EncryptedAesKey);
+    if (wrapped.value_size() == 0)
+      return false;
+    parsed.wrappedKey.assign(wrapped.value_begin(), wrapped.value_end());
+    return true;
+  }
+  catch (const std::exception&) {
     return false;
-  parsed.wrappedKey = std::move(wrapped);
-  return true;
+  }
 }
 
 bool
 parseHistoricalPayloadContent(const std::string& content, HistoricalPayloadContent& parsed)
 {
-  std::string encrypted;
-  std::string size;
-  if (!findField(content, 0x025A, encrypted) || encrypted.empty() ||
-      !findField(content, 0x025B, size) || size.size() != 1)
+  try {
+    const auto envelope = parseEnvelope(content);
+    if (envelope.elements_size() != 3)
+      return false;
+    const auto& encrypted = envelope.get(ndn::nacabe::TLV_EncryptedContent);
+    const auto plainTextSize = ndn::readNonNegativeIntegerAs<uint32_t>(
+      envelope.get(ndn::nacabe::TLV_PlainTextSize));
+    const auto& key = envelope.get(ndn::tlv::Name);
+    if (encrypted.value_size() == 0 || ndn::Name(key).empty())
+      return false;
+    parsed = {std::string(encrypted.value_begin(), encrypted.value_end()), plainTextSize,
+              std::string(key.begin(), key.end())};
+    return true;
+  }
+  catch (const std::exception&) {
     return false;
-  parsed.encryptedContent = std::move(encrypted);
-  parsed.plainTextSize = static_cast<uint8_t>(size[0]);
-  // Optional on the fixture's hand-built envelopes, present on real Producer output.
-  std::string ckName;
-  if (findField(content, 0x0249, ckName) && !ckName.empty())
-    parsed.ckName = std::move(ckName);
-  return true;
+  }
 }
 
 std::optional<std::string>
@@ -109,6 +88,8 @@ decryptHistoricalPayload(const std::string& publicParameters,
 
     const auto plain = ndn::nacabe::algo::ABESupport::getInstance().kpDecrypt(params, key,
                                                                              cipherText);
+    if (plain.size() != payloadContent.plainTextSize)
+      return std::nullopt;
     return std::string(reinterpret_cast<const char*>(plain.data()), plain.size());
   }
   catch (const std::exception&) {

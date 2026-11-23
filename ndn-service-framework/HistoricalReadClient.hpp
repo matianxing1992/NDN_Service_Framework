@@ -33,19 +33,28 @@ struct HistoricalReadRequest
   ndn::Name serviceName;
   ndn::Name ckName;
   ndn::Name payloadName;
+  ndn::Name publicationName;
+  /** Optional Repo location for original packets. It grants no Producer trust. */
+  ndn::Name originalDataForwardingHint;
   std::string policy;
   std::vector<uint8_t> ckEvidence;
+  std::vector<uint8_t> publicationEvidence;
   ndn::security::Certificate recipientCertificate;
+  /** Optional same-identity signing certificate when the RSA recipient key is separate. */
+  std::optional<ndn::security::Certificate> signingCertificate;
   /** The Controller whose signature the key reply must carry. Verification is not optional: an envelope
    *  that names the right generation proves nothing about who wrote it. */
   ndn::security::Certificate controllerCertificate;
   /** The producer certificate the CK and payload Data must be signed by. */
   ndn::security::Certificate producerCertificate;
-  /** The retired generation's public parameter wire, as published under its bound proof. */
+  /** Optionally prevalidated public parameters. Otherwise fetch the retired proof. */
   std::string publicParameters;
-  /** How many payload segments to try; the first missing segment ends the fetch. */
+  /** Maximum allowed payload segment count. */
   uint32_t maxSegments = 4096;
+  uint32_t maxPayloadBytes = 32 * 1024 * 1024;
+  /** Per-packet timeout and overall read budget, including proof lookup and DKEY. */
   uint32_t fetchTimeoutMs = 4000;
+  uint32_t totalTimeoutMs = 20000;
 };
 
 /** Fetch one Data packet by its exact name, requiring the given signer's signature. */
@@ -53,7 +62,7 @@ std::optional<std::vector<uint8_t>>
 fetchSingleData(ndn::Face& face, const ndn::Name& name, const ndn::security::Certificate& signer,
                 uint32_t timeoutMs);
 
-/** Fetch every segment of `root`, starting at 0, until a segment does not arrive. */
+/** Fetch every exact segment of `root`, requiring a consistent signed FinalBlockId. */
 std::optional<std::vector<uint8_t>>
 fetchSegmentedData(ndn::Face& face, const ndn::Name& root, const ndn::security::Certificate& signer,
                    uint32_t maxSegments, uint32_t timeoutMs);
@@ -71,24 +80,39 @@ fetchHistoricalKey(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalRea
 std::optional<std::string>
 fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPrefix, uint64_t generation,
                                 uint64_t epoch, const ndn::security::Certificate& controllerCertificate,
-                                uint32_t timeoutMs);
+                                uint32_t timeoutMs, const ndn::Name& serviceName = {});
 
-/** Ask the Controller for this identity's permissions, so the grant record a later historical read depends on exists.
- *
- * The Controller writes that record when it answers this query, and it is written under the version it advertises at
- * that moment. A reader that only reads cannot obtain it at all: the record is a side effect of the permission
- * exchange, so a read whose grant was never recorded is refused no matter how correct the rest of the flow is.
- *
- * Returns true when the Controller answered; the answer's content is not needed here, only its side effect.
- */
+/** Verify a current permission for the object before the acceptance run revokes it. */
 bool
-primePermissions(ndn::Face& face, ndn::KeyChain& keyChain, const ndn::Name& controllerPrefix,
-                 const ndn::Name& identity, const ndn::security::Certificate& requesterCertificate,
+primePermissions(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalReadRequest& request,
                  uint32_t timeoutMs);
 
 /** The whole read: fetch, verify, request the key, unseal, reassemble and decrypt. */
 std::optional<std::string>
 readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalReadRequest& request);
+
+enum class HistoricalReadFailure
+{
+  NONE,
+  INVALID_DATA,
+  ORIGINAL_UNAVAILABLE,
+  ARCHIVE_UNAVAILABLE,
+  CONTROLLER_UNAVAILABLE,
+  DEADLINE_EXPIRED,
+  KEY_TIMEOUT,
+  KEY_REPLY_INVALID,
+  REQUEST_REJECTED,
+  NOT_AUTHORIZED,
+  EVIDENCE_REQUIRED,
+  KEY_UNAVAILABLE,
+  AUTHORITY_CHANGED,
+  DECRYPTION_FAILED,
+};
+
+/** Failed reads report a local boundary or an authenticated Controller refusal. */
+std::optional<std::string>
+readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain,
+                     const HistoricalReadRequest& request, HistoricalReadFailure& failure);
 
 } // namespace ndn_service_framework
 

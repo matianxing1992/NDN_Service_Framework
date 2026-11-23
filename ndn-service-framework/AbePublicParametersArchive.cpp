@@ -40,25 +40,42 @@ digestOf(std::string_view bytes)
 
 ndn::Name
 historicalPublicParametersName(const ndn::Name& identity, uint64_t generation, uint64_t epoch,
-                               const std::string& digestHex)
+                               const std::string& digestHex, uint64_t writerGeneration)
 {
   if (generation == 0)
     throw std::invalid_argument("historical public parameters need a generation");
-  if (digestHex.size() != 64)
+  if (!isDigestHex(digestHex))
     throw std::invalid_argument("historical public parameters need a content digest");
   ndn::Name name(identity);
   name.append("NDNSF").append("HISTORY").append("PUBPARAMS");
   name.append(std::to_string(generation));
   name.append(std::to_string(epoch));
-  name.append(digestHex);
+  std::string canonicalDigest = digestHex;
+  std::transform(canonicalDigest.begin(), canonicalDigest.end(), canonicalDigest.begin(),
+                 [] (unsigned char value) { return static_cast<char>(std::tolower(value)); });
+  name.append(canonicalDigest);
+  if (writerGeneration != 0)
+    name.append("WRITER").appendVersion(writerGeneration);
   return name;
+}
+
+ndn::Name
+historicalPublicParametersIndexName(const ndn::Name& identity, uint64_t writerGeneration,
+                                    const ControllerVersion& currentMaterial)
+{
+  if (writerGeneration == 0 || !currentMaterial.isValid())
+    throw std::invalid_argument("historical public parameters index needs a writer and material");
+  return ndn::Name(identity).append("NDNSF").append("HISTORY").append("PUBPARAMS")
+    .append("INDEX").appendVersion(writerGeneration)
+    .appendVersion(currentMaterial.controllerGenerationTimestamp)
+    .appendVersion(currentMaterial.controllerEpoch);
 }
 
 bool
 buildHistoricalPublicParametersData(const ControllerGenerationStore::AbeHistoryEntry& entry,
                                     const ndn::Name& identity,
                                     const std::function<void(ndn::Data&)>& sign,
-                                    ndn::Data& result)
+                                    ndn::Data& result, uint64_t writerGeneration)
 {
   if (entry.generationTimestamp == 0 || entry.publicParameters.empty() ||
       entry.publicParametersName.empty())
@@ -87,7 +104,7 @@ buildHistoricalPublicParametersData(const ControllerGenerationStore::AbeHistoryE
   envelope += entry.publicParameters;
 
   result.setName(historicalPublicParametersName(identity, entry.generationTimestamp, entry.epoch,
-                                                hex));
+                                                hex, writerGeneration));
   result.setContent(ndn::Buffer(reinterpret_cast<const uint8_t*>(envelope.data()),
                                 envelope.size()));
   result.setFreshnessPeriod(ndn::time::milliseconds(0));

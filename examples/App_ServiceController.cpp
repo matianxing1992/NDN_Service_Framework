@@ -1,4 +1,6 @@
 #include "ndn-service-framework/CertificatePublisher.hpp"
+#include "ndn-service-framework/ControllerGenerationStore.hpp"
+#include "ndn-service-framework/FileKeyRing.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/common.hpp"
 #include "ndn-service-framework/configured-actor-name.hpp"
@@ -7,13 +9,17 @@
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/security/validator-config.hpp>
+#include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/util/scheduler.hpp>
 #include <ndn-cxx/util/scope.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 
 #include <boost/asio/signal_set.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -38,6 +44,70 @@ getOrCreateIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity
       .getDefaultKey()
       .getDefaultCertificate();
   }
+}
+
+void
+prepareSignerHandoff(const ndn::Name& identity, const std::string& successorPath)
+{
+  using namespace ndn_service_framework;
+  const auto* statePath = std::getenv("NDNSF_CONTROLLER_GENERATION_STATE");
+  const auto* checkpointPath = std::getenv("NDNSF_CONTROLLER_RECOVERY_CHECKPOINT");
+  const auto* predecessorPath = std::getenv("NDNSF_CONTROLLER_CERT_FILE");
+  if (!statePath || !std::filesystem::path(statePath).is_absolute() ||
+      !checkpointPath || !std::filesystem::path(checkpointPath).is_absolute() ||
+      !std::filesystem::is_regular_file(checkpointPath) || !predecessorPath || !*predecessorPath ||
+      successorPath.empty())
+    throw std::invalid_argument("signer handoff requires existing state, checkpoint and signer pins");
+  auto seal = loadFileKeyRingEntry("controller-abe");
+  if (!seal)
+    throw std::invalid_argument("signer handoff requires the controller-abe seal");
+  auto predecessor = ndn::io::load<ndn::security::Certificate>(predecessorPath);
+  auto successor = ndn::io::load<ndn::security::Certificate>(successorPath);
+  if (!predecessor || !successor || predecessor->getIdentity() != identity ||
+      successor->getIdentity() != identity)
+    throw std::invalid_argument("invalid signer handoff certificates");
+
+  ControllerGenerationStore store(statePath);
+  store.setSecretSeal(std::move(seal->key), seal->keyId, true);
+  store.setRecoveryCheckpoint(checkpointPath);
+  if (!store.acquireWriter(identity.toUri(ndn::name::UriFormat::CANONICAL)))
+    throw std::runtime_error("cannot prepare signer handoff while the current writer is active");
+  const auto material = store.loadAbeMaterial();
+  ndn::util::Sha256 predecessorKey;
+  predecessorKey << predecessor->getPublicKey();
+  const auto signer = "sha256:" + predecessorKey.toString();
+  const auto witnessSigner = store.getGrantWitnessSigner();
+  if (!material || material->rotationRequired || material->signingKeyDigest != signer ||
+      (witnessSigner && *witnessSigner != signer))
+    throw std::runtime_error("Controller state does not match a settled predecessor");
+
+  const auto revocations = store.loadRevocations();
+  for (const auto* certificate : {&*predecessor, &*successor}) {
+    ndn::util::Sha256 digest;
+    const auto& wire = certificate->wireEncode();
+    digest << ndn::span<const uint8_t>(wire.data(), wire.size());
+    const auto certificateDigest = "sha256:" + digest.toString();
+    if (std::any_of(revocations.begin(), revocations.end(), [&](const auto& target) {
+          return (target.kind == RevocationKind::IDENTITY && target.targetIdentity == identity) ||
+            (target.kind == RevocationKind::CERTIFICATE &&
+             (target.targetIdentity.empty() || target.targetIdentity == identity) &&
+             sameCertificateDigest(target.certificateDigest, certificateDigest));
+        }))
+      throw std::runtime_error("cannot prepare signer handoff for a revoked certificate or identity");
+  }
+
+  ndn::KeyChain keyChain;
+  const auto local = keyChain.getPib().getIdentity(identity).getDefaultKey().getDefaultCertificate();
+  if (local.wireEncode() != predecessor->wireEncode() ||
+      !keyChain.getTpm().hasKey(predecessor->getKeyName()))
+    throw std::runtime_error("the local Controller key store does not hold the pinned predecessor");
+  const auto handoff = makeControllerSignerHandoff(
+    *predecessor, *successor, material->version, keyChain);
+  const auto& wire = handoff.wireEncode();
+  std::cout.write(reinterpret_cast<const char*>(wire.data()),
+                  static_cast<std::streamsize>(wire.size())).flush();
+  if (!std::cout)
+    throw std::runtime_error("cannot write Controller signer handoff");
 }
 
 } // namespace
@@ -118,6 +188,10 @@ main(int argc, char** argv)
   try {
     const ndn::Name controllerPrefix(getOption(argc, argv, "--controller-prefix", ""));
     ndn_service_framework::validateConfiguredActorName(controllerPrefix, "controller-prefix");
+    if (hasFlag(argc, argv, "--prepare-signer-handoff")) {
+      prepareSignerHandoff(controllerPrefix, getOption(argc, argv, "--prepare-signer-handoff", ""));
+      return 0;
+    }
     ndn::Face face;
     ndn::KeyChain keyChain;
     ndn_service_framework::TrustSchemaValidator validator(face);
@@ -155,7 +229,19 @@ main(int argc, char** argv)
       throw std::invalid_argument(
         "--grant-additional-identity is required when --grant-additional-after-ms is set");
 
-    auto controllerCert = getOrCreateIdentity(keyChain, controllerPrefix);
+    const auto controllerCert = [&] {
+      const char* pinned = std::getenv("NDNSF_CONTROLLER_CERT_FILE");
+      if (!pinned || !*pinned)
+        return getOrCreateIdentity(keyChain, controllerPrefix);
+      const auto certificate = ndn::io::load<ndn::security::Certificate>(pinned);
+      if (!certificate || !certificate->isValid() || certificate->getIdentity() != controllerPrefix)
+        throw std::runtime_error("invalid pinned Controller signing certificate");
+      const auto local = keyChain.getPib().getIdentity(controllerPrefix)
+        .getDefaultKey().getDefaultCertificate();
+      if (certificate->wireEncode() != local.wireEncode())
+        throw std::runtime_error("Controller default signing certificate differs from deployment pin");
+      return local;
+    }();
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(controllerPrefix));
     ensureIdentities(keyChain, ensureIdentityCsv);
 
@@ -188,11 +274,18 @@ main(int argc, char** argv)
     controller.setControllerPrefix(controllerPrefix);
     controller.setBootstrapTokenFile(bootstrapTokenFile);
     bool stopping = false;
+    ndn::scheduler::ScopedEventId revokeEvent;
+    ndn::scheduler::ScopedEventId revokeRetryEvent;
+    ndn::scheduler::ScopedEventId grantEvent;
+    std::function<void()> pollRevocationTrigger;
     const auto signalActive = std::make_shared<bool>(true);
     boost::asio::signal_set signals(face.getIoContext(), SIGINT, SIGTERM);
     signals.async_wait([&, signalActive] (const boost::system::error_code& error, int) {
       if (!error && *signalActive) {
         stopping = true;
+        revokeEvent.cancel();
+        revokeRetryEvent.cancel();
+        grantEvent.cancel();
         controller.cancelStart();
         face.shutdown();
       }
@@ -230,50 +323,36 @@ main(int argc, char** argv)
           return success;
         };
       if (revokeAfterMs >= 0) {
-        scheduler.schedule(ndn::time::milliseconds(revokeAfterMs),
-          [&applyRevocation] { (void)applyRevocation(); });
+        revokeEvent = scheduler.schedule(ndn::time::milliseconds(revokeAfterMs),
+          [applyRevocation] { (void)applyRevocation(); });
         if (revokeRetryAfterMs >= 0)
-          scheduler.schedule(ndn::time::milliseconds(revokeRetryAfterMs),
-            [&applyRevocation] { (void)applyRevocation(); });
+          revokeRetryEvent = scheduler.schedule(ndn::time::milliseconds(revokeRetryAfterMs),
+            [applyRevocation] { (void)applyRevocation(); });
       }
       else {
         // A run-scoped trigger lets an integration harness place revocation
         // after a verified request boundary without guessing Controller
         // startup or model preparation time.  The normal timed path above is
         // unchanged, and the trigger is consumed at most once.
-        const auto triggerPath = std::make_shared<std::filesystem::path>(revokeTriggerFile);
-        const auto applied = std::make_shared<bool>(false);
-        const auto poll = std::make_shared<std::function<void()>>();
-        *poll = [&scheduler, triggerPath, applied, poll, applyRevocation] {
-          if (*applied)
+        const auto triggerPath = std::filesystem::path(revokeTriggerFile);
+        pollRevocationTrigger = [&, triggerPath, applyRevocation] {
+          if (stopping)
             return;
           std::error_code error;
-          const bool regular = std::filesystem::is_regular_file(*triggerPath, error);
-          if (error) {
+          const bool regular = std::filesystem::is_regular_file(triggerPath, error);
+          if (error && error != std::errc::no_such_file_or_directory) {
             std::cout << "NDNSF_REVOCATION_TRIGGER_ERROR code="
                       << error.value() << std::endl;
-            scheduler.schedule(ndn::time::milliseconds(20), *poll);
-            return;
           }
-          if (regular) {
-            const bool success = applyRevocation();
-            if (!success) {
-              // Keep the trigger pending so a transient generation/ABE failure
-              // can recover; never advertise a failed revoke as consumed.
-              std::cout << "NDNSF_REVOCATION_TRIGGER_FAILED" << std::endl;
-              scheduler.schedule(ndn::time::milliseconds(20), *poll);
-              return;
-            }
-            *applied = true;
-            // The callback owns itself only while waiting for the trigger;
-            // clear that owner after the one-shot action to avoid a cycle.
-            *poll = {};
+          if (regular && applyRevocation()) {
             std::cout << "NDNSF_REVOCATION_TRIGGERED" << std::endl;
             return;
           }
-          scheduler.schedule(ndn::time::milliseconds(20), *poll);
+          if (regular)
+            std::cout << "NDNSF_REVOCATION_TRIGGER_FAILED" << std::endl;
+          revokeEvent = scheduler.schedule(ndn::time::milliseconds(20), pollRevocationTrigger);
         };
-        scheduler.schedule(ndn::time::milliseconds(20), *poll);
+        revokeEvent = scheduler.schedule(ndn::time::milliseconds(20), pollRevocationTrigger);
       }
     }
 
@@ -282,7 +361,7 @@ main(int argc, char** argv)
       const ndn::Name serviceName(grantService);
       const ndn::Name attribute = ndn::Name(
           grantRole == "provider" ? "/SERVICE" : "/PERMISSION").append(serviceName);
-      scheduler.schedule(ndn::time::milliseconds(grantAfterMs),
+      grantEvent = scheduler.schedule(ndn::time::milliseconds(grantAfterMs),
         [&controller, targetIdentity, serviceName, attribute] {
           const bool success = controller.grant(
             targetIdentity, serviceName, attribute);

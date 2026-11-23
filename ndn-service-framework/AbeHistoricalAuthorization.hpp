@@ -1,10 +1,16 @@
 #ifndef NDNSF_ABE_HISTORICAL_AUTHORIZATION_HPP
 #define NDNSF_ABE_HISTORICAL_AUTHORIZATION_HPP
 
+#include "ControllerVersion.hpp"
+
+#include <cstdint>
+#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 
 #include <ndn-cxx/name.hpp>
+#include <ndn-cxx/data.hpp>
 
 namespace ndn_service_framework {
 
@@ -27,14 +33,21 @@ historicalAttributeIsAuthorized(const std::string& policy,
                                 const std::set<std::string>& heldAtPublication,
                                 const std::set<std::string>& heldNow);
 
-/** Check that a CK name was published for this producer, service and attribute.
- *
- * A NAC-ABE content key is named `<producer>/KEY/kind=HYBRID-MESSAGE/SCOPE/SERVICE/<digest>/EPOCH/...`
- * where the digest covers exactly the service, the producer and the attribute. Recomputing it is how a
- * Controller tells "a key for the object I want" from "a key for something else" without trusting either
- * the requester's claim or the CK's bytes.
- */
-/** Check that a signed grant record covers the service a policy attribute names.
+/** Encode the canonical identity and Controller version of a historical grant. */
+std::string
+makeHistoricalGrantRecordHeader(const ndn::Name& identity, uint64_t generation, uint64_t epoch);
+
+struct HistoricalGrantRecord
+{
+  ndn::Name identity;
+  ControllerVersion version;
+  std::set<ndn::Name> services;
+};
+
+std::optional<HistoricalGrantRecord>
+decodeHistoricalGrantRecord(std::string_view content);
+
+/** Check that a signed grant record covers the expected identity, version and policy.
  *
  * The record is the Controller's own statement of what it granted, at the version the object was published
  * under. Its content is line oriented:
@@ -48,11 +61,17 @@ historicalAttributeIsAuthorized(const std::string& policy,
  * The policy must be `/PERMISSION/<service>`, and the record must list that same service.
  */
 bool
-historicalGrantRecordCoversPolicy(const std::string& recordContent, const std::string& policy);
+historicalGrantRecordCoversPolicy(const std::string& recordContent, const ndn::Name& identity,
+                                  uint64_t generation, uint64_t epoch, const std::string& policy);
 
+/** Check that a CK name binds its producer, service and attribute. */
 bool
 historicalCkBindsAttribute(const ndn::Name& ckName, const ndn::Name& producer,
                            const ndn::Name& service, const std::string& attribute);
+
+/** Resolve the payload's CK reference from its exact authenticated CK packet. */
+std::optional<ndn::Name>
+historicalCkLocator(const ndn::Data& packet, const ndn::Name& producer);
 
 } // namespace ndn_service_framework
 

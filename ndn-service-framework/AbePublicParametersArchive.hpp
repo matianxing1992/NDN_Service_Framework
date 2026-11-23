@@ -22,11 +22,16 @@ namespace ndn_service_framework {
  * holds that key must never sign different bytes under the same name. A historical answer therefore
  * lives under a name of its own that binds the generation and the digest of the original content:
  *
- *   <identity>/NDNSF/HISTORY/PUBPARAMS/<generation>/<epoch>/<sha256-hex>
+ * Production proofs additionally bind the committed writer generation. The
+ * shorter form describes archive proofs emitted by the legacy writer.
  */
 ndn::Name
 historicalPublicParametersName(const ndn::Name& identity, uint64_t generation, uint64_t epoch,
-                               const std::string& digestHex);
+                               const std::string& digestHex, uint64_t writerGeneration = 0);
+
+ndn::Name
+historicalPublicParametersIndexName(const ndn::Name& identity, uint64_t writerGeneration,
+                                    const ControllerVersion& currentMaterial);
 
 /** Build the historical proof for one archived generation.
  *
@@ -45,7 +50,7 @@ bool
 buildHistoricalPublicParametersData(const ControllerGenerationStore::AbeHistoryEntry& entry,
                                     const ndn::Name& identity,
                                     const std::function<void(ndn::Data&)>& sign,
-                                    ndn::Data& result);
+                                    ndn::Data& result, uint64_t writerGeneration = 0);
 
 /** Build the signed index a cold reader uses to find the proofs.
  *

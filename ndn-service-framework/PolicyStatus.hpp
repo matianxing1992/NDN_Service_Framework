@@ -53,6 +53,7 @@ public:
   static constexpr uint32_t PolicyDigestType = 0xF715;
   static constexpr uint32_t AbePublicParametersNameType = 0xF71E;
   static constexpr uint32_t AbePublicParametersDigestType = 0xF71F;
+  static constexpr uint32_t ABE_MATERIAL_VERSION_TYPE = 0xF720;
   static constexpr uint32_t ControllerCertificateType = 0xF716;
   static constexpr uint32_t SignatureType = 0xF717;
   static constexpr uint32_t RevocationTargetType = 0xF718;
@@ -72,6 +73,9 @@ public:
   /** SHA-256 digest of the canonical public-parameter Data Content. */
   void setAbePublicParametersDigest(const std::string& digest);
   const std::string& getAbePublicParametersDigest() const;
+  /** Version of the persisted material selected by the exact name and digest. */
+  void setAbeMaterialVersion(const ControllerVersion& version);
+  const ControllerVersion& getAbeMaterialVersion() const;
   void setControllerCertificate(const ndn::Name& certificate);
   const ndn::Name& getControllerCertificate() const;
   void setSignature(const ndn::Buffer& signature);
@@ -80,6 +84,11 @@ public:
   const std::vector<RevocationTarget>& getRevocations() const;
 
   bool validate(uint64_t nowMs) const;
+  /** Remaining authorization time under trusted receiver limits, or zero on rejection. */
+  uint64_t remainingLeaseMs(uint64_t nowMs, uint64_t maxLeaseMs,
+                            uint64_t maxClockSkewMs) const;
+  /** Accept an identical status, or extend an unchanged policy after a fresh validated query. */
+  bool canReplaceSameVersion(const PolicyStatusData& current, bool freshQuery) const;
   ndn::Block wireEncode() const;
   bool wireDecode(const ndn::Block& block);
 
@@ -91,6 +100,7 @@ private:
   std::string policyDigest_;
   ndn::Name abePublicParametersName_;
   std::string abePublicParametersDigest_;
+  ControllerVersion m_abeMaterialVersion;
   ndn::Name controllerCertificate_;
   ndn::Buffer signature_;
   std::vector<RevocationTarget> revocations_;

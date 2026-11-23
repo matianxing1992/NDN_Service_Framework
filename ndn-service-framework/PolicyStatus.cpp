@@ -180,6 +180,21 @@ const std::string& PolicyStatusData::getAbePublicParametersDigest() const
 {
   return abePublicParametersDigest_;
 }
+
+void
+PolicyStatusData::setAbeMaterialVersion(const ControllerVersion& version)
+{
+  if (!version.isValid())
+    throw std::invalid_argument("invalid ABE material version");
+  m_abeMaterialVersion = version;
+}
+
+const ControllerVersion&
+PolicyStatusData::getAbeMaterialVersion() const
+{
+  return m_abeMaterialVersion;
+}
+
 void PolicyStatusData::setControllerCertificate(const ndn::Name& value) { controllerCertificate_ = value; }
 const ndn::Name& PolicyStatusData::getControllerCertificate() const { return controllerCertificate_; }
 void PolicyStatusData::setSignature(const ndn::Buffer& value) { signature_ = value; }
@@ -204,6 +219,10 @@ PolicyStatusData::validate(uint64_t nowMs) const
   if (!abePublicParametersDigest_.empty() &&
       !isSha256Digest(abePublicParametersDigest_))
     return false;
+  if (m_abeMaterialVersion.isValid() &&
+      (abePublicParametersName_.empty() || !abePublicParametersName_[-1].isVersion() ||
+       m_abeMaterialVersion.compare(controllerVersion_) > 0))
+    return false;
   for (size_t i = 0; i < revocations_.size(); ++i) {
     if (!revocations_[i].isValid())
       return false;
@@ -224,6 +243,39 @@ PolicyStatusData::validate(uint64_t nowMs) const
   return true;
 }
 
+uint64_t
+PolicyStatusData::remainingLeaseMs(uint64_t nowMs, uint64_t maxLeaseMs,
+                                   uint64_t maxClockSkewMs) const
+{
+  if (!validate(nowMs) || validUntilMs_ - validFromMs_ > maxLeaseMs)
+    return 0;
+  const auto remaining = validUntilMs_ - nowMs;
+  return remaining > maxClockSkewMs ? remaining - maxClockSkewMs : 0;
+}
+
+bool
+PolicyStatusData::canReplaceSameVersion(const PolicyStatusData& current, bool freshQuery) const
+{
+  if (controllerVersion_ != current.controllerVersion_)
+    return false;
+  const bool identicalWindow = validFromMs_ == current.validFromMs_ &&
+                               validUntilMs_ == current.validUntilMs_;
+  if (!identicalWindow &&
+      (!freshQuery || validFromMs_ < current.validFromMs_ || validUntilMs_ <= current.validUntilMs_))
+    return false;
+
+  try {
+    auto normalized = *this;
+    normalized.setValidity(current.validFromMs_, current.validUntilMs_);
+    const auto candidateWire = normalized.wireEncode();
+    const auto currentWire = current.wireEncode();
+    return candidateWire == currentWire;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
 ndn::Block
 PolicyStatusData::wireEncode() const
 {
@@ -240,6 +292,12 @@ PolicyStatusData::wireEncode() const
                                          abePublicParametersName_.toUri()));
     block.push_back(ndn::makeStringBlock(AbePublicParametersDigestType,
                                          abePublicParametersDigest_));
+    if (m_abeMaterialVersion.isValid()) {
+      ndn::Block materialVersion(ABE_MATERIAL_VERSION_TYPE);
+      materialVersion.push_back(m_abeMaterialVersion.wireEncode());
+      materialVersion.encode();
+      block.push_back(materialVersion);
+    }
   }
   block.push_back(ndn::makeStringBlock(ControllerCertificateType,
                                        controllerCertificate_.toUri()));
@@ -275,6 +333,13 @@ PolicyStatusData::wireDecode(const ndn::Block& block)
           ndn::readString(take(elements, index, AbePublicParametersNameType)));
       decoded.abePublicParametersDigest_ = ndn::readString(
           take(elements, index, AbePublicParametersDigestType));
+      if (index < elements.size() && elements[index].type() == ABE_MATERIAL_VERSION_TYPE) {
+        const auto& materialVersion = elements[index++];
+        materialVersion.parse();
+        if (materialVersion.elements().size() != 1 ||
+            !decoded.m_abeMaterialVersion.wireDecode(materialVersion.elements().front()))
+          return false;
+      }
     }
     decoded.controllerCertificate_ = ndn::Name(
         ndn::readString(take(elements, index, ControllerCertificateType)));
