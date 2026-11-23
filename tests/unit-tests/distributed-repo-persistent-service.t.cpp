@@ -3071,6 +3071,36 @@ struct OwnedPacketFixture
   }
 
   void
+  useLargeDigestPackets(const ndn::Name& prefix = ndn::Name("/provider/a/kv"))
+  {
+    request.schemaVersion = 2;
+    packets.clear();
+    original.clear();
+    auto& reference = request.reference;
+    auto& metadata = *reference.packetSetMetadata;
+    reference.objectName = metadata.objectName = ndn::Name(prefix).append("manifest").toUri();
+    metadata.packetNames.clear();
+    metadata.packetOffsets = {0};
+    const std::vector<uint8_t> content(6144, 0x73);
+    for (unsigned i = 0; i < 4096; ++i) {
+      const auto name = i == 0 ? ndn::Name(reference.objectName) :
+        ndn::Name(prefix).appendSegment(i);
+      ndn::Data packet{name};
+      packet.setContent(ndn::span<const uint8_t>(content));
+      keys.sign(packet, ndn::security::signingWithSha256());
+      const auto& wire = packet.wireEncode();
+      packets.emplace_back(wire.begin(), wire.end());
+      original.insert(original.end(), wire.begin(), wire.end());
+      metadata.packetNames.push_back(name.toUri(ndn::name::UriFormat::ALTERNATE));
+      metadata.packetOffsets.push_back(original.size());
+    }
+    metadata.size = reference.expectedSize = original.size();
+    metadata.sha256 = reference.expectedSha256 = sha256(original);
+    BOOST_REQUIRE_GT(reference.expectedSize, 8U << 20);
+    BOOST_REQUIRE_LE(reference.expectedSize, 32U << 20);
+  }
+
+  void
   usePacketSpool(bool alterStagedBytes = false)
   {
     class AlteredRangeSource : public detail::DataReferencePacketSource
@@ -3288,30 +3318,8 @@ BOOST_AUTO_TEST_CASE(OwnedSpoolRechecksExistingPayloadBeforePublishingAnObject)
 BOOST_AUTO_TEST_CASE(LargeDigestOwnedUploadPreservesOriginalWireAndRecoveryManifest)
 {
   OwnedPacketFixture fixture(FilesystemRecoveryPolicy::KEEP_UNCONFIRMED, 64U << 20);
-  fixture.request.schemaVersion = 2;
-  fixture.packets.clear();
-  fixture.original.clear();
-  auto& reference = fixture.request.reference;
-  auto& metadata = *reference.packetSetMetadata;
-  metadata.packetNames.clear();
-  metadata.packetOffsets = {0};
-  const std::vector<uint8_t> content(6144, 0x73);
-  for (unsigned i = 0; i < 4096; ++i) {
-    const auto name = i == 0 ? ndn::Name(reference.objectName) :
-      ndn::Name("/provider/a/kv").appendSegment(i);
-    ndn::Data packet{name};
-    packet.setContent(ndn::span<const uint8_t>(content));
-    fixture.keys.sign(packet, ndn::security::signingWithSha256());
-    const auto& wire = packet.wireEncode();
-    fixture.packets.emplace_back(wire.begin(), wire.end());
-    fixture.original.insert(fixture.original.end(), wire.begin(), wire.end());
-    metadata.packetNames.push_back(name.toUri(ndn::name::UriFormat::ALTERNATE));
-    metadata.packetOffsets.push_back(fixture.original.size());
-  }
-  metadata.size = reference.expectedSize = fixture.original.size();
-  metadata.sha256 = reference.expectedSha256 = sha256(fixture.original);
-  BOOST_REQUIRE_GT(reference.expectedSize, 8U << 20);
-  BOOST_REQUIRE_LE(reference.expectedSize, 32U << 20);
+  fixture.useLargeDigestPackets();
+  const auto& metadata = *fixture.request.reference.packetSetMetadata;
   fixture.node->setDataReferenceSpoolFetcher([&](const RepoDataReference&) {
     ++fixture.fetches;
     auto spool = std::make_shared<detail::FaceDataReferencePacketSpool>(
@@ -4365,6 +4373,98 @@ BOOST_AUTO_TEST_CASE(ManifestWriteWithStaleProofRemainsHiddenAfterReopen)
   BOOST_CHECK_EQUAL(erased.state, "DELETED");
   BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
   BOOST_CHECK(!fixture.node->core().has(name));
+}
+
+BOOST_AUTO_TEST_CASE(LargeOriginalStorageRestartChecksPendingAndCorruptBytes)
+{
+  OwnedPacketFixture fixture(FilesystemRecoveryPolicy::KEEP_UNCONFIRMED, 64U << 20);
+  fixture.useLargeDigestPackets();
+  const auto& reference = fixture.request.reference;
+  const RepoUserStorageAdmission admission{
+    RepoUserStorageAdmissionMode::MANIFEST_V1, std::array<uint8_t, 32>{}};
+  const auto submit = [&](const std::function<void()>& requireCurrent) {
+    return RepoNodeTestAccess::insertOwnedSpool(*fixture.node, fixture.request,
+      fixture.packets.size(), [&](std::size_t index) { return fixture.packets.at(index); },
+      [&](uint64_t offset, std::size_t length) {
+        return std::vector<uint8_t>(fixture.original.begin() + offset,
+                                    fixture.original.begin() + offset + length);
+      }, requireCurrent, admission);
+  };
+
+  const auto handler = std::this_thread::get_id();
+  const auto failed = submit([&] {
+    if (std::this_thread::get_id() == handler && fixture.node->core().has(reference.objectName))
+      throw std::runtime_error("test-proof-expired-after-physical-commit");
+  });
+  BOOST_REQUIRE_EQUAL(failed.state, "FAILED");
+  BOOST_REQUIRE_EQUAL(failed.message, "test-proof-expired-after-physical-commit");
+  BOOST_REQUIRE(fixture.node->core().has(reference.objectName));
+  fixture.provider.reset();
+  fixture.node.reset();
+  BOOST_TEST_MESSAGE("repo restart pending begin");
+  fixture.open();
+  BOOST_TEST_MESSAGE("repo restart pending end");
+
+  const ndn::Data first{ndn::Block(ndn::span<const uint8_t>(fixture.packets.front()))};
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+  BOOST_CHECK_GT(fixture.usage().reservedBytes, fixture.original.size());
+  BOOST_CHECK_THROW(fixture.node->getDataPacket(ndn::Interest(first.getName())), std::exception);
+  BOOST_CHECK_THROW(fixture.node->getDataPacket(ndn::Interest(first.getFullName())), std::exception);
+  const RepoUserStorageDeleteRequest cleanup{1, "large-restart-cleanup", reference.objectName,
+    fixture.request.storageBinding.ownerEpoch};
+  const auto erased = RepoUserStorageDeleteReply::fromJson(toString(
+    fixture.node->handleUserStorageDelete(toBytes(cleanup.toJson()), "/owner/a")));
+  BOOST_REQUIRE_EQUAL(erased.state, "DELETED");
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+
+  fixture.request.operationId = "large-restart-new-write";
+  fixture.useLargeDigestPackets(ndn::Name("/provider/a/kv-committed"));
+  const RepoUserStorageGrantRequest grant{1, "large-restart-grant", "/provider/a",
+    reference.objectName, OwnedPacketFixture::now() + 60000};
+  const auto granted = RepoUserStorageGrantReply::fromJson(toString(
+    fixture.node->handleUserStorageGrant(toBytes(grant.toJson()), "/owner/a")));
+  fixture.request.storageBinding = {1, "/owner/a", grant.grantId, granted.grant.ownerEpoch};
+  const ndn::Data committedFirst{ndn::Block(ndn::span<const uint8_t>(fixture.packets.front()))};
+  const auto written = submit([] {});
+  BOOST_REQUIRE_MESSAGE(written.state == "DONE", written.message);
+  fixture.node.reset();
+  BOOST_TEST_MESSAGE("repo restart committed begin");
+  fixture.open();
+  BOOST_TEST_MESSAGE("repo restart committed end");
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+  BOOST_CHECK_GT(fixture.usage().committedBytes, fixture.original.size());
+  BOOST_CHECK(fixture.node->getRange(reference.objectName, {0, reference.expectedSize}) ==
+              fixture.original);
+  BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(committedFirst.getFullName())) ==
+              fixture.packets.front());
+  fixture.node.reset();
+
+  const auto& digest = reference.expectedSha256;
+  const auto payload = fixture.temp.path() / "objects" / "payloads" / "sha256" /
+    digest.substr(0, 2) / digest;
+  const auto replaceLastByte = [&](uint8_t value) {
+    std::fstream stream(payload, std::ios::binary | std::ios::in | std::ios::out);
+    stream.seekp(-1, std::ios::end);
+    stream.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    stream.close();
+    BOOST_REQUIRE(stream);
+  };
+  replaceLastByte(fixture.original.back() ^ 1);
+  BOOST_TEST_MESSAGE("repo restart corrupt begin");
+  BOOST_CHECK_EXCEPTION(fixture.open(), std::runtime_error, [&](const auto& error) {
+    const std::string_view message(error.what());
+    constexpr std::string_view reason =
+      "repo-artifact-byte-verification-failed: stored bytes do not match full reference digest: ";
+    return message.compare(0, reason.size(), reason) == 0 &&
+           ndn::Name(std::string(message.substr(reason.size()))) == ndn::Name(reference.objectName);
+  });
+  BOOST_TEST_MESSAGE("repo restart corrupt end");
+  BOOST_CHECK(!fixture.node);
+
+  replaceLastByte(fixture.original.back());
+  fixture.open();
+  BOOST_CHECK(fixture.node->getRange(reference.objectName, {0, reference.expectedSize}) ==
+              fixture.original);
 }
 
 BOOST_AUTO_TEST_CASE(ManifestWriteKeepsCommitWhenReceiptProofBecomesStale)

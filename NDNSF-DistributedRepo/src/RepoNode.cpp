@@ -372,8 +372,13 @@ RepoNode::reconcilePersistentUserStorage()
   for (const auto& manifest : m_core.list()) {
     // Ordinary artifact receipts keep their existing accounting and authorization.
     if (manifest.objectType == "original-packet-set") {
-      inventory.push_back({measurePersistentUserStorageObject(manifest),
-        manifest.generation == 0 || manifest.operationId.empty()});
+      try {
+        inventory.push_back({measurePersistentUserStorageObject(manifest),
+          manifest.generation == 0 || manifest.operationId.empty()});
+      }
+      catch (const std::runtime_error& error) {
+        throw std::runtime_error(std::string(error.what()) + ": " + manifest.objectName);
+      }
     }
   }
   for (const auto& pending : m_artifactMetadataStore->pendingUserStorageWrites(m_repoNode)) {
@@ -390,11 +395,17 @@ RepoNode::reconcilePersistentUserStorage()
     if (measured.wireSha256 != pending.object.wireSha256 ||
         measured.generation != pending.object.generation ||
         measured.payloadWireBytes != pending.object.payloadWireBytes) {
-      throw std::runtime_error("repo-user-storage-inventory-conflict: pending publication mismatch");
+      throw std::runtime_error("repo-user-storage-inventory-conflict: pending publication mismatch: " +
+                               pending.object.objectName);
     }
-    const auto durable = m_core.confirmDurablePublicationIfCurrent(
-      m_core.getManifest(measured.objectName));
-    physical->object = measurePersistentUserStorageObject(durable);
+    try {
+      const auto durable = m_core.confirmDurablePublicationIfCurrent(
+        m_core.getManifest(measured.objectName));
+      physical->object = measurePersistentUserStorageObject(durable);
+    }
+    catch (const std::runtime_error& error) {
+      throw std::runtime_error(std::string(error.what()) + ": " + pending.object.objectName);
+    }
     (void)m_artifactMetadataStore->settleUserStorageReservation(m_repoNode,
       pending.grant.ownerIdentity, pending.operationId, measured.manifestBytes, nowMilliseconds());
     if (pending.admission.mode == RepoUserStorageAdmissionMode::LEGACY) {
