@@ -23,10 +23,10 @@ Keep credentials out of this skill and evidence.
 
 ## Locate the task and its owner
 
-Run `git rev-parse --show-toplevel` in the target checkout. Resolve every repository
-path below from that root, never from the installed personal skill directory.
-Read its AGENTS.md and the selected feature's relevant contracts/tasks/evidence.
-Optional historical files may be absent in a fresh checkout.
+Identify the target checkout, authorized workload, current deployment owner and
+applicable project rules. Use the task's own inputs to establish model, runtime,
+configuration and acceptance identity. The operational guidance below travels
+with this skill package.
 
 Respect the current request: documentation or source delivery does not authorize
 builds, SSH polling or experiments. Reuse existing authorization for actual runs.
@@ -34,19 +34,16 @@ Do not launch historical jobs merely because a guide records them.
 
 ## Read the maintained guide for the operation
 
-| Operation | Repository path |
+| Operation | Bundled guidance |
 | --- | --- |
-| Resource choice, prepare/use, persistent state, batches, SSH and closeout | `Experiments/TigerCluster/docs/portable-deployment.md` |
-| Base/application SIF build, checkpoint reuse and candidate qualification | `Experiments/TigerCluster/docs/sif-build.md` |
-| Historical results, resource measurements and known failure boundaries | `Experiments/TigerCluster/docs/lessons-and-evidence.md` |
-| Installed MiniNDN CPU gate | `Experiments/guides/local-validation.md` |
-| Installation and incremental native development | `Experiments/guides/installation.md`, `local-development.md` in the same directory |
-| Maintained scripts and ownership | `Experiments/TigerCluster/README.md` |
+| Resource choice, native physical NFD deployment and closeout | [Portable deployment](references/portable-deployment.md) |
+| SIF construction, staged publication and storage failures | [SIF build and delivery](references/rootless-container-build.md) |
+| Qwen cold/warm, strict CPU oracle and failure lessons | [Qwen experiments](references/qwen-scale-experiments.md) |
+| Choosing the smallest check after a failure | [Retry checks](references/pre-tiger-no-repeat-checklist.md) |
 
-Experiments holds the maintained operational guidance; project rules remain in AGENTS.md.
-Legacy files in references/ are migration pointers, not additional checklists.
-Inspect the actual CLI/schema and first caller/consumer before using an option.
-Use the existing cluster owner and Waf packer; do not add a parallel launcher.
+Use the installed owner and the application's maintained Waf packer. Inspect
+the actual CLI/schema and the failing caller or consumer before choosing options.
+The support scripts in this package provide bounded discovery and artifact checks.
 
 ## Apply the operational boundaries
 
@@ -62,7 +59,9 @@ Use the existing cluster owner and Waf packer; do not add a parallel launcher.
   container mounts and quota; df and application cache limits are not quota.
 - SIF builds use Apptainer 1.5.3 and `--expected-apptainer 1.5.3`; do not weaken
   that check. Build and inspect the actual candidate's native SDK/ELF closure.
-- Shared changes pass focused native checks and installed MiniNDN CPU cold/warm.
+- Shared changes pass applicable focused native and CPU cold/warm gates. If the
+  task selects physical Tiger only, run those checks on Tiger. Connect the two
+  managed NFD instances directly and verify their face, routes and forwarding.
   Before 27B GPU, pass same-candidate Tiger 0.6B GPU cold/warm with independent
   output/state checks, actual CUDA evidence and normal cleanup.
 - Separate build, PREPARED, inference, oracle and cleanup results. Keep the first
