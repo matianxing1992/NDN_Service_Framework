@@ -74,6 +74,92 @@ def model_ref() -> ModelRef:
     )
 
 
+@pytest.mark.parametrize("explicit_generation_id", [False, True])
+@pytest.mark.parametrize("transport", ["inline", "repo"])
+@pytest.mark.parametrize("terminal", ["PENDING", "SUCCEEDED", "FAILED", "REGISTER_FAILED"])
+def test_native_token_stream_forwards_options_and_preserves_admission(
+        explicit_generation_id, transport, terminal):
+    core = CanonicalAPPClient.__new__(CanonicalAPPClient)
+    core._network_client = None
+    core._native_client = object()
+    core._native_splitter = object()
+    core._native_model = SimpleNamespace(
+        model_name="YOLO26n", content_digest=digest("model"),
+        semantics_digest=digest("semantics"), source_revision="checkpoint-r1",
+        adapter=SimpleNamespace(input_schema_digest=input_schema(),
+                                options_schema_digest=options_schema()))
+    core._native_runtime = SimpleNamespace(contract=SimpleNamespace(
+        generation_mode="TOKEN_STREAMING", task_name="object-detection"))
+    generation_id = "0123456789abcdef0123456789abcdef"
+    wire = json.dumps({"generationId": generation_id,
+                       "stateSuccessorMap": "stage0/a=stage0/b"}).encode()
+    value = ApplicationInput.from_inline(
+        task_name="object-detection", input_schema_digest=input_schema(),
+        options_schema_digest=options_schema(), payload=b"input", options=wire)
+    if transport == "repo":
+        value = ApplicationInput.from_repo_ref(
+            task_name=value.task_name, input_schema_digest=input_schema(),
+            options_schema_digest=options_schema(), options=wire, reference=repo_reference())
+    observed = []
+    completed = []
+    failed = []
+    cancelled = []
+
+    class Handle:
+        status_name = terminal
+
+        def observe(self, callback):
+            if terminal == "REGISTER_FAILED":
+                raise RuntimeError("observer registration failed")
+            if terminal != "PENDING":
+                callback({"terminal": True, "payload": b""})
+
+        def result(self, timeout):
+            assert terminal == "SUCCEEDED"
+            assert timeout == 0
+            return SimpleNamespace(payload=b"native-result")
+
+        def cancel(self):
+            cancelled.append(True)
+
+    def submit(payload, **kwargs):
+        observed.append((payload, kwargs))
+        assert "on_event" not in kwargs
+        return Handle()
+
+    core.request_native_payload = submit
+    core.request_native_reference = submit
+    request = dict(
+        model=model_ref(), task=task_ref(), input=value, timeout_ms=1000,
+        stream_options=({"generation_id": generation_id} if explicit_generation_id else None),
+        on_complete=completed.append, on_error=failed.append,
+        options=TaskOptions(schema_digest=options_schema(), payload=wire))
+    if terminal == "REGISTER_FAILED":
+        with pytest.raises(RuntimeError, match="observer registration failed"):
+            core.request_streaming(**request)
+        assert cancelled == [True]
+    else:
+        facade = core.request_streaming(**request)
+        assert facade.native_handle.status_name == terminal
+        assert completed == ([b"native-result"] if terminal == "SUCCEEDED" else [])
+        assert len(failed) == (1 if terminal == "FAILED" else 0)
+        if failed:
+            assert failed[0]["status"] == "FAILED"
+        assert cancelled == []
+    assert len(observed) == 1
+    assert observed[0][0] == (b"input" if transport == "inline" else value.repo_reference)
+    assert observed[0][1]["application_options"] == wire
+    assert observed[0][1]["options"].output_mode == "TOKEN_STREAMING"
+    assert observed[0][1]["options"].generation is None
+    assert list(observed[0][1]["options"].stream.generation_id) == (
+        list(bytes.fromhex(generation_id)) if explicit_generation_id else [0] * 16)
+    with pytest.raises(RuntimeError, match="NATIVE_OPTIONS_IDENTITY_MISMATCH"):
+        core.request_streaming(
+            model=model_ref(), task=task_ref(), input=value, timeout_ms=1000,
+            options=TaskOptions(schema_digest=options_schema(), payload=b"{}"))
+    assert len(observed) == 1
+
+
 def repo_reference() -> dict:
     return {
         "source": "repo-manifest",

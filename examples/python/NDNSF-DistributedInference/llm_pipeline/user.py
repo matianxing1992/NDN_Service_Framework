@@ -110,14 +110,33 @@ def _cancel_invocation_from_worker(invocation) -> None:
 from ndnsf import StreamedInvocationOptions, StreamedInvocationError
 
 
-def _native_qwen_options(args, *, generation_id: str,
-                         tokenizer_digest: str, max_new_tokens: int):
-    """Build native generation/stream options without planner state.
+def _native_generation_options_template(configuration: str) -> dict:
+    """Read operator options without reconstructing the native contract."""
+    config_path = Path(configuration).expanduser().resolve()
 
-    The native requester allocates no Python callback or strategy.  The
-    deterministic generation identity is supplied in both DTOs and in the
-    application options so the C++ owner can compare them after submission.
-    """
+    def read_object(path: Path) -> dict:
+        with path.open("rb") as source:
+            wire = source.read(4 * 1024 * 1024 + 1)
+        if len(wire) > 4 * 1024 * 1024:
+            raise ValueError("native generation options exceed 4 MiB")
+        value = json.loads(wire.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("native generation configuration must be an object")
+        return value
+
+    configuration = read_object(config_path)
+    request = configuration.get("request", {})
+    if not isinstance(request, dict):
+        raise ValueError("native requester request must be an object")
+    if "options_file" not in request:
+        return {}
+    path = APPClient._native_config_path(
+        config_path.parent, request["options_file"], "generation options")
+    return read_object(path)
+
+
+def _native_qwen_options(args, *, generation_id: str, max_new_tokens: int):
+    """Build stream limits; C++ derives generation from application options."""
     from ndnsf import _ndnsf
 
     generation_id = str(generation_id).strip().lower()
@@ -136,25 +155,6 @@ def _native_qwen_options(args, *, generation_id: str,
     stream.callback_queue_capacity = max(16, stream.max_events)
     stream.reorder_capacity = max(stream.interest_window, stream.max_events)
     options.stream = stream
-    generation = _ndnsf.NativeGenerationExecutionContractV1()
-    generation.enabled = True
-    generation.mode = "TOKEN_STREAMING"
-    generation.max_generated_tokens = int(max_new_tokens)
-    generation.token_input_name = "input_ids"
-    generation.state_input_names = [
-        "attention_kv_in", "recurrent_state_in", "convolution_state_in"]
-    generation.state_output_names = [
-        "attention_kv_out", "recurrent_state_out", "convolution_state_out"]
-    generation.eos_token_ids = [2]
-    generation.tokenizer_digest = str(tokenizer_digest)
-    generation.sampling_mode = "Greedy"
-    generation.sampling_temperature = 0.0
-    generation.sampling_top_k = 1
-    generation.sampling_top_p = 1.0
-    generation.sampling_repetition_penalty = 1.0
-    generation.sampling_seed = 1750001
-    generation.generation_id = generation_id
-    options.generation = generation
     return options
 
 
@@ -245,7 +245,6 @@ def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
     options = _native_qwen_options(
         args,
         generation_id=generation_id,
-        tokenizer_digest=digest,
         max_new_tokens=int(max_new_tokens or args.max_new_tokens),
     )
     if conversation is not None:
@@ -253,15 +252,17 @@ def _native_qwen_request(client, args, payload: bytes, *, request_id: str,
             client, conversation, generation_id=generation_id,
             canonical_token_ids=tuple(int(token) for token in (
                 canonical_token_ids or ())))
-    application_options = json.dumps({
+    application_values = dict(getattr(args, "_native_options_template", {}))
+    application_values.pop("generation_id", None)
+    application_values.update({
         "generationId": generation_id,
         "maxNewTokens": int(max_new_tokens or args.max_new_tokens),
-        "eosTokenIds": [2],
         "tokenizerDigest": digest,
         "useCache": True,
         "outputMode": "TOKEN_STREAMING",
-        "greedy": True,
-    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    })
+    application_options = json.dumps(
+        application_values, sort_keys=True, separators=(",", ":")).encode("utf-8")
     request_kwargs = {
         "options": options,
         "task_name": "generate",
@@ -4200,6 +4201,8 @@ def main() -> int:
     _publish_identity_certificate_and_wait(client, args)
     if args.native_requester_config:
         client.configure_native_requester_from_config(
+            args.native_requester_config)
+        args._native_options_template = _native_generation_options_template(
             args.native_requester_config)
         print(
             "LLM_PIPELINE_NATIVE_REQUESTER_CONFIGURED",

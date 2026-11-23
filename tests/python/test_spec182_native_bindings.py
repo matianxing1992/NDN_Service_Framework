@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import hashlib
 import json
+import tempfile
 import unittest
 import sys
 from types import SimpleNamespace
@@ -257,7 +258,41 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             ack_timeout_ms=100,
             max_new_tokens=2,
             native_requester_config="operator-pinned.json",
+            _native_options_template={"eosTokenIds": [2]},
         )
+        template = {
+            "generation_id": "f" * 32,
+            "stateInputNames": [f"stage{rank}/state{family}" for rank in range(4)
+                                for family in range(3)],
+            "stateOutputNames": [f"stage{rank}/next{family}" for rank in range(4)
+                                 for family in range(3)],
+            "eosTokenIds": [9, 10],
+            "sampling": {"mode": "SeededTopKTopP", "temperature": 0.7,
+                         "topK": 3, "topP": 0.8, "seed": 42},
+            "stopStrings": ["stop"],
+        }
+        template["stateSuccessorMap"] = ",".join(
+            left + "=" + right for left, right in zip(
+                template["stateInputNames"], template["stateOutputNames"]))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = root / "requester.json"
+            configuration.write_text(json.dumps({"request": {"options_file": "options.json"}}))
+            options_file = root / "options.json"
+            options_file.write_text(json.dumps(template))
+            args._native_options_template = user._native_generation_options_template(
+                str(configuration))
+            self.assertEqual(args._native_options_template, template)
+            options_file.write_text("[]")
+            with self.assertRaisesRegex(ValueError, "must be an object"):
+                user._native_generation_options_template(str(configuration))
+            options_file.write_bytes(b" " * (4 * 1024 * 1024 + 1))
+            with self.assertRaisesRegex(ValueError, "exceed 4 MiB"):
+                user._native_generation_options_template(str(configuration))
+            configuration.write_text(json.dumps({
+                "request": {"options_file": "../outside-options.json"}}))
+            with self.assertRaisesRegex(ValueError, "escapes config directory"):
+                user._native_generation_options_template(str(configuration))
         result = user._native_qwen_request(
             Client(), args, b"qwen-context",
             request_id="0123456789abcdef0123456789abcdef")
@@ -267,12 +302,16 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             result.request_id, "0123456789abcdef0123456789abcdef")
         self.assertEqual(
             observed["request_id"], "0123456789abcdef0123456789abcdef")
-        self.assertEqual(
-            observed["options"].generation.tokenizer_digest,
-            tokenizer_digest)
+        self.assertIsNone(observed["options"].generation)
         application_options = json.loads(
             observed["application_options"].decode("utf-8"))
         self.assertEqual(application_options["tokenizerDigest"], tokenizer_digest)
+        for key, value in template.items():
+            if key != "generation_id":
+                self.assertEqual(application_options[key], value)
+        self.assertNotIn("generation_id", application_options)
+        self.assertNotEqual(application_options["generationId"], template["generation_id"])
+        self.assertEqual(args._native_options_template, template)
 
         args.native_requester_config = "operator-pinned.json"
         with self.assertRaisesRegex(RuntimeError, "operator-pinned tokenizer digest"):
@@ -326,6 +365,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             ack_timeout_ms=100,
             max_new_tokens=2,
             native_requester_config="operator-pinned.json",
+            _native_options_template={"eosTokenIds": [2]},
         )
         result = user._native_qwen_request(
             Client(), args, b"qwen-context",
@@ -402,6 +442,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             ack_timeout_ms=100,
             max_new_tokens=2,
             native_requester_config="operator-pinned.json",
+            _native_options_template={"eosTokenIds": [2]},
         )
         result = user._native_qwen_request(
             Client(), args, b"qwen-delta",
@@ -477,6 +518,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             ack_timeout_ms=100,
             max_new_tokens=2,
             native_requester_config="operator-pinned.json",
+            _native_options_template={"eosTokenIds": [2]},
             diagnostic_token_loop=False,
             automatic_planning_manifest="",
             _qwen_model_type="qwen3_5",
@@ -499,9 +541,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertEqual(outcome.stop_reason, "EOS")
         self.assertEqual(observed["request_id"], request_id)
         self.assertEqual(outcome.token_steps[0]["metadata"]["streamEventCount"], 1)
-        self.assertEqual(
-            observed["options"].generation.tokenizer_digest,
-            tokenizer_digest)
+        self.assertIsNone(observed["options"].generation)
         application_options = json.loads(
             observed["application_options"].decode("utf-8"))
         self.assertEqual(application_options["tokenizerDigest"], tokenizer_digest)
@@ -563,6 +603,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             ack_timeout_ms=100,
             max_new_tokens=2,
             native_requester_config="operator-pinned.json",
+            _native_options_template={"eosTokenIds": [2]},
             diagnostic_token_loop=False,
             automatic_planning_manifest="",
             _qwen_model_type="qwen3_5",
@@ -622,6 +663,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             timeout_ms=1000,
             max_new_tokens=2,
             native_requester_config="operator-pinned.json",
+            _native_options_template={"eosTokenIds": [2]},
             diagnostic_token_loop=False,
             automatic_planning_manifest="",
             _qwen_model_type="qwen3_5",
@@ -681,6 +723,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             ack_timeout_ms=100,
             max_new_tokens=1,
             native_requester_config="operator-pinned.json",
+            _native_options_template={"eosTokenIds": [2]},
             diagnostic_token_loop=False,
             automatic_planning_manifest="",
             _qwen_model_type="qwen3_5",
@@ -735,6 +778,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             ack_timeout_ms=100,
             max_new_tokens=1,
             native_requester_config="operator-pinned.json",
+            _native_options_template={"eosTokenIds": [2]},
             diagnostic_token_loop=False,
             automatic_planning_manifest="",
             _qwen_model_type="qwen3_5",
@@ -764,6 +808,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             timeout_ms=1000,
             max_new_tokens=1,
             native_requester_config="operator-pinned.json",
+            _native_options_template={"eosTokenIds": [2]},
             diagnostic_token_loop=True,
             _qwen_model_type="qwen3_5",
         )

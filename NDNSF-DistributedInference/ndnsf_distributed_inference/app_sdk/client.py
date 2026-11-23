@@ -1011,14 +1011,11 @@ class APPClient:
                                   conversation=None, canonical_token_ids=None,
                                   objective=None, constraints=None,
                                   request_id: str = "", strategy=None):
-        """Route a stream-only request through the native handle owner.
+        """Forward stream options and input to the configured native owner.
 
-        The native runtime must already describe a non-generation stream.  A
-        model-specific token-generation contract needs adapter-owned fields
-        (token/state names and EOS policy) and therefore remains on the
-        explicit native Qwen entry until that contract is supplied as a native
-        value object.  Conversation turns are likewise rejected here rather
-        than silently handed back to the Python planner.
+        For TOKEN_STREAMING, C++ derives and validates the generation contract
+        from the application's options bytes. Conversation turns use the
+        explicit native continuation entry.
         """
         from ..adapters import InputTransportMode
         from .placement import TaskOptions
@@ -1082,9 +1079,7 @@ class APPClient:
             actual = str(getattr(runtime_contract, contract_field, "") or "")
             if expected and actual and expected != actual:
                 raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
-        if str(getattr(runtime_contract, "generation_mode", "") or "") == "TOKEN_STREAMING":
-            raise RuntimeError(
-                "native streaming requires an adapter-owned generation contract")
+        generation_mode = str(getattr(runtime_contract, "generation_mode", "") or "")
         if options is not None:
             if not isinstance(options, TaskOptions):
                 raise TypeError("native streaming options must be TaskOptions")
@@ -1096,8 +1091,10 @@ class APPClient:
         raw = (stream_options.as_dict()
                if callable(getattr(stream_options, "as_dict", None))
                else dict(stream_options or {}))
-        generation_id = str(raw.get("generation_id", "") or uuid.uuid4().hex)
-        if (len(generation_id) != 32 or generation_id != generation_id.lower()
+        generation_id = str(raw.get("generation_id", "") or "")
+        if not generation_id and generation_mode != "TOKEN_STREAMING":
+            generation_id = uuid.uuid4().hex
+        if generation_id and (len(generation_id) != 32 or generation_id != generation_id.lower()
                 or any(char not in "0123456789abcdef" for char in generation_id)):
             raise ValueError("native stream generation_id must be lowercase 16-byte hex")
         if int(raw.get("attempt_epoch", 1)) != 1:
@@ -1110,7 +1107,10 @@ class APPClient:
             native_stream.mode = _ndnsf.NativeInvocationMode.TARGETED
         else:
             raise ValueError("native stream mode must be Normal or Targeted")
-        native_stream.generation_id = list(bytes.fromhex(generation_id))
+        # A zero generation ID lets C++ adopt the ID in generation options or
+        # allocate one. Do not invent a conflicting Python ID for that path.
+        if generation_id:
+            native_stream.generation_id = list(bytes.fromhex(generation_id))
         native_stream.attempt_epoch = 1
         # NativeInferenceClient allocates the request-scoped stream epoch and
         # event-key commitment after the owner request identity exists.  Keep
@@ -1130,28 +1130,16 @@ class APPClient:
         native_options.timeout_ms = timeout_ms
         native_options.ack_timeout_ms = max(1, min(5_000, timeout_ms // 2))
         native_options.task_name = input.task_name
-        native_options.output_mode = "STREAM"
+        native_options.output_mode = (
+            "TOKEN_STREAMING" if generation_mode == "TOKEN_STREAMING" else "STREAM")
         native_options.stream = native_stream
         effective_request_id = str(request_id or ("ndnsf-di-" + uuid.uuid4().hex))
-        callback = None
-        # Construct the facade before submission so the C++ observer can only
-        # target a live owner, even when a request completes immediately.
-        facade = NativeStreamingHandle(
-            None,
-            timeout_ms=timeout_ms,
-            on_event=on_event,
-            on_complete=on_complete,
-            on_error=on_error,
-            generation_id=generation_id,
-        )
-        callback = facade._native_event
         if input.transport_mode is InputTransportMode.REPO_REF:
             native_handle = self.request_native_reference(
                 input.repo_reference,
                 options=native_options,
                 task_name=input.task_name,
                 application_options=input.options,
-                on_event=callback,
                 request_id=effective_request_id,
             )
         else:
@@ -1160,10 +1148,26 @@ class APPClient:
                 options=native_options,
                 task_name=input.task_name,
                 application_options=input.options,
-                on_event=callback,
                 request_id=effective_request_id,
             )
-        facade._native_handle = native_handle
+        # Retained terminal events may replay synchronously on registration.
+        # Bind the native owner before exposing any observer callback.
+        facade = NativeStreamingHandle(
+            native_handle,
+            timeout_ms=timeout_ms,
+            on_event=on_event,
+            on_complete=on_complete,
+            on_error=on_error,
+            generation_id=generation_id,
+        )
+        try:
+            native_handle.observe(facade._native_event)
+        except BaseException:
+            try:
+                native_handle.cancel()
+            except BaseException:
+                pass
+            raise
         return facade
 
     def request(
