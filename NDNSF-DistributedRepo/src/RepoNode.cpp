@@ -2249,6 +2249,10 @@ RepoNode::insertWirePacketsImpl(
     std::set<std::string> uniquePacketNames;
     packetNames.reserve(packetCount);
     const ndn::Name expectedPrefix(reference.dataPrefix);
+    constexpr auto canonical = ndn::name::UriFormat::CANONICAL;
+    const ndn::name::Component sourceCategory("DATA");
+    const auto sourcePrefix = admission.mode == RepoUserStorageAdmissionMode::MANIFEST_V1
+      ? ndn::Name(expectedPrefix).append(sourceCategory).toUri(canonical) + '/' : std::string{};
     if (reference.hasFinalSegment) {
       if (expectedPrefix.empty() || reference.finalSegment < reference.firstSegment) {
         throw std::invalid_argument(
@@ -2328,7 +2332,12 @@ RepoNode::insertWirePacketsImpl(
             "repo-packet-set-invalid: Data name does not match requested segment order");
         }
       }
-      auto dataName = data.getName().toUri(ndn::name::UriFormat::CANONICAL);
+      const auto& name = data.getName();
+      // The prefix check above covers the typed object prefix. Reuse its URI for
+      // source members; root, page and legacy names keep the regular encoding.
+      auto dataName = !sourcePrefix.empty() && name.size() == expectedPrefix.size() + 2 &&
+                      name[-2] == sourceCategory && name[-1].isSegment()
+        ? sourcePrefix + name[-1].toUri(canonical) : name.toUri(canonical);
       if (reference.packetSetMetadata) {
         // validateExactPacketSet already verified uniqueness of the declared typed names.
         const auto& expected = reference.packetSetMetadata->packetNames.at(i);
