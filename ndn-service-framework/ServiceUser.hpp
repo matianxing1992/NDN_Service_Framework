@@ -750,11 +750,6 @@ namespace ndn_service_framework{
             selectAllResponderAcks(
                 const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates);
 
-            void PublishRequestV2(const std::vector<ndn::Name>& serviceProviderNames,
-                                  const ndn::Name& serviceName,
-                                  const ndn::Name& requestId,
-                                  const ndn::Buffer& payload,
-                                  const size_t& strategy=ndn_service_framework::tlv::FirstResponding);
 
             PreparedServiceRequest prepareServiceRequest(const std::string& serviceName);
 
@@ -1639,6 +1634,12 @@ namespace ndn_service_framework{
             
 
         private:
+            void PublishRequestV2(const std::vector<ndn::Name>& serviceProviderNames,
+                                  const ndn::Name& serviceName,
+                                  const ndn::Name& requestId,
+                                  const ndn::Buffer& payload,
+                                  const size_t& strategy);
+
             /** One Face-owned fetch, stopped before its PendingCall releases keys.
              * Teardown runs on Face or after the application's Face thread joins. */
             struct LargeResponseFetch
