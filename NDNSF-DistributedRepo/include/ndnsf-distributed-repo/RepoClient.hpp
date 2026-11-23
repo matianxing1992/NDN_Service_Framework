@@ -156,7 +156,11 @@ public:
     const RepoDataPublication& input, const ndn_service_framework::ManifestPublication& prepared,
     const RepoOperationOptions& options);
 
-  /** Take ownership of the local packet set and release it once its verified wire is staged. */
+  /** Take ownership of the local packet set.
+   *
+   * A client can retain verified packets within its shared budget through the queued replies.
+   * A publication using the file spool releases its local packet set after staging.
+   */
   RepoPublishResult publishPreparedManifest(
     const RepoDataPublication& input, ndn_service_framework::ManifestPublication&& prepared,
     const RepoOperationOptions& options);
