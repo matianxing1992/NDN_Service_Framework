@@ -239,6 +239,8 @@ public:
 
   const NativeGrantLeaseScope& scope() const { return m_scope; }
 
+  const std::shared_ptr<const NativeFixedPlacementCoreV1>& fixedCore() const { return m_fixedCore; }
+
 private:
   NativeGrantLeaseScope m_scope;
   std::string m_model, m_graph, m_manifest;
@@ -1749,11 +1751,18 @@ NativePlannedRequest planNativeRequestImpl(
     logPlanPhase(control.requestId, "candidate_role_copy", candidateCopyTiming);
     context.requiredExecutionCapabilities = nativePlanRequiredCapabilities(candidate);
     context.distinctProviderPairs = nativeDistinctProviderPairs(candidate);
-    // Pin the same immutable role contract through placement and validation.
-    const auto previousFixedCore = runtime.fixedRoleAssignments
-      ? runtime.fixedRoleAssignments->placementCore(runtime.requesterIdentity,
-          runtime.contract.serviceName, control.workStatistics)
-      : std::shared_ptr<const NativeFixedPlacementCoreV1>{};
+    // The authenticated conversation lease owns its role contracts even after
+    // the shorter, requester-wide placement cache evicts the cold plan.
+    std::shared_ptr<const NativeFixedPlacementCoreV1> previousFixedCore;
+    if (reusePinnedConversationPlacement) {
+      const auto& lease = *conversationTurn->grantLease;
+      if (lease.fixedContext && lease.fixedContext->scope().scopeDigest == lease.scope.scopeDigest)
+        previousFixedCore = lease.fixedContext->fixedCore();
+    }
+    if (!previousFixedCore && runtime.fixedRoleAssignments) {
+      previousFixedCore = runtime.fixedRoleAssignments->placementCore(runtime.requesterIdentity,
+        runtime.contract.serviceName, control.workStatistics);
+    }
     context.pinnedConversationDeviceBudget.clear();
     if (reusePinnedConversationPlacement && previousFixedCore) {
       for (const auto& role : roles) {

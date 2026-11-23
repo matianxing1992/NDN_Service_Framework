@@ -2535,9 +2535,15 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
       {"segment_payload_bytes", std::uint64_t{7000}}}));
     ack.ack.setProviderCapabilityOffer(fields);
   }
+  // A long cold turn can outlive the requester-wide placement cache while
+  // the authenticated conversation lease still owns the exact placement.
+  runtime.fixedRoleAssignments->clear();
+  BOOST_REQUIRE(!runtime.fixedRoleAssignments->placementCore(
+    runtime.requesterIdentity, runtime.contract.serviceName));
   const auto reused = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
     probe, preparation, admission, closure, control, input.context.deadlineMs, cancelled, &pinned);
   BOOST_CHECK(reused.sealed.core.assignment.providerByRole == pinned.providersByRole);
+  BOOST_CHECK_EQUAL(reused.sealed.core.fixedCoreOwner.get(), leaseFirst.sealed.core.fixedCoreOwner.get());
   BOOST_REQUIRE(reused.grantLease.has_value());
   BOOST_CHECK(reused.grantLease->fixedContext == pinned.grantLease->fixedContext);
   BOOST_CHECK(reused.grantLease->projectionLayout == pinned.grantLease->projectionLayout);
