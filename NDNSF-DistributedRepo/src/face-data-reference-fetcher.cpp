@@ -643,7 +643,11 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         if (bootstrapPending && retryQueue.empty() && nextPacket >= std::min(
               windowCapacity, ndn_service_framework::detail::ExactDataCongestionWindow::INITIAL_WINDOW))
           return;
-        if (authenticatedSource && expressed == SOURCE_REFILL_BURST) {
+        // Shared credits already bound the initial flight. Yield on subsequent refills
+        // so early replies cannot prevent a ready group from filling that first window.
+        const bool initialSharedFlight = sourceWindow &&
+          nextPacket < ndn_service_framework::detail::ExactDataCongestionWindow::INITIAL_WINDOW;
+        if (authenticatedSource && !initialSharedFlight && expressed >= SOURCE_REFILL_BURST) {
           const auto weak = weak_from_this();
           const auto executor = strand;
           try {
