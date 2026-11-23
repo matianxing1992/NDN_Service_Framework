@@ -369,7 +369,8 @@ RepoNode::reconcilePersistentUserStorage()
     (void)handleUserStorageDelete(toBytes(request.toJson()), cleanup.ownerIdentity);
   }
   std::vector<RepoUserStorageInventoryEntry> inventory;
-  for (const auto& manifest : m_core.list()) {
+  for (const auto& snapshot : m_core.listManifestSnapshots()) {
+    const auto& manifest = *snapshot;
     // Ordinary artifact receipts keep their existing accounting and authorization.
     if (manifest.objectType == "original-packet-set") {
       try {

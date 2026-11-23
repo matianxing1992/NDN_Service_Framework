@@ -230,6 +230,7 @@ private:
     const RepoObjectManifest& manifest,
     const std::shared_ptr<const RepoObjectManifest>& owner = {}) const;
   friend class RepoNode;
+  std::vector<std::shared_ptr<const RepoObjectManifest>> listManifestSnapshots() const;
   // Establish durability for an owned spool, including when reusing an existing set.
   // Its reader and lifecycle checks do not re-enter the backend.
   RepoObjectManifest commitOwnedOriginalPacketSpool(const RepoObjectManifest& manifest,

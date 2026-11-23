@@ -246,7 +246,8 @@ RepoCore::buildPacketBaseIndex() const
   }
   std::unordered_map<std::string, std::vector<std::string>> index;
   size_t bytes = 0;
-  for (const auto& manifest : m_store->listManifests()) {
+  for (const auto& snapshot : listManifestSnapshots()) {
+    const auto& manifest = *snapshot;
     if (manifest.objectType != "original-packet-set" || manifest.objectName.empty() ||
         manifest.packetNames.empty() || manifest.objectName != manifest.packetNames.front())
       continue;
@@ -489,6 +490,12 @@ std::vector<RepoObjectManifest>
 RepoCore::list() const
 {
   return m_store->listManifests();
+}
+
+std::vector<std::shared_ptr<const RepoObjectManifest>>
+RepoCore::listManifestSnapshots() const
+{
+  return detail::listManifestSnapshots(*m_store);
 }
 
 bool
@@ -2454,7 +2461,7 @@ RepoCatalogDelta
 RepoCore::catalogSnapshot() const
 {
   std::lock_guard<std::mutex> lock(m_mutex);
-  const auto manifests = detail::listManifestSnapshots(*m_store);
+  const auto manifests = listManifestSnapshots();
   RepoCatalogDelta snapshot;
   snapshot.repoNode = m_capability.repoNode;
   snapshot.repoMode = m_capability.repoMode;
