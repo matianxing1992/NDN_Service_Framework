@@ -651,7 +651,7 @@ class AutomaticStreamingHandle:
             for record in receipt_records:
                 if str(record.request_id) != request_id:
                     raise RuntimeError("conversation receipt request mismatch")
-                receipt = ProviderConversationStateReceiptV1.from_dict(
+                receipt = ProviderConversationStateReceiptV1.from_transport_dict(
                     json.loads(bytes(record.payload).decode("utf-8")))
                 role = receipt.role_name
                 if (role in seen_roles or role not in roles

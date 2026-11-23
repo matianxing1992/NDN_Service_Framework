@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import threading
@@ -338,6 +339,26 @@ def corrected_receipt(role: str, *, conversation="c" * 32, parent=0,
         "receipt_digest": "",
         "signature": "",
     })
+
+
+def test_compact_transport_receipt_preserves_canonical_commitment():
+    item = receipt("/LLM/Pipeline/Stage/1")
+    original = item.to_dict()
+    raw = b"".join(bytes.fromhex(digest.removeprefix("sha256:"))
+                   for digest in item.state_component_digests)
+    transport = {**original, "stateComponentDigests": base64.b64encode(raw).decode("ascii")}
+    assert ProviderConversationStateReceiptV1.from_transport_dict(transport) == item
+    assert ProviderConversationStateReceiptV1.from_transport_dict(original) == item
+
+    changed = bytes([raw[0] ^ 1]) + raw[1:]
+    with pytest.raises(ConversationCheckpointInvalid, match="malformed"):
+        ProviderConversationStateReceiptV1.from_transport_dict({
+            **transport, "stateComponentDigests": "??==",
+        })
+    with pytest.raises(ConversationCheckpointInvalid, match="malformed"):
+        ProviderConversationStateReceiptV1.from_transport_dict({
+            **transport, "stateComponentDigests": base64.b64encode(changed).decode("ascii"),
+        })
 
 
 def test_streaming_handle_commits_provider_receipts_before_completion():
