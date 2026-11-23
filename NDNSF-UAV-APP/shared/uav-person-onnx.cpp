@@ -16,6 +16,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <thread>
 #include <csetjmp>
 #include <cstdlib>
@@ -301,6 +302,121 @@ decodePersonJpeg(const ndn::Buffer& jpeg)
   return result;
 }
 
+std::array<int, 4>
+integerPersonBox(const std::array<double, 4>& box, uint32_t width, uint32_t height)
+{
+  if (width == 0 || height == 0 || width > static_cast<uint32_t>(INT_MAX) ||
+      height > static_cast<uint32_t>(INT_MAX)) {
+    throw std::invalid_argument("invalid person image dimensions");
+  }
+  std::array<int, 4> result{};
+  for (size_t i = 0; i < box.size(); ++i) {
+    if (!std::isfinite(box[i])) {
+      throw std::invalid_argument("non-finite person box");
+    }
+    const double value = std::clamp(box[i], 0.0, static_cast<double>(i % 2 ? height : width));
+    const double lower = std::floor(value);
+    const double fraction = value - lower;
+    result[i] = static_cast<int>(lower);
+    if (fraction > 0.5 || (fraction == 0.5 && result[i] % 2 != 0)) ++result[i];
+  }
+  return result;
+}
+
+std::vector<float>
+reidPersonCrop(const UavRgbImage& image, const std::array<int, 4>& box)
+{
+  constexpr int width = static_cast<int>(UavPersonReidSession::INPUT_WIDTH);
+  constexpr int height = static_cast<int>(UavPersonReidSession::INPUT_HEIGHT);
+  constexpr int precision = 22;
+  constexpr int64_t rounding = int64_t{1} << (precision - 1);
+  constexpr float mean[] = {0.485F, 0.456F, 0.406F};
+  constexpr float stdv[] = {0.229F, 0.224F, 0.225F};
+  if (image.width == 0 || image.height == 0 ||
+      image.width > static_cast<uint32_t>(INT_MAX) ||
+      image.height > static_cast<uint32_t>(INT_MAX) ||
+      image.rgb.size() != uint64_t{3} * image.width * image.height ||
+      box[0] < 0 || box[1] < 0 || box[2] > static_cast<int>(image.width) ||
+      box[3] > static_cast<int>(image.height) || box[0] >= box[2] || box[1] >= box[3]) {
+    throw std::invalid_argument("invalid admitted ReID crop");
+  }
+  const int sourceWidth = box[2] - box[0];
+  const int sourceHeight = box[3] - box[1];
+  if (sourceWidth < 16 || sourceHeight < 32) return {};
+
+  // Match Pillow 10.4's RGB bilinear filter: scale the triangle on reduction,
+  // quantize positive coefficients to 22 bits, and round each uint8 pass.
+  // Reference: Pillow/10.4.0/src/libImaging/Resample.c.
+  struct Weights
+  {
+    int first;
+    std::vector<int32_t> values;
+  };
+  const auto weights = [] (int source, int target) {
+    std::vector<Weights> result;
+    result.reserve(target);
+    const double scale = static_cast<double>(source) / target;
+    const double support = std::max(1.0, scale);
+    const double inverseSupport = 1.0 / support;
+    for (int destination = 0; destination < target; ++destination) {
+      const double center = (destination + 0.5) * scale;
+      const int first = std::max(0, static_cast<int>(center - support + 0.5));
+      const int last = std::min(source, static_cast<int>(center + support + 0.5));
+      std::vector<double> raw;
+      raw.reserve(last - first);
+      double total = 0;
+      for (int i = first; i < last; ++i) {
+        const double weight = std::max(0.0, 1.0 - std::abs((i - center + 0.5) * inverseSupport));
+        raw.push_back(weight);
+        total += weight;
+      }
+      Weights item{first, {}};
+      item.values.reserve(raw.size());
+      for (const auto weight : raw) {
+        item.values.push_back(static_cast<int32_t>(weight / total * (1 << precision) + 0.5));
+      }
+      result.push_back(std::move(item));
+    }
+    return result;
+  };
+  const auto horizontal = weights(sourceWidth, width);
+  const auto vertical = weights(sourceHeight, height);
+  std::vector<uint8_t> rows(static_cast<size_t>(sourceHeight) * width * 3);
+  for (int y = 0; y < sourceHeight; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const auto& filter = horizontal[x];
+      for (int channel = 0; channel < 3; ++channel) {
+        int64_t value = rounding;
+        for (size_t i = 0; i < filter.values.size(); ++i) {
+          const auto offset = (static_cast<size_t>(box[1] + y) * image.width +
+                               box[0] + filter.first + i) * 3 + channel;
+          value += static_cast<int64_t>(image.rgb[offset]) * filter.values[i];
+        }
+        rows[(static_cast<size_t>(y) * width + x) * 3 + channel] =
+          static_cast<uint8_t>(std::clamp<int64_t>(value >> precision, 0, 255));
+      }
+    }
+  }
+  std::vector<float> result(3 * width * height);
+  for (int y = 0; y < height; ++y) {
+    const auto& filter = vertical[y];
+    for (int x = 0; x < width; ++x) {
+      for (int channel = 0; channel < 3; ++channel) {
+        int64_t value = rounding;
+        for (size_t i = 0; i < filter.values.size(); ++i) {
+          const auto offset = ((filter.first + i) * width + x) * 3 + channel;
+          value += static_cast<int64_t>(rows[offset]) * filter.values[i];
+        }
+        const auto pixel = std::clamp<int64_t>(value >> precision, 0, 255);
+        const float unit = static_cast<float>(pixel) / 255.0F;
+        result[static_cast<size_t>(channel) * width * height + y * width + x] =
+          (unit - mean[channel]) / stdv[channel];
+      }
+    }
+  }
+  return result;
+}
+
 UavLetterboxedImage
 letterboxPersonImage(const UavRgbImage& image)
 {
@@ -419,6 +535,8 @@ struct UavPersonDetectorSession::Impl
   std::string inputName;
   std::string outputName;
   std::vector<std::string> classNames;
+  bool endToEnd = false;
+  size_t personClass = PERSON_CLASS;
 
   static Ort::SessionOptions
   makeOptions()
@@ -448,7 +566,9 @@ struct UavPersonDetectorSession::Impl
     const auto outputInfo = outputType.GetTensorTypeAndShapeInfo();
     const auto inputShape = inputInfo.GetShape();
     const auto outputShape = outputInfo.GetShape();
-    if (format == ModelFormat::PERSON_END_TO_END) {
+    if (format == ModelFormat::PERSON_STOCK && outputShape.size() == 3 &&
+        (outputShape[1] == MAX_DETECTIONS || outputShape[1] == -1) &&
+        (outputShape[2] == 6 || outputShape[2] == -1)) {
       if (inputShape.size() != 4 || (inputShape[0] != 1 && inputShape[0] != -1) ||
           inputShape[1] != 3 || inputShape[2] != -1 || inputShape[3] != -1 ||
           outputShape.size() != 3 || (outputShape[0] != 1 && outputShape[0] != -1) ||
@@ -458,36 +578,46 @@ struct UavPersonDetectorSession::Impl
           outputInfo.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
         throw std::invalid_argument("person detector requires dynamic input and [1,300,6] output");
       }
+      endToEnd = true;
       return;
     }
-    if (format == ModelFormat::VEHICLE_RAW) {
+    if (format == ModelFormat::VEHICLE_RAW || format == ModelFormat::PERSON_STOCK) {
       const auto metadata = session.GetModelMetadata();
       const auto names = metadata.LookupCustomMetadataMapAllocated(
         "ndnsf.uav.class-names.v1", allocator);
       if (!names) {
-        throw std::invalid_argument("vehicle detector is missing the prepared class index");
+        throw std::invalid_argument("raw detector is missing the prepared class index");
       }
       const auto index = person_json::parseBounded(names.get(), 64 * 1024);
       if (!index.is_array() || index.empty() || index.size() > 256) {
-        throw std::invalid_argument("vehicle detector class index outside supported bounds");
+        throw std::invalid_argument("raw detector class index outside supported bounds");
       }
       for (const auto& item : index) {
         auto name = person_json::text(item);
         if (name.empty() || name.size() > 256 ||
             std::any_of(name.begin(), name.end(),
                         [] (unsigned char ch) { return ch < 0x20 || ch == 0x7f; })) {
-          throw std::invalid_argument("vehicle detector contains an invalid class label");
+          throw std::invalid_argument("raw detector contains an invalid class label");
         }
         classNames.push_back(std::move(name));
+      }
+      if (format == ModelFormat::PERSON_STOCK) {
+        if (std::count(classNames.begin(), classNames.end(), "person") != 1) {
+          throw std::invalid_argument("stock person detector needs one person class");
+        }
+        personClass = static_cast<size_t>(
+          std::find(classNames.begin(), classNames.end(), "person") - classNames.begin());
       }
       const auto channels = static_cast<int64_t>(4 + classNames.size());
       if (inputShape.size() != 4 || (inputShape[0] != 1 && inputShape[0] != -1) ||
           inputShape[1] != 3 || inputShape[2] != -1 || inputShape[3] != -1 ||
           outputShape.size() != 3 || (outputShape[0] != 1 && outputShape[0] != -1) ||
-          (outputShape[1] != channels && outputShape[1] != -1) || outputShape[2] != -1 ||
+          (outputShape[1] != channels &&
+           (format == ModelFormat::PERSON_STOCK || outputShape[1] != -1)) ||
+          outputShape[2] != -1 ||
           inputInfo.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
           outputInfo.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-        throw std::invalid_argument("vehicle detector requires a dynamic raw YOLO head");
+        throw std::invalid_argument("raw detector requires a dynamic YOLO head");
       }
       return;
     }
@@ -563,10 +693,12 @@ UavPersonDetectorSession::detectBoxes(const std::vector<float>& input, size_t wi
                                       const std::function<bool()>& stillAuthorized)
 {
   const bool vehicle = m_impl->format == ModelFormat::VEHICLE_RAW;
-  const bool endToEnd = m_impl->format == ModelFormat::PERSON_END_TO_END;
+  const bool stock = m_impl->format == ModelFormat::PERSON_STOCK;
+  const bool endToEnd = m_impl->endToEnd;
+  const bool dynamicRaw = vehicle || (stock && !endToEnd);
   if (width == 0 || width > INPUT_SIZE || width % 32 != 0 ||
       height == 0 || height > INPUT_SIZE || height % 32 != 0 ||
-      (!vehicle && !endToEnd && (width != INPUT_SIZE || height != INPUT_SIZE)) ||
+      (!vehicle && !stock && (width != INPUT_SIZE || height != INPUT_SIZE)) ||
       input.size() != 3 * width * height ||
       !std::all_of(input.begin(), input.end(), [] (float value) { return std::isfinite(value); })) {
     throw std::invalid_argument("detector input must match the admitted CHW geometry");
@@ -639,13 +771,13 @@ UavPersonDetectorSession::detectBoxes(const std::vector<float>& input, size_t wi
   if (shape.size() != 3 || shape[0] != 1 || shape[1] < 5 || shape[2] <= 0) {
     throw std::runtime_error("person detector returned an unexpected shape");
   }
-  if (vehicle) {
+  if (dynamicRaw) {
     const auto expectedAnchors = (width / 8) * (height / 8) +
                                  (width / 16) * (height / 16) +
                                  (width / 32) * (height / 32);
     if (static_cast<size_t>(shape[1]) != 4 + m_impl->classNames.size() ||
         static_cast<size_t>(shape[2]) != expectedAnchors) {
-      throw std::runtime_error("vehicle detector returned an unexpected raw head");
+      throw std::runtime_error("raw detector returned an unexpected YOLO head");
     }
   }
   const size_t classCount = static_cast<size_t>(shape[1]) - 4;
@@ -656,7 +788,7 @@ UavPersonDetectorSession::detectBoxes(const std::vector<float>& input, size_t wi
   for (size_t anchor = 0; anchor < anchors; ++anchor) {
     size_t classId = PERSON_CLASS;
     float score = data[4 * anchors + anchor];
-    if (vehicle) {
+    if (dynamicRaw) {
       for (size_t id = 1; id < classCount; ++id) {
         const auto candidateScore = data[(4 + id) * anchors + anchor];
         if (candidateScore > score) {
@@ -666,7 +798,8 @@ UavPersonDetectorSession::detectBoxes(const std::vector<float>& input, size_t wi
       }
     }
     if (!std::isfinite(score) || score < m_confidenceThreshold ||
-        (vehicle && score == m_confidenceThreshold)) continue;
+        (dynamicRaw && score == m_confidenceThreshold) ||
+        (stock && classId != m_impl->personClass)) continue;
     const float cx = data[anchor];
     const float cy = data[anchors + anchor];
     const float width = data[2 * anchors + anchor];
@@ -679,7 +812,7 @@ UavPersonDetectorSession::detectBoxes(const std::vector<float>& input, size_t wi
   const auto descendingScore = [] (const auto& lhs, const auto& rhs) {
     return lhs.confidence > rhs.confidence;
   };
-  if (vehicle) {
+  if (dynamicRaw) {
     std::stable_sort(candidates.begin(), candidates.end(), descendingScore);
   }
   else {

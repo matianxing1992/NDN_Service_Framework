@@ -1,8 +1,14 @@
 #include "tests/fixtures/uav-tracking-core-flow.hpp"
 #include "tests/fixtures/uav-tracking-provider-access.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 
+#include <algorithm>
 #include <cerrno>
+#include <cmath>
+#include <cstdlib>
 #include <csignal>
+#include <cstring>
+#include <limits>
 #include <iterator>
 #include <future>
 #include <regex>
@@ -430,6 +436,347 @@ struct ProviderFixture : JobFlowFixture
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(UavTrackingProviderLifecycle)
+
+BOOST_AUTO_TEST_CASE(PersonReidCropMatchesStockPillowInput)
+{
+  // Frozen by make_person_golden.py --stock-crops with Pillow 10.4.0,
+  // torchvision 0.19.1 and Torch 2.4.1. RGB(x,y,c)=(17*x+13*y+73*c) mod 256.
+  struct Case
+  {
+    std::array<double, 4> observation;
+    std::array<int, 4> box;
+    const char* tensorDigest;
+  };
+  const Case cases[] = {
+    {{{5, 7, 20, 39}}, {{5, 7, 20, 39}}, nullptr},
+    {{{5, 7, 21, 38}}, {{5, 7, 21, 38}}, nullptr},
+    {{{5, 7, 21, 39}}, {{5, 7, 21, 39}},
+      "de4512d0b11c1ae0acb86e3e949dd1a1613deb7f6586ccfbbf5f92a5403dd23e"},
+    {{{2.5, 3.5, 83.5, 146.5}}, {{2, 4, 84, 146}},
+      "05b4fa96da5d9f02cd49c15a33bc37112809236ee48fd3d5beaaa0f81eb2458a"},
+    {{{5, 7, 133, 263}}, {{5, 7, 133, 263}},
+      "35f3fdf5fb4510a09dbc56c656dc2ba2d8014e8518883252014b114d7d2e8fe8"},
+    {{{0, 0, 511, 777}}, {{0, 0, 511, 777}},
+      "0732d520dafdc62f03f9b1fdc6a5ba510aaf8e93c5131550d7a59f6ee7a7d483"},
+    {{{1, 3, 65, 600}}, {{1, 3, 65, 600}},
+      "b3ef7478d06dfb9766c371ee4777c5d40dad11fd16dfc6d691e74446da53f459"},
+    {{{-4.5, -7.5, 510.5, 776.5}}, {{0, 0, 510, 776}},
+      "9ee30c5b6aecb104eaea0b1e3fe1762290e7c06e8d29cd3813a846882f1ef5af"},
+    {{{1.5, 2.5, 128.5, 259.5}}, {{2, 2, 128, 260}},
+      "cd0311d5be165521654a26c8a24fb8aa8e4dba296da043fae967179b2ad14f13"},
+  };
+  UavRgbImage image{511, 777, std::vector<uint8_t>(511 * 777 * 3)};
+  for (uint32_t y = 0; y < image.height; ++y) {
+    for (uint32_t x = 0; x < image.width; ++x) {
+      for (uint32_t channel = 0; channel < 3; ++channel) {
+        image.rgb[(static_cast<size_t>(y) * image.width + x) * 3 + channel] =
+          static_cast<uint8_t>((17 * x + 13 * y + 73 * channel) % 256);
+      }
+    }
+  }
+  for (const auto& expected : cases) {
+    const auto box = integerPersonBox(expected.observation, image.width, image.height);
+    BOOST_REQUIRE_EQUAL_COLLECTIONS(box.begin(), box.end(),
+                                    expected.box.begin(), expected.box.end());
+    const auto tensor = reidPersonCrop(image, box);
+    if (!expected.tensorDigest) {
+      BOOST_CHECK(tensor.empty());
+      continue;
+    }
+    BOOST_REQUIRE_EQUAL(tensor.size(), 3 * 128 * 256);
+    static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559);
+    std::string bytes;
+    bytes.reserve(tensor.size() * 4);
+    for (const auto value : tensor) {
+      uint32_t bits = 0;
+      std::memcpy(&bits, &value, sizeof(bits));
+      for (int byte = 0; byte < 4; ++byte) {
+        bytes.push_back(static_cast<char>((bits >> (byte * 8)) & 255));
+      }
+    }
+    ndn::util::Sha256 hash;
+    hash << std::string_view(bytes);
+    BOOST_CHECK_EQUAL(canonicalSha256Hex(hash.toString()), expected.tensorDigest);
+  }
+  BOOST_CHECK_EXCEPTION(integerPersonBox({0, 0, NAN, 40}, 511, 777),
+    std::invalid_argument, [] (const auto& e) {
+      return std::string(e.what()) == "non-finite person box";
+    });
+  BOOST_CHECK_EXCEPTION(reidPersonCrop(image, {0, 0, 512, 32}),
+    std::invalid_argument, [] (const auto& e) {
+      return std::string(e.what()) == "invalid admitted ReID crop";
+    });
+  image.rgb.pop_back();
+  BOOST_CHECK_EXCEPTION(reidPersonCrop(image, {0, 0, 16, 32}),
+    std::invalid_argument, [] (const auto& e) {
+      return std::string(e.what()) == "invalid admitted ReID crop";
+    });
+}
+
+BOOST_AUTO_TEST_CASE(PersonReidMatchesIndependentStockCheckpoint,
+                     *boost::unit_test::disabled())
+{
+  const auto* configured = std::getenv("NDNSF_PERSON_CROP_GOLDEN");
+  BOOST_REQUIRE_MESSAGE(configured, "set the explicitly prepared stock crop golden root");
+  const std::filesystem::path root(configured);
+  BOOST_REQUIRE(root.is_absolute());
+  std::ifstream receiptFile(root / "golden.json");
+  BOOST_REQUIRE(receiptFile.good());
+  person_json::Json receipt;
+  receiptFile >> receipt;
+  BOOST_REQUIRE_EQUAL(receipt.at("schema"), "ndnsf-person-stock-crops-v1");
+  std::ifstream exportFile(root / "onnx-export.json");
+  BOOST_REQUIRE(exportFile.good());
+  person_json::Json exported;
+  exportFile >> exported;
+  BOOST_REQUIRE_EQUAL(exported.at("checkpoint").at("sha256"),
+                      receipt.at("checkpoint").at("sha256"));
+  UavPersonReidSession session(exported.at("onnx").at("path").get<std::string>());
+  BOOST_REQUIRE_EQUAL(session.modelDigest(),
+                      "sha256:" + exported.at("onnx").at("sha256").get<std::string>());
+  UavRgbImage image;
+  image.width = receipt.at("image").at("width").get<uint32_t>();
+  image.height = receipt.at("image").at("height").get<uint32_t>();
+  std::ifstream rgbFile(root / "image.rgb", std::ios::binary);
+  BOOST_REQUIRE(rgbFile.good());
+  image.rgb.assign(std::istreambuf_iterator<char>(rgbFile), {});
+  BOOST_REQUIRE_EQUAL(image.rgb.size(), static_cast<size_t>(image.width) * image.height * 3);
+  const auto imagePath = receipt.at("image").at("path").get<std::string>();
+  std::ifstream imageFile(imagePath, std::ios::binary);
+  BOOST_REQUIRE(imageFile.good());
+  const ndn::Buffer imageBytes(std::istreambuf_iterator<char>(imageFile), {});
+  ndn::util::Sha256 imageHash;
+  imageHash << std::string_view(reinterpret_cast<const char*>(imageBytes.data()),
+                               imageBytes.size());
+  BOOST_REQUIRE_EQUAL(canonicalSha256Hex(imageHash.toString()),
+                      receipt.at("image").at("sha256"));
+  if (imageBytes.size() >= 2 && imageBytes[0] == 0xff && imageBytes[1] == 0xd8) {
+    const auto decoded = decodePersonJpeg(imageBytes);
+    BOOST_REQUIRE_EQUAL(decoded.width, image.width);
+    BOOST_REQUIRE_EQUAL(decoded.height, image.height);
+    BOOST_REQUIRE(decoded.rgb == image.rgb);
+  }
+  const size_t count = receipt.at("cropCount").get<size_t>();
+  BOOST_REQUIRE(count > 0 && count <= 64);
+  const auto readFloats = [] (const std::filesystem::path& path, size_t count) {
+    std::ifstream file(path, std::ios::binary);
+    BOOST_REQUIRE(file.good());
+    const std::vector<uint8_t> bytes(std::istreambuf_iterator<char>(file), {});
+    BOOST_REQUIRE_EQUAL(bytes.size(), count * 4);
+    std::vector<float> values(count);
+    for (size_t i = 0; i < count; ++i) {
+      uint32_t bits = 0;
+      for (size_t b = 0; b < 4; ++b) bits |= uint32_t{bytes[i * 4 + b]} << (8 * b);
+      std::memcpy(&values[i], &bits, sizeof(bits));
+    }
+    BOOST_REQUIRE(std::all_of(values.begin(), values.end(),
+                              [] (float value) { return std::isfinite(value); }));
+    return values;
+  };
+  constexpr size_t stride = 3 * 256 * 128;
+  const auto expectedInput = readFloats(root / "reid-input.f32", count * stride);
+  const auto expectedOutput = readFloats(root / "reid-output.f32", count * 512);
+  std::vector<float> input;
+  input.reserve(expectedInput.size());
+  for (const auto& row : receipt.at("boxes")) {
+    const auto box = integerPersonBox(row.at("observationBox").get<std::array<double, 4>>(),
+                                      image.width, image.height);
+    const auto expectedBox = row.at("box").get<std::array<int, 4>>();
+    BOOST_REQUIRE(box == expectedBox);
+    const auto crop = reidPersonCrop(image, box);
+    if (row.at("tensorIndex").is_null()) {
+      BOOST_REQUIRE(crop.empty());
+    }
+    else {
+      BOOST_REQUIRE_EQUAL(row.at("tensorIndex").get<size_t>(), input.size() / stride);
+      BOOST_REQUIRE_EQUAL(crop.size(), stride);
+      input.insert(input.end(), crop.begin(), crop.end());
+    }
+  }
+  BOOST_REQUIRE_EQUAL(input.size(), expectedInput.size());
+  size_t different = 0;
+  for (size_t i = 0; i < input.size(); ++i) {
+    if (std::memcmp(&input[i], &expectedInput[i], sizeof(float)) != 0) ++different;
+  }
+  BOOST_REQUIRE_EQUAL(different, 0U);
+  double maximumError = 0;
+  for (size_t offset = 0; offset < count; offset += 32) {
+    const size_t batch = std::min<size_t>(32, count - offset);
+    const std::vector<float> values(input.begin() + offset * stride,
+                                    input.begin() + (offset + batch) * stride);
+    const auto embedded = session.embed(values, batch);
+    BOOST_REQUIRE_EQUAL(embedded.size(), batch * 512);
+    for (size_t i = 0; i < embedded.size(); ++i) {
+      maximumError = std::max(maximumError,
+        std::abs(static_cast<double>(embedded[i]) - expectedOutput[offset * 512 + i]));
+    }
+  }
+  BOOST_CHECK_LE(maximumError, 1e-4);
+}
+
+BOOST_AUTO_TEST_CASE(StockPersonHeadsPreserveShapeAndClassAdmission)
+{
+  // ONNX opset 17: three fixed raw candidates followed by zero padding to the
+  // input's stride-8/16/32 anchor count. Class index is [car, person].
+  static constexpr char modelData[] =
+    "\x08\x08\x3a\xaf\x08\x0a\x1b\x0a\x06\x69\x6d\x61\x67\x65\x73\x12\x0a\x69"
+    "\x6e\x70\x75\x74\x53\x68\x61\x70\x65\x22\x05\x53\x68\x61\x70\x65\x0a\x2c"
+    "\x0a\x0a\x69\x6e\x70\x75\x74\x53\x68\x61\x70\x65\x0a\x06\x68\x49\x6e\x64"
+    "\x65\x78\x12\x01\x68\x22\x06\x47\x61\x74\x68\x65\x72\x2a\x0b\x0a\x04\x61"
+    "\x78\x69\x73\x18\x00\xa0\x01\x02\x0a\x2c\x0a\x0a\x69\x6e\x70\x75\x74\x53"
+    "\x68\x61\x70\x65\x0a\x06\x77\x49\x6e\x64\x65\x78\x12\x01\x77\x22\x06\x47"
+    "\x61\x74\x68\x65\x72\x2a\x0b\x0a\x04\x61\x78\x69\x73\x18\x00\xa0\x01\x02"
+    "\x0a\x15\x0a\x01\x68\x0a\x07\x73\x74\x72\x69\x64\x65\x38\x12\x02\x68\x38"
+    "\x22\x03\x44\x69\x76\x0a\x15\x0a\x01\x77\x0a\x07\x73\x74\x72\x69\x64\x65"
+    "\x38\x12\x02\x77\x38\x22\x03\x44\x69\x76\x0a\x11\x0a\x02\x68\x38\x0a\x02"
+    "\x77\x38\x12\x02\x6e\x38\x22\x03\x4d\x75\x6c\x0a\x17\x0a\x01\x68\x0a\x08"
+    "\x73\x74\x72\x69\x64\x65\x31\x36\x12\x03\x68\x31\x36\x22\x03\x44\x69\x76"
+    "\x0a\x17\x0a\x01\x77\x0a\x08\x73\x74\x72\x69\x64\x65\x31\x36\x12\x03\x77"
+    "\x31\x36\x22\x03\x44\x69\x76\x0a\x14\x0a\x03\x68\x31\x36\x0a\x03\x77\x31"
+    "\x36\x12\x03\x6e\x31\x36\x22\x03\x4d\x75\x6c\x0a\x17\x0a\x01\x68\x0a\x08"
+    "\x73\x74\x72\x69\x64\x65\x33\x32\x12\x03\x68\x33\x32\x22\x03\x44\x69\x76"
+    "\x0a\x17\x0a\x01\x77\x0a\x08\x73\x74\x72\x69\x64\x65\x33\x32\x12\x03\x77"
+    "\x33\x32\x22\x03\x44\x69\x76\x0a\x14\x0a\x03\x68\x33\x32\x0a\x03\x77\x33"
+    "\x32\x12\x03\x6e\x33\x32\x22\x03\x4d\x75\x6c\x0a\x14\x0a\x02\x6e\x38\x0a"
+    "\x03\x6e\x31\x36\x12\x04\x6e\x53\x75\x6d\x22\x03\x41\x64\x64\x0a\x19\x0a"
+    "\x04\x6e\x53\x75\x6d\x0a\x03\x6e\x33\x32\x12\x07\x61\x6e\x63\x68\x6f\x72"
+    "\x73\x22\x03\x41\x64\x64\x0a\x22\x0a\x07\x61\x6e\x63\x68\x6f\x72\x73\x0a"
+    "\x05\x74\x68\x72\x65\x65\x12\x0b\x70\x61\x64\x64\x69\x6e\x67\x53\x69\x7a"
+    "\x65\x22\x03\x53\x75\x62\x0a\x2d\x0a\x0b\x70\x61\x64\x64\x69\x6e\x67\x53"
+    "\x69\x7a\x65\x0a\x04\x61\x78\x65\x73\x12\x0d\x70\x61\x64\x64\x69\x6e\x67"
+    "\x56\x65\x63\x74\x6f\x72\x22\x09\x55\x6e\x73\x71\x75\x65\x65\x7a\x65\x0a"
+    "\x41\x0a\x03\x6f\x6e\x65\x0a\x08\x63\x68\x61\x6e\x6e\x65\x6c\x73\x0a\x0d"
+    "\x70\x61\x64\x64\x69\x6e\x67\x56\x65\x63\x74\x6f\x72\x12\x0c\x70\x61\x64"
+    "\x64\x69\x6e\x67\x53\x68\x61\x70\x65\x22\x06\x43\x6f\x6e\x63\x61\x74\x2a"
+    "\x0b\x0a\x04\x61\x78\x69\x73\x18\x00\xa0\x01\x02\x0a\x46\x0a\x0c\x70\x61"
+    "\x64\x64\x69\x6e\x67\x53\x68\x61\x70\x65\x12\x07\x70\x61\x64\x64\x69\x6e"
+    "\x67\x22\x0f\x43\x6f\x6e\x73\x74\x61\x6e\x74\x4f\x66\x53\x68\x61\x70\x65"
+    "\x2a\x1c\x0a\x05\x76\x61\x6c\x75\x65\x2a\x10\x08\x01\x10\x01\x22\x04\x00"
+    "\x00\x00\x00\x42\x04\x7a\x65\x72\x6f\xa0\x01\x04\x0a\x33\x0a\x0b\x70\x72"
+    "\x65\x64\x69\x63\x74\x69\x6f\x6e\x73\x0a\x07\x70\x61\x64\x64\x69\x6e\x67"
+    "\x12\x06\x6f\x75\x74\x70\x75\x74\x22\x06\x43\x6f\x6e\x63\x61\x74\x2a\x0b"
+    "\x0a\x04\x61\x78\x69\x73\x18\x02\xa0\x01\x02\x12\x15\x73\x74\x6f\x63\x6b"
+    "\x2d\x70\x65\x72\x73\x6f\x6e\x2d\x72\x61\x77\x2d\x68\x65\x61\x64\x2a\x13"
+    "\x08\x01\x10\x07\x42\x03\x6f\x6e\x65\x4a\x08\x01\x00\x00\x00\x00\x00\x00"
+    "\x00\x2a\x18\x08\x01\x10\x07\x42\x08\x63\x68\x61\x6e\x6e\x65\x6c\x73\x4a"
+    "\x08\x06\x00\x00\x00\x00\x00\x00\x00\x2a\x13\x10\x07\x42\x05\x74\x68\x72"
+    "\x65\x65\x4a\x08\x03\x00\x00\x00\x00\x00\x00\x00\x2a\x14\x10\x07\x42\x06"
+    "\x68\x49\x6e\x64\x65\x78\x4a\x08\x02\x00\x00\x00\x00\x00\x00\x00\x2a\x14"
+    "\x10\x07\x42\x06\x77\x49\x6e\x64\x65\x78\x4a\x08\x03\x00\x00\x00\x00\x00"
+    "\x00\x00\x2a\x15\x10\x07\x42\x07\x73\x74\x72\x69\x64\x65\x38\x4a\x08\x08"
+    "\x00\x00\x00\x00\x00\x00\x00\x2a\x16\x10\x07\x42\x08\x73\x74\x72\x69\x64"
+    "\x65\x31\x36\x4a\x08\x10\x00\x00\x00\x00\x00\x00\x00\x2a\x16\x10\x07\x42"
+    "\x08\x73\x74\x72\x69\x64\x65\x33\x32\x4a\x08\x20\x00\x00\x00\x00\x00\x00"
+    "\x00\x2a\x14\x08\x01\x10\x07\x42\x04\x61\x78\x65\x73\x4a\x08\x00\x00\x00"
+    "\x00\x00\x00\x00\x00\x2a\x5f\x08\x01\x08\x06\x08\x03\x10\x01\x42\x0b\x70"
+    "\x72\x65\x64\x69\x63\x74\x69\x6f\x6e\x73\x4a\x48\x00\x00\xa0\x40\x00\x00"
+    "\xa0\x41\x00\x00\xa0\x41\x00\x00\xa0\x40\x00\x00\xa0\x41\x00\x00\xa0\x41"
+    "\x00\x00\x00\x40\x00\x00\x00\x41\x00\x00\x00\x41\x00\x00\x00\x40\x00\x00"
+    "\x20\x41\x00\x00\x20\x41\xa4\x70\x7d\x3f\xcd\xcc\xcc\x3d\xcd\xcc\x4c\x3e"
+    "\x66\x66\x66\x3f\xcd\xcc\x4c\x3f\x33\x33\x33\x3f\x5a\x30\x0a\x06\x69\x6d"
+    "\x61\x67\x65\x73\x12\x26\x0a\x24\x08\x01\x12\x20\x0a\x07\x12\x05\x62\x61"
+    "\x74\x63\x68\x0a\x02\x08\x03\x0a\x08\x12\x06\x68\x65\x69\x67\x68\x74\x0a"
+    "\x07\x12\x05\x77\x69\x64\x74\x68\x62\x28\x0a\x06\x6f\x75\x74\x70\x75\x74"
+    "\x12\x1e\x0a\x1c\x08\x01\x12\x18\x0a\x07\x12\x05\x62\x61\x74\x63\x68\x0a"
+    "\x02\x08\x06\x0a\x09\x12\x07\x61\x6e\x63\x68\x6f\x72\x73\x42\x04\x0a\x00"
+    "\x10\x11\x72\x2c\x0a\x18\x6e\x64\x6e\x73\x66\x2e\x75\x61\x76\x2e\x63\x6c"
+    "\x61\x73\x73\x2d\x6e\x61\x6d\x65\x73\x2e\x76\x31\x12\x10\x5b\x22\x63\x61"
+    "\x72\x22\x2c\x22\x70\x65\x72\x73\x6f\x6e\x22\x5d";
+  auto pattern = makeTestScratchTemplate("person-raw-head");
+  const auto* directory = ::mkdtemp(pattern.data());
+  BOOST_REQUIRE(directory);
+  const std::filesystem::path root(directory);
+  BOOST_SCOPE_EXIT(&root) {
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  } BOOST_SCOPE_EXIT_END
+  const auto modelPath = root / "model.onnx";
+  {
+    std::ofstream model(modelPath, std::ios::binary);
+    model.write(modelData, sizeof(modelData) - 1);
+    BOOST_REQUIRE(model.good());
+  }
+  for (const size_t maximum : {1U, 3U}) {
+    UavPersonDetectorSession detector(modelPath, 0.25F, 0.7F, maximum,
+                                      UavPersonDetectorSession::ModelFormat::PERSON_STOCK);
+    for (const size_t width : {32U, 64U}) {
+      UavRectLetterboxedImage input;
+      input.tensorWidth = static_cast<int>(width);
+      input.tensorHeight = 32;
+      input.image.tensor.resize(3 * width * 32);
+      const auto selected = detector.detect(input);
+      BOOST_REQUIRE_EQUAL(selected.size(), 1U);
+      BOOST_CHECK_EQUAL(selected.front().confidence, 0.8F);
+      const std::array<float, 4> expected{16, 15, 24, 25};
+      BOOST_CHECK(selected.front().box == expected);
+      BOOST_CHECK_EXCEPTION(detector.detect(input, [] { return false; }),
+        std::runtime_error, [] (const auto& error) {
+          return std::string(error.what()) == "person detector cancelled before inference";
+        });
+    }
+  }
+  // The output axes are data-dependent: zero input returns [1,300,6],
+  // while a first value of one returns [1,301,7] and must fail after the run.
+  static constexpr char dynamicModelData[] =
+    "\x08\x08\x3a\xae\x05\x0a\x24\x0a\x06\x69\x6d\x61\x67\x65\x73\x12\x04\x66"
+    "\x6c\x61\x74\x22\x07\x46\x6c\x61\x74\x74\x65\x6e\x2a\x0b\x0a\x04\x61\x78"
+    "\x69\x73\x18\x00\xa0\x01\x02\x0a\x22\x0a\x04\x66\x6c\x61\x74\x0a\x09\x66"
+    "\x6c\x61\x74\x53\x68\x61\x70\x65\x12\x06\x70\x69\x78\x65\x6c\x73\x22\x07"
+    "\x52\x65\x73\x68\x61\x70\x65\x0a\x2b\x0a\x06\x70\x69\x78\x65\x6c\x73\x0a"
+    "\x05\x66\x69\x72\x73\x74\x12\x05\x70\x69\x78\x65\x6c\x22\x06\x47\x61\x74"
+    "\x68\x65\x72\x2a\x0b\x0a\x04\x61\x78\x69\x73\x18\x00\xa0\x01\x02\x0a\x21"
+    "\x0a\x05\x70\x69\x78\x65\x6c\x12\x07\x69\x6e\x74\x65\x67\x65\x72\x22\x04"
+    "\x43\x61\x73\x74\x2a\x09\x0a\x02\x74\x6f\x18\x07\xa0\x01\x02\x0a\x1e\x0a"
+    "\x07\x69\x6e\x74\x65\x67\x65\x72\x0a\x04\x72\x6f\x77\x73\x12\x08\x72\x6f"
+    "\x77\x43\x6f\x75\x6e\x74\x22\x03\x41\x64\x64\x0a\x24\x0a\x07\x69\x6e\x74"
+    "\x65\x67\x65\x72\x0a\x07\x63\x6f\x6c\x75\x6d\x6e\x73\x12\x0b\x63\x6f\x6c"
+    "\x75\x6d\x6e\x43\x6f\x75\x6e\x74\x22\x03\x41\x64\x64\x0a\x26\x0a\x08\x72"
+    "\x6f\x77\x43\x6f\x75\x6e\x74\x0a\x04\x61\x78\x69\x73\x12\x09\x72\x6f\x77"
+    "\x56\x65\x63\x74\x6f\x72\x22\x09\x55\x6e\x73\x71\x75\x65\x65\x7a\x65\x0a"
+    "\x2c\x0a\x0b\x63\x6f\x6c\x75\x6d\x6e\x43\x6f\x75\x6e\x74\x0a\x04\x61\x78"
+    "\x69\x73\x12\x0c\x63\x6f\x6c\x75\x6d\x6e\x56\x65\x63\x74\x6f\x72\x22\x09"
+    "\x55\x6e\x73\x71\x75\x65\x65\x7a\x65\x0a\x3a\x0a\x03\x6f\x6e\x65\x0a\x09"
+    "\x72\x6f\x77\x56\x65\x63\x74\x6f\x72\x0a\x0c\x63\x6f\x6c\x75\x6d\x6e\x56"
+    "\x65\x63\x74\x6f\x72\x12\x05\x73\x68\x61\x70\x65\x22\x06\x43\x6f\x6e\x63"
+    "\x61\x74\x2a\x0b\x0a\x04\x61\x78\x69\x73\x18\x00\xa0\x01\x02\x0a\x3e\x0a"
+    "\x05\x73\x68\x61\x70\x65\x12\x06\x6f\x75\x74\x70\x75\x74\x22\x0f\x43\x6f"
+    "\x6e\x73\x74\x61\x6e\x74\x4f\x66\x53\x68\x61\x70\x65\x2a\x1c\x0a\x05\x76"
+    "\x61\x6c\x75\x65\x2a\x10\x08\x01\x10\x01\x22\x04\x00\x00\x00\x00\x42\x04"
+    "\x7a\x65\x72\x6f\xa0\x01\x04\x12\x19\x64\x79\x6e\x61\x6d\x69\x63\x2d\x70"
+    "\x65\x72\x73\x6f\x6e\x2d\x65\x6e\x64\x2d\x74\x6f\x2d\x65\x6e\x64\x2a\x13"
+    "\x10\x07\x42\x05\x66\x69\x72\x73\x74\x4a\x08\x00\x00\x00\x00\x00\x00\x00"
+    "\x00\x2a\x13\x08\x01\x10\x07\x42\x03\x6f\x6e\x65\x4a\x08\x01\x00\x00\x00"
+    "\x00\x00\x00\x00\x2a\x12\x10\x07\x42\x04\x72\x6f\x77\x73\x4a\x08\x2c\x01"
+    "\x00\x00\x00\x00\x00\x00\x2a\x15\x10\x07\x42\x07\x63\x6f\x6c\x75\x6d\x6e"
+    "\x73\x4a\x08\x06\x00\x00\x00\x00\x00\x00\x00\x2a\x14\x08\x01\x10\x07\x42"
+    "\x04\x61\x78\x69\x73\x4a\x08\x00\x00\x00\x00\x00\x00\x00\x00\x2a\x19\x08"
+    "\x01\x10\x07\x42\x09\x66\x6c\x61\x74\x53\x68\x61\x70\x65\x4a\x08\xff\xff"
+    "\xff\xff\xff\xff\xff\xff\x5a\x30\x0a\x06\x69\x6d\x61\x67\x65\x73\x12\x26"
+    "\x0a\x24\x08\x01\x12\x20\x0a\x07\x12\x05\x62\x61\x74\x63\x68\x0a\x02\x08"
+    "\x03\x0a\x08\x12\x06\x68\x65\x69\x67\x68\x74\x0a\x07\x12\x05\x77\x69\x64"
+    "\x74\x68\x62\x27\x0a\x06\x6f\x75\x74\x70\x75\x74\x12\x1d\x0a\x1b\x08\x01"
+    "\x12\x17\x0a\x02\x08\x01\x0a\x06\x12\x04\x72\x6f\x77\x73\x0a\x09\x12\x07"
+    "\x63\x6f\x6c\x75\x6d\x6e\x73\x42\x04\x0a\x00\x10\x11";
+  const auto dynamicPath = root / "dynamic.onnx";
+  {
+    std::ofstream model(dynamicPath, std::ios::binary);
+    model.write(dynamicModelData, sizeof(dynamicModelData) - 1);
+    BOOST_REQUIRE(model.good());
+  }
+  UavPersonDetectorSession dynamic(dynamicPath, 0.25F, 0.7F, 3,
+                                   UavPersonDetectorSession::ModelFormat::PERSON_STOCK);
+  UavRectLetterboxedImage input;
+  input.tensorWidth = 32;
+  input.tensorHeight = 32;
+  input.image.tensor.resize(3 * 32 * 32);
+  BOOST_CHECK(dynamic.detect(input).empty());
+  input.image.tensor[0] = 1;
+  BOOST_CHECK_EXCEPTION(dynamic.detect(input), std::runtime_error,
+    [] (const auto& error) {
+      return std::string(error.what()) ==
+             "end-to-end person detector returned an unexpected tensor";
+    });
+}
 
 BOOST_AUTO_TEST_CASE(DetectorLetterboxPreservesSquareAndStrideAlignedRectangle)
 {

@@ -10,11 +10,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+from importlib.metadata import version
 from pathlib import Path
 
 import cv2
 import numpy as np
-import onnxruntime as ort
 
 
 def sha256(path: Path) -> str:
@@ -58,10 +59,87 @@ def nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> list[int
     return keep
 
 
+def stock_crops(image_path: Path, checkpoint: Path, boxes_path: Path, output: Path) -> int:
+    """Freeze the checkpoint/PIL reference independently of native preprocessing."""
+    import torch
+    from PIL import Image
+    from torchvision import transforms
+    from export_osnet_reid import build
+
+    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError("cannot decode stock reference image")
+    height, width = image.shape[:2]
+    boxes = json.loads(boxes_path.read_text())
+    if not isinstance(boxes, list) or not 1 <= len(boxes) <= 64:
+        raise ValueError("stock reference needs 1..64 crop boxes")
+    transform = transforms.Compose([
+        transforms.Resize((256, 128), interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.ToTensor(),
+        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])
+    crops, rows = [], []
+    for box in boxes:
+        if (not isinstance(box, list) or len(box) != 4
+                or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                       or not math.isfinite(v) for v in box)):
+            raise ValueError("invalid stock reference box")
+        rounded = [int(round(float(value))) for value in box]
+        rounded = [max(0, min(width if i % 2 == 0 else height, value))
+                   for i, value in enumerate(rounded)]
+        x1, y1, x2, y2 = rounded
+        if x1 >= x2 or y1 >= y2:
+            raise ValueError("empty stock reference box")
+        row = {"observationBox": box, "box": rounded, "tensorIndex": None}
+        if x2 - x1 >= 16 and y2 - y1 >= 32:
+            rgb = cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
+            crop = transform(Image.fromarray(rgb))
+            row["tensorIndex"] = len(crops)
+            row["tensorSha256"] = hashlib.sha256(
+                crop.numpy().astype("<f4").tobytes()).hexdigest()
+            crops.append(crop)
+        rows.append(row)
+    torch.set_num_threads(1)
+    model = build(checkpoint)
+    reference = []
+    with torch.inference_mode():
+        for offset in range(0, len(crops), 32):
+            features = model(torch.stack(crops[offset:offset + 32]))
+            norms = torch.linalg.vector_norm(features, dim=1, keepdim=True)
+            if (tuple(features.shape) != (min(32, len(crops) - offset), 512)
+                    or not torch.isfinite(features).all() or not torch.isfinite(norms).all()
+                    or not (norms > 1e-12).all()):
+                raise ValueError("invalid stock reference embedding")
+            reference.append(features / norms)
+    (output / "image.rgb").write_bytes(cv2.cvtColor(image, cv2.COLOR_BGR2RGB).tobytes())
+    tensor = (torch.stack(crops).numpy() if crops else
+              np.empty((0, 3, 256, 128), dtype=np.float32))
+    embedding = (torch.cat(reference).numpy() if reference else
+                 np.empty((0, 512), dtype=np.float32))
+    (output / "reid-input.f32").write_bytes(tensor.astype("<f4").tobytes())
+    (output / "reid-output.f32").write_bytes(embedding.astype("<f4").tobytes())
+    receipt = {
+        "schema": "ndnsf-person-stock-crops-v1",
+        "image": {"path": str(image_path), "sha256": sha256(image_path),
+                  "width": width, "height": height},
+        "checkpoint": {"path": str(checkpoint), "sha256": sha256(checkpoint)},
+        "boxes": rows, "cropCount": len(crops), "featureDimension": 512,
+        "preprocessId": "osnet-rgb-256x128-imagenet-l2-v1",
+        "versions": {name: version(name) for name in
+                     ("torch", "torchvision", "pillow", "torchreid", "numpy")},
+    }
+    (output / "golden.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True)
-    parser.add_argument("--detector", required=True)
+    parser.add_argument("--detector")
+    parser.add_argument("--stock-crops", action="store_true",
+                        help="use checkpoint/PIL reference instead of the raw ONNX detector")
+    parser.add_argument("--boxes", type=Path, help="JSON observation boxes for --stock-crops")
     parser.add_argument("--reid", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -69,6 +147,15 @@ def main() -> int:
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     image_path = Path(args.image).resolve(strict=True)
+    if args.stock_crops:
+        if args.detector or args.boxes is None:
+            parser.error("--stock-crops requires --boxes and does not use --detector")
+        return stock_crops(image_path, Path(args.reid).resolve(strict=True),
+                           args.boxes.resolve(strict=True), output)
+    if not args.detector or args.boxes is not None:
+        parser.error("the raw ONNX reference requires --detector and does not use --boxes")
+    import onnxruntime as ort
+
     image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("cannot decode test image")
@@ -106,14 +193,16 @@ def main() -> int:
     if not decoded:
         raise ValueError("test image produced no person detections")
 
+    from PIL import Image
+
     crops = []
     for row in decoded:
         x1, y1, x2, y2 = row["box"]
         if x2 - x1 < 16 or y2 - y1 < 32:
             continue
         crop = cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
-        crop = cv2.resize(crop, (128, 256), interpolation=cv2.INTER_LINEAR)
-        normalized = crop.astype(np.float32) / 255.0
+        crop = np.asarray(Image.fromarray(crop).resize((128, 256), Image.Resampling.BILINEAR))
+        normalized = crop.astype(np.float32) / np.float32(255)
         normalized = (normalized - np.array([0.485, 0.456, 0.406], dtype=np.float32)) / \
             np.array([0.229, 0.224, 0.225], dtype=np.float32)
         crops.append(normalized.transpose(2, 0, 1))

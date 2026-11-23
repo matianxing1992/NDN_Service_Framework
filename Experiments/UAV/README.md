@@ -14,8 +14,13 @@ Provide the detector and OSNet ONNX files and put their SHA-256 digests in the
 person profile. For YOLO26n, select profile schema
 `uav-person-tracking-profile-v2` and set `detectorPreprocessId` to
 `yolo-default640-stock-box-v1`. The detector needs dynamic image height and
-width and an end-to-end `[1,300,6]` output. The OSNet graph uses the profile's
-existing 512-dimensional GAP embedding contract.
+width and either an end-to-end `[1,300,6]` output or a prepared dynamic raw
+head with a fixed class axis. Raw graphs carry the `ndnsf.uav.class-names.v1` class index; the native
+session takes argmax before selecting person detections and applying the
+person limit. The OSNet graph uses the profile's existing 512-dimensional GAP
+embedding contract. Crops use rounded, clamped integer boxes and the stock
+PIL uint8 bilinear transform; crops smaller than 16 by 32 pixels retain their
+local track without an appearance embedding.
 
 Pass both ONNX files to the existing launcher. It selects the installed main
 GS and Drone applications and generates the computation manifest with the
@@ -29,6 +34,30 @@ python3 Experiments/UAV/run_multicamera_tracking_demo.py \
   --tracking-profile "$PERSON_PROFILE" --source-manifest "$SOURCE_MANIFEST" \
   --output-dir "$RUN_DIRECTORY"
 ```
+
+### Offline native crop reference
+
+Use the frozen host inference environment for this preparation step. The box
+file is a JSON array of four-coordinate observations. The reference uses the
+checkpoint and stock Pillow/torchvision transform rather than native resizing:
+
+```bash
+python tools/person-reid/make_person_golden.py --stock-crops \
+  --image "$REFERENCE_IMAGE" --boxes "$REFERENCE_BOXES_JSON" \
+  --reid "$REID_CHECKPOINT" --output "$GOLDEN_DIRECTORY"
+python tools/person-reid/export_osnet_reid.py \
+  --checkpoint "$REID_CHECKPOINT" --dataset "$REID_DATASET" \
+  --output "$REID_ONNX" --receipt "$GOLDEN_DIRECTORY/onnx-export.json"
+NDNSF_PERSON_CROP_GOLDEN="$GOLDEN_DIRECTORY" \
+  ./build/uav-tracking-provider-tests \
+  --run_test=UavTrackingProviderLifecycle/PersonReidMatchesIndependentStockCheckpoint
+```
+
+The C++ case requires the prepared files, verifies the export's checkpoint and
+ONNX identities, compares every input float exactly and checks all 512 output
+features against the independent reference. It also compares native JPEG RGB
+bytes when the input is a JPEG. This is a numeric boundary check; the three
+sources, cross-window IDs and cancellation still need their runtime checks.
 
 ### Legacy checkpoint replay
 

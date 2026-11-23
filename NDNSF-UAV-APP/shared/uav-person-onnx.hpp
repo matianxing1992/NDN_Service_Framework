@@ -71,6 +71,16 @@ struct UavRgbImage
   std::vector<uint8_t> rgb;
 };
 
+/** Round ties to even and clamp the observation to the admitted image. */
+std::array<int, 4>
+integerPersonBox(const std::array<double, 4>& box, uint32_t width, uint32_t height);
+
+/** Prepare the stock PIL bilinear/uint8/ImageNet ReID input from an integer RGB crop.
+ * Return no tensor for a crop narrower than 16 or shorter than 32 pixels.
+ */
+std::vector<float>
+reidPersonCrop(const UavRgbImage& image, const std::array<int, 4>& box);
+
 /** Decode one admitted JPEG into owned RGB bytes with explicit bounds. */
 UavRgbImage
 decodePersonJpeg(const ndn::Buffer& jpeg);
@@ -127,7 +137,7 @@ public:
   static constexpr size_t PERSON_CLASS = 0;
   static constexpr size_t MAX_DETECTIONS = 300;
 
-  enum class ModelFormat { PERSON_RAW, PERSON_END_TO_END, VEHICLE_RAW };
+  enum class ModelFormat { PERSON_RAW, PERSON_STOCK, VEHICLE_RAW };
 
   explicit UavPersonDetectorSession(const std::filesystem::path& model,
                                     float confidenceThreshold = 0.25F,

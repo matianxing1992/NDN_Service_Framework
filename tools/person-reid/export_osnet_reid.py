@@ -15,11 +15,14 @@ import json
 from pathlib import Path
 
 import numpy as np
-import onnx
-import onnxruntime as ort
 import torch
 from torch import nn
-from torchreid.reid.models import build_model
+try:
+    from torchreid.models import build_model
+except ModuleNotFoundError as exc:
+    if exc.name != "torchreid.models":
+        raise
+    from torchreid.reid.models import build_model
 
 
 def sha256(path: Path) -> str:
@@ -57,6 +60,9 @@ def main() -> int:
     parser.add_argument("--dataset", choices=("market1501", "msmt17"), default="market1501",
                         help="training dataset of the supplied checkpoint")
     args = parser.parse_args()
+
+    import onnx
+    import onnxruntime as ort
 
     checkpoint = Path(args.checkpoint).resolve(strict=True)
     output = Path(args.output).resolve()
