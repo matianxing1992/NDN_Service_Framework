@@ -603,21 +603,23 @@ BOOST_AUTO_TEST_CASE(ProductionGpuOfferFeedsAdmissionAndMemoryConstrainedPlaceme
       const auto& role = input.roles.front();
       const NativeFixedProviderPlacement fixed(
         std::map<std::string, std::string>{{role.role, config.provider}});
-      BOOST_CHECK_THROW(fixed.proposeRoles(input.context, input.ackDigest, input.roles, offers, 200),
-        NativeNoFeasiblePlacement);
+      const ExtensionControl control{
+        std::chrono::steady_clock::now() + std::chrono::seconds(5), [] { return false; }};
+      BOOST_CHECK_THROW(fixed.proposeRoles(
+        input.context, input.ackDigest, input.roles, offers, 200, control), NativeNoFeasiblePlacement);
       auto pinned = input.context;
       pinned.preferredProvidersByRole.emplace(role.role, config.provider);
       pinned.pinnedConversationDeviceBudget.emplace(role.role, std::make_pair("cuda:0", freeMemory));
-      const auto proposal = fixed.proposeRoles(pinned, input.ackDigest, input.roles, offers, 200);
+      const auto proposal = fixed.proposeRoles(pinned, input.ackDigest, input.roles, offers, 200, control);
       BOOST_CHECK_EQUAL(proposal.roles.front().requiredDeviceMemoryMb, role.requiredDeviceMemoryMb);
       BOOST_CHECK_NO_THROW(validateNativeRolePlacement(proposal, input.roles, offers, 200));
       pinned.pinnedConversationDeviceBudget.at(role.role).second = freeMemory + 1;
-      BOOST_CHECK_THROW(fixed.proposeRoles(pinned, input.ackDigest, input.roles, offers, 200),
-        NativeNoFeasiblePlacement);
+      BOOST_CHECK_THROW(fixed.proposeRoles(
+        pinned, input.ackDigest, input.roles, offers, 200, control), NativeNoFeasiblePlacement);
       pinned.pinnedConversationDeviceBudget.at(role.role).second = freeMemory;
       pinned.preferredProvidersByRole.at(role.role) = "/provider/other";
-      BOOST_CHECK_THROW(fixed.proposeRoles(pinned, input.ackDigest, input.roles, offers, 200),
-        NativeNoFeasiblePlacement);
+      BOOST_CHECK_THROW(fixed.proposeRoles(
+        pinned, input.ackDigest, input.roles, offers, 200, control), NativeNoFeasiblePlacement);
     }
   }
 }
