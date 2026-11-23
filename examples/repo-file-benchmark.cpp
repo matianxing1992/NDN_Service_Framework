@@ -371,7 +371,7 @@ run(int argc, char** argv)
       };
       const auto commitSecured = [&](di::NativeStoredModelPacketIo::PacketWires wires,
                                      repo::PacketSource packetSource,
-                                     ndn_service_framework::ManifestPublication* manifest,
+                                     repo::RepoPreparedManifest* manifest,
                                      const Group& group, const std::function<void()>& active) {
         repo::RepoClient client = makePacketClient(user, target);
         const repo::RepoOperationOptions operation{deadline, active, {}};
@@ -394,7 +394,8 @@ run(int argc, char** argv)
         source.expectedWireBytes = group.wireBytes;
         if (manifest) {
           publication.segmentManifest =
-            std::make_shared<ndn_service_framework::SegmentManifestScope>(manifest->scope());
+            std::make_shared<ndn_service_framework::SegmentManifestScope>(
+              manifest->publication().scope());
         }
         else {
           source.next = [&wires, index = size_t{0}](std::vector<uint8_t>& wire) mutable {
@@ -490,9 +491,10 @@ run(int argc, char** argv)
           (fileBytes - payloadBytes + contentBytes - 1) / contentBytes);
         const auto appendOriginal = [&](const ndn::Data& packet) {
           const auto& wire = packet.wireEncode();
-          if (!useManifest)
+          if (!useManifest) {
             wires.emplace_back(wire.begin(), wire.end());
-          wireHash.update(ndn::span<const uint8_t>(wire.data(), wire.size()));
+            wireHash.update(ndn::span<const uint8_t>(wire.data(), wire.size()));
+          }
           group.wireBytes += wire.size();
           if (useCertificate) {
             packetSource.packetNames.push_back(packet.getName().toUri(
@@ -532,17 +534,18 @@ run(int argc, char** argv)
           group.payloadBytes += count;
           payloadBytes += count;
         }
-        std::optional<ndn_service_framework::ManifestPublication> manifest;
+        std::shared_ptr<repo::RepoPreparedManifest> manifest;
         if (useManifest) {
-          manifest.emplace(ndn_service_framework::ManifestPublication::prepare(*packetKeys,
+          manifest = std::make_shared<repo::RepoPreparedManifest>(
+            ndn_service_framework::ManifestPublication::prepare(*packetKeys,
             ndn::security::signingByCertificate(certificate), manifestScope(identity, group.prefix),
             {manifestGroupSize, repo::REPO_USER_STORAGE_OBJECT_MAX_BYTES,
              static_cast<uint32_t>(groupPackets)}, manifestContent, {}, ndn::time::seconds(60)));
-          for (const auto& packet : manifest->packets()) {
+          for (const auto& packet : manifest->publication().packets()) {
             appendOriginal(packet);
           }
         }
-        group.wireDigest = digest(wireHash);
+        group.wireDigest = manifest ? manifest->wireSha256() : digest(wireHash);
         const auto preparationEnd = std::chrono::duration_cast<std::chrono::nanoseconds>(
           Clock::now().time_since_epoch()).count();
         auto prepared = std::make_shared<Group>(std::move(group));
@@ -556,7 +559,7 @@ run(int argc, char** argv)
             try {
               if (useCertificate) {
                 commitSecured(std::move(wires), std::move(packetSource),
-                              manifest ? &*manifest : nullptr, *prepared, active);
+                              manifest.get(), *prepared, active);
               }
               else {
                 commit(std::move(wires), "sha256:" + prepared->wireDigest, active);

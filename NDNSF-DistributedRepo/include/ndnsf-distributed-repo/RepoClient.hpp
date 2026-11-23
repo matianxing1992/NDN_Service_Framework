@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace ndn_service_framework {
@@ -94,6 +95,23 @@ struct StoreOptions
   std::string policyEpoch;
 };
 
+/** Own a locally prepared manifest and its ordered original-wire SHA-256. */
+class RepoPreparedManifest
+{
+public:
+  explicit RepoPreparedManifest(ndn_service_framework::ManifestPublication&& publication);
+  RepoPreparedManifest(RepoPreparedManifest&&) noexcept;
+  ~RepoPreparedManifest();
+
+  const ndn_service_framework::ManifestPublication& publication() const { return *m_publication; }
+  const std::string& wireSha256() const { return m_wireSha256; }
+
+private:
+  std::unique_ptr<ndn_service_framework::ManifestPublication> m_publication;
+  std::string m_wireSha256;
+  friend class RepoClient;
+};
+
 class RepoClient
 {
 public:
@@ -143,6 +161,11 @@ public:
     const RepoDataPublication& input, ndn_service_framework::ManifestPublication&& prepared,
     const RepoOperationOptions& options);
 
+  /** Publish the same locally owned packets used to compute the grant's wire digest. */
+  RepoPublishResult publishPreparedManifest(
+    const RepoDataPublication& input, RepoPreparedManifest prepared,
+    const RepoOperationOptions& options);
+
   /** Retrieve an artifact by exactly one of a committed handle or a file reference. */
   RepoFetchResult fetchFile(const RepoFileFetch& input,
                             const RepoOperationOptions& options) const;
@@ -185,7 +208,8 @@ private:
                                     const ndn_service_framework::ManifestPublication* prepared,
                                     const RepoOperationOptions& options,
                                     std::unique_ptr<ndn_service_framework::ManifestPublication>*
-                                      owner = nullptr);
+                                      owner = nullptr,
+                                    const std::string* preparedDigest = nullptr);
   struct Impl;
   explicit RepoClient(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> m_impl;

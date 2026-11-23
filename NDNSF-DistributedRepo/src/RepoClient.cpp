@@ -1103,7 +1103,8 @@ commitOriginalPacketPublication(
   const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
   int ackCollectionTimeMs, int timeoutMs, const std::function<void()>& requireCurrent,
   const ndn_service_framework::ManifestPublication* prepared,
-  std::unique_ptr<ndn_service_framework::ManifestPublication>* preparedOwner = nullptr)
+  std::unique_ptr<ndn_service_framework::ManifestPublication>* preparedOwner = nullptr,
+  const std::string* preparedDigest = nullptr)
 {
   validateUserStorageClientTarget(target, timeoutMs);
   if (writer.isOnIoThread())
@@ -1279,7 +1280,10 @@ commitOriginalPacketPublication(
   auto packetLoopStarted = stamp(measurePreparation);
   publication->spool = std::make_shared<detail::FaceDataReferencePacketSpool>(
     names.size(), request.reference.expectedSize);
-  ndn::util::Sha256 digest;
+  std::optional<ndn::util::Sha256> digest;
+  if (preparedDigest == nullptr) {
+    digest.emplace();
+  }
   std::vector<uint64_t> offsets{0};
   std::vector<std::string> canonicalNames;
   uint64_t contentBytes = 0;
@@ -1363,7 +1367,9 @@ commitOriginalPacketPublication(
     measure(packetStarted, packetProof);
     publication->spool->append(i, original);
     measure(packetStarted, spoolAppend);
-    digest.update(original);
+    if (digest) {
+      digest->update(original);
+    }
     measure(packetStarted, wireDigest);
     offsets.push_back(offsets.back() + wire.size());
   }
@@ -1376,7 +1382,8 @@ commitOriginalPacketPublication(
   }
   publication->spool->finalize();
   if (publication->spool->totalWireBytes() != request.reference.expectedSize ||
-      toLowerHex(digest.toString()) != request.reference.expectedSha256)
+      (preparedDigest ? *preparedDigest : toLowerHex(digest->toString())) !=
+        request.reference.expectedSha256)
     throw std::invalid_argument("repo-original-publication-digest-or-size-mismatch");
 
   const auto packetSource = preparedOwner ? "prepared-owned" : prepared ? "prepared" : "wire";
@@ -3571,6 +3578,25 @@ RepoClient::publishData(const RepoDataPublication& input,
   return publishDataImpl(input, nullptr, options);
 }
 
+RepoPreparedManifest::RepoPreparedManifest(
+  ndn_service_framework::ManifestPublication&& publication)
+  : m_publication(
+      std::make_unique<ndn_service_framework::ManifestPublication>(std::move(publication)))
+{
+  if (m_publication->packets().empty()) {
+    throw std::invalid_argument("prepared Repo manifest has no packets");
+  }
+  ndn::util::Sha256 digest;
+  for (const auto& packet : m_publication->packets()) {
+    const auto& wire = packet.wireEncode();
+    digest.update({wire.data(), wire.size()});
+  }
+  m_wireSha256 = toLowerHex(digest.toString());
+}
+
+RepoPreparedManifest::RepoPreparedManifest(RepoPreparedManifest&&) noexcept = default;
+RepoPreparedManifest::~RepoPreparedManifest() = default;
+
 RepoPublishResult
 RepoClient::publishPreparedManifest(
   const RepoDataPublication& input, const ndn_service_framework::ManifestPublication& prepared,
@@ -3589,10 +3615,22 @@ RepoClient::publishPreparedManifest(
 }
 
 RepoPublishResult
+RepoClient::publishPreparedManifest(const RepoDataPublication& input, RepoPreparedManifest prepared,
+                                    const RepoOperationOptions& options)
+{
+  if (!prepared.m_publication) {
+    throw std::invalid_argument("prepared Repo manifest has no packets");
+  }
+  return publishDataImpl(input, prepared.m_publication.get(), options, &prepared.m_publication,
+                         &prepared.m_wireSha256);
+}
+
+RepoPublishResult
 RepoClient::publishDataImpl(const RepoDataPublication& input,
                             const ndn_service_framework::ManifestPublication* prepared,
                             const RepoOperationOptions& options,
-                            std::unique_ptr<ndn_service_framework::ManifestPublication>* owner)
+                            std::unique_ptr<ndn_service_framework::ManifestPublication>* owner,
+                            const std::string* preparedDigest)
 {
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
@@ -3730,7 +3768,7 @@ RepoClient::publishDataImpl(const RepoDataPublication& input,
   const auto manifest = commitOriginalPacketPublication(
     *m_impl->user, target, request, nextPacket, verifySignature,
     PUBLICATION_ACK_COLLECTION_MS, remainingMs(options.deadline), options.requireCurrent,
-    prepared, owner);
+    prepared, owner, preparedDigest);
   RepoPublishResult result;
   // Deliberately no operationReference: the Repo's status service does not resolve an insert
   // operation by id (`repo-publish-operation-not-found`), so handing the caller an id it

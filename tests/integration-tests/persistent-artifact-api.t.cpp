@@ -3309,6 +3309,8 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   }
   BOOST_REQUIRE_LE(ordinaryNameBytes, 512U << 10);
   BOOST_REQUIRE_GT(sourceFullNameBytes, 512U << 10);
+  const repo::RepoPreparedManifest preparedManifest{ManifestPublication(manifestPublication)};
+  BOOST_REQUIRE_EQUAL(preparedManifest.wireSha256(), manifestInsert.reference.expectedSha256);
   auto manifestWriter = repo::RepoClient::makePersistent(sourceWriter, clientConfig());
   const auto publishManifest = [&](const repo::RepoUserStorageInsertRequest& request,
                                    bool prepared = false) {
@@ -3342,9 +3344,9 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     options.deadline = std::chrono::steady_clock::now() + 15s;
     if (!prepared)
       return manifestWriter.publishData(input, options);
-    // Keep the fixture's original packet set as an oracle, and transfer an independent owner.
-    return manifestWriter.publishPreparedManifest(input, ManifestPublication(manifestPublication),
-                                                  options);
+    // Keep the independently indexed original wires for comparison after restart.
+    return manifestWriter.publishPreparedManifest(input,
+      repo::RepoPreparedManifest{ManifestPublication(manifestPublication)}, options);
   };
   const auto commitManifest = [&](const repo::RepoUserStorageInsertRequest& request,
                                   bool prepared = false) {
