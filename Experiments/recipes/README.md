@@ -200,6 +200,10 @@ The digest and size in the write reference identify the original-wire file. Repl
 returned packet byte for byte with NFD caching disabled. The result includes all attempts and
 only reports a sustained median for windows whose entire sample set completed without errors.
 Use `--samples 1 --seconds 1 --windows 16` for a connectivity check.
+Use `--group N --groups 4` to replay four consecutive complete groups starting at group `N`.
+The groups must share a publication prefix, and each original-wire file is checked against its
+own reference. Keep the window, direction, placement and topology fixed when comparing the
+single-group and four-group working sets.
 
 ## UAV multi-camera tracking assets
 

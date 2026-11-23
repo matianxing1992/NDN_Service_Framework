@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -24,6 +25,8 @@
 #include <vector>
 
 using Clock = std::chrono::steady_clock;
+constexpr std::size_t MAX_REPLAY_RECORDS = 4 * 4096;
+constexpr std::uintmax_t MAX_REPLAY_WIRE_BYTES = 4 * 64 * 1024 * 1024;
 
 bool
 sampleSource(const ndn::Name& name)
@@ -162,7 +165,7 @@ main(int argc, char** argv)
     const auto duration = std::chrono::seconds(std::stoul(argv[9]));
     const std::string producerSocket = argv[10];
     if ((payload != 7000 && payload != 8400) || window == 0 || window > 4096 || records < window ||
-        records > 4096 || (mode != "ordinary" && mode != "digest") ||
+        records > MAX_REPLAY_RECORDS || (mode != "ordinary" && mode != "digest") ||
         duration < std::chrono::seconds(1) || duration > std::chrono::seconds(120)) {
       return 2;
     }
@@ -176,8 +179,8 @@ main(int argc, char** argv)
     const ndn::Name prefix(argv[12]);
     const std::filesystem::path fixture(argv[13]);
     if (prefix.empty() || !std::filesystem::is_regular_file(fixture) ||
-        std::filesystem::file_size(fixture) > 64 * 1024 * 1024) {
-      throw std::runtime_error("invalid replay group");
+        std::filesystem::file_size(fixture) > MAX_REPLAY_WIRE_BYTES) {
+      throw std::runtime_error("invalid replay fixture");
     }
     std::ifstream input(fixture, std::ios::binary);
     if (!input) throw std::runtime_error("missing committed original-wire fixture");
