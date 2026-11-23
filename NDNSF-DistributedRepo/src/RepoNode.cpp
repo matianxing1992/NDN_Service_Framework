@@ -496,31 +496,19 @@ RepoNode::~RepoNode()
 void
 RepoNode::registerOriginalDataServing(ndn::Face& face)
 {
-  registerOriginalDataServing(face, 1);
-}
-
-void
-RepoNode::registerOriginalDataServing(ndn::Face& face, std::size_t workerCount)
-{
   if (m_providerIdentity.empty()) {
     throw std::logic_error("original Data serving requires a Provider identity route");
   }
   if (m_originalDataServingRegistered || m_ownedInsertStopping.load()) {
     throw std::logic_error("original Data serving is already registered");
   }
-  if (workerCount == 0 || workerCount > m_originalDataWorkers.size() ||
-      (workerCount > 1 && !m_core.supportsConcurrentCommittedReads())) {
-    throw std::invalid_argument("unsupported original Data reader count");
-  }
 
   const ndn::Name route(m_providerIdentity);
   const std::weak_ptr<RepoNode> weakSelf = shared_from_this();
+  if (m_artifactMetadataStore) {
+    m_originalDataWorker = std::thread([this, &face] { runOriginalDataWorker(face); });
+  }
   try {
-    if (m_artifactMetadataStore) {
-      std::lock_guard<std::mutex> guard(m_originalDataJoinMutex);
-      for (std::size_t i = 0; i < workerCount; ++i)
-        m_originalDataWorkers[i] = std::thread([this, &face] { runOriginalDataWorker(face); });
-    }
     // A local-only filter accepts the original producer name. Registering /
     // with NFD would hijack unrelated traffic; only the distinct Repo identity
     // is advertised as a forwarding-hint route.
@@ -836,14 +824,8 @@ RepoNode::stopOriginalDataWorker() noexcept
 {
   std::lock_guard<std::mutex> joinGuard(m_originalDataJoinMutex);
   requestOriginalDataWorkerStop();
-  bool joined = false;
-  for (auto& worker : m_originalDataWorkers) {
-    if (worker.joinable()) {
-      worker.join();
-      joined = true;
-    }
-  }
-  if (joined) {
+  if (m_originalDataWorker.joinable()) {
+    m_originalDataWorker.join();
     try {
       ndn_service_framework::logControlTiming("repo-server", "reply-admission",
         ndn::Name(m_providerIdentity), {

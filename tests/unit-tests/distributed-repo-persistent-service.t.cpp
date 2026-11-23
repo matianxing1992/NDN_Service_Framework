@@ -170,14 +170,6 @@ struct RepoNodeTestAccess
     std::lock_guard<std::mutex> lock(node.m_originalDataMutex);
     return node.m_originalDataQueue.size();
   }
-
-  static std::size_t
-  originalDataReaders(RepoNode& node)
-  {
-    std::lock_guard<std::mutex> lock(node.m_originalDataJoinMutex);
-    return std::count_if(node.m_originalDataWorkers.begin(), node.m_originalDataWorkers.end(),
-                         [](const auto& worker) { return worker.joinable(); });
-  }
 };
 
 } // namespace ndnsf_distributed_repo
@@ -4747,9 +4739,7 @@ BOOST_AUTO_TEST_CASE(PersistentOriginalFaceBurstChecksEachDeadlineAndDrainsQueue
     } while (std::chrono::steady_clock::now() < deadline);
     return complete();
   };
-  BOOST_CHECK_THROW(fixture.node->registerOriginalDataServing(face, 3), std::invalid_argument);
-  fixture.node->registerOriginalDataServing(face, 2);
-  BOOST_CHECK_EQUAL(RepoNodeTestAccess::originalDataReaders(*fixture.node), 2U);
+  fixture.node->registerOriginalDataServing(face);
   BOOST_REQUIRE(pumpUntil([&] { return fixture.node->isOriginalDataServingReady(); }));
   const auto pending = RepoNodeTestAccess::pending(*fixture.node);
   const auto [pendingBytes, byteLimit] = RepoNodeTestAccess::pendingBytes(*fixture.node);
