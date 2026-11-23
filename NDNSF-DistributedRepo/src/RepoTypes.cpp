@@ -1412,10 +1412,18 @@ public:
     return m_authoritativeStore->listManifests();
   }
 
-  std::vector<std::shared_ptr<const RepoObjectManifest>> listManifestSnapshots() const
+  std::vector<std::shared_ptr<const RepoObjectManifest>>
+  listManifestSnapshots(detail::RecheckManifestCatalog* recheck) const
   {
     std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
-    return detail::listManifestSnapshots(*m_authoritativeStore);
+    auto snapshots = detail::listManifestSnapshots(*m_authoritativeStore, recheck);
+    if (recheck) {
+      *recheck = [this, check = std::move(*recheck)] {
+        std::unique_lock<std::mutex> lock(m_authorityMutex);
+        return check();
+      };
+    }
+    return snapshots;
   }
 
   std::vector<RepoObjectManifest>
@@ -1731,12 +1739,14 @@ detail::readManifestSnapshot(const RepoStoreBackend& store, const std::string& o
 }
 
 std::vector<std::shared_ptr<const RepoObjectManifest>>
-detail::listManifestSnapshots(const RepoStoreBackend& store)
+detail::listManifestSnapshots(const RepoStoreBackend& store, RecheckManifestCatalog* recheck)
 {
   if (const auto tiered = dynamic_cast<const TieredRepoStore*>(&store))
-    return tiered->listManifestSnapshots();
+    return tiered->listManifestSnapshots(recheck);
   if (const auto filesystem = dynamic_cast<const FilesystemRepoStoreBackend*>(&store))
-    return filesystem->listManifestSnapshots();
+    return filesystem->listManifestSnapshots(recheck);
+  if (recheck)
+    *recheck = [&store] { return listManifestSnapshots(store); };
   auto manifests = store.listManifests();
   std::vector<std::shared_ptr<const RepoObjectManifest>> snapshots;
   snapshots.reserve(manifests.size());

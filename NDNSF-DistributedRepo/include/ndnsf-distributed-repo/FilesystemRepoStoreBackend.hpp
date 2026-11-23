@@ -52,7 +52,9 @@ public:
   size_t size() const override;
   std::vector<RepoObjectManifest> listManifests() const override;
   /** Pin the current catalog for a caller that only reads the packet indexes. */
-  std::vector<std::shared_ptr<const RepoObjectManifest>> listManifestSnapshots() const;
+  using ManifestSnapshots = std::vector<std::shared_ptr<const RepoObjectManifest>>;
+  using RecheckManifestCatalog = std::function<ManifestSnapshots()>;
+  ManifestSnapshots listManifestSnapshots(RecheckManifestCatalog* recheck = nullptr) const;
   /** Internal locator integration: copy matching metadata under the existing lock. */
   std::vector<RepoObjectManifest>
   findPacketManifests(const std::string& canonical, const std::string& alternate,
@@ -115,6 +117,15 @@ private:
     uint64_t generation = 0;
   };
 
+  using ManifestStamp = std::array<uint64_t, 7>;
+  using StampedCatalog = std::unordered_map<std::string,
+    std::pair<ManifestStamp, std::shared_ptr<const RepoObjectManifest>>>;
+  struct ManifestObservation
+  {
+    ManifestStamp stamp{};
+    bool reusable = false;
+  };
+
   struct CachedManifest
   {
     std::string encoded;
@@ -130,10 +141,13 @@ private:
   std::shared_ptr<const RepoObjectManifest>
   readManifestUnlocked(const std::string& objectName, uint64_t* wireBytes = nullptr) const;
   std::shared_ptr<const RepoObjectManifest>
-  loadManifestUnlocked(const std::filesystem::path& path, uint64_t* wireBytes = nullptr) const;
+  loadManifestUnlocked(const std::filesystem::path& path,
+                       ManifestObservation* observed = nullptr) const;
   /** Pin an immutable parse while the complete current filesystem identity matches. */
   std::shared_ptr<const RepoObjectManifest>
-  cachedManifestUnlocked(const std::filesystem::path& path, uint64_t* wireBytes = nullptr) const;
+  cachedManifestUnlocked(const std::filesystem::path& path,
+                         ManifestObservation* observed = nullptr) const;
+  ManifestSnapshots readManifestCatalog(StampedCatalog* capture, const StampedCatalog* prior) const;
   std::shared_ptr<const RepoObjectManifest>
   parseManifestCachedUnlocked(const std::string& key, std::string encoded,
                               const std::filesystem::path* source = nullptr) const;

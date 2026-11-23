@@ -1822,6 +1822,16 @@ BOOST_AUTO_TEST_CASE(CatalogParseCacheHonorsEncodedByteBound)
     // All files together exceed the budget in every row. Their enumeration
     // order may differ; an eviction must force a reparse.
     BOOST_CHECK_GT(catalogParses.load(), 0U);
+    if (encodedBytes > budget) {
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      detail::RecheckManifestCatalog recheck;
+      const auto first = detail::listManifestSnapshots(*store, &recheck);
+      catalogParses = 0;
+      BOOST_CHECK(first == recheck());
+      BOOST_CHECK_EQUAL(catalogParses.load(), 0U);
+      std::filesystem::remove(directory / "manifests" / "small.json");
+      BOOST_CHECK_EQUAL(recheck().size(), first.size() - 1);
+    }
   }
 }
 

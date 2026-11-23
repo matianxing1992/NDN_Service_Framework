@@ -1981,7 +1981,8 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   }
   std::set<std::string> indexedPacketNames;
   std::map<std::string, std::shared_ptr<const RepoObjectManifest>> catalogMetadata;
-  const auto catalog = detail::listManifestSnapshots(*m_store);
+  detail::RecheckManifestCatalog recheckCatalog;
+  const auto catalog = detail::listManifestSnapshots(*m_store, &recheckCatalog);
   for (const auto& stored : catalog) {
     catalogMetadata.emplace(stored->objectName, stored);
     if (verifyStoredSpool && stored->objectName != existing->objectName &&
@@ -2004,7 +2005,7 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   finishStage("catalog");
   const auto requireCurrentCatalog = [&] {
     if (requireActive) requireActive();
-    const auto current = detail::listManifestSnapshots(*m_store);
+    const auto current = recheckCatalog();
     const auto rejectCatalog = [&] (const char* kind, const std::string* affected = nullptr,
                                    const std::string* before = nullptr,
                                    const std::string* after = nullptr) {

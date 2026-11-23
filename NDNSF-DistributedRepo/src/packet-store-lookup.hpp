@@ -23,8 +23,10 @@ std::shared_ptr<const RepoObjectManifest>
 readManifestSnapshot(const RepoStoreBackend& store, const std::string& objectName);
 
 /** Pin current catalog entries without deep-copying immutable packet indexes. */
+using RecheckManifestCatalog =
+  std::function<std::vector<std::shared_ptr<const RepoObjectManifest>>()>;
 std::vector<std::shared_ptr<const RepoObjectManifest>>
-listManifestSnapshots(const RepoStoreBackend& store);
+listManifestSnapshots(const RepoStoreBackend& store, RecheckManifestCatalog* recheck = nullptr);
 
 /** Observe current physical state without copying an owned backend's immutable packet index. */
 RepoObjectMetadataSnapshot

@@ -687,11 +687,25 @@ FilesystemRepoStoreBackend::listManifests() const
   return manifests;
 }
 
-std::vector<std::shared_ptr<const RepoObjectManifest>>
-FilesystemRepoStoreBackend::listManifestSnapshots() const
+FilesystemRepoStoreBackend::ManifestSnapshots
+FilesystemRepoStoreBackend::listManifestSnapshots(RecheckManifestCatalog* recheck) const
+{
+  if (!recheck)
+    return readManifestCatalog(nullptr, nullptr);
+  StampedCatalog captured;
+  auto snapshots = readManifestCatalog(&captured, nullptr);
+  *recheck = [this, captured = std::move(captured)] {
+    return readManifestCatalog(nullptr, &captured);
+  };
+  return snapshots;
+}
+
+FilesystemRepoStoreBackend::ManifestSnapshots
+FilesystemRepoStoreBackend::readManifestCatalog(StampedCatalog* capture,
+                                                const StampedCatalog* prior) const
 {
   std::lock_guard<std::mutex> lock(m_mutex);
-  std::vector<std::shared_ptr<const RepoObjectManifest>> manifests;
+  ManifestSnapshots manifests;
   const fs::path directory = fs::path(m_rootPath) / "manifests";
   std::set<std::string> present;
   for (const auto& entry : fs::directory_iterator(directory)) {
@@ -700,11 +714,21 @@ FilesystemRepoStoreBackend::listManifestSnapshots() const
     }
     const auto key = entry.path().filename().string();
     present.insert(key);
-    if (auto cached = cachedManifestUnlocked(entry.path())) {
-      manifests.push_back(std::move(cached));
-      continue;
+    if (prior) {
+      const auto found = prior->find(key);
+      if (found != prior->end() && manifestStamp(entry.path()) == found->second.first) {
+        manifests.push_back(found->second.second);
+        continue;
+      }
     }
-    manifests.push_back(loadManifestUnlocked(entry.path()));
+    ManifestObservation observed;
+    auto manifest = cachedManifestUnlocked(entry.path(), capture ? &observed : nullptr);
+    if (!manifest)
+      manifest = loadManifestUnlocked(entry.path(), capture ? &observed : nullptr);
+    // Do not promote a recent read into a reusable stamp just by aging.
+    if (capture && observed.reusable)
+      capture->emplace(key, std::make_pair(observed.stamp, manifest));
+    manifests.push_back(std::move(manifest));
   }
   std::lock_guard<std::mutex> parseLock(m_catalogParseMutex);
   for (auto cached = m_catalogParseCache.begin(); cached != m_catalogParseCache.end();) {
@@ -1565,26 +1589,33 @@ FilesystemRepoStoreBackend::readManifestUnlocked(const std::string& objectName,
                                                  uint64_t* wireBytes) const
 {
   const auto path = manifestPath(objectName);
-  if (auto cached = cachedManifestUnlocked(path, wireBytes)) {
+  ManifestObservation observed;
+  if (auto cached = cachedManifestUnlocked(path, wireBytes ? &observed : nullptr)) {
     if (cached->objectName != objectName) {
       throw std::runtime_error("repo-file-metadata-key-mismatch");
     }
+    if (wireBytes)
+      *wireBytes = observed.stamp[MANIFEST_FILE_SIZE_INDEX];
     return cached;
   }
   if (!fs::exists(path)) {
     throw std::out_of_range("repo-object-not-found: " + objectName);
   }
-  auto manifest = loadManifestUnlocked(path, wireBytes);
+  auto manifest = loadManifestUnlocked(path, wireBytes ? &observed : nullptr);
   if (manifest->objectName != objectName) {
     throw std::runtime_error("repo-file-metadata-key-mismatch");
   }
+  if (wireBytes)
+    *wireBytes = observed.stamp[MANIFEST_FILE_SIZE_INDEX];
   return manifest;
 }
 
 std::shared_ptr<const RepoObjectManifest>
-FilesystemRepoStoreBackend::loadManifestUnlocked(const fs::path& path, uint64_t* wireBytes) const
+FilesystemRepoStoreBackend::loadManifestUnlocked(const fs::path& path,
+                                                ManifestObservation* observed) const
 {
   const auto stamp = manifestStamp(path);
+  const bool reusable = observed && isStableManifestStamp(stamp);
   auto manifest = parseManifestCachedUnlocked(path.filename().string(), readText(path), &path);
   if (stamp != manifestStamp(path)) {
     std::lock_guard<std::mutex> lock(m_catalogParseMutex);
@@ -1595,14 +1626,14 @@ FilesystemRepoStoreBackend::loadManifestUnlocked(const fs::path& path, uint64_t*
     }
     throw std::runtime_error("repo-file-metadata-changed-during-read");
   }
-  // The size belongs to the same file identity that bracketed the parse.
-  if (wireBytes)
-    *wireBytes = stamp[MANIFEST_FILE_SIZE_INDEX];
+  if (observed)
+    *observed = {stamp, reusable};
   return manifest;
 }
 
 std::shared_ptr<const RepoObjectManifest>
-FilesystemRepoStoreBackend::cachedManifestUnlocked(const fs::path& path, uint64_t* wireBytes) const
+FilesystemRepoStoreBackend::cachedManifestUnlocked(const fs::path& path,
+                                                  ManifestObservation* observed) const
 {
   std::lock_guard<std::mutex> lock(m_catalogParseMutex);
   const auto found = m_catalogParseCache.find(path.filename().string());
@@ -1616,8 +1647,8 @@ FilesystemRepoStoreBackend::cachedManifestUnlocked(const fs::path& path, uint64_
   // this is a cache bypass for recent files, not a stale-data grace period.
   if (!isStableManifestStamp(*identity))
     return {};
-  if (wireBytes)
-    *wireBytes = (*identity)[MANIFEST_FILE_SIZE_INDEX];
+  if (observed)
+    *observed = {*identity, true};
   return found->second.parsed;
 }
 
