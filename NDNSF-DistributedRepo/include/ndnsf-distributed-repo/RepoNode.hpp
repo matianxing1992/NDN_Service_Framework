@@ -10,6 +10,7 @@
 
 #include <ndn-cxx/face.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -108,6 +109,7 @@ public:
    *  must outlive this RepoNode, and callers must opt in explicitly.
    */
   void registerOriginalDataServing(ndn::Face& face);
+  void registerOriginalDataServing(ndn::Face& face, std::size_t workerCount);
   bool isOriginalDataServingReady() const noexcept;
 
   RepoObjectManifest put(const std::string& objectName,
@@ -364,7 +366,7 @@ private:
   std::size_t m_originalDataPeakPendingBytes = 0;
   bool m_stopOriginalDataWorker = false;
   std::mutex m_originalDataJoinMutex;
-  std::thread m_originalDataWorker;
+  std::array<std::thread, 2> m_originalDataWorkers;
   mutable std::mutex m_statusMutex;
   std::map<std::string, RepoOperationStatus> m_statusById;
   uint64_t m_nextOperationId = 0;

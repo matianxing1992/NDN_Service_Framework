@@ -333,7 +333,8 @@ main(int argc, char* argv[])
       provider.reserveUnaryHandler(
         ndnsf_distributed_repo::makeRepoServiceName(config.servicePrefix, "MANIFEST"));
     }
-    repo->registerOriginalDataServing(face);
+    const std::size_t originalDataReaders = repo->core().supportsConcurrentCommittedReads() ? 2 : 1;
+    repo->registerOriginalDataServing(face, originalDataReaders);
     provider.init();
     provider.fetchPermissionsFromController(config.authorityIdentity);
 
@@ -343,6 +344,7 @@ main(int argc, char* argv[])
               << " manifestHandler=" << (config.reserveManifestHandler ? "reserved" : "shared")
               << " manifestFetchFace=" << (manifestFace ? "dedicated" : "shared")
               << " manifestSpool=" << (spoolBudget ? "bounded-memory" : "file")
+              << " originalDataReaders=" << originalDataReaders
               << std::endl;
     if (std::getenv("NDNSF_DEPLOYMENT_BOOT_ID") != nullptr) {
       // The manager's fresh owned log binds this marker to its PID/launch.
