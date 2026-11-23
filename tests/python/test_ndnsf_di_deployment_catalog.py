@@ -535,6 +535,32 @@ class DeploymentCatalogTest(unittest.TestCase):
             ref = catalog.publish_definition(value)
             client = InferenceClient(core, deployments=catalog)
 
+            unsupported = signer.define(
+                deployment_id="unsupported-native-constraints",
+                deployment_owner=value.deployment_owner, service=value.service,
+                model_intent=value.model_intent, request_contract=value.request_contract,
+                artifacts=(), objective=value.objective,
+                constraints=DeploymentConstraints(minimum_providers=2),
+                optimization_profile="default")
+            cases = (
+                (catalog.publish_definition(unsupported), InferenceOptions(),
+                 "NATIVE_COORDINATOR_CONSTRAINTS_UNSUPPORTED"),
+                (ref, InferenceOptions(metadata={"label": "requires-support"}),
+                 "NATIVE_COORDINATOR_OPTIONS_UNSUPPORTED"),
+                (ref, InferenceOptions(output_encoding="text/plain"),
+                 "NATIVE_COORDINATOR_OPTIONS_UNSUPPORTED"),
+            )
+            for deployment, options, error in cases:
+                with self.subTest(error=error, options=options):
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        client._request_as_coordinator(
+                            deployment, input=b"payload",
+                            deadline=datetime.now(timezone.utc) + timedelta(seconds=5),
+                            options=options, coordinator_service=value.coordinator_service)
+            self.assertEqual(admitted, [])
+            self.assertFalse(any(record["kind"] == "request-handle"
+                                 for record in journal.records()))
+
             def submit():
                 return client._request_as_coordinator(
                     ref, input=b"payload", deadline=datetime.now(timezone.utc) + timedelta(seconds=5),

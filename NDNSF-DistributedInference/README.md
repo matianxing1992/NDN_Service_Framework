@@ -276,6 +276,14 @@ A generic `DONE` status without the exact revision, adapter, artifacts, and all
 required roles remains `PREPARING`. Definitions signed by an unknown
 Application key are rejected even when their self-signature is valid.
 
+With a configured native requester, local and coordinator-owned preplanned
+requests enter the same C++ inference path. This bridge currently accepts one
+binary result with the configured model, service and input schema, default
+`DeploymentConstraints()`, and empty request metadata. Other constraints,
+continuous output, output encodings and model bindings are rejected before
+submission. A signed definition alone does not establish backend support.
+The durable journal binds the application request ID to the native request ID.
+
 Remote discovery is record-based rather than metadata-based. The Application
 publishes an exact, signed definition Data packet; the lifecycle owner may
 publish an exact signed activation or revocation packet. NDNSD carries only a

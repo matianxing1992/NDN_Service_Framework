@@ -55,6 +55,12 @@ Collaboration 状态投影同一聚合结果，而其内部请求仍逐一验证
 `PREPARING`。即使自签名在密码学上有效，未知 Application 密钥签出的 definition
 也会被拒绝。
 
+配置原生 requester 后，本地和 coordinator 的预规划请求进入同一 C++ 推理路径。
+当前桥接支持配置中的模型、服务、输入 schema、单个二进制结果、默认
+`DeploymentConstraints()` 及空请求 metadata。其他约束、连续输出、输出编码或模型
+绑定会在提交前被拒绝。签名定义本身不能证明后端支持。耐久日志保存应用请求 ID
+与原生请求 ID 的绑定。
+
 远程发现以记录而不是元数据为权威。Application 发布精确名称、带签名的 definition
 Data；生命周期所有者可以发布精确名称、带签名的 activation 或 revocation Data。
 NDNSD 只携带由 `application.deployments.discovery_hint(...)` 或
