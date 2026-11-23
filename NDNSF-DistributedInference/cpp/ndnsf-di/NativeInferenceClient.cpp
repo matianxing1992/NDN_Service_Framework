@@ -2105,8 +2105,8 @@ collectConversationReceipts(
     }
     ProviderConversationStateReceiptV1 receipt;
     try {
-      receipt = nativeReadProviderConversationStateReceipt(nativeParseJson(
-        std::string(record.payload.begin(), record.payload.end())));
+      receipt = nativeDecodeProviderConversationReceipt(
+        std::string(record.payload.begin(), record.payload.end()));
     }
     catch (const std::exception&) {
       throw NativeDiError("NATIVE_CONVERSATION_RECEIPT_INVALID", "conversation", "receipt",

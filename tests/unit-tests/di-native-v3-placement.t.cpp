@@ -6,6 +6,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
@@ -4244,7 +4245,24 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
       receipt.stateSchemaDigest = nativePlanningDigest("state-schema");
       receipt.stateComponentDigests = {nativePlanningDigest("state-component")};
       receipt.expiresAtMs = 2'000'000'060'000ULL;
+      BOOST_CHECK_EQUAL(nativeEncodeProviderConversationReceipt(receipt), receipt.toJson());
+      BOOST_CHECK_EQUAL(nativeDecodeProviderConversationReceipt(receipt.toJson()).toJson(),
+                        receipt.toJson());
+      for (std::size_t index = 1; index < 96; ++index) {
+        receipt.stateComponentDigests.push_back(
+          nativePlanningDigest("state-component-" + std::to_string(index)));
+      }
       const auto receiptJson = receipt.toJson();
+      const auto receiptWire = nativeEncodeProviderConversationReceipt(receipt);
+      BOOST_CHECK_GT(receiptJson.size(), 8192U);
+      BOOST_CHECK_LT(receiptWire.size(), 7000U);
+      BOOST_CHECK_EQUAL(nativeDecodeProviderConversationReceipt(receiptWire).toJson(), receiptJson);
+      auto tampered = nativeParseJson(receiptWire);
+      auto& packed = tampered.at("stateComponentDigests").get_ref<std::string&>();
+      BOOST_REQUIRE(!packed.empty());
+      packed.front() = packed.front() == 'A' ? 'B' : 'A';
+      BOOST_CHECK_THROW(nativeDecodeProviderConversationReceipt(nativeCanonicalJson(tampered)),
+                        std::invalid_argument);
       const auto seedRecord = [&] (const ndn::Name& topic, const ndn::Buffer& payload) {
         VerifiedCollaborationData value;
         value.dataName = ndn::Name("/provider/a/NDNSF/DI/conversation").append(topic);
@@ -4257,7 +4275,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
         value.payload = payload;
         user->seedConversationData(std::move(value));
       };
-      const ndn::Buffer receiptPayload(receiptJson.begin(), receiptJson.end());
+      const ndn::Buffer receiptPayload(receiptWire.begin(), receiptWire.end());
       user->seedConversationScope(id, "ndnsf-di-conversation-state-v1", ndn::Buffer(32, 0x5a));
       seedRecord(ndn::Name("/ndnsf-di/conversation/receipt").append(role), receiptPayload);
 

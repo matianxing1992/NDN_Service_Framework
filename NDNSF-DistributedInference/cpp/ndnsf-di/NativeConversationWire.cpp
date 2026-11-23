@@ -2,6 +2,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 
+#include <ndn-cxx/security/transform/base64-decode.hpp>
+#include <ndn-cxx/security/transform/base64-encode.hpp>
+#include <ndn-cxx/security/transform/buffer-source.hpp>
+#include <ndn-cxx/security/transform/stream-sink.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
 #include <openssl/crypto.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
@@ -12,6 +17,8 @@
 #include <limits>
 #include <memory>
 #include <set>
+#include <sstream>
+#include <string_view>
 
 namespace ndnsf::di {
 
@@ -87,6 +94,74 @@ nativeReadProviderConversationStateReceipt(const NativeJson& value)
       !value.at("signature").is_string() || !value.at("signature").get<std::string>().empty())
     throw std::invalid_argument("conversation receipt digest or signature field mismatch");
   return result;
+}
+
+namespace {
+constexpr std::size_t COMPACT_RECEIPT_THRESHOLD = 7000;
+constexpr std::size_t STATE_DIGEST_BYTES = SHA256_DIGEST_LENGTH;
+constexpr std::string_view STATE_DIGEST_PREFIX = "sha256:";
+
+std::string
+encodeStateDigestBytes(ndn::span<const std::uint8_t> packed)
+{
+  namespace transform = ndn::security::transform;
+  std::ostringstream encoded;
+  transform::bufferSource(packed) >> transform::base64Encode(false) >>
+    transform::streamSink(encoded);
+  return encoded.str();
+}
+} // namespace
+
+std::string
+nativeEncodeProviderConversationReceipt(const ProviderConversationStateReceiptV1& receipt)
+{
+  auto wire = receipt.toJson();
+  if (wire.size() <= COMPACT_RECEIPT_THRESHOLD)
+    return wire;
+
+  // Preserve the legacy JSON receipt for ordinary layouts. With many state ports,
+  // the original hexadecimal strings can make SVS segment this control publication.
+  auto value = nativeParseJson(wire);
+  std::vector<std::uint8_t> packed;
+  packed.reserve(receipt.stateComponentDigests.size() * STATE_DIGEST_BYTES);
+  for (const auto& digest : receipt.stateComponentDigests) {
+    const auto bytes = ndn::fromHex(std::string_view(digest).substr(STATE_DIGEST_PREFIX.size()));
+    packed.insert(packed.end(), bytes->begin(), bytes->end());
+  }
+  value["stateComponentDigests"] = encodeStateDigestBytes(packed);
+  auto compact = nativeCanonicalJson(value);
+  if (compact.size() < wire.size())
+    return compact;
+  return wire;
+}
+
+ProviderConversationStateReceiptV1
+nativeDecodeProviderConversationReceipt(const std::string& wire)
+{
+  auto value = nativeParseJson(wire);
+  if (value.is_object() && value.contains("stateComponentDigests") &&
+      value.at("stateComponentDigests").is_string()) {
+    namespace transform = ndn::security::transform;
+    auto& components = value.at("stateComponentDigests");
+    const auto encoded = components.get<std::string>();
+    std::ostringstream decoded;
+    const ndn::span<const std::uint8_t> encodedBytes(
+      reinterpret_cast<const std::uint8_t*>(encoded.data()), encoded.size());
+    transform::bufferSource(encodedBytes) >> transform::base64Decode(false) >>
+      transform::streamSink(decoded);
+    const auto packed = decoded.str();
+    const ndn::span<const std::uint8_t> bytes(
+      reinterpret_cast<const std::uint8_t*>(packed.data()), packed.size());
+    if (bytes.empty() || bytes.size() % STATE_DIGEST_BYTES != 0 ||
+        encodeStateDigestBytes(bytes) != encoded)
+      throw std::invalid_argument("invalid compact conversation state digests");
+    components = NativeJson::array();
+    for (std::size_t offset = 0; offset < bytes.size(); offset += STATE_DIGEST_BYTES) {
+      components.push_back(std::string(STATE_DIGEST_PREFIX) +
+        ndn::toHex(bytes.subspan(offset, STATE_DIGEST_BYTES), false));
+    }
+  }
+  return nativeReadProviderConversationStateReceipt(value);
 }
 
 namespace {

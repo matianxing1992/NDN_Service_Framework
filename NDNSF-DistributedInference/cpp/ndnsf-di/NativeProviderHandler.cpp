@@ -4842,7 +4842,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             config.conversationStateKeyScope,
             controlTopic,
             [] (const ndn_service_framework::ServiceProvider::CollaborationData&) {});
-          const auto receiptJson = receipt.toJson();
+          const auto receiptPayload = nativeEncodeProviderConversationReceipt(receipt);
           ndn::Name receiptTopic("/ndnsf-di/conversation/receipt");
           receiptTopic.append(ndn::Name(finalized.role));
           NativeWorkScope publishSubmit(workStatistics,
@@ -4850,7 +4850,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ctx.publish(
             config.conversationStateKeyScope,
             std::move(receiptTopic),
-            ndn::Buffer(receiptJson.begin(), receiptJson.end()),
+            ndn::Buffer(receiptPayload.begin(), receiptPayload.end()),
             detail::makeCollaborationWorkObserver(workStatistics));
           publishSubmit.finish();
           std::ostringstream record;
