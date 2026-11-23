@@ -100,7 +100,7 @@ BOOST_AUTO_TEST_CASE(ManifestInsertBindsBinaryScopeAndCanonicalPacketOrder)
     digest[1] = 0xff;
     digest[5] = '\n';
     auto& reference = request.reference;
-    reference.dataPrefix = "/producer/kv";
+    reference.dataPrefix = count == 129 ? "/producer/8=kv%2Fcache/54=%01%00" : "/producer/kv";
     reference.objectName = reference.dataPrefix + "/MANIFEST";
     auto& metadata = *reference.packetSetMetadata;
     metadata.objectName = reference.objectName;
@@ -139,7 +139,8 @@ BOOST_AUTO_TEST_CASE(ManifestInsertBindsBinaryScopeAndCanonicalPacketOrder)
     BOOST_CHECK(derived.packetOffsets.empty());
     BOOST_REQUIRE_EQUAL(derived.packetNames.size(), metadata.packetNames.size());
     for (size_t i = 0; i < metadata.packetNames.size(); ++i) {
-      BOOST_CHECK(ndn::Name(derived.packetNames[i]) == ndn::Name(metadata.packetNames[i]));
+      BOOST_CHECK_EQUAL(derived.packetNames[i],
+        ndn::Name(metadata.packetNames[i]).toUri(ndn::name::UriFormat::CANONICAL));
     }
     BOOST_CHECK_LT(compactWire.size(), wire.size());
     BOOST_CHECK(encodeUserStorageInsertRequest(expanded) == compactWire);

@@ -422,15 +422,19 @@ validateSegmentManifestInsert(const RepoDataReference& reference)
     throw std::invalid_argument("repo-segment-manifest-insert-source-count-invalid");
   }
   auto remainingNameBytes = detail::MAX_NAMED_PACKET_NAME_BYTES;
-  const auto checkName = [&](const std::string& text, const ndn::Name& expected, const char* error) {
-    const auto canonical = expected.toUri(ndn::name::UriFormat::CANONICAL);
-    if (text != canonical && ndn::Name(text) != expected) {
-      throw std::invalid_argument(error);
-    }
-    if (canonical.size() > remainingNameBytes) {
+  constexpr auto canonical = ndn::name::UriFormat::CANONICAL;
+  const auto chargeName = [&](std::size_t length) {
+    if (length > remainingNameBytes) {
       throw std::invalid_argument("repo-segment-manifest-insert-names-too-large");
     }
-    remainingNameBytes -= canonical.size();
+    remainingNameBytes -= length;
+  };
+  const auto checkName = [&](const std::string& text, const ndn::Name& expected, const char* error) {
+    const auto encoded = expected.toUri(canonical);
+    if (text != encoded && ndn::Name(text) != expected) {
+      throw std::invalid_argument(error);
+    }
+    chargeName(encoded.size());
   };
   checkName(metadata.packetNames.front(), names.rootName(),
             "repo-segment-manifest-insert-layout-invalid");
@@ -438,9 +442,14 @@ validateSegmentManifestInsert(const RepoDataReference& reference)
     checkName(metadata.packetNames[1 + i], names.pageName(i),
               "repo-segment-manifest-insert-page-name-invalid");
   }
+  const auto sourcePrefix = names.sourceName(0).getPrefix(-1).toUri(canonical) + '/';
   for (uint32_t i = 0; i < count; ++i) {
-    checkName(metadata.packetNames[1 + pages + i], names.sourceName(i),
-              "repo-segment-manifest-insert-source-name-invalid");
+    const auto encoded = sourcePrefix + ndn::name::Component::fromSegment(i).toUri(canonical);
+    const auto& text = metadata.packetNames[1 + pages + i];
+    if (text != encoded && ndn::Name(text) != names.sourceName(i)) {
+      throw std::invalid_argument("repo-segment-manifest-insert-source-name-invalid");
+    }
+    chargeName(encoded.size());
   }
   return count;
 }
@@ -471,8 +480,8 @@ expandCompactManifestInsert(RepoDataReference& reference)
     throw std::invalid_argument("repo-compact-manifest-insert-root-invalid");
   }
   size_t remainingNameBytes = detail::MAX_NAMED_PACKET_NAME_BYTES;
-  const auto add = [&](const ndn::Name& name) {
-    auto text = name.toUri(ndn::name::UriFormat::CANONICAL);
+  constexpr auto canonical = ndn::name::UriFormat::CANONICAL;
+  const auto add = [&](std::string text) {
     if (text.size() > 4096 || text.size() > remainingNameBytes) {
       throw std::invalid_argument("repo-segment-manifest-insert-names-too-large");
     }
@@ -480,12 +489,13 @@ expandCompactManifestInsert(RepoDataReference& reference)
     metadata->packetNames.push_back(std::move(text));
   };
   metadata->packetNames.reserve(count);
-  add(scope.rootName());
+  add(scope.rootName().toUri(canonical));
   for (uint32_t i = 0; i < pages; ++i) {
-    add(scope.pageName(i));
+    add(scope.pageName(i).toUri(canonical));
   }
+  const auto sourcePrefix = scope.sourceName(0).getPrefix(-1).toUri(canonical) + '/';
   for (uint32_t i = 0; i < sources; ++i) {
-    add(scope.sourceName(i));
+    add(sourcePrefix + ndn::name::Component::fromSegment(i).toUri(canonical));
   }
   metadata->segmentCount = count;
 }
