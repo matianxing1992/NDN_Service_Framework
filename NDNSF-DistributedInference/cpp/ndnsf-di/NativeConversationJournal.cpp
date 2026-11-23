@@ -1,13 +1,16 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-journal-file.hpp"
 
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
 #include <algorithm>
 #include <cerrno>
 #include <fcntl.h>
+#include <limits>
 #include <mutex>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <system_error>
 #include <unistd.h>
 
 namespace ndnsf::di {
@@ -72,21 +75,146 @@ NativeJson checkedRecord(NativeJson record)
           "conversation journal record malformed");
   const auto checksum = record.at("checksum").get<std::string>();
   record.erase("checksum");
-  require(checksum == sha(record.dump(-1, ' ', true)), "conversation journal checksum mismatch");
-  require(record.at("schema") == journalSchema && record.at("kind").is_string() &&
+  using Validation = detail::JournalRecordValidation;
+  const auto validation = detail::validateJournalRecord(
+    record.dump(-1, ' ', true), checksum, record.value("schema", NativeJson()).dump(-1, ' ', true));
+  require(validation != Validation::CHECKSUM_MISMATCH, "conversation journal checksum mismatch");
+  require(validation == Validation::VALID && record.at("kind").is_string() &&
           record.at("payload").is_object(), "conversation journal schema mismatch");
   record["checksum"] = checksum;
   return record;
 }
 
+std::string
+recordBody(std::string_view kindJson, std::string_view payloadJson, std::uint64_t timestampMs)
+{
+  std::string wire = "{\"kind\":";
+  wire += kindJson;
+  wire += ",\"payload\":";
+  wire += payloadJson;
+  wire += ",\"schema\":\"";
+  wire += journalSchema;
+  wire += "\",\"timestampMs\":" + std::to_string(timestampMs) + "}";
+  return wire;
+}
+
 NativeJson makeRecord(const std::string& kind, NativeJson payload, std::uint64_t now)
 {
+  const auto checksum = sha(recordBody(NativeJson(kind).dump(-1, ' ', true),
+                                       payload.dump(-1, ' ', true), now));
   NativeJson record{{"schema", journalSchema}, {"kind", kind},
                     {"timestampMs", now}, {"payload", std::move(payload)}};
-  record["checksum"] = sha(record.dump(-1, ' ', true));
+  record["checksum"] = checksum;
   return record;
 }
+
+off_t
+checkJournalOffset(int fd, std::uint64_t offset)
+{
+  struct stat info{};
+  if (::fstat(fd, &info) != 0) {
+    throw std::system_error(errno, std::generic_category(), "journal descriptor check failed");
+  }
+  if (!S_ISREG(info.st_mode) || info.st_size < 0 ||
+      static_cast<std::uint64_t>(info.st_size) != offset) {
+    throw std::system_error(std::make_error_code(std::errc::invalid_argument),
+                            "journal offset or descriptor invalid");
+  }
+  return info.st_size;
+}
 } // namespace
+
+detail::JournalRecordValidation
+detail::validateJournalRecord(const std::string& body, std::string_view checksum,
+                              std::string_view schemaJson)
+{
+  const auto expected = sha(body);
+  if (checksum.size() != expected.size() ||
+      CRYPTO_memcmp(checksum.data(), expected.data(), expected.size()) != 0) {
+    return JournalRecordValidation::CHECKSUM_MISMATCH;
+  }
+  static const auto EXPECTED_SCHEMA = NativeJson(journalSchema).dump();
+  return schemaJson == EXPECTED_SCHEMA
+    ? JournalRecordValidation::VALID : JournalRecordValidation::SCHEMA_MISMATCH;
+}
+
+detail::JournalFrame
+detail::frameJournalRecords(const std::vector<JournalRecord>& records, std::uint64_t timestampMs)
+{
+  JournalFrame frame;
+  if (records.empty()) {
+    return frame;
+  }
+  const bool batch = records.size() > 1;
+  frame.checksums.reserve(records.size());
+  if (batch) {
+    frame.wire = "{\"records\":[";
+  }
+  for (const auto& record : records) {
+    if (!frame.checksums.empty()) {
+      frame.wire += ',';
+    }
+    auto wire = recordBody(record.kindJson, record.payloadJson, record.timestampMs);
+    auto& checksum = frame.checksums.emplace_back(sha(wire));
+    wire.insert(1, "\"checksum\":\"" + checksum + "\",");
+    frame.wire += wire;
+  }
+  if (batch) {
+    frame.wire += "]}";
+    frame.wire = recordBody("\"journal-transaction\"", frame.wire, timestampMs);
+    frame.wire.insert(1, "\"checksum\":\"" + sha(frame.wire) + "\",");
+  }
+  frame.wire += '\n';
+  return frame;
+}
+
+void
+detail::truncateJournalTail(int fd, std::uint64_t observedSize, std::uint64_t validSize)
+{
+  checkJournalOffset(fd, observedSize);
+  if (validSize >= observedSize) {
+    throw std::invalid_argument("journal tail boundary invalid");
+  }
+  if (::ftruncate(fd, static_cast<off_t>(validSize)) != 0 || ::fsync(fd) != 0) {
+    throw detail::NativeJournalRollbackError("journal tail repair failed");
+  }
+}
+
+void
+detail::appendJournalWire(int fd, std::uint64_t offset, std::string_view wire)
+{
+  const auto start = checkJournalOffset(fd, offset);
+  const auto remaining = static_cast<std::uint64_t>(std::numeric_limits<off_t>::max() - start);
+  if (wire.size() > remaining) {
+    throw std::invalid_argument("journal append exceeds file size bound");
+  }
+  std::size_t written = 0;
+  try {
+    while (written < wire.size()) {
+      const auto size = std::min(wire.size() - written,
+        static_cast<std::size_t>(std::numeric_limits<ssize_t>::max()));
+      const auto count = ::pwrite(fd, wire.data() + written, size,
+                                  start + static_cast<off_t>(written));
+      if (count < 0 && errno == EINTR) {
+        continue;
+      }
+      if (count <= 0) {
+        throw std::system_error(count < 0 ? errno : EIO, std::generic_category(),
+                                "journal append failed");
+      }
+      written += static_cast<std::size_t>(count);
+    }
+    if (::fsync(fd) != 0) {
+      throw std::system_error(errno, std::generic_category(), "journal append sync failed");
+    }
+  }
+  catch (...) {
+    if (written != 0 && (::ftruncate(fd, start) != 0 || ::fsync(fd) != 0)) {
+      throw detail::NativeJournalRollbackError("journal append rollback failed");
+    }
+    throw;
+  }
+}
 
 struct NativeConversationJournal::Impl
 {
@@ -171,14 +299,13 @@ NativeConversationJournal::NativeConversationJournal(NativeConversationJournalCo
     position = tail ? wire.size() : end + 1;
   }
   if (position < wire.size()) {
-    require(::ftruncate(state.file.fd, position) == 0 && ::fsync(state.file.fd) == 0,
-            "conversation torn tail repair failed");
+    detail::truncateJournalTail(state.file.fd, wire.size(), position);
   }
   // A valid legacy last record may omit its final newline; preserve its bytes
   // and separate the next append rather than merging two JSON documents.
   if (position && wire[position - 1] != '\n') {
-    require(position < settings.quotaBytes && ::pwrite(state.file.fd, "\n", 1, position) == 1 &&
-            ::fsync(state.file.fd) == 0, "conversation journal newline repair failed");
+    require(position < settings.quotaBytes, "conversation journal newline exceeds quota");
+    detail::appendJournalWire(state.file.fd, position, "\n");
     ++position;
   }
   state.size = position;
@@ -261,23 +388,16 @@ void NativeConversationJournal::Impl::appendTransaction(
   const auto transaction = makeRecord("journal-transaction", {{"records", appended}}, nowMs);
   const auto wire = transaction.dump(-1, ' ', true) + "\n";
   require(wire.size() <= state.config.quotaBytes - state.usage, "conversation journal quota exceeded");
-  std::size_t written = 0;
   try {
-    while (written < wire.size()) {
-      const auto count = ::pwrite(state.file.fd, wire.data() + written, wire.size() - written, state.size + written);
-      if (count < 0 && errno == EINTR) continue;
-      require(count > 0, "conversation journal append failed");
-      written += static_cast<std::size_t>(count);
-    }
-    require(::fsync(state.file.fd) == 0, "conversation journal append sync failed");
+    detail::appendJournalWire(state.file.fd, state.size, wire);
   }
-  catch (...) {
-    if (::ftruncate(state.file.fd, state.size) != 0 || ::fsync(state.file.fd) != 0) state.poisoned = true;
+  catch (const detail::NativeJournalRollbackError&) {
+    state.poisoned = true;
     throw;
   }
   state.records.swap(nextRecords);
-  state.size += written;
-  state.usage += written;
+  state.size += wire.size();
+  state.usage += wire.size();
 }
 
 std::vector<NativeJson> NativeConversationJournal::readConversations(std::uint64_t nowMs) const

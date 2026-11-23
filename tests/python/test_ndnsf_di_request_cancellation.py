@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import hashlib
 import unittest
 from unittest import mock
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -14,7 +15,7 @@ from ndnsf_distributed_inference.app_sdk.client import RequestRecoveryError
 from ndnsf_distributed_inference.app_sdk.execution_control import (
     ExecutionControlEvidence, ExistingServiceExecutionControlTransport,
 )
-from ndnsf_distributed_inference.app_sdk.runtime_journal import RuntimeJournal
+from ndnsf_distributed_inference.app_sdk.runtime_journal import RuntimeJournal, RuntimeJournalError
 from ndnsf_distributed_inference.core import (
     ExecutionActivateMessage,
     ReadySetMember,
@@ -150,6 +151,51 @@ class DistributedCancellationTest(unittest.TestCase):
                 record["kind"] == "execution-control-evidence"
                 for record in client.journal.records()
             ))
+            first_receipt, = (
+                record["payload"] for record in client.journal.records()
+                if record["kind"] == "request-cancellation-progress"
+            )
+            self.assertEqual(first_receipt["provider"], "/provider/a")
+            retry_transport = _ControlTransport()
+            restarted = APPClient(
+                RuntimeJournal.for_test(root, "alice"), requester_identity="/alice",
+                execution_control_transport=retry_transport,
+            )
+            reopened = restarted.open_request(handle.request_id)
+            restarted.cancel(reopened, reason="operator retried")
+            self.assertEqual([call[0] for call in retry_transport.calls], ["/provider/b"])
+            self.assertEqual(retry_transport.calls[0][2]["cancellationId"],
+                             first_receipt["cancellation_id"])
+            terminal = restarted.open_request(handle.request_id)
+            self.assertEqual(restarted.status(terminal), RequestState.CANCELLED)
+            self.assertEqual(terminal.cancellation_reason, "operator")
+            records = restarted.journal.records()
+            self.assertEqual(sum(row["kind"] == "request-cancellation-request"
+                                 for row in records), 1)
+            self.assertEqual({row["payload"]["provider"] for row in records
+                              if row["kind"] == "execution-control-evidence"},
+                             {"/provider/a", "/provider/b"})
+
+    def test_corrupted_cancellation_progress_is_rejected_before_retry(self):
+        with tempfile.TemporaryDirectory() as root:
+            client, _, handle = self._pending_client(
+                root, _ControlTransport(fail_provider="/provider/b"))
+            with self.assertRaisesRegex(RequestRecoveryError, "CANCELLATION_INCOMPLETE"):
+                client.cancel(handle)
+            receipt, = (row["payload"] for row in client.journal.records()
+                        if row["kind"] == "request-cancellation-progress")
+            # The journal checksum is valid, but the stored evidence digest no longer matches.
+            client.journal.append("request-cancellation-progress", {
+                **receipt, "wire_digest": "sha256:other-response",
+            })
+            transport = _ControlTransport()
+            reopened = APPClient(
+                RuntimeJournal.for_test(root, "alice"), requester_identity="/alice",
+                execution_control_transport=transport,
+            )
+            with self.assertRaisesRegex(RequestRecoveryError, "CANCELLATION_EVIDENCE_INVALID"):
+                reopened.cancel(reopened.open_request(handle.request_id))
+            self.assertEqual(transport.calls, [])
 
     def test_stale_attempt_evidence_is_rejected(self):
         with tempfile.TemporaryDirectory() as root:
@@ -233,6 +279,14 @@ class DistributedCancellationTest(unittest.TestCase):
                 deadline=time.time() + 30,
             )
             bound = client.bind_execution_activation(original, _activation(original))
+            stale_transport = _ControlTransport()
+            stale = APPClient(
+                RuntimeJournal.for_test(root, "alice"),
+                requester_identity="/alice",
+                execution_control_transport=stale_transport,
+            )
+            stale_handle = stale.open_request(bound.request_id)
+            self.assertEqual(stale.status(stale_handle), RequestState.CERTIFIED)
             result = SimpleNamespace(
                 status=True,
                 payload=b"accepted-result",
@@ -250,6 +304,83 @@ class DistributedCancellationTest(unittest.TestCase):
             self.assertEqual(client.status(bound), RequestState.COMPLETED)
             self.assertEqual(client.result(bound), b"accepted-result")
             self.assertEqual(transport.calls, [])
+            journal_bytes = client.journal.path.read_bytes()
+            with self.assertRaisesRegex(RuntimeJournalError, "REQUEST_STATE_CHANGED"):
+                stale.cancel(stale_handle, reason="stale-cursor")
+            self.assertEqual(stale_transport.calls, [])
+            self.assertEqual(client.journal.path.read_bytes(), journal_bytes)
+
+    def test_two_active_writers_share_one_cancellation_lease(self):
+        with tempfile.TemporaryDirectory() as root:
+            first_transport, second_transport = _ControlTransport(), _ControlTransport()
+            client, pending, handle = self._pending_client(root, first_transport)
+            peer = APPClient(
+                RuntimeJournal.for_test(root, "alice"), requester_identity="/alice",
+                execution_control_transport=second_transport,
+            )
+            same_request = peer.open_request(handle.request_id)
+            unrelated = peer.submit("d", "r", b"another request")
+            entered, release = threading.Event(), threading.Event()
+
+            def pause_first(evidence):
+                if evidence.provider == "/provider/a":
+                    entered.set()
+                    if not release.wait(timeout=5):
+                        raise TimeoutError("fixture did not release cancel")
+                return evidence
+
+            first_transport.mutate = pause_first
+            with ThreadPoolExecutor(max_workers=1) as runner:
+                first = runner.submit(client.cancel, handle)
+                try:
+                    self.assertTrue(entered.wait(timeout=5))
+                    with self.assertRaisesRegex(RequestRecoveryError, "CANCELLATION_IN_PROGRESS"):
+                        peer.cancel(same_request, reason="overlapping cancel")
+                    self.assertEqual(second_transport.calls, [])
+                    peer.cancel(unrelated)
+                    self.assertEqual(peer.status(unrelated), RequestState.CANCELLED)
+                finally:
+                    release.set()
+                first.result(timeout=5)
+
+            self.assertTrue(pending.cancelled())
+            self.assertEqual(len(first_transport.calls), 2)
+            journal = RuntimeJournal.for_test(root, "alice")
+            kinds = [record["kind"] for record in journal.records()]
+            self.assertEqual(kinds.count("request-cancellation-request"), 1)
+            self.assertEqual(kinds.count("execution-control-evidence"), 2)
+
+    def test_result_committed_during_cancel_stops_fanout_and_wins_terminal(self):
+        for winner in ("/provider/a", "/provider/b"):
+            with self.subTest(winner=winner), tempfile.TemporaryDirectory() as root:
+                transport = _ControlTransport()
+                client, pending, handle = self._pending_client(root, transport)
+
+                def complete_during_cancel(evidence):
+                    if evidence.provider == winner:
+                        result = SimpleNamespace(
+                            status=True, request_id=handle.request_id, payload=b"result",
+                            data_name=winner + "/result", signer_certificate=winner + "/KEY/cert",
+                            wire_digest="sha256:result",
+                        )
+                        client._network_result(handle, result)
+                        pending.set_result(result)
+                    return evidence
+
+                transport.mutate = complete_during_cancel
+                client.cancel(handle)
+
+                self.assertEqual([call[0] for call in transport.calls],
+                                 ["/provider/a"] if winner == "/provider/a" else
+                                 ["/provider/a", "/provider/b"])
+                reopened = APPClient(
+                    RuntimeJournal.for_test(root, "alice"), requester_identity="/alice")
+                terminal = reopened.open_request(handle.request_id)
+                self.assertEqual(reopened.status(terminal), RequestState.COMPLETED)
+                self.assertEqual(reopened.result(terminal), b"result")
+                kinds = [record["kind"] for record in reopened.journal.records()]
+                self.assertEqual(kinds.count("request-cancellation-request"), 1)
+                self.assertNotIn("execution-control-evidence", kinds)
 
     def test_completed_cancellation_is_idempotent_across_requester_restart(self):
         with tempfile.TemporaryDirectory() as root:
@@ -284,11 +415,12 @@ class DistributedCancellationTest(unittest.TestCase):
             encode_execution_control,
         )
         component = "execution-control-" + hashlib.sha256(
-            encode_execution_control(payload)).hexdigest()[:24]
+            encode_execution_control(payload)).hexdigest()[:24] + "-" + "a" * 32
         response = SimpleNamespace(
             status=True,
             payload=b"schema=ndnsf-di-execution-control-v2;status=1;reason=CANCELLED;",
             error="",
+            request_id=f"/{component}",
             data_name=f"/provider/a/NDNSF/RESPONSE/{component}",
             signer_certificate="/provider/a/KEY/cert",
             wire_digest="sha256:wire",
@@ -305,6 +437,39 @@ class DistributedCancellationTest(unittest.TestCase):
             call.args[:3], ("/provider/a", "prefill", "/LLM/Qwen"))
         self.assertIn(b"operation=CANCEL;", call.args[3])
         self.assertEqual(call.kwargs["timeout_ms"], 700)
+
+        for change in (
+            {"data_name": f"/provider/a/NDNSF/RESPONSE/{component}-other"},
+            {"request_id": f"/{component[:-1]}b"},
+            {"payload": response.payload + b"status=0;"},
+            {"payload": b"schema=unrelated;status=1;reason=CANCELLED;"},
+        ):
+            with self.subTest(change=change):
+                network.request_execution_control.return_value = SimpleNamespace(
+                    **{**vars(response), **change})
+                with self.assertRaises(ValueError):
+                    ExistingServiceExecutionControlTransport(network).cancel(
+                        "/provider/a", "/LLM/Qwen", payload, timeout_ms=700)
+
+    def test_execution_control_facade_uses_unique_core_ids_for_unchanged_wire(self):
+        from ndnsf_distributed_inference.app_sdk.facades import APPClient as NetworkClient
+
+        client = NetworkClient.__new__(NetworkClient)
+        service_user = SimpleNamespace(request_collaboration=mock.Mock())
+        client._client = SimpleNamespace(user=service_user)
+        wire = b"authenticated execution control"
+        expected = "execution-control-" + hashlib.sha256(wire).hexdigest()[:24] + "-"
+        request_ids = []
+        for timeout in (700, 1300):
+            client.request_execution_control(
+                "/provider/a", "prefill", "/LLM/Qwen", wire, timeout_ms=timeout)
+            call = service_user.request_collaboration.call_args
+            actual = call.kwargs["request_id"]
+            self.assertRegex(actual, f"^{expected}[0-9a-f]{{32}}$")
+            self.assertEqual(call.kwargs["assignment_context"].request_id, actual)
+            self.assertEqual(call.args[1], wire)
+            request_ids.append(actual)
+        self.assertNotEqual(*request_ids)
 
 
 if __name__ == "__main__":

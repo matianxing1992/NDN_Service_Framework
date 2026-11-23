@@ -17,6 +17,7 @@ import hashlib
 import io
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
+from uuid import uuid4
 
 from ndnsf import (
     CollaborationRole,
@@ -28,6 +29,7 @@ from ..client import DistributedInferenceClient, InferenceResult
 from ..client import DeploymentSession
 from ..core import AssignmentContext
 from .controller import APPController
+from .execution_control import _execution_control_request_prefix
 from ..plan import (
     ArtifactSpec,
     DistributedInferencePlan,
@@ -43,7 +45,7 @@ from ..provider import (
     ProviderAdmissionPolicy,
     ProviderRuntimeContext,
 )
-from ..repo_reference import repo_manifest_from_large_data_reference, publication_manifest_name
+from ..repo_reference import publication_manifest_name
 from .contracts import DIRepoArtifactBinding
 
 
@@ -311,12 +313,12 @@ class APPClient:
     ):
         """Send control through the existing authenticated collaboration service."""
         wire = bytes(payload)
-        # The cancellation ID is already bound into ``wire``.  Deriving the
-        # request identity from the exact bytes makes transport retries reuse
-        # one NDNSF request instead of creating a second authority operation.
+        # The payload retains the original cancellation ID on retry. Each Core
+        # exchange needs its own Selection identity to reach the Provider.
         nonce = hashlib.sha256(wire).hexdigest()
+        request_id = _execution_control_request_prefix(wire) + uuid4().hex
         context = AssignmentContext(
-            request_id=f"execution-control-{nonce[:24]}",
+            request_id=request_id,
             attempt_epoch=1,
             plan_digest="sha256:" + hashlib.sha256(wire).hexdigest(),
             model_variant_id="ndnsf-di-execution-control-v1",
@@ -339,6 +341,7 @@ class APPClient:
             ack_timeout_ms=min(1000, max(100, timeout_ms // 3)),
             timeout_ms=timeout_ms,
             assignment_context=context,
+            request_id=request_id,
         )
 
     @classmethod
@@ -1331,16 +1334,5 @@ class APPProvider:
     def stop(self) -> int:
         return self._provider.stop()
 
-    def set_stream_publication_interceptor_for_test(self, callback) -> None:
-        """Install an integration-only interceptor on the real Core Provider."""
-        self._provider.provider.set_stream_publication_interceptor_for_test(
-            callback)
-
-    def set_stream_retention_interceptor_for_test(self, callback) -> None:
-        """Install an integration-only retention hook on the real Core Provider."""
-        self._provider.provider.set_stream_retention_interceptor_for_test(
-            callback)
-
-    def publish_stream_packet_for_test(self, wire: bytes) -> None:
-        """Re-publish signed stream Data through the real Core SVS endpoint."""
-        self._provider.provider.publish_stream_packet_for_test(wire)
+    def _stream_fault_test_access(self):
+        return self._provider.provider._stream_fault_test_access()

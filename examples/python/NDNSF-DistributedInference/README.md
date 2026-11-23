@@ -227,17 +227,16 @@ YOLO_SPLIT_RESULT ... ok=true
 YOLO_SPLIT_MININDN_OK ...
 ```
 
-Four-role YOLO 2x2 ONNX split:
+Four-role YOLO 2x2 with the installed requester and providers. Set `candidate`, `candidate_sha256`, and `model` to the frozen Spec 201 inputs.
 
 ```bash
-sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case yolo-2x2 --spec201-candidate "$candidate" \
+  --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 ```
 
-Expected markers:
-
 ```text
-YOLO_2X2_RESULT ... ok=true
-YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK ...
+YOLO_2X2_NATIVE_REQUESTER_MININDN_OK ...
 ```
 
 Four-role PyTorch-defined fully connected ONNX split:

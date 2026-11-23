@@ -19,6 +19,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-cancellation.hpp"
 #include "di_bindings.hpp"
 #ifdef NDNSF_HAVE_UAV_TRACKING
 #include "uav-tracking-job.hpp"
@@ -83,6 +84,37 @@
 
 namespace py = pybind11;
 namespace nsf = ndn_service_framework;
+
+namespace ndn_service_framework {
+
+struct PythonStreamFaultTestAccess
+{
+  static void setPublication(ServiceProvider& provider,
+    std::function<bool(const ndn::Data&)> interceptor)
+  {
+    provider.setStreamPublicationInterceptorForTest(std::move(interceptor));
+  }
+
+  static void setRetention(ServiceProvider& provider,
+    std::function<bool(const ndn::Data&)> interceptor)
+  {
+    provider.setStreamRetentionInterceptorForTest(std::move(interceptor));
+  }
+
+  static void republish(ServiceProvider& provider, const ndn::Data& data)
+  {
+    provider.publishStreamPacketForTest(data);
+  }
+
+  static std::optional<uint64_t> cursor(ServiceProvider& provider, const ndn::Name& name)
+  {
+    const auto parsed = provider.parseOwnedStreamEventName(name);
+    if (!parsed) return std::nullopt;
+    return parsed->cursor;
+  }
+};
+
+} // namespace ndn_service_framework
 
 PyFunctionPtr
 keepPyFunction(py::function fn)
@@ -3279,6 +3311,49 @@ public:
     return m_ctx->localProvider().toUri();
   }
 
+  std::int64_t
+  coordinatorWorkBudgetMs() const
+  {
+    if (!m_ctx->hasCurrentWorkAuthority()) {
+      return 0;
+    }
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+      m_ctx->assignment().workDeadline - std::chrono::steady_clock::now()).count();
+  }
+
+  void
+  armCoordinatorCancellation(const std::string& requestDigest)
+  {
+    namespace control = ndnsf::di::detail;
+    if (m_ctx->assignment().scopeKeys.count(control::NATIVE_CANCELLATION_SCOPE)) {
+      m_coordinatorCancellation.emplace(control::NativeCancellationBinding{
+        m_ctx->sessionId(), 1, "coordinator", requestDigest});
+      m_ctx->allowData(control::NATIVE_CANCELLATION_SCOPE,
+                       ndn::Name(control::NATIVE_CANCELLATION_TOPIC));
+    }
+  }
+
+  bool
+  coordinatorCancellationReceived()
+  {
+    namespace control = ndnsf::di::detail;
+    const auto scope = control::NATIVE_CANCELLATION_SCOPE;
+    const auto topic = ndn::Name(control::NATIVE_CANCELLATION_TOPIC);
+    if (!m_coordinatorCancellation) {
+      return false;
+    }
+    const auto& binding = *m_coordinatorCancellation;
+    py::gil_scoped_release release;
+    const auto records = m_ctx->waitFor(scope, topic, 0, 0);
+    return std::any_of(records.begin(), records.end(), [&] (const auto& record) {
+      return record.sessionId == binding.requestId && record.keyScope == scope &&
+             record.topic == topic && record.producerRole == "user-control-v1" &&
+             record.producer == m_ctx->requesterName() &&
+             control::nativeCancellationPhase(
+               std::string(record.payload.begin(), record.payload.end()), binding) == "cancel";
+    });
+  }
+
   PyCollaborationAssignment assignment() const
   {
     const auto& native = m_ctx->assignment();
@@ -3500,67 +3575,6 @@ public:
     }
     return toPyBytes(*payload);
   }
-
-  std::optional<py::bytes> fetchLargeExact(const std::string& dataName,
-                                           const std::string& keyScope,
-                                           int timeoutMs,
-                                           size_t expectedSegments)
-  {
-    auto payload = m_ctx->fetchLarge(ndn::Name(dataName), keyScope, timeoutMs,
-                                     expectedSegments);
-    if (!payload) {
-      return std::nullopt;
-    }
-    return toPyBytes(*payload);
-  }
-
-  std::optional<PyCollaborationData>
-  waitOne(const std::string& keyScope,
-          const std::string& topicPrefix,
-          int timeoutMs)
-  {
-    py::gil_scoped_release release;
-    auto data = m_ctx->waitOne(keyScope, ndn::Name(topicPrefix), timeoutMs);
-    if (!data) {
-      return std::nullopt;
-    }
-    py::gil_scoped_acquire acquire;
-    return toPyCollaborationData(*data);
-  }
-
-  std::vector<PyCollaborationData>
-  waitFor(const std::string& keyScope,
-          const std::string& topicPrefix,
-          size_t minCount,
-          int timeoutMs)
-  {
-    std::vector<nsf::ServiceProvider::CollaborationData> nativeData;
-    {
-      py::gil_scoped_release release;
-      nativeData = m_ctx->waitFor(keyScope, ndn::Name(topicPrefix), minCount, timeoutMs);
-    }
-    std::vector<PyCollaborationData> output;
-    output.reserve(nativeData.size());
-    for (const auto& data : nativeData) {
-      output.push_back(toPyCollaborationData(data));
-    }
-    return output;
-  }
-
-  void publishFinalResponse(const py::bytes& payload)
-  {
-    const auto wire = toBuffer(payload);
-    py::gil_scoped_release release;
-    m_ctx->publishFinalResponse(wire);
-  }
-
-  void publishFinalFailureResponse(const py::bytes& payload,
-                                   const std::string& errorInfo)
-  {
-    const auto wire = toBuffer(payload);
-    py::gil_scoped_release release;
-    m_ctx->publishFinalFailureResponse(wire, errorInfo);
-  }
   std::string publishLargeReference(const std::string& keyScope,
                                     const std::string& dataTopic,
                                     const std::string& referenceTopic,
@@ -3636,6 +3650,67 @@ public:
       return std::nullopt;
     }
     return toPyBytes(result.plaintext);
+  }
+
+  std::optional<py::bytes> fetchLargeExact(const std::string& dataName,
+                                           const std::string& keyScope,
+                                           int timeoutMs,
+                                           size_t expectedSegments)
+  {
+    auto payload = m_ctx->fetchLarge(ndn::Name(dataName), keyScope, timeoutMs,
+                                     expectedSegments);
+    if (!payload) {
+      return std::nullopt;
+    }
+    return toPyBytes(*payload);
+  }
+
+  std::optional<PyCollaborationData>
+  waitOne(const std::string& keyScope,
+          const std::string& topicPrefix,
+          int timeoutMs)
+  {
+    py::gil_scoped_release release;
+    auto data = m_ctx->waitOne(keyScope, ndn::Name(topicPrefix), timeoutMs);
+    if (!data) {
+      return std::nullopt;
+    }
+    py::gil_scoped_acquire acquire;
+    return toPyCollaborationData(*data);
+  }
+
+  std::vector<PyCollaborationData>
+  waitFor(const std::string& keyScope,
+          const std::string& topicPrefix,
+          size_t minCount,
+          int timeoutMs)
+  {
+    std::vector<nsf::ServiceProvider::CollaborationData> nativeData;
+    {
+      py::gil_scoped_release release;
+      nativeData = m_ctx->waitFor(keyScope, ndn::Name(topicPrefix), minCount, timeoutMs);
+    }
+    std::vector<PyCollaborationData> output;
+    output.reserve(nativeData.size());
+    for (const auto& data : nativeData) {
+      output.push_back(toPyCollaborationData(data));
+    }
+    return output;
+  }
+
+  void publishFinalResponse(const py::bytes& payload)
+  {
+    const auto wire = toBuffer(payload);
+    py::gil_scoped_release release;
+    m_ctx->publishFinalResponse(wire);
+  }
+
+  void publishFinalFailureResponse(const py::bytes& payload,
+                                   const std::string& errorInfo)
+  {
+    const auto wire = toBuffer(payload);
+    py::gil_scoped_release release;
+    m_ctx->publishFinalFailureResponse(wire, errorInfo);
   }
 
   void reportOperationStatus(const py::dict& payload)
@@ -3721,6 +3796,7 @@ public:
 
 private:
   nsf::ServiceProvider::CollaborationContext* m_ctx = nullptr;
+  std::optional<ndnsf::di::detail::NativeCancellationBinding> m_coordinatorCancellation;
 };
 
 class PyOpaqueSelectionParticipant final : public nsf::OpaqueSelectionParticipant
@@ -3844,6 +3920,20 @@ private:
   std::shared_ptr<py::function> m_onAborted;
 };
 
+std::function<bool(const ndn::Data&)>
+makeStreamFaultInterceptor(nsf::ServiceProvider& provider, py::function callback)
+{
+  auto kept = keepPyFunction(std::move(callback));
+  return [&provider, kept = std::move(kept)] (const ndn::Data& data) {
+    const auto cursor = nsf::PythonStreamFaultTestAccess::cursor(provider, data.getName());
+    if (!cursor) return true;
+    py::gil_scoped_acquire gil;
+    const auto wire = data.wireEncode();
+    return (*kept)(data.getName().toUri(), *cursor,
+      py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size())).cast<bool>();
+  };
+}
+
 class NativeServiceProvider
 {
 public:
@@ -3945,18 +4035,8 @@ public:
     if (!m_provider) {
       throw std::runtime_error("provider is not initialized");
     }
-    auto kept = keepPyFunction(std::move(callback));
-    m_provider->setStreamPublicationInterceptorForTest(
-      [kept = std::move(kept)] (const ndn::Data& data) {
-        py::gil_scoped_acquire gil;
-        const auto wire = data.wireEncode();
-        const auto parsed = nsf::parseInvocationEventName(data.getName());
-        return (*kept)(
-          data.getName().toUri(),
-          parsed ? parsed->cursor : 0,
-          py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size()))
-          .cast<bool>();
-      });
+    nsf::PythonStreamFaultTestAccess::setPublication(*m_provider,
+      makeStreamFaultInterceptor(*m_provider, std::move(callback)));
   }
 
   void
@@ -3965,18 +4045,8 @@ public:
     if (!m_provider) {
       throw std::runtime_error("provider is not initialized");
     }
-    auto kept = keepPyFunction(std::move(callback));
-    m_provider->setStreamRetentionInterceptorForTest(
-      [kept = std::move(kept)] (const ndn::Data& data) {
-        py::gil_scoped_acquire gil;
-        const auto wire = data.wireEncode();
-        const auto parsed = nsf::parseInvocationEventName(data.getName());
-        return (*kept)(
-          data.getName().toUri(),
-          parsed ? parsed->cursor : 0,
-          py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size()))
-          .cast<bool>();
-      });
+    nsf::PythonStreamFaultTestAccess::setRetention(*m_provider,
+      makeStreamFaultInterceptor(*m_provider, std::move(callback)));
   }
 
   void
@@ -3985,7 +4055,7 @@ public:
     if (!m_provider) {
       throw std::runtime_error("provider is not initialized");
     }
-    m_provider->publishStreamPacketForTest(*dataFromWireBytes(wire));
+    nsf::PythonStreamFaultTestAccess::republish(*m_provider, *dataFromWireBytes(wire));
   }
 
   void
@@ -4443,6 +4513,10 @@ public:
     while (m_running.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
       throwIfError();
+      py::gil_scoped_acquire gil;
+      if (PyErr_CheckSignals() < 0) {
+        throw py::error_already_set();
+      }
     }
     throwIfError();
   }
@@ -6407,6 +6481,132 @@ public:
     return m_user->publishCollaborationData(
       ndn::Name(targetProvider), ndn::Name(requestId), keyScope,
       ndn::Name(topic), value);
+  }
+
+  void
+  requestDiCoordinatorAsync(const std::string& serviceName, const std::string& providerName,
+                            const std::string& requestId, const py::bytes& initialPayload,
+                            int ackTimeoutMs, int timeoutMs, py::function onResponse,
+                            py::function onTimeout)
+  {
+    namespace control = ndnsf::di::detail;
+    const auto requestedId = ndn::Name(requestId);
+    const auto provider = ndn::Name(providerName);
+    const auto service = ndn::Name(serviceName);
+    if (requestedId.empty() || provider.empty() || service.empty() ||
+        ackTimeoutMs <= 0 || ackTimeoutMs >= timeoutMs) {
+      throw std::invalid_argument("invalid deferred coordinator binding");
+    }
+    start();
+    const auto payload = toBuffer(initialPayload);
+    auto response = keepPyFunction(std::move(onResponse));
+    auto timeout = keepPyFunction(std::move(onTimeout));
+    const auto notify = [response, requestId] (const nsf::ResponseMessage* value,
+                                             const std::string& error) {
+      py::gil_scoped_acquire gil;
+      PyServiceResponse output;
+      output.status = value && value->getStatus();
+      output.requestId = requestId;
+      output.error = value ? value->getErrorInfo() : error;
+      if (value) {
+        output.payload = toPyBytes(value->getPayload());
+        output.dataName = value->getDataName();
+        output.signerCertificate = value->getSignerCertificate();
+        output.providerIdentity = value->getProviderIdentity();
+        output.wireDigest = value->getWireDigest();
+      }
+      else {
+        output.payload = py::bytes();
+      }
+      try { (*response)(output); }
+      catch (const py::error_already_set& e) { PyErr_WriteUnraisable(e.value().ptr()); }
+    };
+    const auto weak = weak_from_this();
+    boost::asio::post(m_face.getIoContext(),
+      [weak, service, provider, requestedId, payload, ackTimeoutMs, timeoutMs, notify, timeout] {
+        const auto self = weak.lock();
+        if (!self) return;
+        try {
+          nsf::CollaborationPlan plan;
+          plan.ackCollectionTimeMs = ackTimeoutMs;
+          plan.timeoutMs = timeoutMs;
+          nsf::CollaborationRoleSpec role;
+          role.service = service;
+          role.role = "coordinator";
+          role.allowDynamicProvisioning = false;
+          plan.roles.push_back(std::move(role));
+          plan.keyScopes.push_back({control::NATIVE_CANCELLATION_SCOPE, {"coordinator"}});
+          plan.participantSelector = std::make_shared<RoleAssignmentSelectionPolicy>(
+            std::map<std::string, ndn::Name>{}, std::map<std::string, ndn::Name>{},
+            std::map<std::string, std::vector<std::string>>{},
+            std::map<std::string, std::string>{{"coordinator", provider.toUri()}});
+          self->m_user->BeginCollaborationWithProviders(
+            service, payload, ackTimeoutMs, timeoutMs,
+            [weak, provider, plan = std::move(plan), notify] (
+                const nsf::CollaborationAckClosure& closed) mutable {
+              if (const auto owner = weak.lock()) {
+                boost::asio::post(owner->m_face.getIoContext(),
+                  [weak, provider, plan = std::move(plan), closed, notify]() mutable {
+                    const auto current = weak.lock();
+                    if (!current) return;
+                    try {
+                      const auto offered = std::any_of(closed.candidates.begin(),
+                        closed.candidates.end(), [&] (const auto& candidate) {
+                          if (candidate.providerName != provider || !candidate.ack.getStatus())
+                            return false;
+                          const auto roles = rolesFromAckPayload(candidate.ack.getPayload());
+                          return std::find(roles.begin(), roles.end(), "coordinator") != roles.end();
+                        });
+                      if (offered && current->m_user->CommitCollaborationPlan(
+                            closed.requestId, closed.digest, std::move(plan))) return;
+                      current->m_user->CancelCollaboration(closed.requestId);
+                      notify(nullptr, "COORDINATOR_SELECTION_REJECTED");
+                    }
+                    catch (const std::exception& e) {
+                      current->m_user->CancelCollaboration(closed.requestId);
+                      notify(nullptr, e.what());
+                    }
+                  });
+              }
+            },
+            [notify] (const nsf::ResponseMessage& value) { notify(&value, {}); },
+            [timeout] (const ndn::Name& id) {
+              py::gil_scoped_acquire gil;
+              try { (*timeout)(id.toUri()); }
+              catch (const py::error_already_set& e) { PyErr_WriteUnraisable(e.value().ptr()); }
+            }, requestedId, {}, {}, std::nullopt, {}, {}, {}, {provider});
+        }
+        catch (const std::exception& e) {
+          notify(nullptr, e.what());
+        }
+      });
+  }
+
+  void
+  cancelDiCoordinator(const std::string& providerName, const std::string& requestId,
+                      const py::bytes& requestWire)
+  {
+    namespace control = ndnsf::di::detail;
+    const auto id = ndn::Name(requestId);
+    const auto provider = ndn::Name(providerName);
+    const auto payload = toBuffer(requestWire);
+    const auto wire = control::nativeCancellationWire(
+      {id.toUri(), 1, "coordinator", ndnsf::di::nativePlanningDigest(payload.data(), payload.size())},
+      "cancel");
+    const auto weak = weak_from_this();
+    boost::asio::post(m_face.getIoContext(), [weak, provider, id, wire] {
+      if (const auto owner = weak.lock()) {
+        try {
+          if (owner->m_user->publishCollaborationData(
+                provider, id, control::NATIVE_CANCELLATION_SCOPE,
+                ndn::Name(control::NATIVE_CANCELLATION_TOPIC), ndn::Buffer(wire.begin(), wire.end()))) {
+            return;
+          }
+        }
+        catch (const std::exception&) {}
+        owner->m_user->CancelCollaboration(id);
+      }
+    });
   }
 
   void
@@ -9311,6 +9511,10 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_property_readonly("role", &PyCollaborationContext::role)
     .def_property_readonly("requester_name", &PyCollaborationContext::requesterName)
     .def_property_readonly("local_provider", &PyCollaborationContext::localProvider)
+    .def("_coordinator_work_budget_ms", &PyCollaborationContext::coordinatorWorkBudgetMs)
+    .def("_arm_coordinator_cancellation", &PyCollaborationContext::armCoordinatorCancellation)
+    .def("_coordinator_cancellation_received",
+         &PyCollaborationContext::coordinatorCancellationReceived)
     .def_property_readonly("assignment", &PyCollaborationContext::assignment)
     .def("require_inputs", &PyCollaborationContext::requireInputs,
          py::arg("inputs"), py::arg("validate"))
@@ -9466,15 +9670,6 @@ PYBIND11_MODULE(_ndnsf, m)
          &NativeServiceProvider::providerSigningKeyName)
     .def_property_readonly("provider_signing_certificate_name",
          &NativeServiceProvider::providerSigningCertificateName)
-    .def("set_stream_publication_interceptor_for_test",
-         &NativeServiceProvider::setStreamPublicationInterceptorForTest,
-         py::arg("callback"))
-    .def("set_stream_retention_interceptor_for_test",
-         &NativeServiceProvider::setStreamRetentionInterceptorForTest,
-         py::arg("callback"))
-    .def("publish_stream_packet_for_test",
-         &NativeServiceProvider::publishStreamPacketForTest,
-         py::arg("wire"))
     .def("configure_opaque_selection_store",
          &NativeServiceProvider::configureOpaqueSelectionStore,
          py::arg("wal_path"), py::arg("storage_key"),
@@ -9512,7 +9707,44 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("run", &NativeServiceProvider::run, py::call_guard<py::gil_scoped_release>())
     .def("wait_until_ready", &NativeServiceProvider::waitUntilReady,
          py::arg("timeout_ms") = 15000)
-    .def("stop", &NativeServiceProvider::stop);
+    .def("stop", &NativeServiceProvider::stop, py::call_guard<py::gil_scoped_release>());
+
+  struct StreamFaultAccess
+  {
+    explicit StreamFaultAccess(const py::object& owner)
+      : provider(owner)
+    {
+      if (!py::isinstance<NativeServiceProvider>(owner)) {
+        throw py::type_error("stream fault access requires a native Provider");
+      }
+    }
+
+    py::object
+    lockProvider() const
+    {
+      auto owner = provider();
+      if (owner.is_none()) {
+        throw std::runtime_error("stream fault Provider has been released");
+      }
+      return owner;
+    }
+
+    py::weakref provider;
+  };
+  auto testing = m.def_submodule("_testing", "Integration fixture access to Core.");
+  py::class_<StreamFaultAccess>(testing, "StreamFaultAccess")
+    .def(py::init<const py::object&>())
+    .def("intercept_publication", [] (StreamFaultAccess& access, py::function callback) {
+      access.lockProvider().cast<NativeServiceProvider&>()
+        .setStreamPublicationInterceptorForTest(std::move(callback));
+    })
+    .def("intercept_retention", [] (StreamFaultAccess& access, py::function callback) {
+      access.lockProvider().cast<NativeServiceProvider&>()
+        .setStreamRetentionInterceptorForTest(std::move(callback));
+    })
+    .def("republish", [] (StreamFaultAccess& access, const py::bytes& wire) {
+      access.lockProvider().cast<NativeServiceProvider&>().publishStreamPacketForTest(wire);
+    });
 
   py::enum_<nsf::DependencyRedundancy>(m, "NativeDependencyRedundancy")
     .value("NONE", nsf::DependencyRedundancy::None)
@@ -9695,6 +9927,8 @@ PYBIND11_MODULE(_ndnsf, m)
          &NativeServiceUser::publishCollaborationData,
          py::arg("target_provider"), py::arg("request_id"),
          py::arg("key_scope"), py::arg("topic"), py::arg("payload"))
+    .def("_request_di_coordinator_async", &NativeServiceUser::requestDiCoordinatorAsync)
+    .def("_cancel_di_coordinator", &NativeServiceUser::cancelDiCoordinator)
     .def("request_collaboration_async", &NativeServiceUser::requestCollaborationAsync,
          py::arg("service"),
          py::arg("payload"),

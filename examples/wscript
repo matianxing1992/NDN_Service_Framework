@@ -504,6 +504,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/native-app-request-events.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.cpp',

@@ -263,13 +263,8 @@ def _client_timing_enabled() -> bool:
 class DistributedInferenceClient:
     """Compile an inference plan into NDNSF collaboration calls."""
 
-    def __init__(self, user: ServiceUser, *, async_workers: int = 4,
-                 optimization_suite=None):
-        from .app_sdk.engine import DistributedInferenceEngine
-        from .planner.defaults import DefaultOptimizationSuite
+    def __init__(self, user: ServiceUser, *, async_workers: int = 4):
         self.user = user
-        self.optimization_engine = DistributedInferenceEngine(
-            optimization_suite or DefaultOptimizationSuite())
         self.user.start()
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, int(async_workers)),

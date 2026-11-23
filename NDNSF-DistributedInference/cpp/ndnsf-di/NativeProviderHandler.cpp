@@ -443,12 +443,28 @@ nativeGenerationIdMatchesStreamOptions(
   return true;
 }
 
+namespace {
+
+std::string
+executionControlScope(const ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+                      const std::string& activationDigest)
+{
+  if (activationDigest.empty()) {
+    return {};
+  }
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"requester", ctx.requesterName().toUri()}, {"service", ctx.assignment().service.toUri()},
+    {"provider", ctx.localProvider().toUri()}, {"activation", activationDigest},
+  }));
+}
+
 NativeProviderExecutionBindingResult
-validateNativeProviderExecutionBinding(
+validateExecutionBinding(
   const std::map<std::string, std::string>& fields,
   const std::string& expectedProviderBootId,
   const std::string& expectedPlanDigest,
-  ExecutionAttemptAuthority& authority)
+  ExecutionAttemptAuthority& authority,
+  std::string controlScope)
 {
   NativeProviderExecutionBindingResult result;
   result.attempt.requestId = nativeProviderFieldValue(
@@ -483,7 +499,7 @@ validateNativeProviderExecutionBinding(
     result.reason = "DI_PLAN_BINDING_MISMATCH";
     return result;
   }
-  const auto admission = authority.admit(result.attempt);
+  const auto admission = authority.admit(result.attempt, std::move(controlScope));
   if (admission != ExecutionAttemptAdmission::Accepted) {
     result.reason = std::string("DI_ATTEMPT_") + toString(admission);
     return result;
@@ -494,9 +510,11 @@ validateNativeProviderExecutionBinding(
 }
 
 NativeProviderExecutionControlResult
-applyNativeProviderExecutionControl(
+applyExecutionControl(
   const std::map<std::string, std::string>& fields,
-  ExecutionAttemptAuthority& authority)
+  ExecutionAttemptAuthority& authority,
+  const ndn_service_framework::ServiceProvider::CollaborationContext* context,
+  const std::string& wire)
 {
   NativeProviderExecutionControlResult result;
   const auto schema = nativeProviderFieldValue(fields, {"schema"});
@@ -512,24 +530,39 @@ applyNativeProviderExecutionControl(
   const auto operation = nativeProviderFieldValue(fields, {"operation"});
   result.attempt.requestId = nativeProviderFieldValue(fields, {"requestId"});
   try {
-    result.attempt.attemptEpoch = std::stoull(
-      nativeProviderFieldValue(fields, {"attemptEpoch"}));
+    const auto epoch = nativeProviderFieldValue(fields, {"attemptEpoch"});
+    std::size_t consumed = 0;
+    result.attempt.attemptEpoch = std::stoull(epoch, &consumed);
+    if (consumed != epoch.size() || std::to_string(result.attempt.attemptEpoch) != epoch) {
+      throw std::invalid_argument("invalid control attempt epoch");
+    }
     result.attempt.validate();
+    if (schema == "ndnsf-di-execution-control-v2") {
+      const auto activation = nativeProviderFieldValue(fields, {"activationDigest"});
+      const auto cancellationId = nativeProviderFieldValue(fields, {"cancellationId"});
+      if (operation != "CANCEL" || !context || cancellationId.empty() ||
+          nativeProviderFieldValue(fields, {"requesterIdentity"}) !=
+            context->requesterName().toUri() ||
+          nativeProviderFieldValue(fields, {"providerName"}) != context->localProvider().toUri() ||
+          nativeProviderFieldValue(fields, {"providerRole"}) != context->role()) {
+        result.reason = "CONTROL_BINDING_INVALID";
+        return result;
+      }
+      result.status = authority.cancel(
+        result.attempt, executionControlScope(*context, activation), nativePlanningDigest(wire));
+      result.reason = result.status ? "CANCELLED" : "CANCEL_REJECTED";
+      return result;
+    }
     if (operation == "CANCEL") {
-      result.status = authority.cancel(result.attempt);
+      result.status = authority.cancel(result.attempt, {}, {});
       result.reason = result.status ? "CANCELLED" : "CANCEL_REJECTED";
       return result;
     }
     if (operation == "SUPERSEDE") {
       const auto nextEpoch = std::stoull(nativeProviderFieldValue(
         fields, {"supersededByAttemptEpoch"}));
-      authority.cancel(result.attempt);
-      ExecutionAttemptKey replacement{result.attempt.requestId, nextEpoch};
-      replacement.validate();
-      const auto admitted = authority.admit(replacement);
-      result.status = admitted == ExecutionAttemptAdmission::Accepted;
-      result.reason = result.status ? "SUPERSEDED" :
-        std::string("SUPERSEDE_") + toString(admitted);
+      result.status = authority.supersedeLegacy(result.attempt, nextEpoch);
+      result.reason = result.status ? "SUPERSEDED" : "SUPERSEDE_REJECTED";
       return result;
     }
     result.reason = "CONTROL_OPERATION_UNSUPPORTED";
@@ -538,6 +571,25 @@ applyNativeProviderExecutionControl(
     result.reason = "CONTROL_BINDING_INVALID";
   }
   return result;
+}
+
+} // namespace
+
+NativeProviderExecutionBindingResult
+validateNativeProviderExecutionBinding(
+  const std::map<std::string, std::string>& fields,
+  const std::string& expectedProviderBootId,
+  const std::string& expectedPlanDigest,
+  ExecutionAttemptAuthority& authority)
+{
+  return validateExecutionBinding(fields, expectedProviderBootId, expectedPlanDigest, authority, {});
+}
+
+NativeProviderExecutionControlResult
+applyNativeProviderExecutionControl(const std::map<std::string, std::string>& fields,
+                                    ExecutionAttemptAuthority& authority)
+{
+  return applyExecutionControl(fields, authority, nullptr, {});
 }
 
 namespace {
@@ -2930,8 +2982,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
          requestPayloadText[requestPayloadFirst] == '{')
           ? std::map<std::string, std::string>{}
           : parseNativeProviderAssignmentFields(request.getPayload());
-      const auto control = applyNativeProviderExecutionControl(
-        controlFields, state->attemptAuthority);
+      const auto control = applyExecutionControl(
+        controlFields, state->attemptAuthority, &ctx, requestPayloadText);
       if (control.recognized) {
         requestStatistics.reset();
         std::ostringstream record;
@@ -3338,11 +3390,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       if (config.requireExecutionAttemptBinding) {
         logProviderBoundaryStdout("EXECUTION_BINDING_BEGIN", stageRequestId,
                                   ctx.localProvider().toUri(), role);
-        auto binding = validateNativeProviderExecutionBinding(
+        auto binding = validateExecutionBinding(
           assignmentFields,
           config.providerBootId,
           requestPlanDigest,
-          state->attemptAuthority);
+          state->attemptAuthority,
+          executionControlScope(ctx, nativeProviderFieldValue(
+            assignmentFields, {"executionActivationDigest"})));
         if (!binding.status) {
           std::ostringstream record;
           record << "NDNSF_DI_EXECUTION_ATTEMPT"

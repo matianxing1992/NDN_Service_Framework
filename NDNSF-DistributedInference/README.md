@@ -261,15 +261,15 @@ compatibility surfaces and emit migration guidance where adapted.
 
 | Maintained legacy call | Canonical owner/call |
 |---|---|
-| `APPClient.submit(...)` / `distributed_inference(...)` | `InferenceClient.request(deployment, ...)` |
-| `APPClient.infer(...)` | `InferenceClient.run(deployment, ...)` |
+| `APPClient.submit(...)` | `InferenceClient.request_preplanned(deployment, ...)` |
+| `APPClient.distributed_inference(...)` / `APPClient.infer(...)` | `InferenceClient.run(deployment, ...)` |
 | `APPProvider.serve_service(...)` | `InferenceProvider.serve(...)` |
 | Provider `stage/activate/drain/delete` | separately credentialed `ProviderAdminPort` |
 | raw deployment discovery dictionaries | `client.deployments.discover(...)` typed summaries |
 
-`InferenceApplication.request` and `InferenceClient.request` have the same
-signature and return the same durable handle. For a local creator it projects
-validated Provider-signed snapshots. For a remote caller, the bound
+`InferenceApplication.request_preplanned` delegates to
+`InferenceClient.request_preplanned`. The durable request handle projects
+validated Provider-signed snapshots for a local creator. For a remote caller, the bound
 deployment-owner coordinator projects the same aggregate through signed
 Collaboration status while its inner request still verifies every Provider.
 A generic `DONE` status without the exact revision, adapter, artifacts, and all
@@ -818,6 +818,26 @@ stage and explicit merge/fan-in edges. For network regression, the generated
 policy creates enough compute provider identities for the generated roles while
 keeping the repo provider separate.
 
+Both GUI controls for **YOLO 2x2** use the installed native Requester and
+Providers. In **YOLO candidate arguments**, enter the prepared Spec 201
+candidate JSON path, its expected SHA-256 and the matching model path. If the
+candidate uses a separate install prefix, also enter its native binary, Python
+package and library arguments as accepted by the smoke launcher. When opening
+the installed GUI from outside the checkout, set `NDNSF_REPO_ROOT` to the
+matching checkout so the GUI can locate the experiment launcher. The same
+candidate arguments work on the command line:
+
+```sh
+python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
+  --native-requester --native-providers --parallel-detect-scale-shards \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" \
+  --model "$model"
+```
+
+The smoke launcher prepares the assets and starts the roles. The native
+Requester uses the `ONNX_SOURCE` hybrid catalog and emits the run evidence
+path with `YOLO_2X2_NATIVE_REQUESTER_MININDN_OK`.
+
 The `yolo_2x2` splitter now exposes two experimental parallel modes. The older
 `--parallel-output-shards` mode is a small correctness scaffold: same-stage
 roles run independently and a `/Merge` role concatenates output slices, but
@@ -956,28 +976,19 @@ The easiest way to exercise the whole network path is MiniNDN:
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_YoloSplit_Minindn.py
-sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
 sudo -E python3 Experiments/NDNSF_DI_PyTorch2x2_Minindn.py
 ```
 
-The YOLO layout smoke can replace the Python compute providers with the native
-C++ provider executable for the parallel-detect layout:
+For the native YOLO 2x2 network smoke, supply the frozen Spec 201 candidate, its SHA-256 and the matching model.
 
 ```bash
-sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
-  --layout 2x2 \
-  --parallel-detect-scale-shards \
-  --native-providers \
-  --cold-requests 1 \
-  --warm-requests 1
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case yolo-2x2 --spec201-candidate "$candidate" \
+  --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 ```
 
-Expected success markers include:
-
 ```text
-YOLO_SPLIT_RESULT ... ok=true
-YOLO_2X2_RESULT ... ok=true
-PYTORCH_2X2_RESULT ... ok=true
+YOLO_2X2_NATIVE_REQUESTER_MININDN_OK ...
 ```
 
 The unified runner can also launch selected cases. The `yolo-layout` case is
@@ -986,8 +997,10 @@ fast non-MiniNDN layout/policy smoke:
 
 ```bash
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case runtime-compat
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3 \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
@@ -2969,45 +2982,9 @@ The smoke succeeds only when it prints:
 ONNX_EXECUTOR_FANIN_FANOUT_OK
 ```
 
-```bash
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
-  --model yolo26n.pt \
-  --input-size 32 \
-  --layout 3x2 \
-  --auto-split \
-  --out-dir /tmp/ndnsf-yolo-3x2 \
-  --policy /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id A --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id B --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id C --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id D --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/user.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
-```
+See the [native YOLO 2x2 smoke](#7-run-the-full-minindn-smoke-tests) for the maintained network entry point.
 
-With `--auto-split`, the splitter uses the ONNX planner recommendation as a
-pipeline-boundary hint; the requested layout determines how many chunks are
-exported. Without it, the example keeps the previous YOLO-specific split hint
-as a stable fallback.
-
-For MiniNDN, run:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
-```
-
-Expected output includes:
-
-```text
-YOLO_2X2_RESULT ... ok=true
-YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK ...
-```
-
-The same script also writes regression statistics under
+Historical Python-provider layout runs wrote regression statistics under
 `results/yolo_<layout>_minindn_quick/`:
 
 ```text
@@ -3564,8 +3541,10 @@ To run the APP API smoke, the local ONNX executor smoke, and both stable
 MiniNDN split smokes through one entry point:
 
 ```bash
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3 \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
@@ -3695,6 +3674,9 @@ optimizers implement the ten public SDK protocols; omitted hooks resolve to
 named defaults. `RunnerAdapterRegistry` remains independent. `APPDeployment`
 uses external `ArtifactReference` values and `APPClient` provides durable
 submit/reopen/wait/cancel/stream/result handles. The aggregate is compatibility-only.
+Writing and reopening encrypted APP request records requires the matching
+installed `ndnsf` binding. The native codec seals each request envelope and
+authenticates its request ID and expiry on read.
 
 For host-only `ndnsf-di cluster` management, install `ndnsf-di-ops`; its normal
 dependency resolver installs the Name codec without App, native bindings or

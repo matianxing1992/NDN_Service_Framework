@@ -47,7 +47,11 @@ class ExecutionAttemptAuthority
 {
 public:
   ExecutionAttemptAdmission admit(const ExecutionAttemptKey& key);
+  ExecutionAttemptAdmission admit(const ExecutionAttemptKey& key, std::string controlScope);
   bool cancel(const ExecutionAttemptKey& key);
+  bool cancel(const ExecutionAttemptKey& key, const std::string& controlScope,
+              const std::string& controlDigest);
+  bool supersedeLegacy(const ExecutionAttemptKey& key, std::uint64_t replacementEpoch);
   bool complete(const ExecutionAttemptKey& key);
   bool isAuthoritative(const ExecutionAttemptKey& key) const;
 
@@ -57,6 +61,8 @@ private:
     std::uint64_t currentEpoch = 0;
     bool cancelled = false;
     bool terminal = false;
+    std::string controlScope;
+    std::string cancellationDigest;
   };
 
   mutable std::mutex m_mutex;

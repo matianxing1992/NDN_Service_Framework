@@ -1255,6 +1255,15 @@ class CollaborationContext:
     def local_provider(self) -> str:
         return str(self._native.local_provider)
 
+    def _coordinator_work_budget_ms(self) -> int:
+        return int(self._native._coordinator_work_budget_ms())
+
+    def _arm_coordinator_cancellation(self, request_digest: str) -> None:
+        self._native._arm_coordinator_cancellation(request_digest)
+
+    def _coordinator_cancellation_received(self) -> bool:
+        return bool(self._native._coordinator_cancellation_received())
+
     @property
     def assignment(self) -> CollaborationAssignment:
         native = self._native.assignment
@@ -2117,17 +2126,8 @@ class ServiceProvider:
         self._native.add_streaming_context_service(service, handler)
         self._streaming_services.add(service)
 
-    def set_stream_publication_interceptor_for_test(self, callback) -> None:
-        """Install a real-SVS publication interceptor for an integration test."""
-        self._native.set_stream_publication_interceptor_for_test(callback)
-
-    def set_stream_retention_interceptor_for_test(self, callback) -> None:
-        """Install a real-SVS retention interceptor for an integration test."""
-        self._native.set_stream_retention_interceptor_for_test(callback)
-
-    def publish_stream_packet_for_test(self, wire: bytes) -> None:
-        """Re-publish one already signed stream packet through real SVS."""
-        self._native.publish_stream_packet_for_test(bytes(wire))
+    def _stream_fault_test_access(self):
+        return _ndnsf._testing.StreamFaultAccess(self._native)
 
     def streaming_handler(self, service: str):
         def decorator(fn: Callable[[bytes, Any], object]):
@@ -3532,6 +3532,15 @@ class ServiceUser:
             **_dependency_transport_kwargs(dependency_transport),
         )
         return _from_native_response(response)
+
+    def _request_di_coordinator_async(self, service, provider, request_id, payload,
+                                      ack_timeout_ms, timeout_ms, on_response, on_timeout):
+        self._native._request_di_coordinator_async(
+            service, provider, request_id, payload, ack_timeout_ms, timeout_ms,
+            on_response, on_timeout)
+
+    def _cancel_di_coordinator(self, provider, request_id, payload):
+        self._native._cancel_di_coordinator(provider, request_id, payload)
 
     def request_collaboration_async(
         self,

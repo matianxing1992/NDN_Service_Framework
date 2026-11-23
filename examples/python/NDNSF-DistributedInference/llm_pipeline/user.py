@@ -1181,7 +1181,6 @@ def _configure_tiny_onnx_automatic_planning(client, args) -> None:
         catalog_snapshot_provider=lambda: (snapshot,),
         verify_offer_signature=verify_offer,
         ack_timeout_ms=args.ack_timeout_ms,
-        ack_coverage_roles=roles,
         canonical_artifact_ensurer=canonical_ensurer,
     )
     args._automatic_adapter = adapter

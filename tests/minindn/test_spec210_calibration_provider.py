@@ -13,7 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = Path(os.environ.get(
     "NDNSF_UAV_DEMO_ASSET_DIR", "/home/tianxing/.cache/ndnsf/spec191-assets")).expanduser()
-MODEL = Path(os.environ.get("NDNSF_UAV_DEMO_MODEL", str(ASSETS / "3UAVs.pt"))).expanduser()
+MODEL = Path(os.environ.get("NDNSF_UAV_DEMO_MODEL", str(ASSETS / "3UAVs_YOLOv8n.onnx"))).expanduser()
 TRUST_SCHEMA_VALUE = os.environ.get("NDNSF_UAV_DEMO_TEST_TRUST_SCHEMA", "")
 TRUST_SCHEMA = Path(TRUST_SCHEMA_VALUE).expanduser() if TRUST_SCHEMA_VALUE else None
 PROVIDER_HELPER_VALUE = os.environ.get("NDNSF_SPEC210_CALIBRATION_PROVIDER_HELPER", "")

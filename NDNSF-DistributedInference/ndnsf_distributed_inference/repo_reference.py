@@ -268,32 +268,7 @@ def _boolish(value: object, default: bool = False) -> bool:
     return default
 
 
-def _reject_repo_manifest_conversion(operation: str):
-    from .repo_artifact_resolver import reject_legacy_repo_manifest
-    reject_legacy_repo_manifest(operation)
-
-
-def large_data_reference_from_repo_manifest(manifest: Any, **_metadata) -> dict:
-    _reject_repo_manifest_conversion("large_data_reference_from_repo_manifest")
-
-
-def repo_artifact_reference(manifest: Any, **_metadata) -> dict:
-    _reject_repo_manifest_conversion("repo_artifact_reference")
-
-
-def repo_manifest_from_artifact_reference(entry: dict) -> dict:
-    _reject_repo_manifest_conversion("repo_manifest_from_artifact_reference")
-
-
-def repo_manifest_from_large_data_reference(entry: dict) -> dict:
-    _reject_repo_manifest_conversion("repo_manifest_from_large_data_reference")
-
-
 __all__ = [
     "LargeDataReference",
     "bind_published_large_data_reference",
-    "large_data_reference_from_repo_manifest",
-    "repo_artifact_reference",
-    "repo_manifest_from_artifact_reference",
-    "repo_manifest_from_large_data_reference",
 ]

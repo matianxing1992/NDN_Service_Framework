@@ -11,7 +11,7 @@ from ndnsf_distributed_inference.artifact_deployment import (
 from ndnsf_distributed_inference.client import DistributedInferenceClient, _artifact_fingerprint
 from ndnsf_distributed_inference.app_sdk.facades import APPClient, InferencePlanBuilder
 from ndnsf_distributed_inference.app_sdk.placement import AutomaticPlanningCoordinator
-from spec201_publication_fixture import publication_result
+from publication_fixture import publication_result
 from ndnsf_distributed_inference.naming import canonical_name_uri, parse_producer_data_name
 from ndnsf_distributed_inference.plan import ArtifactSpec
 from ndnsf_distributed_inference.app_sdk.client import APPClient as DurableAPPClient

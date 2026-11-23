@@ -2,6 +2,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
@@ -14,6 +15,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-app-request-events.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-journal-file.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
@@ -24,6 +27,7 @@
 
 #include <ndn-cxx/encoding/block.hpp>
 #include <ndn-cxx/name.hpp>
+#include <openssl/crypto.h>
 #include <pybind11/functional.h>
 #include <pybind11/detail/type_caster_base.h>
 #include <pybind11/stl.h>
@@ -36,11 +40,50 @@
 #include <iostream>
 #include <limits>
 #include <set>
+#include <system_error>
+#include <thread>
+#include <tuple>
 
 namespace py = pybind11;
 namespace di = ndnsf::di;
 
 namespace {
+
+struct JournalEnvelopeKeyBuffer
+{
+  ~JournalEnvelopeKeyBuffer()
+  {
+    for (auto& key : keys) {
+      OPENSSL_cleanse(key.bytes.data(), key.bytes.size());
+    }
+  }
+
+  void
+  add(std::string keyId, py::handle value)
+  {
+    if (!PyBytes_Check(value.ptr()) || PyBytes_GET_SIZE(value.ptr()) != 32) {
+      throw py::value_error("request-envelope key must contain exactly 32 bytes");
+    }
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(PyBytes_AS_STRING(value.ptr()));
+    keys.push_back({std::move(keyId), {bytes, bytes + 32}});
+  }
+
+  std::vector<di::NativeConversationJournalKey> keys;
+};
+
+template<typename Operation>
+void
+runJournalFileOperation(Operation&& operation)
+{
+  try {
+    py::gil_scoped_release release;
+    operation();
+  }
+  catch (const std::system_error& error) {
+    PyErr_SetString(PyExc_OSError, error.what());
+    throw py::error_already_set();
+  }
+}
 
 py::object
 blockWireOrNone(const std::optional<ndn::Block>& block)
@@ -221,6 +264,202 @@ bindDistributedInference(py::module_& module)
   auto diError = py::exception<di::DiError>(module, "DiError");
   (void)diError;
   py::register_local_exception_translator(&translateDiError);
+  py::register_exception<di::NativeJournalEnvelopeKeyUnavailable>(
+    module, "_JournalEnvelopeKeyUnavailable", PyExc_ValueError);
+  py::register_exception<di::detail::NativeJournalRollbackError>(
+    module, "_JournalRollbackError", PyExc_OSError);
+  module.def("_drive_di_coordinator_request", [] (py::object context,
+                                                   const std::string& outerRequestId,
+                                                   const std::string& coordinatorService,
+                                                   const std::string& deploymentOwner,
+                                                   const std::string& requestWire,
+                                                   std::int64_t applicationBudgetMs,
+                                                   py::function start, py::function report)
+    -> py::object {
+    const auto stringAttr = [] (py::handle object, const char* field) {
+      return py::cast<std::string>(object.attr(field));
+    };
+    if (outerRequestId.empty() ||
+        ndn::Name(outerRequestId) != ndn::Name(stringAttr(context, "session_id")) ||
+        ndn::Name(coordinatorService) !=
+          ndn::Name(stringAttr(context.attr("assignment"), "service")) ||
+        ndn::Name(deploymentOwner) != ndn::Name(stringAttr(context, "local_provider")) ||
+        stringAttr(context, "role") != "coordinator") {
+      PyErr_SetString(PyExc_PermissionError, "coordinator request identity or assignment mismatch");
+      throw py::error_already_set();
+    }
+    using Clock = std::chrono::steady_clock;
+    using Milliseconds = std::chrono::milliseconds;
+    const auto now = Clock::now();
+    auto workBudget = context.attr("_coordinator_work_budget_ms");
+    const auto budget = std::min({applicationBudgetMs, py::cast<std::int64_t>(workBudget()),
+      std::chrono::duration_cast<Milliseconds>(Clock::time_point::max() - now).count()});
+    if (budget <= 0) {
+      return py::none();
+    }
+    const auto deadline = now + Milliseconds(budget);
+    const auto remaining = [&] {
+      return std::min(py::cast<std::int64_t>(workBudget()),
+                      std::chrono::duration_cast<Milliseconds>(deadline - Clock::now()).count());
+    };
+    const auto initial = remaining();
+    if (initial <= 0) {
+      return py::none();
+    }
+    context.attr("_arm_coordinator_cancellation")(di::nativePlanningDigest(requestWire));
+    const auto cancelled = context.attr("_coordinator_cancellation_received");
+    const auto notifyCancellation = [&] {
+      if (remaining() > 0) {
+        context.attr("publish_final_failure_response")(py::bytes(),
+                                                        "COORDINATOR_CANCEL_REQUESTED");
+      }
+    };
+    if (cancelled().cast<bool>()) {
+      notifyCancellation();
+      return py::none();
+    }
+    auto request = start(initial);
+    const auto cancel = [&] (const char* reason) { request.attr("cancel")(reason); };
+    bool requesterCancelled = false;
+    try {
+      for (auto left = remaining(); left > 0; left = remaining()) {
+        report(request);
+        if (remaining() <= 0) {
+          break;
+        }
+        const auto state = stringAttr(request.attr("status")(), "value");
+        if (state == "COMPLETED" || state == "FAILED" || state == "CANCELLED" || state == "EXPIRED") {
+          return request;
+        }
+        if (cancelled().cast<bool>()) {
+          requesterCancelled = true;
+          break;
+        }
+        const auto pause = std::min<std::int64_t>(250, remaining());
+        if (pause > 0) {
+          py::gil_scoped_release release;
+          std::this_thread::sleep_for(Milliseconds(pause));
+        }
+      }
+    }
+    catch (...) {
+      try { cancel("COORDINATOR_WORK_ENDED"); } catch (...) {}
+      throw;
+    }
+    cancel(requesterCancelled ? "COORDINATOR_REQUESTER_CANCELLED" : "COORDINATOR_WORK_ENDED");
+    if (requesterCancelled) {
+      notifyCancellation();
+    }
+    return py::none();
+  });
+  using AppRequestEvents = di::detail::NativeAppRequestEvents;
+  py::class_<AppRequestEvents>(module, "_AppRequestEvents")
+    .def(py::init<>())
+    .def("restore", &AppRequestEvents::restore, py::call_guard<py::gil_scoped_release>())
+    .def("events", &AppRequestEvents::events, py::call_guard<py::gil_scoped_release>())
+    .def("count", &AppRequestEvents::count, py::call_guard<py::gil_scoped_release>())
+    .def("status", &AppRequestEvents::status, py::call_guard<py::gil_scoped_release>())
+    .def_static("with_cancellation_lease", [] (const std::string& journalLockPath,
+                                                const std::string& requestId,
+                                                py::function cancel) {
+      py::gil_scoped_release release;
+      return AppRequestEvents::withCancellationLease(journalLockPath, requestId, [&cancel] {
+        py::gil_scoped_acquire acquire;
+        cancel();
+      });
+    })
+    .def("admit_cancellation", [] (const AppRequestEvents& self, const std::string& requestId,
+                                    py::function check) {
+      py::gil_scoped_release release;
+      return self.admitCancellation(requestId, [&check] (std::size_t sequence) {
+        py::gil_scoped_acquire acquire;
+        check(sequence);
+      });
+    })
+    .def("append", [] (AppRequestEvents& self, const std::string& requestId,
+                       const std::vector<AppRequestEvents::Transition>& transitions,
+                       py::function persist, bool allowTerminalWinner) {
+      py::gil_scoped_release release;
+      return self.append(requestId, transitions, [&persist] (const std::vector<std::string>& rows) {
+        py::gil_scoped_acquire acquire;
+        persist(rows);
+      }, allowTerminalWinner);
+    }, py::arg("request_id"), py::arg("transitions"), py::arg("persist"),
+       py::arg("allow_terminal_winner") = false);
+  module.def("_validate_di_journal_record", [] (const std::string& body,
+                                               const std::string& checksum,
+                                               const std::string& schemaJson) {
+    py::gil_scoped_release release;
+    using Validation = di::detail::JournalRecordValidation;
+    switch (di::detail::validateJournalRecord(body, checksum, schemaJson)) {
+      case Validation::CHECKSUM_MISMATCH: return "checksum";
+      case Validation::SCHEMA_MISMATCH: return "schema";
+      case Validation::VALID: return "";
+    }
+    throw std::logic_error("unknown journal validation result");
+  });
+  module.def("_frame_di_journal_records", [] (
+      std::vector<std::tuple<std::string, std::string, std::uint64_t>> entries,
+      std::uint64_t timestampMs) {
+    di::detail::JournalFrame frame;
+    {
+      py::gil_scoped_release release;
+      std::vector<di::detail::JournalRecord> records;
+      records.reserve(entries.size());
+      for (auto& [kindJson, payloadJson, time] : entries) {
+        records.push_back({std::move(kindJson), std::move(payloadJson), time});
+      }
+      frame = di::detail::frameJournalRecords(records, timestampMs);
+    }
+    return py::make_tuple(py::bytes(frame.wire), std::move(frame.checksums));
+  });
+  module.def("_append_di_journal_wire", [] (int fd, std::uint64_t offset, py::bytes encoded) {
+    const std::string wire(encoded);
+    runJournalFileOperation([&] {
+      di::detail::appendJournalWire(fd, offset, wire);
+    });
+  });
+  module.def("_truncate_di_journal_tail", [] (int fd, std::uint64_t observedSize,
+                                              std::uint64_t validSize) {
+    runJournalFileOperation([&] {
+      di::detail::truncateJournalTail(fd, observedSize, validSize);
+    });
+  });
+  module.def("_seal_di_journal_envelope", [] (py::bytes payload, const std::string& requestId,
+                                             std::uint64_t expiresAtMs, std::string keyId,
+                                             py::bytes key) {
+    JournalEnvelopeKeyBuffer buffer;
+    buffer.keys.reserve(1);
+    buffer.add(std::move(keyId), key);
+    const std::string plaintext(payload);
+    std::string encoded;
+    {
+      py::gil_scoped_release release;
+      encoded = di::nativeSealRequestJournalEnvelope(
+        plaintext, requestId, expiresAtMs, buffer.keys.front());
+    }
+    return py::bytes(encoded);
+  });
+  module.def("_read_di_journal_envelope", [] (py::bytes encoded, const std::string& requestId,
+                                             const py::dict& keyRing, std::uint64_t nowMs) {
+    JournalEnvelopeKeyBuffer buffer;
+    buffer.keys.reserve(keyRing.size());
+    for (const auto& [keyId, value] : keyRing) {
+      buffer.add(py::cast<std::string>(keyId), value);
+    }
+    try {
+      const std::string wire(encoded);
+      std::string plaintext;
+      {
+        py::gil_scoped_release release;
+        plaintext = di::nativeReadRequestJournalEnvelope(wire, requestId, buffer.keys, nowMs);
+      }
+      return py::bytes(plaintext);
+    }
+    catch (const di::NativeJson::exception&) {
+      throw py::value_error("request envelope integrity failure");
+    }
+  });
 
   py::enum_<di::CachePolicy>(module, "CachePolicy")
     .value("REQUIRE_READY", di::CachePolicy::RequireReady)

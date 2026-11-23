@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import json
 import tempfile
-import os
 import unittest
 from concurrent.futures import Future
 from types import SimpleNamespace
@@ -10,6 +10,7 @@ from unittest import mock
 from ndnsf_distributed_inference.app_sdk import APPClient
 from ndnsf_distributed_inference.app_sdk.runtime_journal import (
     RuntimeJournal as RuntimeJournalImpl,
+    RuntimeJournalError,
 )
 from ndnsf_distributed_inference.app_sdk.contracts import (
     InferenceRequestHandle, RequestEnvelopeReference,
@@ -146,17 +147,84 @@ class RequestHandleTest(unittest.TestCase):
             network.async_distributed_inference = submit_network
             journal = RuntimeJournal(root, "alice")
             client = APPClient(journal, network_client=network)
-            with mock.patch("os.fsync", wraps=os.fsync) as fsync:
-                handle = client.submit(
-                    service="/LLM/Qwen",
-                    input=b"prompt",
-                    deployment_revision="sha256:" + "a" * 64,
-                    deadline=60,
-                )
+            handle = client.submit(
+                service="/LLM/Qwen",
+                input=b"prompt",
+                deployment_revision="sha256:" + "a" * 64,
+                deadline=60,
+            )
 
             self.assertEqual(client.status(handle), RequestState.COMPLETED)
             self.assertEqual(client.result(handle), b"result")
-            self.assertEqual(fsync.call_count, 2)
+            request_txn, result_txn = map(json.loads, journal.path.read_bytes().splitlines())
+            for transaction, envelope_id in (
+                    (request_txn, handle.request_id),
+                    (result_txn, handle.request_id + "-result")):
+                self.assertEqual(transaction["kind"], "journal-transaction")
+                envelope = transaction["payload"]["records"][0]
+                self.assertEqual(envelope["kind"], "protected-envelope")
+                self.assertEqual(envelope["payload"]["request_id"], envelope_id)
+
+    def test_native_event_transition_is_visible_only_after_commit(self):
+        with tempfile.TemporaryDirectory() as root:
+            journal = RuntimeJournal(root, "alice")
+            client = APPClient(journal)
+            handle = client.submit("d", "r", b"payload")
+            original_bytes = journal.path.read_bytes()
+            original_events = list(client.stream(handle))
+
+            with self.assertRaisesRegex(ValueError, "monotonically"):
+                client._event(handle, RequestState.CREATED)
+            with mock.patch.object(journal, "append_many",
+                                   side_effect=OSError("journal unavailable")):
+                with self.assertRaisesRegex(OSError, "journal unavailable"):
+                    client._event(handle, RequestState.CANCELLED)
+            self.assertEqual(client.status(handle), RequestState.PLANNING)
+            self.assertEqual(list(client.stream(handle)), original_events)
+            self.assertEqual(journal.path.read_bytes(), original_bytes)
+
+            client.cancel(handle)
+            terminal_bytes = journal.path.read_bytes()
+            client._event(handle, RequestState.CANCELLED)
+            with self.assertRaisesRegex(RuntimeError, "already terminal"):
+                client._event(handle, RequestState.FAILED)
+            self.assertEqual(journal.path.read_bytes(), terminal_bytes)
+
+            reopened = APPClient(RuntimeJournal(root, "alice"))
+            current = reopened.open_request(handle.request_id)
+            self.assertEqual(reopened.status(current), RequestState.CANCELLED)
+            self.assertEqual([event.sequence for event in reopened.stream(current)],
+                             list(range(1, len(original_events) + 2)))
+
+    def test_stale_writer_cannot_change_request_journal(self):
+        with tempfile.TemporaryDirectory() as root:
+            journal = RuntimeJournal(root, "alice")
+            client = APPClient(journal)
+            stale = APPClient(RuntimeJournal(root, "alice"))
+            handle = client.submit("d", "r", b"original", request_id="same")
+            original_bytes = journal.path.read_bytes()
+
+            with self.assertRaisesRegex(ValueError, "request_id already exists"):
+                stale.submit("d", "r", b"replacement", request_id="same")
+            self.assertEqual(journal.path.read_bytes(), original_bytes)
+            self.assertEqual(journal.read_envelope(handle.request_id), b"original")
+
+            peer = APPClient(RuntimeJournal(root, "alice"))
+            earlier = peer.open_request(handle.request_id)
+            client._event(handle, RequestState.EXECUTING)
+            executing_bytes = journal.path.read_bytes()
+            with self.assertRaisesRegex(RuntimeJournalError, "REQUEST_STATE_CHANGED"):
+                peer.cancel(earlier)
+            self.assertEqual(journal.path.read_bytes(), executing_bytes)
+            self.assertEqual(peer.status(earlier), RequestState.PLANNING)
+
+            reopened = APPClient(RuntimeJournal(root, "alice"))
+            current = reopened.open_request(handle.request_id)
+            reopened.cancel(current)
+            terminal = reopened.open_request(handle.request_id)
+            self.assertEqual(reopened.status(terminal), RequestState.CANCELLED)
+            self.assertEqual(terminal.event_cursor, 4)
+            self.assertEqual([event.sequence for event in reopened.stream(terminal)], [1, 2, 3, 4])
 
     def test_reopen_is_identity_attempt_and_envelope_fenced(self):
         with tempfile.TemporaryDirectory() as root:
@@ -290,10 +358,10 @@ class RequestHandleTest(unittest.TestCase):
             journal = RuntimeJournal(root, "alice")
             original_commit = journal.commit_prepared_envelope
 
-            def fail_result_commit(prepared, entries):
+            def fail_result_commit(prepared, entries, **kwargs):
                 if prepared.request_id.endswith("-result"):
                     raise OSError("result spool unavailable")
-                return original_commit(prepared, entries)
+                return original_commit(prepared, entries, **kwargs)
 
             journal.commit_prepared_envelope = fail_result_commit
             client = APPClient(journal, network_client=network)

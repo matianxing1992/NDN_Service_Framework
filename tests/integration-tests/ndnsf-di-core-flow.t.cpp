@@ -6502,8 +6502,8 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   if (caseOptions.conversationFault == Spec190NativeConversationFault::CommitAckLoss) {
     const auto droppedProvider =
       environment.provider(roleProviderIndex.back()).getName();
-    environment.provider(roleProviderIndex.back())
-      .setCollaborationPublicationInterceptorForTest(
+    ServiceProviderTestAccess::setCollaborationPublicationInterceptor(
+        environment.provider(roleProviderIndex.back()),
         [droppedProvider, conversationCommitAckDropped] (const ndn::Name& dataName) {
           const auto parsed = parseCollaborationDataName(dataName);
           if (!parsed || parsed->producerName != droppedProvider ||
@@ -7160,7 +7160,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   auto heldPublication = std::make_shared<std::optional<ndn::Data>>();
   auto heldPublicationMutex = std::make_shared<std::mutex>();
   if (caseOptions.fault == Spec175NativeTinyFault::NeverRetainedEvent5) {
-    finalProvider.setStreamRetentionInterceptorForTest(
+    ServiceProviderTestAccess::setStreamRetentionInterceptor(finalProvider,
       [retentionSuppressions, eventProducer = finalProvider.getName()] (const ndn::Data& data) {
         const auto parsed = test::inspectEventCursorForTest(data.getName(), eventProducer);
         if (parsed && *parsed == 5) {
@@ -7171,7 +7171,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       });
   }
   if (caseOptions.fault == Spec175NativeTinyFault::RetentionExpiredEvent5) {
-    finalProvider.setStreamRetentionExpiryObserverForTest(
+    ServiceProviderTestAccess::setStreamRetentionExpiryObserver(finalProvider,
       [retentionExpirations, eventProducer = finalProvider.getName()] (const ndn::Name& name) {
         const auto parsed = test::inspectEventCursorForTest(name, eventProducer);
         if (parsed && *parsed == 5) {
@@ -7187,7 +7187,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       caseOptions.fault == Spec175NativeTinyFault::TamperEventOneSignature ||
       caseOptions.fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3 ||
       caseOptions.fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3WithReplacement) {
-    finalProvider.setStreamPublicationInterceptorForTest(
+    ServiceProviderTestAccess::setStreamPublicationInterceptor(finalProvider,
       [fault = caseOptions.fault, publicationSuppressions,
        publicationReorders, publicationDuplicates,
        providerTransportDetachments, heldPublication,
@@ -7783,7 +7783,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   result.publicationDuplicates =
     publicationDuplicates->load(std::memory_order_relaxed);
   result.tamperedPublications = result.bridgeStats.tamperedStreamDataPackets;
-  result.publisherQueueHighWater = finalProvider.streamPublisherHighWaterMarkForTest(
+  result.publisherQueueHighWater = ServiceProviderTestAccess::streamPublisherHighWaterMark(finalProvider,
     requesterName, serviceName, requestId);
   result.callbackQueueHighWater =
     environment.user().streamCallbackQueueHighWaterMarkForTest(requestId);
@@ -7820,12 +7820,12 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     result.failed = true;
     result.error = "not every Provider epoch coordinator terminated cleanly";
   }
-  finalProvider.setStreamRetentionInterceptorForTest({});
-  finalProvider.setStreamRetentionExpiryObserverForTest({});
-  finalProvider.setStreamPublicationInterceptorForTest({});
+  ServiceProviderTestAccess::setStreamRetentionInterceptor(finalProvider, {});
+  ServiceProviderTestAccess::setStreamRetentionExpiryObserver(finalProvider, {});
+  ServiceProviderTestAccess::setStreamPublicationInterceptor(finalProvider, {});
   if (caseOptions.conversationFault == Spec190NativeConversationFault::CommitAckLoss) {
-    environment.provider(roleProviderIndex.back())
-      .setCollaborationPublicationInterceptorForTest({});
+    ServiceProviderTestAccess::setCollaborationPublicationInterceptor(
+      environment.provider(roleProviderIndex.back()), {});
   }
   if (requestScope) {
     environment.flushReorderedPackets();
@@ -14449,10 +14449,10 @@ BOOST_AUTO_TEST_CASE(Spec220CollaborationFacePublicationIsRequestObserved)
       }
       pumpDone.store(true, std::memory_order_release);
       if (pumpThread.joinable()) pumpThread.join();
-      provider.setCollaborationPublicationInterceptorForTest({});
+      ServiceProviderTestAccess::setCollaborationPublicationInterceptor(provider, {});
     }
   } cleanup{provider, releaseCallback, pumpDone, pumpThread};
-  provider.setCollaborationPublicationInterceptorForTest(
+  ServiceProviderTestAccess::setCollaborationPublicationInterceptor(provider,
     [callbackEntered, releaseCallbackFuture] (const ndn::Name&) {
       callbackEntered->set_value();
       releaseCallbackFuture.wait();
@@ -14510,7 +14510,7 @@ BOOST_AUTO_TEST_CASE(Spec220CollaborationFacePublicationIsRequestObserved)
 
   auto unobservedCallback = std::make_shared<std::promise<void>>();
   auto unobservedFuture = unobservedCallback->get_future();
-  provider.setCollaborationPublicationInterceptorForTest(
+  ServiceProviderTestAccess::setCollaborationPublicationInterceptor(provider,
     [unobservedCallback] (const ndn::Name&) {
       unobservedCallback->set_value();
       return false;

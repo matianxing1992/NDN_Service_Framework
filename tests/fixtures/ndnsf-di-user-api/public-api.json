@@ -65,7 +65,6 @@
     "EventReader",
     "Subscription",
     "DiError",
-    "NativeProviderConfig",
     "ProviderConfig",
     "ServiceDefinition",
     "ProviderCounters",

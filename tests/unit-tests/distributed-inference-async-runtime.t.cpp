@@ -6059,6 +6059,27 @@ BOOST_AUTO_TEST_CASE(NativeProviderExecutionControlCancelsAndSupersedesInPayload
   BOOST_CHECK(supersedeAuthority.isAuthoritative({"request-control", 2}));
 }
 
+BOOST_AUTO_TEST_CASE(ExecutionAttemptAuthorityReplaysOnlyTheBoundCancellation)
+{
+  ExecutionAttemptAuthority authority;
+  const ExecutionAttemptKey first{"request-control", 1};
+  const ExecutionAttemptKey second{"request-control", 2};
+  BOOST_REQUIRE_EQUAL(authority.admit(first, "certified-scope"), ExecutionAttemptAdmission::Accepted);
+  BOOST_CHECK(!authority.cancel(first, {}, {}));
+  BOOST_CHECK(!authority.supersedeLegacy(first, 2));
+  BOOST_CHECK(!authority.cancel(first, "other-requester", "cancel-receipt"));
+  BOOST_CHECK(authority.isAuthoritative(first));
+  BOOST_REQUIRE(authority.cancel(first, "certified-scope", "cancel-receipt"));
+  BOOST_CHECK(authority.cancel(first, "certified-scope", "cancel-receipt"));
+  BOOST_CHECK(!authority.cancel(first, "certified-scope", "different-wire"));
+  BOOST_CHECK(!authority.cancel(first, "other-requester", "cancel-receipt"));
+  BOOST_CHECK(!authority.complete(first));
+  BOOST_REQUIRE_EQUAL(authority.admit(second, "new-activation"), ExecutionAttemptAdmission::Accepted);
+  BOOST_CHECK(!authority.cancel(first, "certified-scope", "cancel-receipt"));
+  BOOST_REQUIRE(authority.complete(second));
+  BOOST_CHECK(!authority.cancel(second, "new-activation", "late-cancel"));
+}
+
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanReturnsNoStaticSegmentsForDynamicEdges)
 {
   DependencyEdge dynamicEdge{

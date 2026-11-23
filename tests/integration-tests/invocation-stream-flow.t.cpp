@@ -1,3 +1,4 @@
+#include "tests/fixtures/service-provider-test-access.hpp"
 #include "tests/fixtures/test-resource-paths.hpp"
 #include "tests/boost-test.hpp"
 
@@ -736,7 +737,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamRetriesOneSuppressedEventFromProviderIms)
   installEncryptedRequestPublisher(environment, serviceName, &requestScope);
   std::atomic<bool> suppressNext{true};
   std::atomic<size_t> suppressed{0};
-  environment.provider().setStreamPublicationInterceptorForTest(
+  ServiceProviderTestAccess::setStreamPublicationInterceptor(environment.provider(),
       [&] (const ndn::Data&) {
         if (suppressNext.exchange(false)) {
           ++suppressed;
@@ -785,7 +786,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamRetriesOneSuppressedEventFromProviderIms)
   BOOST_CHECK_EQUAL(handle->metrics().retryCount, 1);
   BOOST_CHECK_EQUAL(suppressed.load(), 1);
 
-  environment.provider().setStreamPublicationInterceptorForTest({});
+  ServiceProviderTestAccess::setStreamPublicationInterceptor(environment.provider(), {});
   environment.flushReorderedPackets();
   environment.updateRequestResidue(requestScope, {});
   environment.resetRequest(requestScope);
@@ -804,7 +805,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamPublishesSvsPacketOnProviderFaceEventLoop)
   std::atomic<bool> handlerRanOffFaceThread{false};
   std::atomic<bool> publicationObserved{false};
   std::atomic<bool> publicationRanOnFaceThread{false};
-  environment.provider().setStreamPublicationInterceptorForTest(
+  ServiceProviderTestAccess::setStreamPublicationInterceptor(environment.provider(),
       [&] (const ndn::Data&) {
         publicationObserved = true;
         publicationRanOnFaceThread = std::this_thread::get_id() == faceThread;
@@ -863,7 +864,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamPublishesSvsPacketOnProviderFaceEventLoop)
   BOOST_CHECK_EQUAL(events.front(), "event");
   BOOST_CHECK_EQUAL(result, "result");
   BOOST_CHECK(handle->status() == StreamedInvocationStatus::Completed);
-  environment.provider().setStreamPublicationInterceptorForTest({});
+  ServiceProviderTestAccess::setStreamPublicationInterceptor(environment.provider(), {});
 }
 
 BOOST_AUTO_TEST_CASE(NormalStreamReordersOneEventAndDrainsInOrder)
@@ -889,7 +890,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamReordersOneEventAndDrainsInOrder)
   std::optional<ndn::Data> delayed;
   bool reinjecting = false;
   size_t reordered = 0;
-  environment.provider().setStreamPublicationInterceptorForTest(
+  ServiceProviderTestAccess::setStreamPublicationInterceptor(environment.provider(),
       [&] (const ndn::Data& data) {
         const auto parsed = inspectEventCursorForTest(data.getName(), environment);
         if (reinjecting || !parsed) return true;
@@ -943,7 +944,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamReordersOneEventAndDrainsInOrder)
   BOOST_CHECK(handle->status() == StreamedInvocationStatus::Completed);
   BOOST_CHECK_EQUAL(handle->metrics().deliveredEvents, expected.size());
   BOOST_CHECK_EQUAL(reordered, 1);
-  environment.provider().setStreamPublicationInterceptorForTest({});
+  ServiceProviderTestAccess::setStreamPublicationInterceptor(environment.provider(), {});
 }
 
 BOOST_AUTO_TEST_CASE(NormalStreamSuppressesDuplicateEventData)
@@ -968,7 +969,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamSuppressesDuplicateEventData)
   installEncryptedRequestPublisher(environment, serviceName);
   bool reinjecting = false;
   size_t duplicated = 0;
-  environment.provider().setStreamPublicationInterceptorForTest(
+  ServiceProviderTestAccess::setStreamPublicationInterceptor(environment.provider(),
       [&] (const ndn::Data& data) {
         const auto parsed = inspectEventCursorForTest(data.getName(), environment);
         if (reinjecting || !parsed || *parsed != 4) return true;
@@ -1010,7 +1011,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamSuppressesDuplicateEventData)
   BOOST_CHECK(handle->status() == StreamedInvocationStatus::Completed);
   BOOST_CHECK_EQUAL(handle->metrics().deliveredEvents, expected.size());
   BOOST_CHECK_EQUAL(duplicated, 1);
-  environment.provider().setStreamPublicationInterceptorForTest({});
+  ServiceProviderTestAccess::setStreamPublicationInterceptor(environment.provider(), {});
 }
 
 BOOST_AUTO_TEST_CASE(NormalStreamRejectsTamperedEventBeforeDelivery)
@@ -1038,7 +1039,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamRejectsTamperedEventBeforeDelivery)
   // Drop the original packet before IMS insertion and inject only a tampered
   // copy into SVS.  This makes the validator failure deterministic: no valid
   // exact Data can race the intentionally invalid publication.
-  environment.provider().setStreamRetentionInterceptorForTest(
+  ServiceProviderTestAccess::setStreamRetentionInterceptor(environment.provider(),
       [&] (const ndn::Data& data) {
         const auto parsed = inspectEventCursorForTest(data.getName(), environment);
         if (reinjecting || tampered || !parsed || *parsed != 1) return true;
@@ -1087,7 +1088,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamRejectsTamperedEventBeforeDelivery)
   BOOST_CHECK(events.empty());
   BOOST_CHECK(result.empty());
   BOOST_CHECK(handle->status() == StreamedInvocationStatus::Failed);
-  environment.provider().setStreamRetentionInterceptorForTest({});
+  ServiceProviderTestAccess::setStreamRetentionInterceptor(environment.provider(), {});
 }
 
 BOOST_AUTO_TEST_CASE(NormalStreamContainsCallbackException)
@@ -1179,7 +1180,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamFailsWhenMissingEventWasNeverRetained)
   // missing Data was never retained.
   std::atomic<bool> suppressNext{true};
   std::atomic<size_t> suppressed{0};
-  environment.provider().setStreamRetentionInterceptorForTest(
+  ServiceProviderTestAccess::setStreamRetentionInterceptor(environment.provider(),
       [&] (const ndn::Data&) {
         if (suppressNext.exchange(false)) {
           ++suppressed;
@@ -1225,7 +1226,7 @@ BOOST_AUTO_TEST_CASE(NormalStreamFailsWhenMissingEventWasNeverRetained)
   BOOST_CHECK_EQUAL(handle->metrics().retryCount, 1);
   BOOST_CHECK_EQUAL(suppressed.load(), 1);
 
-  environment.provider().setStreamRetentionInterceptorForTest({});
+  ServiceProviderTestAccess::setStreamRetentionInterceptor(environment.provider(), {});
 }
 
 BOOST_AUTO_TEST_CASE(StreamedTargetedOverloadRejectsNormalModeAndProviderList)

@@ -5,11 +5,16 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import re
 from typing import Any, Mapping, Protocol
 
 
 CONTROL_SCHEMA = "ndnsf-di-execution-control-v2"
 LEGACY_CONTROL_SCHEMA = "ndnsf-di-execution-control-v1"
+
+
+def _execution_control_request_prefix(wire: bytes) -> str:
+    return "execution-control-" + hashlib.sha256(wire).hexdigest()[:24] + "-"
 
 
 def _digest(payload: Mapping[str, Any]) -> str:
@@ -58,6 +63,16 @@ class ExecutionControlEvidence:
     def digest(self) -> str:
         return _digest({"schema": CONTROL_SCHEMA, **asdict(self)})
 
+    @classmethod
+    def from_record(cls, payload: Mapping[str, Any]) -> "ExecutionControlEvidence":
+        fields = dict(payload)
+        schema = fields.pop("schema", None)
+        digest = fields.pop("evidence_digest", None)
+        evidence = cls(**fields)
+        if schema != CONTROL_SCHEMA or digest != evidence.digest():
+            raise ValueError("invalid execution-control evidence record")
+        return evidence
+
 
 class ExecutionControlTransport(Protocol):
     def cancel(
@@ -92,7 +107,7 @@ def _parse_fields(payload: bytes) -> dict[str, str]:
         if not item:
             continue
         key, separator, value = item.partition("=")
-        if not separator or not key:
+        if not separator or not key or key in fields:
             raise ValueError("malformed execution-control response")
         fields[key] = value
     return fields
@@ -121,12 +136,16 @@ class ExistingServiceExecutionControlTransport:
             timeout_ms=timeout_ms,
         )
         fields = _parse_fields(bytes(getattr(response, "payload", b"")))
+        if fields.get("schema") != CONTROL_SCHEMA or fields.get("status") not in {"0", "1"}:
+            raise ValueError("invalid execution-control response schema or status")
         accepted = bool(getattr(response, "status", False)) and fields.get("status") == "1"
         data_name = str(getattr(response, "data_name", ""))
-        request_component = (
-            "execution-control-" + hashlib.sha256(wire).hexdigest()[:24]
-        )
-        if request_component not in data_name:
+        request_component = str(getattr(response, "request_id", ""))
+        if request_component.startswith("/"):
+            request_component = request_component[1:]
+        if (not re.fullmatch(_execution_control_request_prefix(wire) + "[0-9a-f]{32}",
+                            request_component)
+                or data_name.rsplit("/", 1)[-1] != request_component):
             raise ValueError(
                 "execution-control response Data name does not bind the request payload"
             )
@@ -147,4 +166,9 @@ class ExistingServiceExecutionControlTransport:
         )
 
 
-__all__ = [name for name in globals() if not name.startswith("_")]
+__all__ = [
+    "ExecutionControlEvidence",
+    "ExecutionControlTransport",
+    "ExistingServiceExecutionControlTransport",
+    "encode_execution_control",
+]

@@ -1377,17 +1377,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DistributedRepo_Generic_Minindn.py"
-      ],
-      "currentOwner": "Experiments/NDNSF_DistributedRepo_Generic_Minindn.py",
-      "proposedCanonicalOwner": "experiments",
-      "rollbackRelease": "pre-spec111-worktree",
-      "status": "inventoried",
-      "surfaceId": "deployment-caller:Experiments/NDNSF_DistributedRepo_Generic_Minindn.py",
-      "surfaceKind": "deployment-caller"
-    },
-    {
-      "callers": [
         "Experiments/NDNSF_NegativeAck_Minindn.py"
       ],
       "currentOwner": "Experiments/NDNSF_NegativeAck_Minindn.py",
@@ -2803,17 +2792,6 @@
       "rollbackRelease": "pre-spec111-worktree",
       "status": "inventoried",
       "surfaceId": "deployment-caller:examples/python/NDNSF-DistributedRepo/generic_object_store/catalog_sync.py",
-      "surfaceKind": "deployment-caller"
-    },
-    {
-      "callers": [
-        "examples/python/NDNSF-DistributedRepo/generic_object_store/client.py"
-      ],
-      "currentOwner": "examples/python/NDNSF-DistributedRepo/generic_object_store/client.py",
-      "proposedCanonicalOwner": "experiments",
-      "rollbackRelease": "pre-spec111-worktree",
-      "status": "inventoried",
-      "surfaceId": "deployment-caller:examples/python/NDNSF-DistributedRepo/generic_object_store/client.py",
       "surfaceKind": "deployment-caller"
     },
     {
@@ -4490,8 +4468,7 @@
     },
     {
       "callers": [
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py"
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.app_sdk.client",
       "externalUseStatus": "external_use_unknown",
@@ -4505,8 +4482,7 @@
     },
     {
       "callers": [
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py"
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.app_sdk.controller",
       "proposedCanonicalOwner": "app_sdk",
@@ -4517,8 +4493,7 @@
     },
     {
       "callers": [
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py"
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.app_sdk.deployment",
       "externalUseStatus": "external_use_unknown",
@@ -4532,8 +4507,7 @@
     },
     {
       "callers": [
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py"
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.app_sdk.provider",
       "externalUseStatus": "external_use_unknown",
@@ -4567,7 +4541,6 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_llm_proportional_native_bundle.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.policy",
@@ -4760,7 +4733,6 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_llm_proportional_native_bundle.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.policy",
@@ -4928,8 +4900,7 @@
     },
     {
       "callers": [
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py"
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.app_sdk.facades",
       "proposedCanonicalOwner": "app_sdk",
@@ -5203,8 +5174,7 @@
     },
     {
       "callers": [
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py"
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.app_sdk.facades",
       "proposedCanonicalOwner": "app_sdk",
@@ -5685,7 +5655,6 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_llm_proportional_native_bundle.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.policy",
@@ -6119,7 +6088,6 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_llm_proportional_native_bundle.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.policy",
@@ -6146,7 +6114,6 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_llm_proportional_native_bundle.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.policy",
@@ -6207,7 +6174,6 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_llm_proportional_native_bundle.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.policy",
@@ -6532,7 +6498,6 @@
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/app.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
-        "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/generate_llm_proportional_native_bundle.py"
       ],
       "currentOwner": "ndnsf_distributed_inference.policy",

@@ -1167,31 +1167,6 @@ namespace ndn_service_framework{
                 std::function<void(const ndn::Name& messageName,
                                    const ndn::Buffer& wire)>;
 
-            /**
-             * Test-only hook at the real streamed-event publication boundary.
-             * Returning false suppresses the SVS publication after the exact
-             * signed Data has been retained in the Provider IMS.  This lets
-             * integration tests exercise the production exact-Interest retry
-             * path without intercepting DummyFace traffic.
-             */
-            using StreamPublicationInterceptorForTest =
-                std::function<bool(const ndn::Data& data)>;
-
-            /** Test-only hook at the encrypted collaboration publication
-             * boundary. Returning false suppresses the SVS publication after
-             * the real Provider has built the collaboration Data name and
-             * encrypted payload. */
-            using CollaborationPublicationInterceptorForTest =
-                std::function<bool(const ndn::Name& dataName)>;
-
-            /** Test-only hook that can suppress retention before publication. */
-            using StreamRetentionInterceptorForTest =
-                std::function<bool(const ndn::Data& data)>;
-
-            /** Test-only observer fired after a retained event is evicted. */
-            using StreamRetentionExpiryObserverForTest =
-                std::function<void(const ndn::Name& eventName)>;
-
             enum class ProviderRequestLifecycleState
             {
                 REQUEST_OBSERVED,
@@ -1334,25 +1309,6 @@ namespace ndn_service_framework{
             /** Re-issue the LocalMock NAC-ABE Producer public-parameter
              * fetch after fixture transport wiring is complete. */
             void refreshNacProducerForTest();
-
-            /** Install or clear the LocalMock streamed-event publication hook. */
-            void setStreamPublicationInterceptorForTest(
-                StreamPublicationInterceptorForTest interceptor);
-            void setCollaborationPublicationInterceptorForTest(
-                CollaborationPublicationInterceptorForTest interceptor);
-            void setStreamRetentionInterceptorForTest(
-                StreamRetentionInterceptorForTest interceptor);
-            void setStreamRetentionExpiryObserverForTest(
-                StreamRetentionExpiryObserverForTest observer);
-            /** Re-publish one already signed streamed Data packet through the
-             * production SVS endpoint.  This is test-only fault-controller
-             * plumbing used to inject duplicate and reordered publications;
-             * it does not re-sign or modify the packet. */
-            void publishStreamPacketForTest(const ndn::Data& data);
-            size_t streamPublisherHighWaterMarkForTest(
-                const ndn::Name& requesterName,
-                const ndn::Name& serviceName,
-                const ndn::Name& requestId);
 
             ndn::Name getName();
 
@@ -2114,6 +2070,38 @@ namespace ndn_service_framework{
         protected:
             void
             onMissingData(const std::vector<ndn::svs::MissingDataInfo> &);
+
+        private:
+            friend struct PythonStreamFaultTestAccess;
+
+            using StreamPublicationInterceptorForTest =
+                std::function<bool(const ndn::Data& data)>;
+            using StreamRetentionInterceptorForTest =
+                std::function<bool(const ndn::Data& data)>;
+            using CollaborationPublicationInterceptorForTest =
+                std::function<bool(const ndn::Name& dataName)>;
+            using StreamRetentionExpiryObserverForTest =
+                std::function<void(const ndn::Name& eventName)>;
+
+            /** Suppress SVS publication after the exact signed Data is retained. */
+            void setStreamPublicationInterceptorForTest(
+                StreamPublicationInterceptorForTest interceptor);
+            /** Suppress event retention before publication. */
+            void setStreamRetentionInterceptorForTest(
+                StreamRetentionInterceptorForTest interceptor);
+            /** Re-publish exact signed stream Data through the production SVS endpoint. */
+            void publishStreamPacketForTest(const ndn::Data& data);
+
+            /** Suppress SVS publication after the real collaboration Data is built. */
+            void setCollaborationPublicationInterceptorForTest(
+                CollaborationPublicationInterceptorForTest interceptor);
+            /** Observe a retained event after eviction. */
+            void setStreamRetentionExpiryObserverForTest(
+                StreamRetentionExpiryObserverForTest observer);
+            size_t streamPublisherHighWaterMarkForTest(
+                const ndn::Name& requesterName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId);
 
         protected:
             friend struct ServiceProviderTestAccess;

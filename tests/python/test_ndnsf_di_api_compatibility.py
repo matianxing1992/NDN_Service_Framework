@@ -14,7 +14,7 @@ class ApiCompatibilityTest(unittest.TestCase):
     def test_client_adapter_warns_once_and_delegates_without_rewriting_result(self):
         value = object()
         client = SimpleNamespace(
-            request=Mock(return_value=value), run=Mock(return_value=value),
+            request_preplanned=Mock(return_value=value), run=Mock(return_value=value),
             run_async=Mock())
         adapter = LegacyClientAdapter(client)
         with warnings.catch_warnings(record=True) as caught:
@@ -22,7 +22,7 @@ class ApiCompatibilityTest(unittest.TestCase):
             self.assertIs(adapter.submit("d", input=b"x", timeout="t"), value)
             self.assertIs(adapter.submit("d", input=b"x", timeout="t"), value)
         self.assertEqual(len(caught), 1)
-        client.request.assert_called_with(
+        client.request_preplanned.assert_called_with(
             "d", input=b"x", timeout="t", deadline=None, options=None)
 
     def test_provider_adapter_does_not_expose_admin(self):

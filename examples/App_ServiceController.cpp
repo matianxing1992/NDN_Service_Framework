@@ -231,10 +231,10 @@ main(int argc, char** argv)
         };
       if (revokeAfterMs >= 0) {
         scheduler.schedule(ndn::time::milliseconds(revokeAfterMs),
-          [&applyRevocation] { (void)applyRevocation(); });
+          [applyRevocation] { (void)applyRevocation(); });
         if (revokeRetryAfterMs >= 0)
           scheduler.schedule(ndn::time::milliseconds(revokeRetryAfterMs),
-            [&applyRevocation] { (void)applyRevocation(); });
+            [applyRevocation] { (void)applyRevocation(); });
       }
       else {
         // A run-scoped trigger lets an integration harness place revocation

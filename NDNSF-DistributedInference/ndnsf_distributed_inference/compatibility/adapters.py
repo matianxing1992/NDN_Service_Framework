@@ -25,8 +25,8 @@ class LegacyClientAdapter:
         self._client = client
 
     def submit(self, deployment, *, input, timeout=None, deadline=None, options=None):
-        _warn_once("submit", "InferenceClient.request")
-        return self._client.request(
+        _warn_once("submit", "InferenceClient.request_preplanned")
+        return self._client.request_preplanned(
             deployment, input=input, timeout=timeout, deadline=deadline,
             options=options)
 

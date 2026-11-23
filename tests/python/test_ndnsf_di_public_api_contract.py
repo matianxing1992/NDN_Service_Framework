@@ -17,7 +17,7 @@ MANIFEST = json.loads((
 
 class PublicApiContractTest(unittest.TestCase):
     def test_preferred_namespace_matches_allowlist_and_owner_manifest(self):
-        from ndnsf_distributed_inference import api
+        from ndnsf_distributed_inference import api, app_sdk, provider_api
         from ndnsf import _ndnsf
 
         self.assertEqual(set(api.__all__), set(MANIFEST["apiExports"]))
@@ -26,6 +26,11 @@ class PublicApiContractTest(unittest.TestCase):
         self.assertIs(api.Runtime, _ndnsf.Runtime)
         self.assertIs(api.PreparedModel, _ndnsf.PreparedModel)
         self.assertIs(api.ProviderConfig, _ndnsf.NativeProviderConfig)
+        self.assertIs(provider_api.ProviderConfig, api.ProviderConfig)
+        self.assertFalse(hasattr(api, "NativeProviderConfig"))
+        self.assertFalse(hasattr(provider_api, "NativeProviderConfig"))
+        self.assertFalse(hasattr(app_sdk.APPProvider, "serve"))
+        self.assertFalse({"Enum", "dataclass", "hashlib"} & set(app_sdk.__all__))
         self.assertNotIn("__getattr__", api.__dict__)
 
     def test_application_and_client_expose_model_first_and_explicit_preplanned(self):
@@ -41,6 +46,7 @@ class PublicApiContractTest(unittest.TestCase):
         self.assertIn("legacy_deployment", app.parameters)
         self.assertTrue(hasattr(InferenceApplication, "request_preplanned"))
         self.assertTrue(hasattr(InferenceClient, "request_preplanned"))
+        self.assertFalse(hasattr(InferenceClient, "request"))
 
     def test_preferred_request_has_no_numeric_or_empty_sentinel_mode(self):
         from ndnsf_distributed_inference.api import InferenceApplication

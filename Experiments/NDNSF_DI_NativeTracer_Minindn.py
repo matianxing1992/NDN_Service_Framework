@@ -70,7 +70,6 @@ PLAN_MANIFEST_EXE = REPO / "build/examples/di-native-plan-manifest-smoke"
 PROVIDER_SESSION_EXE = REPO / "build/examples/di-native-provider-session-smoke"
 DEFAULT_OUT = REPO / "results/native_di_real_minindn/latest"
 SERVICE = "/Inference/NativeTracer"
-EXECUTION_LEASE_SERVICE = "/Inference/Control/Lease"
 GROUP = "/NDNSF-DI/Tracer/group"
 CONTROLLER = "/NDNSF-DI/Tracer/controller"
 USER = "/NDNSF-DI/Tracer/user"
@@ -947,43 +946,6 @@ def wait_for_log_patterns(paths: list[Path],
     raise RuntimeError(f"timed out waiting for {label}: {observed}")
 
 
-def wait_for_any_log_pattern(paths: list[Path], pattern: str,
-                             timeout_s: float, label: str) -> Path:
-    """Return the first log that observes a fault boundary marker."""
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        for path in paths:
-            if pattern in read_log_text(path):
-                return path
-        time.sleep(0.05)
-    observed = {str(path): read_log_text(path)[-1200:] for path in paths}
-    raise RuntimeError(f"timed out waiting for {label}: {observed}")
-
-
-def wait_for_any_log_line(paths: list[Path], fields: tuple[str, ...],
-                          timeout_s: float, label: str) -> Path:
-    """Return when one complete log line contains every boundary field."""
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        for path in paths:
-            if any(all(field in line for field in fields)
-                   for line in read_log_text(path).splitlines()):
-                return path
-        time.sleep(0.05)
-    observed = {str(path): read_log_text(path)[-1200:] for path in paths}
-    raise RuntimeError(f"timed out waiting for {label}: {observed}")
-
-
-def native_service_execution_start_count(paths: list[Path]) -> int:
-    count = 0
-    for path in paths:
-        for line in read_log_text(path).splitlines():
-            if ("event=PROVIDER_EXECUTE_START" in line and
-                    "serviceName=/Inference/NativeTracer" in line):
-                count += 1
-    return count
-
-
 def validate_local_timing_csv(path: Path,
                               assignment_rows: list[dict[str, str]]) -> dict[str, object]:
     expected = {row["role"]: row["provider"] for row in assignment_rows}
@@ -1096,8 +1058,7 @@ def provider_check_command(row: dict[str, str],
 def provider_serve_command(row: dict[str, str],
                            policy_dir: Path,
                            deterministic_runner: bool = False,
-                           enable_admission_lease: bool = False,
-                           require_execution_lease: bool = False) -> str:
+                           enable_admission_lease: bool = False) -> str:
     policy_dir = policy_dir.resolve()
     args = [
         str(PROVIDER_EXE),
@@ -1118,8 +1079,6 @@ def provider_serve_command(row: dict[str, str],
         args.append("--tracer-deterministic-runner")
     if enable_admission_lease:
         args.extend(["--enable-admission-lease", "--admission-lease-ttl-ms", "60000"])
-    if require_execution_lease:
-        args.append("--require-execution-lease")
     return f"cd {perf.shell_quote(str(policy_dir))} && exec {shell_join(args)}"
 
 
@@ -1146,8 +1105,6 @@ def user_driver_command(policy_dir: Path,
                         assignment_csv: Optional[Path] = None,
                         ack_timeout_ms: int = 8000,
                         timeout_ms: int = 60000,
-                        lease_timeout_ms: int = 5000,
-                        cancellation_delay_ms: int = 0,
                         data_v1_no_progress_ms: int = 2000,
                         overload_fast_fail_timeout_ms: int = 0,
                         target_rps: float = 0.0,
@@ -1155,9 +1112,7 @@ def user_driver_command(policy_dir: Path,
                         open_loop_driver_mode: str = "threaded",
                         burst_admission_providers: Optional[list[str]] = None,
                         runtime_aware_max_replans: int = 0,
-                        runtime_aware_replan_reasons: str = "",
-                        execution_leases: bool = False,
-                        execution_cancellation_gate: bool = False) -> str:
+                        runtime_aware_replan_reasons: str = "") -> str:
     policy_dir = policy_dir.resolve()
     if assignment_csv is not None:
         assignment_csv = assignment_csv.resolve()
@@ -1170,7 +1125,6 @@ def user_driver_command(policy_dir: Path,
         "--user", USER,
         "--trust-schema", str(policy_dir / "trust-schema.conf"),
         "--ack-timeout-ms", str(ack_timeout_ms),
-        "--lease-timeout-ms", str(lease_timeout_ms),
         "--timeout-ms", str(timeout_ms),
         "--data-v1-no-progress-ms", str(data_v1_no_progress_ms),
         "--permission-wait-ms", "8000",
@@ -1200,12 +1154,6 @@ def user_driver_command(policy_dir: Path,
         args.extend(["--runtime-aware-max-replans", str(runtime_aware_max_replans)])
     if runtime_aware_replan_reasons:
         args.extend(["--runtime-aware-replan-reasons", runtime_aware_replan_reasons])
-    if execution_leases:
-        args.append("--execution-leases")
-    if execution_cancellation_gate:
-        args.append("--execution-cancellation-gate")
-        if cancellation_delay_ms > 0:
-            args.extend(["--cancellation-delay-ms", str(cancellation_delay_ms)])
     return f"cd {perf.shell_quote(str(REPO))} && exec {shell_join(args)}"
 
 
@@ -1244,17 +1192,6 @@ def add_worker_user_policies(policy_path: Path, requests: int) -> None:
         raise RuntimeError(f"could not locate user-policies closing brace in {policy_path}")
     policy_path.write_text(text[:insert_at] + "\n" + "\n".join(blocks) + text[insert_at:],
                            encoding="utf-8")
-
-
-def add_execution_lease_policies(policy_path: Path) -> None:
-    """Allow every NativeTracer user/provider to use the DI lease service."""
-
-    text = policy_path.read_text(encoding="utf-8")
-    marker = f"            {SERVICE}\n"
-    addition = marker + f"            {EXECUTION_LEASE_SERVICE}\n"
-    if EXECUTION_LEASE_SERVICE not in text:
-        text = text.replace(marker, addition)
-    policy_path.write_text(text, encoding="utf-8")
 
 
 def parse_user_execution(log_path: Path) -> dict[str, object]:
@@ -2866,10 +2803,6 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
         "requestCount": args.requests,
         "concurrency": args.concurrency,
         "failureReason": "",
-        "spec111Fault": {
-            "cell": args.spec111_fault,
-            "status": "disabled" if not args.spec111_fault else "not-started",
-        },
         "dependencyObjectCounters": {
             "eventCount": 0,
             "directionCounters": {},
@@ -3029,28 +2962,12 @@ def main() -> int:
     parser.add_argument("--enable-native-admission-lease", action="store_true",
                         default=bool(default_value(profile_defaults, "enable_native_admission_lease", False)),
                         help="Require NativeTracer generic admission leases before selected role execution")
-    parser.add_argument("--enable-execution-leases", action="store_true",
-                        help="Acquire fail-closed provider execution leases before collaboration")
     parser.add_argument("--ack-timeout-ms", type=int, default=8000,
                         help="ACK collection window passed to the user driver")
     parser.add_argument(
         "--data-v1-no-progress-ms", type=int, default=2000,
         help=("NDNSF_DATA_V1 group no-progress watchdog passed to the user "
               "driver; increase explicitly for injected stage delays"),
-    )
-    parser.add_argument("--lease-timeout-ms", type=int, default=5000,
-                        help="Timeout for each authenticated execution-lease request")
-    parser.add_argument("--cancellation-delay-ms", type=int, default=0,
-                        help="Delay before post-certificate CANCEL; 0 uses user-driver default")
-    parser.add_argument(
-        "--spec111-fault",
-        choices=("", "requester-loss-after-prepare",
-                 "provider-restart-after-commit",
-                 "network-cut-after-certificate",
-                 "post-certificate-cancellation"),
-        default="",
-        help=("Inject one bounded Spec 111 MiniNDN consistency fault. "
-              "Requires --full-network and --enable-execution-leases."),
     )
     parser.add_argument("--overload-fast-fail-timeout-ms", type=int,
                         default=default_value(profile_defaults, "overload_fast_fail_timeout_ms", 0),
@@ -3067,14 +2984,10 @@ def main() -> int:
         raise SystemExit("--requests must be positive")
     if args.concurrency <= 0:
         raise SystemExit("--concurrency must be positive")
-    if args.lease_timeout_ms <= 0:
-        raise SystemExit("--lease-timeout-ms must be positive")
     if args.ack_timeout_ms <= 0:
         raise SystemExit("--ack-timeout-ms must be positive")
     if args.data_v1_no_progress_ms <= 0:
         raise SystemExit("--data-v1-no-progress-ms must be positive")
-    if args.cancellation_delay_ms < 0:
-        raise SystemExit("--cancellation-delay-ms must be non-negative")
     if args.concurrency > args.requests:
         args.concurrency = args.requests
     if args.target_rps < 0.0:
@@ -3099,10 +3012,6 @@ def main() -> int:
         raise SystemExit("--provider-admission-min-free-memory-mb must be non-negative")
     if args.overload_fast_fail_timeout_ms < 0:
         raise SystemExit("--overload-fast-fail-timeout-ms must be non-negative")
-    if args.spec111_fault and (
-            not args.full_network or not args.enable_execution_leases):
-        raise SystemExit(
-            "--spec111-fault requires --full-network --enable-execution-leases")
     topology_file = Path(args.topology_file).resolve()
     args.topology_file = str(topology_file)
     controlled_host_telemetry = (
@@ -3154,18 +3063,13 @@ def main() -> int:
                 args.submission_spacing_ms if args.concurrency > 1 else 0,
                 assignment_csv=Path(args.out) / "assignment.csv",
                 ack_timeout_ms=args.ack_timeout_ms,
-                lease_timeout_ms=args.lease_timeout_ms,
                 data_v1_no_progress_ms=args.data_v1_no_progress_ms,
                 overload_fast_fail_timeout_ms=args.overload_fast_fail_timeout_ms,
                 target_rps=args.target_rps,
                 open_loop_duration_s=args.open_loop_duration_s,
                 open_loop_driver_mode=args.open_loop_driver_mode,
                 runtime_aware_max_replans=args.runtime_aware_max_replans,
-                runtime_aware_replan_reasons=args.runtime_aware_replan_reasons,
-                execution_leases=args.enable_execution_leases,
-                execution_cancellation_gate=(
-                    args.spec111_fault == "post-certificate-cancellation"),
-                cancellation_delay_ms=args.cancellation_delay_ms),
+                runtime_aware_replan_reasons=args.runtime_aware_replan_reasons),
         }, indent=2, sort_keys=True))
         return 0
 
@@ -3294,7 +3198,6 @@ def main() -> int:
                 args.provider_network_matrix_json,
                 "plan-tracer")
         add_worker_user_policies(policy_dir / "controller.policies", args.requests)
-        add_execution_lease_policies(policy_dir / "controller.policies")
         summary["assignmentRequested"] = requested_assignment
         summary["assignmentResolved"] = resolved_assignment
         summary["assignment"] = resolved_assignment
@@ -3538,7 +3441,6 @@ def main() -> int:
 
             provider_logs = []
             provider_log_rows = []
-            provider_processes: dict[str, dict[str, object]] = {}
             for row in provider_rows:
                 node = ndn.net[row["node"]]
                 command = provider_serve_command(
@@ -3546,11 +3448,10 @@ def main() -> int:
                     policy_dir,
                     args.tracer_deterministic_runner or
                     args.policy_bundle == "llm-proportional",
-                    args.enable_native_admission_lease,
-                    args.enable_execution_leases)
+                    args.enable_native_admission_lease)
                 provider_env = llm_provider_resource_env(row["provider"])
                 provider_env.update(provider_admission_env(args))
-                proc, path = start_node_command(
+                _, path = start_node_command(
                     node,
                     "provider-serve-" + safe_log_component(row["role"]) +
                     "--" + safe_log_component(row["provider"]),
@@ -3567,13 +3468,6 @@ def main() -> int:
                     "node": row["node"],
                     "role": row["role"],
                 })
-                provider_processes[row["provider"]] = {
-                    "proc": proc,
-                    "log": path,
-                    "row": row,
-                    "command": command,
-                    "env": provider_env,
-                }
             wait_for_log_patterns(provider_logs,
                                   ["NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"],
                                   args.provider_check_timeout,
@@ -3611,7 +3505,6 @@ def main() -> int:
                                     args.submission_spacing_ms if args.concurrency > 1 else 0,
                                     assignment_csv=assignment_csv,
                                     ack_timeout_ms=args.ack_timeout_ms,
-                                    lease_timeout_ms=args.lease_timeout_ms,
                                     data_v1_no_progress_ms=args.data_v1_no_progress_ms,
                                     overload_fast_fail_timeout_ms=args.overload_fast_fail_timeout_ms,
                                     target_rps=args.target_rps,
@@ -3622,100 +3515,10 @@ def main() -> int:
                                         "/NDNSF-DI/Tracer/provider/single",
                                     ] if resolved_assignment == "capacity-pool" else None,
                                     runtime_aware_max_replans=args.runtime_aware_max_replans,
-                                    runtime_aware_replan_reasons=args.runtime_aware_replan_reasons,
-                                    execution_leases=args.enable_execution_leases,
-                                    execution_cancellation_gate=(
-                                        args.spec111_fault ==
-                                        "post-certificate-cancellation"),
-                                    cancellation_delay_ms=args.cancellation_delay_ms)
+                                    runtime_aware_replan_reasons=args.runtime_aware_replan_reasons)
             user_proc, user_log = start_node_command(
                 ndn.net["memphis"], "user-driver", user_command,
                 logs_dir, env, procs)
-            if args.spec111_fault == "requester-loss-after-prepare":
-                trigger_log = wait_for_any_log_pattern(
-                    provider_logs,
-                    "operation=PREPARE status=accepted",
-                    20.0,
-                    "Spec 111 requester-loss PREPARE boundary",
-                )
-                user_proc.terminate()
-                user_proc.wait(timeout=5)
-                # Reservation window is max(ack, lease timeout)+2s (7s by
-                # default); wait beyond it so the provider-owned periodic
-                # sweeper runs without another operation entering the table.
-                time.sleep(8.0)
-                summary["spec111Fault"] = {
-                    "cell": args.spec111_fault,
-                    "status": "injected",
-                    "trigger": "first authenticated PREPARE accepted",
-                    "triggerLog": str(trigger_log),
-                    "requesterExitCode": user_proc.returncode,
-                    "cleanupWaitSeconds": 8.0,
-                    "networkInjection": True,
-                }
-            elif args.spec111_fault == "provider-restart-after-commit":
-                target = provider_processes[
-                    "/NDNSF-DI/Tracer/provider/backbone"]
-                trigger_log = wait_for_any_log_pattern(
-                    [target["log"]],
-                    "operation=COMMIT status=accepted",
-                    20.0,
-                    "Spec 111 Provider restart COMMIT boundary",
-                )
-                old_proc = target["proc"]
-                old_proc.terminate()
-                old_proc.wait(timeout=5)
-                row = target["row"]
-                replacement_proc, replacement_log = start_node_command(
-                    ndn.net[row["node"]],
-                    "provider-restart-" + safe_log_component(row["provider"]),
-                    target["command"], logs_dir, env, procs,
-                    Path(row["homeDir"]), target["env"])
-                provider_logs.append(replacement_log)
-                wait_for_log_patterns(
-                    [replacement_log],
-                    ["NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"],
-                    args.provider_check_timeout,
-                    "Spec 111 replacement Provider readiness",
-                )
-                summary["spec111Fault"] = {
-                    "cell": args.spec111_fault,
-                    "status": "injected",
-                    "trigger": "first authenticated COMMIT accepted",
-                    "triggerLog": str(trigger_log),
-                    "oldProviderExitCode": old_proc.returncode,
-                    "replacementLog": str(replacement_log),
-                    "replacementRunning": replacement_proc.poll() is None,
-                    "networkInjection": True,
-                }
-            elif args.spec111_fault == "network-cut-after-certificate":
-                trigger_log = wait_for_any_log_line(
-                    provider_logs,
-                    ("event=PROVIDER_EXECUTE_START",
-                     "serviceName=/Inference/NativeTracer"),
-                    20.0,
-                    "Spec 111 post-certificate activation boundary",
-                )
-                ndn.net.configLinkStatus("memphis", "ucla", "down")
-                time.sleep(2.0)
-                ndn.net.configLinkStatus("memphis", "ucla", "up")
-                summary["spec111Fault"] = {
-                    "cell": args.spec111_fault,
-                    "status": "injected",
-                    "trigger": "certificate-gated NativeTracer activation",
-                    "triggerLog": str(trigger_log),
-                    "link": "memphis-ucla",
-                    "cutSeconds": 2.0,
-                    "restored": True,
-                    "networkInjection": True,
-                }
-            elif args.spec111_fault == "post-certificate-cancellation":
-                summary["spec111Fault"] = {
-                    "cell": args.spec111_fault,
-                    "status": "injected",
-                    "trigger": "certified NativeTracer user execution-control gate",
-                    "networkInjection": True,
-                }
             try:
                 user_proc.wait(timeout=user_driver_wait_timeout_s(
                     args.requests,
@@ -3729,18 +3532,7 @@ def main() -> int:
             except Exception:
                 user_proc.kill()
                 user_proc.wait(timeout=3)
-            try:
-                user_result = parse_user_execution(user_log)
-            except RuntimeError:
-                if not args.spec111_fault:
-                    raise
-                user_result = {
-                    "status": "interrupted-by-fault",
-                    "requestCount": args.requests,
-                    "successCount": 0,
-                    "failureCount": args.requests,
-                    "requests": [],
-                }
+            user_result = parse_user_execution(user_log)
             summary["userExecution"] = {
                 "status": "executed" if user_result.get("status") == "executed" else "failed",
                 "reason": (
@@ -3779,50 +3571,6 @@ def main() -> int:
                 user_result,
                 negative_ack_counters,
             )
-            if args.spec111_fault:
-                starts = native_service_execution_start_count(provider_logs)
-                expected_no_activation = args.spec111_fault in {
-                    "requester-loss-after-prepare",
-                    "provider-restart-after-commit",
-                }
-                cancellation_gate = user_result.get("cancellationGate", {})
-                if args.spec111_fault == "post-certificate-cancellation":
-                    expected_providers = {
-                        row["provider"] for row in provider_rows
-                    }
-                    safe = (
-                        isinstance(cancellation_gate, dict)
-                        and cancellation_gate.get("status") == "PASS"
-                        and set(cancellation_gate.get("activatedProviders", ())) ==
-                        expected_providers
-                        and cancellation_gate.get("acceptedTerminalPreserved") is True
-                        and cancellation_gate.get("survivors") == []
-                    )
-                else:
-                    safe = (
-                        starts == 0 if expected_no_activation
-                        else starts <= len(provider_rows)
-                    )
-                summary["spec111Fault"].update({
-                    "status": "passed" if safe else "failed",
-                    "nativeExecutionStarts": starts,
-                    "expectedNoActivation": expected_no_activation,
-                    "userStatus": user_result.get("status", "not-completed"),
-                    "processCleanup": "harness-finally-owned-process-stop",
-                    "cancellationGate": cancellation_gate,
-                    "safetyInvariant": (
-                        "exact-member cancellation, stale fencing and terminal preservation"
-                        if args.spec111_fault == "post-certificate-cancellation" else
-                        "zero uncertified execution" if expected_no_activation else
-                        "no duplicate execution authority after certified activation"
-                    ),
-                })
-                if not safe:
-                    raise RuntimeError(
-                        "Spec 111 fault safety invariant failed: "
-                        f"{summary['spec111Fault']}")
-                summary["status"] = "SUCCESS"
-                return 0
             if user_proc.returncode != 0 or user_result.get("status") != "executed":
                 raise RuntimeError(
                     f"NativeTracer user execution failed rc={user_proc.returncode} "

@@ -74,15 +74,19 @@ for source in recipe["sources"]:
 print("verified", len(recipe["sources"]), "files in", root)
 PY
 
+python3 Experiments/UAV/prepare_vehicle_detector.py \
+  --checkpoint /persistent/models/uav-multicam-tracking-v1/3UAVs_YOLOv8n.pt \
+  --checkpoint-sha256 c51091c489af103ab641c3db0580231b1ed622bfa1f95694ef0fa59607ff1117 \
+  --output /persistent/models/uav-multicam-tracking-v1/3UAVs_YOLOv8n.onnx
+
 python3 Experiments/UAV/run_multicamera_tracking_demo.py \
   --source /persistent/models/uav-multicam-tracking-v1 \
-  --model /persistent/models/uav-multicam-tracking-v1/3UAVs_YOLOv8n.pt \
+  --model /persistent/models/uav-multicam-tracking-v1/3UAVs_YOLOv8n.onnx \
   --license Apache-2.0 --output-dir "$RUN_DIR" --prepare --preflight --headless
 ```
 
-`--model` must be passed: the demo's `DEFAULT_MODEL` constant names `3UAVs.pt`, while the
-upstream artifact is `3UAVs_YOLOv8n.pt`, so a default run reports a missing checkpoint even
-with the assets present. The recipe records this as `knownGap`.
+The default model path is `3UAVs_YOLOv8n.onnx` under `NDNSF_SPEC191_ASSET_ROOT`.
+Keep the checkpoint for reproducible preparation and the ONNX digest for deployment evidence.
 
 These clips carry no synchronized GPS/IMU or camera calibration truth. A run over them keeps
 `acquisitionKind=simulated` and `accuracyQualification=unvalidated`; it exercises the tracking

@@ -10,11 +10,10 @@ import time
 import uuid
 import asyncio
 import threading
-import warnings
 import re
-from concurrent.futures import Future
+from concurrent.futures import Future, InvalidStateError
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Mapping
 
@@ -22,6 +21,7 @@ from ..client import (
     InferenceResult, SelectionAcceptanceTracker,
 )
 from .contracts import (
+    DeploymentConstraints,
     DeploymentProgress,
     DeploymentStatus,
     ApplicationRuntimeConfig,
@@ -37,7 +37,7 @@ from .contracts import (
 )
 from ..core.execution_intent import ExecutionIntentCoordinator
 from ..core.contracts import ExecutionActivateMessage
-from .execution_control import ExistingServiceExecutionControlTransport
+from .execution_control import ExecutionControlEvidence, ExistingServiceExecutionControlTransport
 from .runtime_journal import (
     FileRequestEnvelopeKeyProvider,
     RequestEnvelopeKeyProvider,
@@ -329,7 +329,9 @@ class APPClient:
         self.requester_identity = requester_identity or journal.root.name
         self.intent_coordinator = intent_coordinator or ExecutionIntentCoordinator()
         self._request_handles: dict[str, RequestHandle] = {}
-        self._request_events_by_id: dict[str, list[dict]] = {}
+        from ndnsf import _ndnsf
+
+        self._request_events = _ndnsf._AppRequestEvents()
         self._result_rendezvous_by_id: dict[str, dict] = {}
         # Conversation state is deliberately a separate owner from the
         # request-handle table.  A later request can use only an authenticated
@@ -342,8 +344,10 @@ class APPClient:
                 handle = RequestRecord.from_record(payload)
                 self._request_handles[handle.request_id] = handle
             elif record["kind"] == "request-event":
-                self._request_events_by_id.setdefault(
-                    str(payload["requestId"]), []).append(payload)
+                self._request_events.restore(
+                    str(payload["requestId"]), RequestState(payload["state"]).value,
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                )
             elif record["kind"] == "result-rendezvous":
                 self._result_rendezvous_by_id[str(payload["request_id"])] = payload
 
@@ -1803,7 +1807,7 @@ class APPClient:
                 "request_id must be 1-256 characters using letters, digits, "
                 "dot, underscore, colon, or hyphen"
             )
-        if request_id in self._request_handles or self._events(request_id):
+        if request_id in self._request_handles or self._request_events.count(request_id):
             raise ValueError(f"request_id already exists: {request_id}")
         if deadline is None:
             expires_at_ms = now + int(ttl_ms)
@@ -1870,10 +1874,9 @@ class APPClient:
             requester_identity=self.requester_identity,
             attempt_epoch=1,
             envelope_reference=reference,
-            event_cursor=len(initial_states),
             service_name=service,
         )
-        self._append_events(
+        handle = self._append_events(
             handle, [(state, "", "") for state in initial_states],
             extra_entries=(
                 ("request-handle", handle.to_record()),
@@ -1881,13 +1884,13 @@ class APPClient:
             ),
             prepared_envelope=prepared_envelope,
         )
-        self._request_handles[request_id] = handle
         if network_submission:
             options = dict(inference_options or {})
             options.setdefault("timeout_ms", max(1, expires_at_ms - now))
             options.update({
                 "request_id": request_id,
-                "on_result": lambda result: self._network_result(handle, result),
+                "on_result": lambda result, **binding: self._network_result(
+                    handle, result, **binding),
                 "on_error": lambda error: self._event(
                     handle, RequestState.FAILED, reason=type(error).__name__),
             })
@@ -1938,13 +1941,10 @@ class APPClient:
             current,
             activation_digest=digest,
             execution_activation_wire=base64.b64encode(wire).decode("ascii"),
-            event_cursor=len(self._events(current.request_id)) + 1,
         )
-        self._append_events(
+        return self._append_events(
             updated, [(RequestState.CERTIFIED, "", "")],
             extra_entries=(("request-handle-update", updated.to_record()),))
-        self._request_handles[current.request_id] = updated
-        return updated
 
     def _execution_activation(
         self, handle: RequestHandle,
@@ -1964,11 +1964,15 @@ class APPClient:
             raise RequestRecoveryError("EXECUTION_ACTIVATION_BINDING_MISMATCH")
         return activation
 
-    def _network_result(self, handle: RequestHandle, result) -> None:
+    def _network_result(self, handle: RequestHandle, result, *, native_request_id="") -> None:
         # The callback closes over the initially submitted handle.  Certificate
         # binding may advance the durable handle while the request is in flight,
         # so terminal processing must use the latest journal-backed identity.
         handle = self._request_handles.get(handle.request_id, handle)
+        if self.status(handle) in (
+                RequestState.COMPLETED, RequestState.FAILED,
+                RequestState.CANCELLED, RequestState.EXPIRED):
+            return
         wire_request_id = str(getattr(result, "request_id", "")).lstrip("/")
         if wire_request_id != handle.request_id:
             self._event(
@@ -1979,12 +1983,15 @@ class APPClient:
             "requestId": handle.request_id,
             "wireRequestId": wire_request_id,
         }
+        if native_request_id:
+            binding["nativeRequestId"] = native_request_id
         if not bool(getattr(result, "status", False)):
             self._append_events(
                 handle,
                 [(RequestState.FAILED, "", str(getattr(
                     result, "error", "NETWORK_FAILURE"))[:160])],
                 extra_entries=(("request-wire-binding", binding),),
+                allow_terminal_winner=True,
             )
             return
         payload = bytes(getattr(result, "payload", b""))
@@ -2016,25 +2023,27 @@ class APPClient:
                 RequestState.COMPLETED,
             )
         try:
-            self._complete_request(
+            committed = self._complete_request(
                 handle, payload, prepared_result.wire_digest,
                 wire_request_id=wire_request_id,
                 transitions=transitions,
                 extra_entries=(("request-wire-binding", binding),),
                 network_result=result,
                 prepared_envelope=prepared_result,
+                allow_terminal_winner=True,
             )
         except (RuntimeJournalError, OSError):
             self._event(
                 handle, RequestState.FAILED,
                 reason="RESULT_PERSISTENCE_FAILED")
             return
-        self._result_cache[handle.request_id] = payload
+        if committed:
+            self._result_cache[handle.request_id] = payload
 
     def _complete_request(
         self, handle, payload, protected_digest, *, wire_request_id,
         transitions, extra_entries=(), network_result=None,
-        prepared_envelope=None,
+        prepared_envelope=None, allow_terminal_winner=False,
     ):
         terminal_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
         rendezvous = ResultRendezvousRecord(
@@ -2066,14 +2075,13 @@ class APPClient:
         updated = replace(
             handle,
             result_rendezvous_digest=rendezvous_digest,
-            event_cursor=len(self._events(handle.request_id)) + len(transitions),
             terminal_evidence_digest=terminal_digest,
         )
         transition_rows = [
             (state, terminal_digest if state == RequestState.COMPLETED else "", "")
             for state in transitions
         ]
-        self._append_events(
+        return self._append_events(
             updated,
             transition_rows,
             extra_entries=(
@@ -2082,9 +2090,8 @@ class APPClient:
                 ("request-handle-update", updated.to_record()),
             ),
             prepared_envelope=prepared_envelope,
-        )
-        self._request_handles[handle.request_id] = updated
-        self._result_rendezvous_by_id[handle.request_id] = rendezvous_payload
+            allow_terminal_winner=allow_terminal_winner,
+        ) is not None
 
     def open_request(
         self, request_id: str, attempt_epoch: int = None,
@@ -2118,8 +2125,7 @@ class APPClient:
         return self._request_handles[request_id]
 
     def status(self, handle: RequestHandle) -> RequestState:
-        events = self._events(handle.request_id)
-        return RequestState(events[-1]["state"]) if events else RequestState.CREATED
+        return RequestState(self._request_events.status(handle.request_id))
 
     def wait(self, handle: RequestHandle, timeout_ms: int = 1000) -> RequestState:
         deadline = time.monotonic()+timeout_ms/1000
@@ -2152,10 +2158,11 @@ class APPClient:
         return payload
 
     def _completed_inference_result(self, handle: RequestHandle) -> InferenceResult:
+        payload = self.result(handle)
         rendezvous = self._result_rendezvous_by_id.get(handle.request_id, {})
         return InferenceResult(
             True,
-            self.result(handle),
+            payload,
             "",
             handle.request_id,
             str(rendezvous.get("provider_result_data_name", "")),
@@ -2186,90 +2193,161 @@ class APPClient:
             current,
             cancellation_id=cancellation_id,
             cancellation_reason=str(reason)[:160],
-            event_cursor=len(self._events(handle.request_id)) + 1,
         )
         if current.activation_digest:
-            activation = self._execution_activation(current)
-            if not current.service_name:
-                raise RequestRecoveryError("EXECUTION_CONTROL_SERVICE_MISSING")
-            transport = self._execution_control_transport
-            if transport is None and self._network_client is not None:
-                transport = ExistingServiceExecutionControlTransport(
-                    self._network_client)
+            if not self._request_events.with_cancellation_lease(
+                    str(self.journal.lock_path), current.request_id,
+                    lambda: self._cancel_with_peers(current, updated)):
+                raise RequestRecoveryError("CANCELLATION_IN_PROGRESS")
+            return
+        committed = self._append_events(
+            updated,
+            [(RequestState.CANCELLED, "", updated.cancellation_reason)],
+            extra_entries=((
+                "request-handle-update", updated.to_record()),),
+            allow_terminal_winner=True,
+        )
+        if committed is not None:
+            self._cancel_network_future(handle.request_id)
+
+    def _cancel_with_peers(self, current: RequestHandle, updated: RequestHandle) -> None:
+        activation = self._execution_activation(current)
+        if not current.service_name:
+            raise RequestRecoveryError("EXECUTION_CONTROL_SERVICE_MISSING")
+        transport = self._execution_control_transport
+        if transport is None and self._network_client is not None:
+            transport = ExistingServiceExecutionControlTransport(
+                self._network_client)
+        request_record = {
+            "schema": "ndnsf-di-execution-control-v2",
+            "operation": "CANCEL",
+            "requestId": current.request_id,
+            "attemptEpoch": current.attempt_epoch,
+            "requesterIdentity": current.requester_identity,
+            "activationDigest": current.activation_digest,
+            "cancellationId": updated.cancellation_id,
+            "reason": updated.cancellation_reason,
+        }
+        def persist_cancellation(entries=()):
+            def check_cancellation(sequence):
+                fence = (
+                    current.request_id, sequence,
+                    (current.attempt_epoch, current.envelope_digest),
+                )
+                self.journal.append_many(entries, _request_fence=fence)
+
+            return self._request_events.admit_cancellation(
+                current.request_id, check_cancellation)
+
+        if not persist_cancellation():
+            return
+        records = self.journal.records()
+        for record in reversed(records):
+            if record["kind"] != "request-cancellation-request":
+                continue
+            saved = record["payload"]
+            if all(saved.get(key) == request_record[key] for key in (
+                    "schema", "operation", "requestId", "attemptEpoch",
+                    "requesterIdentity", "activationDigest")):
+                cancellation_id, reason = saved.get("cancellationId"), saved.get("reason")
+                if (not isinstance(cancellation_id, str)
+                        or not re.fullmatch(r"sha256:[0-9a-f]{64}", cancellation_id)
+                        or not isinstance(reason, str) or len(reason) > 160):
+                    raise RequestRecoveryError("CANCELLATION_INTENT_INVALID")
+                request_record = saved
+                updated = replace(
+                    updated, cancellation_id=cancellation_id, cancellation_reason=reason,
+                )
+                break
+        else:
             if transport is None:
                 raise RequestRecoveryError("EXECUTION_CONTROL_TRANSPORT_MISSING")
-            request_record = {
-                "schema": "ndnsf-di-execution-control-v2",
-                "operation": "CANCEL",
-                "requestId": current.request_id,
-                "attemptEpoch": current.attempt_epoch,
-                "requesterIdentity": current.requester_identity,
-                "activationDigest": current.activation_digest,
-                "cancellationId": cancellation_id,
-                "reason": str(reason)[:160],
-            }
-            self.journal.append("request-cancellation-request", request_record)
-            evidence_records = []
-            seen_providers = set()
-            for member in activation.members:
-                if member.provider in seen_providers:
-                    continue
-                seen_providers.add(member.provider)
-                payload = {
-                    **request_record,
-                    "providerName": member.provider,
-                    "providerRole": member.role,
-                }
+            if not persist_cancellation((("request-cancellation-request", request_record),)):
+                return
+
+        recovered = {
+            record["payload"].get("provider"): record["payload"]
+            for record in records if record["kind"] == "request-cancellation-progress"
+            and record["payload"].get("request_id") == current.request_id
+            and record["payload"].get("cancellation_id") == updated.cancellation_id
+        }
+
+        def matches(evidence, provider):
+            return (
+                evidence.accepted is True
+                and evidence.operation == "CANCEL"
+                and evidence.provider == provider
+                and evidence.service_name == current.service_name
+                and evidence.requester_identity == current.requester_identity
+                and evidence.request_id == current.request_id
+                and evidence.attempt_epoch == current.attempt_epoch
+                and evidence.activation_digest == current.activation_digest
+                and evidence.cancellation_id == updated.cancellation_id
+            )
+
+        evidence_records = []
+        seen_providers = set()
+        for member in activation.members:
+            if member.provider in seen_providers:
+                continue
+            seen_providers.add(member.provider)
+            if member.provider in recovered:
                 try:
-                    evidence = transport.cancel(
-                        member.provider,
-                        current.service_name,
-                        payload,
-                        timeout_ms=max(1, min(5000, current.expires_at_ms - int(time.time() * 1000))),
-                    )
-                except Exception as exc:
-                    self.journal.append("request-cancellation-failure", {
-                        **request_record,
-                        "provider": member.provider,
-                        "reason": type(exc).__name__,
-                    })
-                    raise RequestRecoveryError("CANCELLATION_INCOMPLETE") from exc
-                if (
-                    not evidence.accepted
-                    or evidence.operation != "CANCEL"
-                    or evidence.provider != member.provider
-                    or evidence.service_name != current.service_name
-                    or evidence.requester_identity != current.requester_identity
-                    or evidence.request_id != current.request_id
-                    or evidence.attempt_epoch != current.attempt_epoch
-                    or evidence.activation_digest != current.activation_digest
-                    or evidence.cancellation_id != cancellation_id
-                ):
-                    self.journal.append("request-cancellation-failure", {
-                        **request_record,
-                        "provider": member.provider,
-                        "reason": "EVIDENCE_BINDING_MISMATCH",
-                    })
-                    raise RequestRecoveryError("CANCELLATION_INCOMPLETE")
-                evidence_records.append((
-                    "execution-control-evidence", evidence.to_record()))
-            self._append_events(
-                updated,
-                [(RequestState.CANCELLED, "", str(reason)[:160])],
-                extra_entries=(
-                    *evidence_records,
-                    ("request-handle-update", updated.to_record()),
-                ),
-            )
-        else:
-            self._append_events(
-                updated,
-                [(RequestState.CANCELLED, "", str(reason)[:160])],
-                extra_entries=((
-                    "request-handle-update", updated.to_record()),),
-            )
-        self._request_handles[handle.request_id] = updated
-        future = self._network_futures.get(handle.request_id)
+                    evidence = ExecutionControlEvidence.from_record(recovered[member.provider])
+                except (TypeError, ValueError) as exc:
+                    raise RequestRecoveryError("CANCELLATION_EVIDENCE_INVALID") from exc
+                if not matches(evidence, member.provider):
+                    raise RequestRecoveryError("CANCELLATION_EVIDENCE_INVALID")
+                evidence_records.append(("execution-control-evidence", evidence.to_record()))
+                continue
+            if transport is None:
+                raise RequestRecoveryError("EXECUTION_CONTROL_TRANSPORT_MISSING")
+            if not persist_cancellation():
+                return
+            payload = {
+                **request_record,
+                "providerName": member.provider,
+                "providerRole": member.role,
+            }
+            try:
+                evidence = transport.cancel(
+                    member.provider,
+                    current.service_name,
+                    payload,
+                    timeout_ms=max(1, min(5000, current.expires_at_ms - int(time.time() * 1000))),
+                )
+            except Exception as exc:
+                self.journal.append("request-cancellation-failure", {
+                    **request_record,
+                    "provider": member.provider,
+                    "reason": type(exc).__name__,
+                })
+                raise RequestRecoveryError("CANCELLATION_INCOMPLETE") from exc
+            if not matches(evidence, member.provider):
+                self.journal.append("request-cancellation-failure", {
+                    **request_record,
+                    "provider": member.provider,
+                    "reason": "EVIDENCE_BINDING_MISMATCH",
+                })
+                raise RequestRecoveryError("CANCELLATION_INCOMPLETE")
+            committed_evidence = evidence.to_record()
+            if not persist_cancellation((("request-cancellation-progress", committed_evidence),)):
+                return
+            evidence_records.append(("execution-control-evidence", committed_evidence))
+        committed = self._append_events(
+            updated,
+            [(RequestState.CANCELLED, "", updated.cancellation_reason)],
+            extra_entries=(
+                *evidence_records,
+                ("request-handle-update", updated.to_record()),
+            ),
+            allow_terminal_winner=True,
+        )
+        if committed is not None:
+            self._cancel_network_future(current.request_id)
+
+    def _cancel_network_future(self, request_id: str) -> None:
+        future = self._network_futures.get(request_id)
         if future is not None:
             future.cancel()
 
@@ -2292,7 +2370,7 @@ class APPClient:
             request_id, timeout_ms=timeout_ms)
 
     def _events(self, request_id):
-        return list(self._request_events_by_id.get(request_id, ()))
+        return [json.loads(wire) for wire in self._request_events.events(request_id)]
 
     def _event(self, handle, state, result_digest="", reason=""):
         self._append_events(
@@ -2300,53 +2378,45 @@ class APPClient:
 
     def _append_events(
         self, handle, transitions, *, extra_entries=(),
-        prepared_envelope=None,
+        prepared_envelope=None, allow_terminal_winner=False,
     ):
-        events = self._events(handle.request_id)
-        current = RequestState(events[-1]["state"]) if events else None
-        terminal = {
-            RequestState.COMPLETED, RequestState.FAILED,
-            RequestState.CANCELLED, RequestState.EXPIRED,
-        }
-        order = {
-            RequestState.CREATED: 0,
-            RequestState.PLANNING: 1,
-            RequestState.PREPARING: 2,
-            RequestState.CERTIFIED: 3,
-            RequestState.EXECUTING: 4,
-            RequestState.COMPLETED: 5,
-        }
-        payloads = []
-        for state, result_digest, reason in transitions:
-            state = RequestState(state)
-            if current in terminal:
-                if current == state and len(transitions) == 1:
-                    return ()
-                raise RuntimeError("durable request state is already terminal")
-            if (current is not None and state not in terminal and
-                    order.get(state, -1) <= order.get(current, -1)):
-                raise ValueError("durable request state must advance monotonically")
-            payloads.append({
-                "requestId": handle.request_id,
-                "sequence": len(events) + len(payloads) + 1,
-                "state": state.value,
-                "timestampMs": int(time.time() * 1000),
-                "resultDigest": result_digest,
-                "reasonCode": reason,
-            })
-            current = state
-        entries = (
-            *extra_entries,
-            *(("request-event", payload) for payload in payloads),
+        committed_handle = handle
+
+        def persist(rows):
+            nonlocal committed_handle
+            payloads = tuple(json.loads(row) for row in rows)
+            previous_sequence = payloads[0]["sequence"] - 1
+            identity = (handle.attempt_epoch, handle.envelope_digest)
+            committed_handle = replace(handle, event_cursor=payloads[-1]["sequence"])
+            entries = []
+            for kind, payload in extra_entries:
+                if kind == "request-handle":
+                    identity = None
+                if kind in ("request-handle", "request-handle-update"):
+                    payload = committed_handle.to_record()
+                entries.append((kind, payload))
+            entries.extend(("request-event", payload) for payload in payloads)
+            fence = (handle.request_id, previous_sequence, identity)
+            if prepared_envelope is None:
+                self.journal.append_many(entries, _request_fence=fence)
+            else:
+                self.journal.commit_prepared_envelope(
+                    prepared_envelope, entries, _request_fence=fence)
+
+            # Update the durable projections before the native owner exposes the new status.
+            for kind, payload in extra_entries:
+                if kind in ("request-handle", "request-handle-update"):
+                    self._request_handles[handle.request_id] = committed_handle
+                elif kind == "result-rendezvous":
+                    self._result_rendezvous_by_id[handle.request_id] = payload
+
+        persisted = self._request_events.append(
+            handle.request_id,
+            [(RequestState(state).value, digest, reason) for state, digest, reason in transitions],
+            persist,
+            allow_terminal_winner,
         )
-        if prepared_envelope is None:
-            self.journal.append_many(entries)
-        else:
-            self.journal.commit_prepared_envelope(
-                prepared_envelope, entries)
-        self._request_events_by_id.setdefault(
-            handle.request_id, []).extend(payloads)
-        return tuple(payloads)
+        return committed_handle if persisted else None
 
 
 class RequestCatalog:
@@ -2579,6 +2649,8 @@ class InferenceClient:
             )
 
             def finish(item):
+                if item.cancelled():
+                    return
                 try:
                     result = item.result()
                     if on_result is not None:
@@ -2588,6 +2660,89 @@ class InferenceClient:
                         on_error(exc)
 
             future.add_done_callback(finish)
+            return future
+
+        return submit
+
+    def _native_preplanned_submitter(self, definition, deadline_utc, options):
+        from ndnsf import _ndnsf
+
+        core = self._core
+        model = core._native_model
+        contract = getattr(core._native_runtime, "contract", None)
+        if model is None or contract is None or definition.service != contract.service_name:
+            raise RequestRecoveryError("NATIVE_COORDINATOR_SERVICE_MISMATCH")
+        allowed = (definition.model_intent.allowed if definition.model_intent is not None
+                   else (definition.model_id,))
+        if not set(allowed).intersection((model.model_name, model.content_digest)):
+            raise RequestRecoveryError("NATIVE_MODEL_IDENTITY_MISMATCH")
+        if any(artifact.digest != model.content_digest for artifact in definition.artifacts):
+            raise RequestRecoveryError("NATIVE_COORDINATOR_ARTIFACT_MISMATCH")
+        request_contract = definition.request_contract
+        if (request_contract is not None and
+                (request_contract.continuous_output or
+                 request_contract.input_schema != model.adapter.input_schema_digest or
+                 request_contract.output_schema != "application/octet-stream")):
+            raise RequestRecoveryError("NATIVE_COORDINATOR_REQUEST_CONTRACT_MISMATCH")
+        if definition.constraints not in (None, DeploymentConstraints()):
+            raise RequestRecoveryError("NATIVE_COORDINATOR_CONSTRAINTS_UNSUPPORTED")
+        if options.metadata or options.output_encoding != "application/octet-stream":
+            raise RequestRecoveryError("NATIVE_COORDINATOR_OPTIONS_UNSUPPORTED")
+
+        def submit(payload, *, request_id, on_result, on_error, **ignored):
+            timeout_ms = int((deadline_utc - datetime.now(deadline_utc.tzinfo)).total_seconds() * 1000)
+            if timeout_ms <= 1:
+                raise TimeoutError("native coordinator request deadline expired")
+            native_options = _ndnsf.NativeRequestOptions()
+            native_options.timeout_ms = timeout_ms
+            native_options.ack_timeout_ms = max(1, min(5000, timeout_ms // 2))
+            handle = core.request_native_payload(payload, options=native_options, request_id=request_id)
+            future = Future()
+            owned = [handle]
+            ownership = threading.Lock()
+
+            def release(done):
+                with ownership:
+                    native, *subscription = owned
+                    owned.clear()
+                if done.cancelled():
+                    native.cancel()
+                if subscription:
+                    subscription[0].cancel()
+
+            future.add_done_callback(release)
+
+            def finish(error, result):
+                if future.done():
+                    return
+                try:
+                    if handle.application_request_id != request_id or not handle.request_id:
+                        raise RequestRecoveryError("NATIVE_COORDINATOR_REQUEST_MISMATCH")
+                    if error is not None:
+                        message = error.get("message", "") if isinstance(error, dict) else str(error)
+                        projected = InferenceResult(False, b"", message, request_id)
+                    else:
+                        projected = InferenceResult(True, bytes(result.payload), "", request_id)
+                    on_result(projected, native_request_id=str(handle.request_id))
+                    future.set_result(projected)
+                except InvalidStateError:
+                    pass
+                except Exception as exc:
+                    if not future.done():
+                        try:
+                            on_error(exc)
+                        finally:
+                            try:
+                                future.set_exception(exc)
+                            except InvalidStateError:
+                                pass
+
+            subscription = handle._on_completion(finish)
+            with ownership:
+                if owned:
+                    owned.append(subscription)
+                    return future
+            subscription.cancel()
             return future
 
         return submit
@@ -2642,18 +2797,6 @@ class InferenceClient:
             deployment, input=input, timeout=timeout, deadline=deadline,
             options=options, authorized_coordinator="")
 
-    def request(
-        self, deployment: RequestableDeployment, *, input,
-        timeout=None, deadline=None, options: InferenceOptions | None = None,
-    ) -> InferenceRequestHandle:
-        warnings.warn(
-            "InferenceClient.request(deployment, ...) is preplanned compatibility; "
-            "use request_preplanned() or InferenceApplication.request(model=...)",
-            DeprecationWarning, stacklevel=2)
-        return self.request_preplanned(
-            deployment, input=input, timeout=timeout, deadline=deadline,
-            options=options)
-
     def _request_as_coordinator(
         self, deployment: RequestableDeployment, *, input,
         deadline, options: InferenceOptions, coordinator_service: str,
@@ -2672,16 +2815,26 @@ class InferenceClient:
         if (authorized_coordinator and
                 definition.coordinator_service != authorized_coordinator):
             raise PermissionError("definition is bound to another coordinator")
-        deployment_handle = self._deployments.ensure(deployment)
         effective_options = options or InferenceOptions()
         if not isinstance(effective_options, InferenceOptions):
             raise TypeError("options must be InferenceOptions")
         deadline_utc = timing.deadline_utc()
+        submitter = None
         if self._request_submitter is None:
             remote = (
                 definition.application_identity != self._core.requester_identity and
                 definition.coordinator_service != authorized_coordinator)
-            definition_ref = self._deployments.definition_ref(definition)
+            if remote:
+                definition_ref = self._deployments.definition_ref(definition)
+                submitter = self._remote_coordinator_submitter(
+                    definition_ref, deadline_utc, effective_options)
+            elif self._core.native_client is not None:
+                submitter = self._native_preplanned_submitter(
+                    definition, deadline_utc, effective_options)
+            elif effective_options != InferenceOptions():
+                raise RequestRecoveryError("PREPLANNED_NETWORK_OPTIONS_UNSUPPORTED")
+        deployment_handle = self._deployments.ensure(deployment)
+        if self._request_submitter is None:
             record = self._core.submit(
                 service=definition.service,
                 input=input,
@@ -2689,16 +2842,10 @@ class InferenceClient:
                 deployment_revision=revision,
                 deadline=deadline_utc,
                 objective=definition.objective,
-                inference_options={
-                    "metadata": dict(effective_options.metadata),
-                    "output_encoding": effective_options.output_encoding,
-                },
+                inference_options={"deployment_revision": revision} if submitter is None else None,
                 _encoded_input=(
-                    self._encode_remote_input(input) if remote else None),
-                _network_submitter=(
-                    self._remote_coordinator_submitter(
-                        definition_ref, deadline_utc, effective_options)
-                    if remote else None),
+                    self._encode_remote_input(input) if submitter is not None else None),
+                _network_submitter=submitter,
             )
         else:
             record = self._request_submitter(
@@ -2831,10 +2978,10 @@ class InferenceClient:
             return
         required = int(getattr(definition.constraints, "minimum_providers", 1))
         ready = [item for item in progress if item.phase.value == "READY"]
-        unique = {(item.role, item.provider) for item in ready}
+        ready_providers = {item.provider for item in ready}
         expected_roles = set(definition.roles)
         observed_roles = {item.role for item in ready}
-        if (len(unique) < required or
+        if (len(ready_providers) < required or
                 (expected_roles and not expected_roles.issubset(observed_roles)) or
                 not certificate_rows):
             if progress:
@@ -2861,14 +3008,14 @@ class InferenceClient:
     def run(self, deployment: RequestableDeployment, *, input,
             timeout=None, deadline=None,
             options: InferenceOptions | None = None) -> InferenceResult:
-        return self.request(
+        return self.request_preplanned(
             deployment, input=input, timeout=timeout, deadline=deadline,
             options=options).result()
 
     async def run_async(self, deployment: RequestableDeployment, *, input,
                         timeout=None, deadline=None,
                         options: InferenceOptions | None = None) -> InferenceResult:
-        return await self.request(
+        return await self.request_preplanned(
             deployment, input=input, timeout=timeout, deadline=deadline,
             options=options).result_async()
 

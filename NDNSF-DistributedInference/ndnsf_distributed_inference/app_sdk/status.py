@@ -88,4 +88,13 @@ class RequestFailureStatus:
         object.__setattr__(self, "boundary", actual)
 
 
-__all__ = [name for name in globals() if not name.startswith("_")]
+__all__ = [
+    "FailureBoundaryV1",
+    "InstancePhase",
+    "RequestEvent",
+    "RequestFailureStatus",
+    "RequestState",
+    "RevisionState",
+    "StatusCondition",
+    "failure_boundary_for_code",
+]

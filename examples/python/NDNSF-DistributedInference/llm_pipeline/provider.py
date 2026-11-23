@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import re
+import signal
 import time
 from pathlib import Path
 from threading import Lock, RLock, Thread
@@ -99,6 +100,7 @@ def _configure_spec175_stream_fault(provider: APPProvider, case_id: str) -> None
     case_id = str(case_id or "").upper()
     if case_id not in {"M02", "M03", "M04", "M05", "M09"}:
         return
+    fault_access = provider._stream_fault_test_access()
     lock = Lock()
     held_wire: list[bytes] = []
     injected = {"value": False}
@@ -122,7 +124,7 @@ def _configure_spec175_stream_fault(provider: APPProvider, case_id: str) -> None
                 with lock:
                     delayed = held_wire.pop() if held_wire else b""
                 if delayed:
-                    provider.publish_stream_packet_for_test(delayed)
+                    fault_access.republish(delayed)
                     mark("release-after-cursor-4", cursor)
             return True
         if case_id == "M03" and cursor == 4:
@@ -132,14 +134,14 @@ def _configure_spec175_stream_fault(provider: APPProvider, case_id: str) -> None
                     duplicate_wire = bytes(wire)
                     mark("duplicate-publication", cursor)
                     # The interceptor runs on the Provider Face event loop.
-                    # Re-entering publish_stream_packet_for_test synchronously
+                    # Re-entering the SVS publisher synchronously
                     # corrupts the SVS publication transaction and can hide
                     # even cursor 1 from the consumer.  Replay after the
                     # current commit returns, preserving duplicate Data
                     # semantics without Face/SVS reentrancy.
                     def republish_after_commit() -> None:
                         time.sleep(0.01)
-                        provider.publish_stream_packet_for_test(duplicate_wire)
+                        fault_access.republish(duplicate_wire)
 
                     Thread(target=republish_after_commit, daemon=True).start()
             return True
@@ -167,7 +169,7 @@ def _configure_spec175_stream_fault(provider: APPProvider, case_id: str) -> None
 
                     def republish_after_one_interest_timeout() -> None:
                         time.sleep(0.35)
-                        provider.publish_stream_packet_for_test(delayed)
+                        fault_access.republish(delayed)
                         mark("bounded-republish", cursor)
 
                     Thread(
@@ -183,9 +185,9 @@ def _configure_spec175_stream_fault(provider: APPProvider, case_id: str) -> None
                     return False
         return True
 
-    provider.set_stream_publication_interceptor_for_test(publication)
+    fault_access.intercept_publication(publication)
     if case_id in {"M04", "M05"}:
-        provider.set_stream_retention_interceptor_for_test(retention)
+        fault_access.intercept_retention(retention)
 
 
 def _emit(*args, **kwargs) -> None:
@@ -4711,15 +4713,24 @@ def main() -> int:
     # Start Core synchronously before publishing readiness.  ``run()`` used to
     # perform native registration only after this marker, allowing a User
     # request to reach one Provider before its SVS subscriptions were active.
-    provider.start()
-    _emit(
-        "LLM_PIPELINE_PROVIDER_READY",
-        f"provider_id={args.provider_id or '(root)'}",
-        f"roles={args.roles}",
-        f"runtime={args.runtime}",
-        flush=True,
-    )
-    return provider.run()
+    previous_sigterm = signal.signal(signal.SIGTERM, signal.default_int_handler)
+    try:
+        provider.start()
+        _emit(
+            "LLM_PIPELINE_PROVIDER_READY",
+            f"provider_id={args.provider_id or '(root)'}",
+            f"roles={args.roles}",
+            f"runtime={args.runtime}",
+            flush=True,
+        )
+        return provider.run()
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        try:
+            provider.stop()
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

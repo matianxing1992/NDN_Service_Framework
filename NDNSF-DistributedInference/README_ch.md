@@ -41,14 +41,14 @@ ensure 操作，只改变延迟。下文旧的 `APPClient`/`APPProvider`/`APPDep
 
 | 保留的旧调用 | 规范所有者/调用 |
 |---|---|
-| `APPClient.submit(...)` / `distributed_inference(...)` | `InferenceClient.request(deployment, ...)` |
-| `APPClient.infer(...)` | `InferenceClient.run(deployment, ...)` |
+| `APPClient.submit(...)` | `InferenceClient.request_preplanned(deployment, ...)` |
+| `APPClient.distributed_inference(...)` / `APPClient.infer(...)` | `InferenceClient.run(deployment, ...)` |
 | `APPProvider.serve_service(...)` | `InferenceProvider.serve(...)` |
 | Provider 的 `stage/activate/drain/delete` | 使用独立凭据的 `ProviderAdminPort` |
 | 原始部署发现字典 | `client.deployments.discover(...)` 类型化摘要 |
 
-`InferenceApplication.request` 与 `InferenceClient.request` 的签名和耐久句柄
-完全相同。创建者本地调用时，`request.deployment_status()` 投影已验证的 Provider
+`InferenceApplication.request_preplanned` 调用 `InferenceClient.request_preplanned`。
+创建者本地调用时，耐久句柄的 `request.deployment_status()` 投影已验证的 Provider
 签名快照；远程调用时，绑定的 deployment-owner coordinator 通过签名的
 Collaboration 状态投影同一聚合结果，而其内部请求仍逐一验证 Provider。如果通用
 `DONE` 缺少精确 revision、adapter、artifact 或任一必需角色，状态仍保持
@@ -649,28 +649,19 @@ result = client.distributed_inference(service, image_tensor)
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_YoloSplit_Minindn.py
-sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
 sudo -E python3 Experiments/NDNSF_DI_PyTorch2x2_Minindn.py
 ```
 
-YOLO layout smoke 也可以在 parallel-detect layout 下用 native C++ provider
-executable 替换 Python compute providers：
+原生 YOLO 2x2 网络验收使用冻结的 Spec 201 候选、候选 SHA-256 和匹配的模型文件。
 
 ```bash
-sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
-  --layout 2x2 \
-  --parallel-detect-scale-shards \
-  --native-providers \
-  --cold-requests 1 \
-  --warm-requests 1
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case yolo-2x2 --spec201-candidate "$candidate" \
+  --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 ```
 
-成功输出应包含：
-
 ```text
-YOLO_SPLIT_RESULT ... ok=true
-YOLO_2X2_RESULT ... ok=true
-PYTORCH_2X2_RESULT ... ok=true
+YOLO_2X2_NATIVE_REQUESTER_MININDN_OK ...
 ```
 
 统一 runner 也可以运行指定 cases。`yolo-layout` 是 MiniNDN 网络级
@@ -679,8 +670,10 @@ smoke：
 
 ```bash
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case runtime-compat
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3 \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
@@ -2423,44 +2416,9 @@ PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
 ONNX_EXECUTOR_FANIN_FANOUT_OK
 ```
 
-```bash
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
-  --model yolo26n.pt \
-  --input-size 32 \
-  --layout 3x2 \
-  --auto-split \
-  --out-dir /tmp/ndnsf-yolo-3x2 \
-  --policy /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id A --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id B --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id C --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id D --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/user.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
-```
+维护中的网络入口见 [原生 YOLO 2x2 验收](#7-运行完整-minindn-smoke-tests)。
 
-使用 `--auto-split` 时，splitter 会用 ONNX planner recommendation
-选择 pipeline boundary hint；layout 参数决定最终导出的 chunk 数量。不加这个
-参数时，示例保留原来的 YOLO-specific split hint 作为稳定 fallback。
-
-MiniNDN 中运行：
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
-```
-
-期望输出包含：
-
-```text
-YOLO_2X2_RESULT ... ok=true
-YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK ...
-```
-
-同一个脚本还会在 `results/yolo_<layout>_minindn_quick/` 下写入回归统计：
+历史 Python Provider 布局实验曾在 `results/yolo_<layout>_minindn_quick/` 下写入回归统计：
 
 ```text
 inference-latency-stats.json
@@ -2961,8 +2919,10 @@ readiness contract：先注册服务，artifact 异步安装期间 ACK 保持 ne
 MiniNDN split smokes：
 
 ```bash
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3 \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 

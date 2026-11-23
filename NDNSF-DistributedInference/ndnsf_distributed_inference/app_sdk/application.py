@@ -269,10 +269,7 @@ class InferenceApplication:
         self, deployment: RequestableDeployment, *, input,
         timeout=None, deadline=None, options: InferenceOptions | None = None,
     ):
-        requester = getattr(self._client, "request_preplanned", None)
-        if requester is None:
-            requester = self._client.request
-        return requester(
+        return self._client.request_preplanned(
             deployment, input=input, timeout=timeout, deadline=deadline,
             options=options)
 

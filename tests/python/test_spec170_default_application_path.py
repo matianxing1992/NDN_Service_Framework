@@ -5,7 +5,7 @@ from dataclasses import replace
 import hashlib
 from types import SimpleNamespace
 import unittest
-from spec201_publication_fixture import publication_result
+from publication_fixture import publication_result
 
 from ndnsf_distributed_inference.adapters import build_object_detection_adapter
 from ndnsf_distributed_inference.adapters.qwen import (

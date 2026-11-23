@@ -3180,6 +3180,8 @@ prepareNativeCanonicalOnnxRole(
       throw std::runtime_error("DI_AUTOMATIC_SOURCE_METADATA_MISSING");
     if (isEntryProgram && !materialMetadataPresent)
       throw std::runtime_error("DI_NATIVE_SOURCE_ENTRY_MATERIAL_MISSING");
+    if (!materialMetadataPresent && !projection.assemblyContract().sourceTransformV1.empty())
+      throw std::runtime_error("DI_CANONICAL_SOURCE_TRANSFORM_MATERIAL_MISSING");
     if (!materialMetadataPresent && sourceName.empty())
       throw std::runtime_error("DI_CANONICAL_SOURCE_NAME_MISSING");
 

@@ -10,7 +10,7 @@ import unittest
 
 import jsonschema
 import yaml
-from spec201_publication_fixture import publication_result
+from publication_fixture import publication_result
 
 from ndnsf.service import CollaborationRole, ServiceUser
 from ndnsf_distributed_inference.adapters import (
