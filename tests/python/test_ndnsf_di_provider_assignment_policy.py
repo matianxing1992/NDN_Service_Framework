@@ -9,7 +9,7 @@ from ndnsf_distributed_inference.core.ports import ProviderCandidate
 from ndnsf_distributed_inference.planner.cost_policy import score_cost
 from ndnsf_distributed_inference.planner.fixed_policy import FixedProviderAssignmentPolicy
 from ndnsf_distributed_inference.planner.provider_assignment_policy import CostProviderAssignmentPolicy
-from support.spec111_policy import request
+from support.policy import request
 
 
 ROOT = Path(__file__).resolve().parents[2]

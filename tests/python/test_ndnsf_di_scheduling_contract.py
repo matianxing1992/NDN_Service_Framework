@@ -6,7 +6,7 @@ from ndnsf_distributed_inference.core.decision_validation import validate_schedu
 from ndnsf_distributed_inference.core.ports import SchedulingProposal, SchedulingScope
 from ndnsf_distributed_inference.planner.scheduling_policy import ScopedFifoSchedulingPolicy
 from ndnsf_distributed_inference.plan import ContentionRetryPolicy
-from support.spec111_policy import request
+from support.policy import request
 
 
 class SchedulingContractTest(unittest.TestCase):
