@@ -130,6 +130,19 @@ checkWireSize(uint32_t size)
   require(size != 0 && size <= ndn::MAX_NDN_PACKET_SIZE, "segment-manifest-packet-size");
 }
 
+size_t
+compactSignedWire(ndn::Data& data)
+{
+  const auto& wire = data.wireEncode();
+  const auto size = wire.size();
+  checkWireSize(static_cast<uint32_t>(size));
+  // A signed packet can retain the encoder's expanded buffer. Copy the exact
+  // wire before the manifest records its implicit digest and keeps it alive.
+  if (wire.getBuffer()->capacity() > 2 * size)
+    data.wireDecode(ndn::Block(ndn::span<const uint8_t>(wire.data(), size)));
+  return size;
+}
+
 bool
 hasCertificateSignature(const ndn::Data& data)
 {
@@ -198,9 +211,7 @@ ManifestPublication::prepare(ndn::security::KeyChain& keyChain, const ndn::secur
     data.setFinalBlock(ndn::name::Component::fromSegment(count - 1));
     data.setFreshnessPeriod(freshness).setContent(payload);
     keyChain.sign(data, ndn::security::signingWithSha256());
-    const auto size = data.wireEncode().size();
-    checkWireSize(static_cast<uint32_t>(size));
-    addBytes(sourceWireBytes, size, limits.maxWireBytes);
+    addBytes(sourceWireBytes, compactSignedWire(data), limits.maxWireBytes);
   }
 
   auto totalWireBytes = sourceWireBytes;
@@ -217,9 +228,7 @@ ManifestPublication::prepare(ndn::security::KeyChain& keyChain, const ndn::secur
     auto& data = result.m_packets[1 + page];
     data.setFreshnessPeriod(freshness).setContent(content);
     keyChain.sign(data, ndn::security::signingWithSha256());
-    const auto wireSize = data.wireEncode().size();
-    checkWireSize(static_cast<uint32_t>(wireSize));
-    addBytes(totalWireBytes, wireSize, limits.maxWireBytes);
+    addBytes(totalWireBytes, compactSignedWire(data), limits.maxWireBytes);
   }
 
   std::vector<uint8_t> content(std::begin(ROOT_MAGIC), std::end(ROOT_MAGIC));
@@ -241,9 +250,7 @@ ManifestPublication::prepare(ndn::security::KeyChain& keyChain, const ndn::secur
   root.setFreshnessPeriod(freshness).setContent(content);
   keyChain.sign(root, signer);
   require(hasCertificateSignature(root), "segment-manifest-root-signature");
-  const auto wireSize = root.wireEncode().size();
-  checkWireSize(static_cast<uint32_t>(wireSize));
-  addBytes(totalWireBytes, wireSize, limits.maxWireBytes);
+  addBytes(totalWireBytes, compactSignedWire(root), limits.maxWireBytes);
   return result;
 }
 

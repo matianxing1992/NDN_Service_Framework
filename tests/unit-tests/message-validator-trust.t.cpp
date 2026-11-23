@@ -432,12 +432,17 @@ BOOST_AUTO_TEST_CASE(ManifestProofBindsOriginalPacketsAndCurrentTrust)
     scope.objectPrefix.appendNumber(count);
     const SegmentManifestLimits limits{4096, 1024 * 1024, count};
     std::vector<ndn::ConstBufferPtr> sources;
-    for (uint32_t i = 0; i < count; ++i) {
+    sources.push_back(std::make_shared<const ndn::Buffer>(ndn::Buffer(8400)));
+    for (uint32_t i = 1; i < count; ++i) {
       sources.push_back(std::make_shared<const ndn::Buffer>(ndn::Buffer{static_cast<uint8_t>(i)}));
     }
     const auto publication = ManifestPublication::prepare(
       fixture.keys, signer, scope, limits, sources, app, ndn::time::milliseconds(4000));
     const auto& packets = publication.packets();
+    for (const auto& packet : packets) {
+      const auto& wire = packet.wireEncode();
+      BOOST_CHECK_LE(wire.getBuffer()->capacity(), 2 * wire.size());
+    }
     const auto root = validateRoot(packets.front(), scope);
     BOOST_REQUIRE(root);
     auto wrongProducer = scope;
@@ -463,6 +468,12 @@ BOOST_AUTO_TEST_CASE(ManifestProofBindsOriginalPacketsAndCurrentTrust)
     BOOST_CHECK_EQUAL_COLLECTIONS(proof.applicationManifest().begin(),
                                   proof.applicationManifest().end(), app.begin(), app.end());
     const auto& first = packets[1 + proof.pageCount()];
+    ndn::Data original(scope.sourceName(0));
+    original.setFinalBlock(ndn::name::Component::fromSegment(count - 1));
+    original.setFreshnessPeriod(ndn::time::milliseconds(4000)).setContent(sources.front());
+    fixture.keys.sign(original, ndn::security::signingWithSha256());
+    BOOST_CHECK(original.wireEncode() == first.wireEncode());
+    BOOST_CHECK(original.getFullName() == first.getFullName());
     if (proof.pageCount() != 0) {
       BOOST_CHECK(!proof.matchesSource(0, first));
       proof.acceptPage(1, packets[2]);
