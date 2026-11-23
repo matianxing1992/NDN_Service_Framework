@@ -1817,6 +1817,8 @@ BOOST_AUTO_TEST_CASE(CatalogParseCacheHonorsEncodedByteBound)
       const auto bytes = i < 4 ? 13U * 1024U * 1024U : encodedBytes - totalBytes;
       BOOST_REQUIRE_LE(bytes, 16U * 1024U * 1024U);
       metadata.objectName = "/actual/producer/catalog/byte-bound/" + std::to_string(i);
+      metadata.objectType = "original-packet-set";
+      metadata.packetNames = {metadata.objectName};
       const auto overhead = metadata.toJson().size();
       BOOST_REQUIRE_LT(overhead, bytes);
       // Synthetic opaque metadata exercises the cache budget, not a
@@ -1861,6 +1863,13 @@ BOOST_AUTO_TEST_CASE(CatalogParseCacheHonorsEncodedByteBound)
     BOOST_CHECK_GT(catalogParses.load(), 0U);
     if (encodedBytes > budget) {
       std::this_thread::sleep_for(std::chrono::seconds(2));
+      store.reset();
+      store = makeFilesystemRepoStore(directory.string());
+      BOOST_REQUIRE_EQUAL(store->listManifests().size(), 6U);
+      catalogParses = 0;
+      BOOST_CHECK(detail::findPacketManifests(
+        *store, "/different/object/packet", "/different/object/packet", false).empty());
+      BOOST_CHECK_EQUAL(catalogParses.load(), 0U);
       detail::RecheckManifestCatalog recheck;
       const auto first = detail::listManifestSnapshots(*store, &recheck);
       catalogParses = 0;

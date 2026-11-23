@@ -30,6 +30,14 @@ namespace fs = std::filesystem;
 
 using ManifestStamp = std::array<uint64_t, 7>;
 constexpr std::size_t MANIFEST_FILE_SIZE_INDEX = 2;
+constexpr std::size_t MAX_PACKET_PREFIX_BYTES = 512;
+
+std::string_view
+clipPacketPrefix(std::string_view prefix, std::string_view name)
+{
+  const auto mismatch = std::mismatch(prefix.begin(), prefix.end(), name.begin(), name.end());
+  return prefix.substr(0, mismatch.first - prefix.begin());
+}
 
 bool
 canShareBytePrefix(std::string_view first, std::string_view second)
@@ -729,9 +737,11 @@ FilesystemRepoStoreBackend::readManifestCatalog(StampedCatalog* capture,
       }
     }
     ManifestObservation observed;
-    auto manifest = cachedManifestUnlocked(entry.path(), capture ? &observed : nullptr);
+    auto manifest = cachedManifestUnlocked(entry.path(), &observed);
     if (!manifest)
-      manifest = loadManifestUnlocked(entry.path(), capture ? &observed : nullptr);
+      manifest = loadManifestUnlocked(entry.path(), &observed);
+    if (observed.reusable && manifest->objectType == "original-packet-set")
+      retainManifestSummary(key, summarizeManifest(*manifest, observed));
     // Do not promote a recent read into a reusable stamp just by aging.
     if (capture && observed.reusable)
       capture->emplace(key, std::make_pair(observed.stamp, manifest));
@@ -754,21 +764,56 @@ FilesystemRepoStoreBackend::readManifestCatalog(StampedCatalog* capture,
   return manifests;
 }
 
+FilesystemRepoStoreBackend::ManifestCollisionSummary
+FilesystemRepoStoreBackend::summarizeManifest(const RepoObjectManifest& manifest,
+                                              const ManifestObservation& observation)
+{
+  ManifestCollisionSummary summary;
+  summary.stamp = observation.stamp;
+  summary.reusable = observation.reusable;
+  summary.objectName = manifest.objectName;
+  summary.objectType = manifest.objectType;
+  if (manifest.objectType == "original-packet-set" && !manifest.packetNames.empty()) {
+    auto prefix = std::string_view(manifest.packetNames.front()).substr(0, MAX_PACKET_PREFIX_BYTES);
+    for (const auto& name : manifest.packetNames) {
+      prefix = clipPacketPrefix(prefix, name);
+      if (prefix.empty())
+        break;
+    }
+    summary.packetPrefix = prefix;
+  }
+  return summary;
+}
+
+void
+FilesystemRepoStoreBackend::retainManifestSummary(const std::string& key,
+                                                 const ManifestCollisionSummary& summary) const
+{
+  constexpr std::size_t MAX_SUMMARIES = 4096;
+  if (!summary.reusable || summary.objectName.size() > 4096 || summary.objectType.size() > 64)
+    return;
+  std::lock_guard<std::mutex> lock(m_manifestCollisionMutex);
+  const auto known = m_manifestCollisionSummaries.find(key);
+  if (known != m_manifestCollisionSummaries.end()) {
+    // A listing observes names and file identity. Keep an existing write recheck digest.
+    if (known->second.stamp != summary.stamp || !summary.metadataDigest.empty())
+      known->second = summary;
+    return;
+  }
+  if (m_manifestCollisionSummaries.size() >= MAX_SUMMARIES)
+    m_manifestCollisionSummaries.erase(m_manifestCollisionSummaries.begin());
+  m_manifestCollisionSummaries.emplace(key, summary);
+}
+
 detail::OriginalPacketWriteCatalog
 FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
   const std::unordered_set<std::string_view>& incoming) const
 {
-  constexpr std::size_t MAX_PREFIX_BYTES = 512;
-  constexpr std::size_t MAX_SUMMARIES = 4096;
   if (incoming.empty())
     throw std::invalid_argument("repo-original-packet-catalog-empty");
-  const auto clipPrefix = [](std::string_view prefix, std::string_view name) {
-    return prefix.substr(0, std::mismatch(prefix.begin(), prefix.end(),
-      name.begin(), name.end()).first - prefix.begin());
-  };
-  std::string_view incomingPrefix = incoming.begin()->substr(0, MAX_PREFIX_BYTES);
+  std::string_view incomingPrefix = incoming.begin()->substr(0, MAX_PACKET_PREFIX_BYTES);
   for (const auto name : incoming)
-    incomingPrefix = clipPrefix(incomingPrefix, name);
+    incomingPrefix = clipPacketPrefix(incomingPrefix, name);
 
   detail::OriginalPacketWriteCatalog result;
   std::unordered_map<std::string, ManifestCollisionSummary> observed;
@@ -791,33 +836,14 @@ FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
           m_manifestCollisionSummaries.erase(known);
       }
     }
-    if (!summary.reusable) {
+    if (!summary.reusable || summary.metadataDigest.empty()) {
       ManifestObservation observation;
       manifest = cachedManifestUnlocked(entry.path(), &observation);
       if (!manifest)
         manifest = loadManifestUnlocked(entry.path(), &observation);
-      summary.stamp = observation.stamp;
-      summary.reusable = observation.reusable;
-      summary.objectName = manifest->objectName;
-      summary.objectType = manifest->objectType;
+      summary = summarizeManifest(*manifest, observation);
       summary.metadataDigest = sha256Hex(toBytes(manifest->toJson()));
-      if (manifest->objectType == "original-packet-set" && !manifest->packetNames.empty()) {
-        std::string_view prefix = std::string_view(manifest->packetNames.front())
-                                    .substr(0, MAX_PREFIX_BYTES);
-        for (const auto& name : manifest->packetNames) {
-          prefix = clipPrefix(prefix, name);
-          if (prefix.empty())
-            break;
-        }
-        summary.packetPrefix = prefix;
-      }
-      if (summary.reusable && summary.objectName.size() <= 4096 &&
-          summary.objectType.size() <= 64) {
-        std::lock_guard<std::mutex> lock(m_manifestCollisionMutex);
-        if (m_manifestCollisionSummaries.size() == MAX_SUMMARIES)
-          m_manifestCollisionSummaries.erase(m_manifestCollisionSummaries.begin());
-        m_manifestCollisionSummaries.emplace(key, summary);
-      }
+      retainManifestSummary(key, summary);
     }
     if (!result.objectTypes.emplace(summary.objectName, summary.objectType).second)
       throw std::runtime_error("repo-original-packet-catalog-changed");

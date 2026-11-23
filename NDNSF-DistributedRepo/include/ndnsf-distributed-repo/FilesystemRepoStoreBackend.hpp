@@ -160,6 +160,9 @@ private:
   std::shared_ptr<const RepoObjectManifest>
   cachedManifestUnlocked(const std::filesystem::path& path,
                          ManifestObservation* observed = nullptr) const;
+  static ManifestCollisionSummary summarizeManifest(const RepoObjectManifest& manifest,
+                                                     const ManifestObservation& observation);
+  void retainManifestSummary(const std::string& key, const ManifestCollisionSummary& summary) const;
   ManifestSnapshots readManifestCatalog(StampedCatalog* capture, const StampedCatalog* prior) const;
   std::shared_ptr<const RepoObjectManifest>
   parseManifestCachedUnlocked(const std::string& key, std::string encoded,
