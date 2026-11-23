@@ -106,7 +106,8 @@ traceManifestRoot(const ndn::Name& name, const char* stage) noexcept
 }
 
 bool
-traceManifestSource(const ndn::Name& name, const char* stage) noexcept
+traceManifestSource(const ndn::Name& name, const char* stage, std::size_t lookupSize,
+                    std::size_t drainSize) noexcept
 {
   try {
     static const bool enabled = [] {
@@ -121,8 +122,14 @@ traceManifestSource(const ndn::Name& name, const char* stage) noexcept
     if (components < 2 || name[components - 2] != sourceComponent ||
         !name[components - 1].isSegment() || name[components - 1].toSegment() % SAMPLE_EVERY != 0)
       return false;
-    ndn_service_framework::logControlTiming("repo-manifest-source", stage,
-      full ? name.getPrefix(-1) : name);
+    const auto ordinaryName = full ? name.getPrefix(-1) : name;
+    if (lookupSize != 0) {
+      ndn_service_framework::logControlTiming("repo-manifest-source", stage, ordinaryName,
+        {{"lookup_size", std::to_string(lookupSize)}, {"drain_size", std::to_string(drainSize)}});
+    }
+    else {
+      ndn_service_framework::logControlTiming("repo-manifest-source", stage, ordinaryName);
+    }
     return true;
   }
   catch (...) {

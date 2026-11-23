@@ -695,7 +695,8 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
           });
         if (!batch) return;
         for (std::size_t i = 0; i < positions.size(); ++i) {
-          detail::traceManifestSource(batch->at(i).getName(), "repo-storage-data-ready");
+          detail::traceManifestSource(batch->at(i).getName(), "repo-storage-data-ready",
+                                      positions.size(), reads.size());
           reads[positions[i]].batchData = std::move(batch->at(i));
         }
       }
@@ -743,7 +744,7 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
           detail::traceManifestRoot(read.job.interest.getName(), "repo-lookup-start");
           auto data = getDataPacketObject(read.job.interest);
           detail::traceManifestRoot(data.getName(), "repo-lookup-finish");
-          detail::traceManifestSource(data.getName(), "repo-storage-data-ready");
+          detail::traceManifestSource(data.getName(), "repo-storage-data-ready", 1, reads.size());
           replies.push_back({std::move(data), read.job.deadline, read.completion});
         }
         detail::traceManifestSource(replies.back().data.getName(), "repo-data-ready");

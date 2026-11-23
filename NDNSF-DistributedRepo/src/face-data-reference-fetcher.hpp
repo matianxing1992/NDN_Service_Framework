@@ -29,7 +29,8 @@ inline constexpr std::size_t MAX_NAMED_PACKET_NAME_BYTES = 512U << 10;
 void traceManifestRoot(const ndn::Name& name, const char* stage) noexcept;
 
 /** Sample manifest DATA across the Producer and fetching Face callbacks. */
-bool traceManifestSource(const ndn::Name& name, const char* stage) noexcept;
+bool traceManifestSource(const ndn::Name& name, const char* stage,
+                         std::size_t lookupSize = 0, std::size_t drainSize = 0) noexcept;
 
 /** Shared admission for authenticated source Interests on one Repo Face. */
 class ManifestSourceWindow
