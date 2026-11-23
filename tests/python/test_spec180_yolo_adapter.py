@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from spec180_yolo_inputs import declared_yolo_checkpoint
+from yolo_inputs import declared_yolo_checkpoint
 
 # Only the cases that build a package need the declared external checkpoint; the catalogue negative operates
 # on a malformed public key and must keep running without it, so the guard is per case rather than module-wide.

@@ -163,7 +163,8 @@ def _validate_native_probe_evidence(user_text: _EvidenceSnapshot, request_id: st
         original = original_by_observer[observer]
         selection = selected_by_observer[observer]
         replies = [row for row in remeasure_responses if row.get("observer") == observer]
-        if (selection.get("reason") != "ARRIVAL_DISPERSION_UNSTABLE" or
+        if (selection.get("reason") not in {
+                "ARRIVAL_DISPERSION_UNSTABLE", "UNSTABLE_PACKET_TRAIN"} or
                 selection.get("priorScopeDigest") != original.get("scopeDigest") or
                 repeated.get("invocation") != "NDNSF_Targeted" or
                 any(repeated.get(field) != original.get(field) for field in

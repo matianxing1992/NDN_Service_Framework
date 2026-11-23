@@ -334,7 +334,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   std::optional<ndn::Data> heldWindowSegment;
   bool heldWindowSegmentReleased = false;
   bool refilledBeforeHeldReply = false;
-  bool droppedWindowPacket = false;
+  std::size_t windowLossTargetInterests = 0;
+  std::size_t windowLossDroppedReplies = 0;
   const auto releaseWindowSegment = [&] {
     heldWindowSegmentReleased = true;
     if (heldWindowSegment) {
@@ -383,6 +384,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
         }
         if ((interest.getName().size() >= 2 && interest.getName().get(-2) == ndn::name::Component("DATA") && interest.getName().get(-1).isSegment())) {
           ++segmentInterests;
+          if (windowLoss && interest.getName().get(-1).toSegment() == 1)
+            ++windowLossTargetInterests;
           requestedSegments.insert(interest.getName());
           if (segmentTimeout) return;
           if (observedSizing && holdObservedManifest) {
@@ -498,9 +501,11 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
           return;
         }
         auto packet = std::make_shared<ndn::Data>(data);
+        // Suppress every reply to the initial segment Interest. An identical
+        // second reply to that Interest must not satisfy the simulated loss.
         if (windowLoss && data.getName().get(-1).toSegment() == 1 &&
-            !droppedWindowPacket) {
-          droppedWindowPacket = true;
+            windowLossTargetInterests == 1) {
+          ++windowLossDroppedReplies;
           return;
         }
         if (windowMark) packet->setTag(std::make_shared<ndn::lp::CongestionMarkTag>(1));
@@ -1629,6 +1634,10 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     }
     else {
       BOOST_CHECK_EQUAL(segmentInterests, expectedRequests + (windowLoss ? 1U : 0U));
+    }
+    if (windowLoss) {
+      BOOST_CHECK_EQUAL(windowLossTargetInterests, 2U);
+      BOOST_CHECK_GT(windowLossDroppedReplies, 0U);
     }
     BOOST_CHECK_GT(maximumUnansweredSegments, 0U);
     BOOST_TEST_MESSAGE("SPEC216_TENSOR_WINDOW max_unanswered=" << maximumUnansweredSegments);

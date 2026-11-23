@@ -1941,7 +1941,7 @@ void dispatchPlacementProbeIntent(
       for (const auto& observer : retry.observers) {
         logRuntimeEvidence("NDNSF_DI_NATIVE_PLACEMENT_PROBE_REMEASURE_SELECTED requestId=" +
           operation->coreRequestId + " observer=" + observer.observerProvider +
-          " reason=ARRIVAL_DISPERSION_UNSTABLE priorScopeDigest=" +
+          " reason=UNSTABLE_PACKET_TRAIN priorScopeDigest=" +
           first.responseByObserver.at(observer.observerProvider).at("scope_digest").get<std::string>());
       }
       dispatchPlacementProbeIntentOnce(operation, retry, context, deadline, sourceAttempt, true,

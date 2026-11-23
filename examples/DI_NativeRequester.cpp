@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <csignal>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -1001,6 +1002,24 @@ run(int argc, char** argv)
       throw std::invalid_argument("kv_handoff requires live compatible-Provider placement");
   }
   auto runtime = Runtime::open(std::move(runtimeConfig));
+  std::optional<PreparedModel> preparedView;
+  std::optional<Conversation> conversation;
+  BOOST_SCOPE_EXIT_ALL(&) {
+    if (std::uncaught_exceptions() > 0) {
+      try {
+        if (conversation)
+          conversation->close();
+        runtime->close();
+        if (runtime->drain(std::chrono::seconds(6)))
+          std::cerr << "NATIVE_REQUEST_FAILURE_DRAINED\n";
+        else
+          std::cerr << "NATIVE_REQUEST_FAILURE_DRAIN_TIMEOUT\n";
+      }
+      catch (const std::exception& error) {
+        std::cerr << "NATIVE_REQUEST_FAILURE_DRAIN_FAILED: " << error.what() << '\n';
+      }
+    }
+  };
   logSpec220PreparationStage("runtime-open.complete");
   std::shared_ptr<const PlacementStrategy> requestPlacementStrategy;
   if (!prepareOnly && !requestPlacementStrategyId.empty()) {
@@ -1030,7 +1049,6 @@ run(int argc, char** argv)
     return 0;
   }
   logSpec220PreparationStage("user-prepare.begin");
-  std::optional<PreparedModel> preparedView;
   if (modelInputMode == "stored") {
     if (!storedModelRepository)
       throw std::logic_error("stored model Repo target was not configured");
@@ -1148,7 +1166,6 @@ run(int argc, char** argv)
   if (diagnosticOutputEnabled())
     std::cout << "NATIVE_REQUEST_ROUTE=Runtime.open->User.prepare->User.request\n";
 
-  std::optional<Conversation> conversation;
   std::optional<std::string> activeConversationId;
   if (const auto conversationConfig = config.get_child_optional("conversation");
       !groupedTurns && conversationConfig) {
@@ -1542,7 +1559,8 @@ run(int argc, char** argv)
     conversation.reset();
   }
   runtime->close();
-  (void)runtime->drain(std::chrono::seconds(5));
+  if (!runtime->drain(std::chrono::seconds(5)))
+    throw std::runtime_error("NATIVE_REQUEST_DRAIN_TIMEOUT");
   if (statisticsWriteFailed)
     throw std::runtime_error("NATIVE_STATISTICS_WRITE_FAILED");
   return 0;

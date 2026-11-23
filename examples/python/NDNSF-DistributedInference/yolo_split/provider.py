@@ -98,7 +98,7 @@ def main() -> int:
             ack_threads=2,
         )
         roles = [args.role] if args.role else args.roles
-        app_provider.serve(
+        app_provider.serve_service(
             service=SERVICE,
             roles=roles,
             handler=handle_role,

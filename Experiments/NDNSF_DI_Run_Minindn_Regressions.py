@@ -129,23 +129,15 @@ CASES = {
     "yolo-2x2": RegressionCase(
         name="yolo-2x2",
         script=REPO / "Experiments/NDNSF_DI_Yolo2x2_Minindn.py",
-        success_marker="YOLO_2X2_NATIVE_PROVIDERS_MININDN_OK",
-        description="YOLO 2x2 native-provider dataflow, repo-backed artifacts, and cache reuse",
+        success_marker="YOLO_2X2_NATIVE_REQUESTER_MININDN_OK",
+        description="YOLO 2x2 installed native requester and provider dataflow",
         extra_args=(
             "--layout", "2x2",
             "--parallel-detect-scale-shards",
             "--native-providers",
+            "--native-requester",
             "--cold-requests", "1",
-            # This case is a repo-backed native-provider artifact deployment
-            # smoke. Continuous warm requests exercise a separate SVS/ACK
-            # stability benchmark and should not gate artifact materialization.
             "--warm-requests", "0",
-            # This quick regression validates repo-backed native provider
-            # startup and dataflow, not low-latency ACK tuning. Keep a stable
-            # ACK window so all collaboration roles are present before
-            # selection.
-            "--ack-timeout-ms", "1000",
-            "--timeout-ms", "10000",
             "--quiet-perf-logs",
         ),
     ),
@@ -257,10 +249,10 @@ def main() -> int:
                         help="Warm run duration for --case yolo-layout; 0 uses --warm-requests")
     parser.add_argument("--warm-interval-ms", type=int, default=0,
                         help="Minimum interval between warm request starts for --case yolo-layout")
-    parser.add_argument("--ack-timeout-ms", type=int, default=1500,
-                        help="ACK timeout forwarded to --case yolo-layout")
+    parser.add_argument("--ack-timeout-ms", type=int,
+                        help="YOLO ACK timeout (default: 1000 for yolo-2x2, 1500 for yolo-layout)")
     parser.add_argument("--timeout-ms", type=int, default=60000,
-                        help="Service timeout forwarded to --case yolo-layout")
+                        help="Service timeout forwarded to yolo-2x2 and yolo-layout")
     parser.add_argument("--provider-handler-workers", type=int, default=2,
                         help="Provider Python worker count forwarded to --case yolo-layout")
     parser.add_argument("--user-async-workers", type=int, default=1,
@@ -271,6 +263,21 @@ def main() -> int:
                         help='deployment JSON required by --case qwen06b-native')
     parser.add_argument('--oracle', type=Path,
                         help='explicit native oracle candidate for qwen06b-native qualification')
+    parser.add_argument("--spec201-candidate", type=Path,
+                        help="frozen Spec 201 bundle for the network YOLO cases")
+    parser.add_argument("--spec201-candidate-sha256",
+                        help="expected SHA-256 of the Spec 201 candidate JSON")
+    parser.add_argument("--model", type=Path,
+                        help="YOLO weights matching the frozen candidate")
+    parser.add_argument("--native-install-prefix", type=Path,
+                        help="installed SDK prefix matching the frozen network YOLO candidate")
+    parser.add_argument("--native-python-package", type=Path,
+                        help="installed ndnsf package matching the frozen network YOLO candidate")
+    parser.add_argument("--topology-file", type=Path,
+                        help="MiniNDN topology matching the frozen network YOLO candidate")
+    parser.add_argument("--results-dir", type=Path, help="output directory for the network YOLO case")
+    parser.add_argument("--artifact-cache-root", type=Path,
+                        help="artifact cache directory for the network YOLO case")
     args = parser.parse_args()
 
     if args.list:
@@ -293,7 +300,16 @@ def main() -> int:
             "--parallel-detect-replicated-backbone-shards, and "
             "--auto-parallel-detect-plan are mutually exclusive")
 
-    for case in selected_cases(args.case):
+    cases = selected_cases(args.case)
+    network_yolo = any(case.name in {"yolo-2x2", "yolo-layout"} for case in cases)
+    if network_yolo:
+        if not (args.spec201_candidate and args.spec201_candidate_sha256 and args.model):
+            parser.error("network YOLO cases require --spec201-candidate, "
+                         "--spec201-candidate-sha256 and --model")
+    elif any((args.native_install_prefix, args.native_python_package, args.topology_file, args.results_dir,
+              args.artifact_cache_root)):
+        parser.error("candidate installation and storage options require a network YOLO case")
+    for case in cases:
         extra_args = ["--layout", args.layout] if case.name.startswith("yolo-layout") else []
         if case.name == 'qwen06b-native':
             extra_args.extend(['--deployment', str(args.deployment.resolve())])
@@ -307,6 +323,36 @@ def main() -> int:
             extra_args.append("--parallel-detect-replicated-backbone-shards")
         if case.name == "yolo-layout-local" and args.auto_parallel_detect_plan:
             extra_args.append("--auto-parallel-detect-plan")
+        if case.name in {"yolo-2x2", "yolo-layout"}:
+            ack_timeout_ms = args.ack_timeout_ms
+            if ack_timeout_ms is None:
+                ack_timeout_ms = 1000 if case.name == "yolo-2x2" else 1500
+            extra_args.extend([
+                "--spec201-candidate", str(args.spec201_candidate.resolve()),
+                "--spec201-candidate-sha256", args.spec201_candidate_sha256,
+                "--model", str(args.model.resolve()),
+                "--ack-timeout-ms", str(ack_timeout_ms),
+                "--timeout-ms", str(args.timeout_ms),
+            ])
+            if args.native_install_prefix is not None:
+                prefix = args.native_install_prefix.resolve()
+                for option, relative in (
+                    ("--native-requester-binary", "bin/DI_NativeRequester"),
+                    ("--native-provider-binary", "bin/di-native-provider"),
+                    ("--native-assembly-worker-binary", "libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker"),
+                    ("--native-authority-binary", "bin/DI_NativeArtifactAuthority"),
+                    ("--native-repo-binary", "bin/DistributedRepoServer"),
+                    ("--native-library-path", "lib"),
+                ):
+                    extra_args.extend((option, str(prefix / relative)))
+            for option, value in (
+                ("--native-python-package", args.native_python_package),
+                ("--topology-file", args.topology_file),
+                ("--results-dir", args.results_dir),
+                ("--artifact-cache-root", args.artifact_cache_root),
+            ):
+                if value is not None:
+                    extra_args.extend((option, str(value.resolve())))
         if case.name == "yolo-layout":
             if args.parallel_output_shards:
                 extra_args.append("--parallel-output-shards")
@@ -321,8 +367,6 @@ def main() -> int:
                 "--warm-requests", str(args.warm_requests),
                 "--warm-duration-s", str(args.warm_duration_s),
                 "--warm-interval-ms", str(args.warm_interval_ms),
-                "--ack-timeout-ms", str(args.ack_timeout_ms),
-                "--timeout-ms", str(args.timeout_ms),
                 "--provider-handler-workers", str(args.provider_handler_workers),
                 "--user-async-workers", str(args.user_async_workers),
             ])

@@ -89,11 +89,14 @@ RevocationTarget::wireEncode() const
   block.push_back(ndn::makeNonNegativeIntegerBlock(
       0xF719, static_cast<uint64_t>(kind)));
   if (!targetIdentity.empty())
-    block.push_back(ndn::makeStringBlock(0xF71A, targetIdentity.toUri()));
+    block.push_back(ndn::makeStringBlock(0xF71A,
+                                         targetIdentity.toUri(ndn::name::UriFormat::ALTERNATE)));
   if (!serviceName.empty())
-    block.push_back(ndn::makeStringBlock(0xF71B, serviceName.toUri()));
+    block.push_back(ndn::makeStringBlock(0xF71B,
+                                         serviceName.toUri(ndn::name::UriFormat::ALTERNATE)));
   if (!authorizationAttribute.empty())
-    block.push_back(ndn::makeStringBlock(0xF71D, authorizationAttribute.toUri()));
+    block.push_back(ndn::makeStringBlock(
+      0xF71D, authorizationAttribute.toUri(ndn::name::UriFormat::ALTERNATE)));
   if (!certificateDigest.empty())
     block.push_back(ndn::makeStringBlock(0xF71C, certificateDigest));
   block.encode();
@@ -230,19 +233,23 @@ PolicyStatusData::wireEncode() const
   if (!validate(validFromMs_))
     throw std::invalid_argument("invalid PolicyStatusData");
   ndn::Block block(TYPE);
-  block.push_back(ndn::makeStringBlock(ServiceNameType, serviceName_.toUri()));
+  // These protocol fields predate canonical-only names and use the alternate URI form.
+  block.push_back(ndn::makeStringBlock(ServiceNameType,
+                                       serviceName_.toUri(ndn::name::UriFormat::ALTERNATE)));
   block.push_back(controllerVersion_.wireEncode());
   block.push_back(ndn::makeNonNegativeIntegerBlock(ValidFromType, validFromMs_));
   block.push_back(ndn::makeNonNegativeIntegerBlock(ValidUntilType, validUntilMs_));
   block.push_back(ndn::makeStringBlock(PolicyDigestType, policyDigest_));
   if (!abePublicParametersName_.empty()) {
     block.push_back(ndn::makeStringBlock(AbePublicParametersNameType,
-                                         abePublicParametersName_.toUri()));
+                                         abePublicParametersName_.toUri(
+                                           ndn::name::UriFormat::ALTERNATE)));
     block.push_back(ndn::makeStringBlock(AbePublicParametersDigestType,
                                          abePublicParametersDigest_));
   }
   block.push_back(ndn::makeStringBlock(ControllerCertificateType,
-                                       controllerCertificate_.toUri()));
+                                       controllerCertificate_.toUri(
+                                         ndn::name::UriFormat::ALTERNATE)));
   block.push_back(ndn::makeBinaryBlock(SignatureType, signature_.begin(), signature_.end()));
   for (const auto& target : revocations_)
     block.push_back(target.wireEncode());

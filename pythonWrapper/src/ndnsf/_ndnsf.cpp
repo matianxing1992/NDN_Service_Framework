@@ -81,11 +81,18 @@
 namespace py = pybind11;
 namespace nsf = ndn_service_framework;
 
+PyFunctionPtr
+keepPyFunction(py::function fn)
+{
+  return PyFunctionPtr(new py::function(std::move(fn)), [](py::function* value) {
+    py::gil_scoped_acquire gil;
+    delete value;
+  });
+}
+
 namespace {
 
 std::mutex g_keyChainMutex;
-
-using PyFunctionPtr = std::shared_ptr<py::function>;
 
 int
 envIntValue(const char* name, int defaultValue, int minValue, int maxValue)
@@ -111,15 +118,6 @@ pythonFacePollTimeout()
   static const int pollMs =
     envIntValue("NDNSF_PY_FACE_POLL_MS", 1, 1, 100);
   return ndn::time::milliseconds(pollMs);
-}
-
-PyFunctionPtr
-keepPyFunction(py::function fn)
-{
-  return PyFunctionPtr(new py::function(std::move(fn)), [](py::function* value) {
-    py::gil_scoped_acquire gil;
-    delete value;
-  });
 }
 
 void

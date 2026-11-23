@@ -11,6 +11,7 @@ from pathlib import Path
 import os
 import re
 import sys
+from threading import Event
 import time
 
 from ndnsf_distributed_inference.adapters import ApplicationInput
@@ -728,8 +729,21 @@ def _load_yolo_native_payload(client, args) -> int:
             task_name=task_name,
             application_options=b"{}",
         )
+        completed = Event()
+        completion = handle._on_completion(lambda _error, _result: completed.set())
         try:
-            result = handle.result(int(args.timeout_ms))
+            # Keep SIGINT responsive while the native request owns the deadline
+            # and the terminal result.
+            if not completed.wait((options.timeout_ms + 1000) / 1000):
+                handle.cancel()
+                raise TimeoutError("native request did not report completion")
+            result = handle.result(0)
+        except KeyboardInterrupt:
+            handle.cancel()
+            _emit_native_request_result(
+                f"YOLO_NATIVE_REQUEST_INTERRUPTED request={handle.request_id} "
+                f"status={handle.status_name}")
+            raise
         except Exception as exc:
             _emit_native_request_result(
                 "YOLO_NATIVE_REQUEST_RESULT status=false "
@@ -737,6 +751,8 @@ def _load_yolo_native_payload(client, args) -> int:
                 f"elapsed_ms={(time.monotonic() - started) * 1000:.3f} error={exc}",
             )
             return 3
+        finally:
+            completion.cancel()
         elapsed_ms = (time.monotonic() - started) * 1000
         response_payload = bytes(result.payload)
         matched = False
@@ -892,7 +908,14 @@ def main() -> int:
             try:
                 return _load_yolo_native_payload(client, args)
             finally:
-                client.shutdown()
+                try:
+                    native_client = client.native_client
+                    if native_client is not None:
+                        if not native_client._close_and_drain(6000):
+                            raise RuntimeError("native YOLO requester did not drain")
+                        _emit_native_request_result("YOLO_NATIVE_REQUESTER_DRAINED")
+                finally:
+                    client.shutdown()
         if not args.offline_oracle:
             try:
                 return _load_yolo_ack_driven(client, args)

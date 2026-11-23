@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from spec180_yolo_inputs import declared_yolo_checkpoint
+from yolo_inputs import declared_yolo_checkpoint
 
 
 ROOT = Path(__file__).resolve().parents[2]

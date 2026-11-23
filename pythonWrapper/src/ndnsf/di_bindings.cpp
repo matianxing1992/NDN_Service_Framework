@@ -14,6 +14,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 
@@ -28,6 +29,7 @@
 #include <pybind11/stl.h>
 #include <pybind11/stl/filesystem.h>
 
+#include <chrono>
 #include <cmath>
 #include <exception>
 #include <filesystem>
@@ -200,6 +202,21 @@ prepareOptionsWithTimeout(di::PrepareOptions options, const py::object& timeout)
 void
 bindDistributedInference(py::module_& module)
 {
+  module.def("_di_tensor_object_digest", [] (py::bytes wire) {
+    return di::computeTensorExecutionObjectDigest(
+      di::detail::decodeStandaloneTensorEndpoint(std::string(wire)));
+  });
+  module.def("_di_tensor_name_prefix", [] (py::bytes wire) {
+    return di::tensorObjectNamePrefix(di::detail::decodeStandaloneTensorEndpoint(std::string(wire)));
+  });
+  module.def("_di_tensor_manifest_name", [] (py::bytes wire) {
+    return di::tensorObjectManifestName(
+      di::detail::decodeStandaloneTensorEndpoint(std::string(wire)));
+  });
+  module.def("_di_tensor_segment_name", [] (py::bytes wire, std::size_t segment) {
+    return di::tensorObjectSegmentName(
+      di::detail::decodeStandaloneTensorEndpoint(std::string(wire)), segment);
+  });
   py::register_exception<di::NativeDiError>(module, "NativeDiError");
   auto diError = py::exception<di::DiError>(module, "DiError");
   (void)diError;
@@ -839,6 +856,21 @@ bindDistributedInference(py::module_& module)
       return handle.result(std::chrono::milliseconds(wait_timeout_ms));
     }, py::arg("wait_timeout_ms") = 0)
     .def("cancel", &di::NativeInferenceHandle::cancel)
+    .def("_on_completion", [] (di::NativeInferenceHandle& handle, py::function callback) {
+      if (!callback)
+        throw py::value_error("completion callback is empty");
+      return handle.onCompletion(
+        [callback = keepPyFunction(std::move(callback))] (
+          std::exception_ptr error, std::optional<di::NativeInferenceResult> result) {
+          py::gil_scoped_acquire acquire;
+          try {
+            (*callback)(callbackError(error), result ? py::cast(*result) : py::none());
+          }
+          catch (const py::error_already_set& e) {
+            PyErr_WriteUnraisable(e.value().ptr());
+          }
+        });
+    })
     .def("observe", [] (di::NativeInferenceHandle& handle,
                          py::function observer) {
       if (!observer)
@@ -862,6 +894,13 @@ bindDistributedInference(py::module_& module)
   py::class_<di::NativeInferenceClient,
              std::shared_ptr<di::NativeInferenceClient>>(module, "NativeInferenceClient")
     .def("close", &di::NativeInferenceClient::close)
+    .def("_close_and_drain", [] (di::NativeInferenceClient& client, std::int64_t timeoutMs) {
+      if (timeoutMs < 0)
+        throw py::value_error("drain timeout must be nonnegative");
+      py::gil_scoped_release release;
+      client.close();
+      return client.drain(std::chrono::milliseconds(timeoutMs));
+    }, py::arg("timeout_ms"))
     .def("request", &di::NativeInferenceClient::request,
          py::arg("model"), py::arg("input"), py::arg("split_strategy"),
          py::arg("placement_strategy"), py::arg("options"));

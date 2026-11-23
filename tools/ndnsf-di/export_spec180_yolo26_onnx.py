@@ -171,6 +171,10 @@ def _load_yolo(model_path: Path):
     selected, model = load_yolo_model(str(model_path))
     if Path(selected).resolve() != model_path.resolve():
         raise ExportError(f"Ultralytics selected unexpected checkpoint: {selected}")
+    # Both the canonical graph and its independent PyTorch oracle use
+    # the registered one-to-one head and its six-field detection rows.
+    if not model.end2end:
+        raise ExportError("YOLO26n checkpoint does not expose its one-to-one detection head")
     return YoloFull(model).eval()
 
 

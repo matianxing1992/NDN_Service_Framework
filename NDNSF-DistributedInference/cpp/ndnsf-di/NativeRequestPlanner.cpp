@@ -2736,9 +2736,11 @@ NativePlacementProbeIntentV1 selectNativePlacementProbeRemeasurementV1(
             item.at("reported_by") != observer.observerProvider) continue;
         ++rows;
         const auto& row = item.at("row");
+        const auto reason = row.value("probe_rate_reason", std::string{});
         unstable = unstable || (row.at("kind") == "ACTIVE_PROBE_GOODPUT" &&
           row.value("probe_rate_status", std::string{}) == "UNKNOWN" &&
-          row.value("probe_rate_reason", std::string{}) == "ARRIVAL_DISPERSION_UNSTABLE");
+          (reason == "ARRIVAL_DISPERSION_UNSTABLE" || reason == "ARRIVAL_GAP_DOMINATED" ||
+           reason == "CLOCK_RESOLUTION"));
       }
       if (unstable && rows == observer.rttPairs.size() + observer.goodputEdges.size())
         selected.observers.push_back(observer);

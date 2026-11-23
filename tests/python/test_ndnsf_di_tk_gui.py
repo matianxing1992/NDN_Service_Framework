@@ -14,6 +14,7 @@ from ndnsf_distributed_inference.app_sdk.gui import (
     FakeRuntimeFactory,
     NdnsfSvsEnvConfig,
     ProviderTabConfig,
+    RegressionRunnerTab,
     RoleRuntimeController,
     RoleProcessState,
     ThreeRoleGuiProfile,
@@ -34,6 +35,38 @@ from ndnsf_distributed_inference.app_sdk.gui import (
 
 
 class TkGuiHelperTests(unittest.TestCase):
+    def test_yolo_smoke_starts_installed_native_roles(self) -> None:
+        runner = mock.Mock()
+        runner.REGRESSION_CASES = RegressionRunnerTab.REGRESSION_CASES
+        runner.yolo_args_var.get.return_value = (
+            '--spec201-candidate "/tmp/test candidate.json" --spec201-candidate-sha256 digest'
+        )
+        RegressionRunnerTab.run_yolo_2x2_smoke(runner)
+        args, kwargs = runner._start.call_args
+        self.assertEqual(args[0][1:], [
+            "Experiments/NDNSF_DI_Run_Minindn_Regressions.py", "--case", "yolo-2x2",
+            "--spec201-candidate", "/tmp/test candidate.json",
+            "--spec201-candidate-sha256", "digest",
+        ])
+        self.assertEqual(kwargs["success_markers"],
+                         ("YOLO_2X2_NATIVE_REQUESTER_MININDN_OK", "evidence="))
+
+    def test_yolo_selection_uses_native_smoke(self) -> None:
+        runner = mock.Mock()
+        runner.regression_case_var.get.return_value = "yolo-2x2"
+        RegressionRunnerTab.run_selected_regression(runner)
+        runner.run_yolo_2x2_smoke.assert_called_once_with()
+        runner._start.assert_not_called()
+
+    def test_yolo_candidate_arguments_are_needed_before_launch(self) -> None:
+        for value, message in (("", "--spec201-candidate"), ('"', "Invalid YOLO")):
+            with self.subTest(value=value):
+                runner = mock.Mock()
+                runner.yolo_args_var.get.return_value = value
+                RegressionRunnerTab.run_yolo_2x2_smoke(runner)
+                runner._start.assert_not_called()
+                self.assertIn(message, runner._append.call_args.args[0])
+
     def test_svs_protocol_defaults_and_explicit_rollback(self) -> None:
         default_env = NdnsfSvsEnvConfig().to_env()
         self.assertEqual(default_env["NDNSF_SVS_PROTOCOL_VERSION"], "v3")

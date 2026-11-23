@@ -94,6 +94,10 @@ def load_yolo_model(preferred: str = "yolo26n.pt"):
     for name in candidates:
         try:
             model = YOLO(name).model.eval()
+            # Honor the checkpoint's declared detection mode across Ultralytics
+            # versions that initialize the runtime head selector differently.
+            if model.yaml.get("end2end") is True:
+                model.end2end = True
             model.cpu()
             return name, model
         except Exception as exc:

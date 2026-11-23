@@ -30,6 +30,8 @@ namespace detail {
 std::string nativeRoleStepContractDigest(const NativeExecutionPlan& plan, std::string_view role);
 // Reuse the complete endpoint admission contract at the naming leaf.
 void validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpoint);
+// Decode a standalone SDK endpoint without the enclosing role's naming context.
+NativeTensorEndpointV3 decodeStandaloneTensorEndpoint(const std::string& wire);
 // Internal wire path. root must be the unchanged read_json result of this exact
 // wire, owned by the caller in the same callback-free scope. Strict wire/type
 // parsing and the complete public semantic decoder still run here.

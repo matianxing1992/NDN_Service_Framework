@@ -28,6 +28,7 @@ from native_install_candidate import (  # noqa: E402
     build_yolo_native_candidate,
     file_identity,
     resolve_installed_python_package,
+    resolve_yolo_extension_pair,
     sha256_file,
     validate_spec201_candidate,
     write_candidate,
@@ -5753,6 +5754,8 @@ def initialize_di_keychains(ndn,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--topology-file", type=Path, default=TOPO,
+                        help="MiniNDN topology used by the frozen candidate")
     # Benchmark recipe note:
     #   sudo mn -c >/tmp/ndnsf_mn_cleanup.log 2>&1 || true; sleep 3
     #   sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=0 \
@@ -5964,10 +5967,11 @@ def main() -> None:
     CONFIG = OUT / "yolo_policy.yaml"
     GEN_POLICY = str(OUT / "generated-policy")
     ARTIFACT_REFERENCES = OUT / "artifact-references.json"
-    ARTIFACT_CACHE_ROOT = resolve_artifact_cache_root(
-        Path(args_cli.artifact_cache_root), OUT)
-
     naming_candidate = None
+    source_inspector = None
+    if args_cli.native_requester:
+        requester_prefix = Path(args_cli.native_requester_binary).resolve().parent.parent
+        source_inspector = requester_prefix / "libexec/ndnsf-tests/native-source-inspect"
     if args_cli.native_providers:
         native_library_path = str(Path(args_cli.native_library_path).expanduser().resolve(strict=True)) \
             if args_cli.native_library_path else ""
@@ -5981,7 +5985,8 @@ def main() -> None:
             [Path(args_cli.native_provider_binary),
              Path(args_cli.native_assembly_worker_binary),
              Path(args_cli.native_repo_binary)] +
-            ([Path(args_cli.native_requester_binary), Path(args_cli.native_authority_binary)]
+            ([Path(args_cli.native_requester_binary), Path(args_cli.native_authority_binary),
+              source_inspector]
              if args_cli.native_requester else []),
             selected_profile=("yolo", vars(args_cli)))
         credentials = naming_candidate["credentialBundles"]["yolo"]
@@ -6001,7 +6006,9 @@ def main() -> None:
             model_path = REPO / model_path
         validate_spec201_candidate(args_cli.spec201_candidate,
                                   args_cli.spec201_candidate_sha256, [],
-                                  [TOPO, PY_DIR / "yolo_policy.yaml", model_path])
+                                  [args_cli.topology_file, PY_DIR / "yolo_policy.yaml", model_path])
+    ARTIFACT_CACHE_ROOT = resolve_artifact_cache_root(
+        Path(args_cli.artifact_cache_root), OUT)
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
     log(f"artifact cache root={ARTIFACT_CACHE_ROOT}")
@@ -6038,7 +6045,7 @@ def main() -> None:
     ]
     if args_cli.native_providers:
         assert installed_package is not None
-        py_path_parts.insert(1, str(installed_package.parent))
+        py_path_parts.insert(0, str(installed_package.parent))
     py_path = ":".join(py_path_parts)
     if args_cli.native_providers:
         input_model = Path(args_cli.model).expanduser()
@@ -6120,6 +6127,7 @@ def main() -> None:
                 timeout_ms=timeout_ms,
                 ack_timeout_ms=ack_timeout_ms,
                 cache_root=ARTIFACT_CACHE_ROOT / "native-requester-packages",
+                source_inspector=source_inspector,
             )
             from native_probe_validation_links import render_anchored_probe_validation_schema
             anchored_schema = render_anchored_probe_validation_schema(
@@ -6133,10 +6141,7 @@ def main() -> None:
                     Path(native_assets["authority_binary_config"]).parent / "trust-schema.conf"):
                 schema_path.write_text(anchored_schema, encoding="utf-8")
         source_package = REPO / "pythonWrapper/ndnsf"
-        extension_candidates = sorted(source_package.glob("_ndnsf*.so"))
-        installed_extensions = sorted(installed_package.glob("_ndnsf*.so"))
-        if len(extension_candidates) != 1 or len(installed_extensions) != 1:
-            raise RuntimeError("SPEC196_CANDIDATE_PYTHON_EXTENSION_MISSING_OR_AMBIGUOUS")
+        extension = resolve_yolo_extension_pair(installed_package, source_package, naming_candidate)
         candidate_components = {
             "requester": (
                 Path(args_cli.native_requester_binary),
@@ -6155,6 +6160,8 @@ def main() -> None:
                           Path(__file__), PY_DIR / "user.py",
                           REPO / "Experiments/native_yolo_requester.py"]
         if native_assets is not None:
+            candidate_components["sourceInspector"] = (
+                source_inspector, REPO / "build/native-source-inspect")
             candidate_components["authority"] = (
                 Path(args_cli.native_authority_binary),
                 REPO / "build/examples/DI_NativeArtifactAuthority")
@@ -6163,12 +6170,12 @@ def main() -> None:
         native_candidate = build_yolo_native_candidate(
             run_id=native_run_id,
             components=candidate_components,
-            extension=(installed_extensions[0], extension_candidates[0]),
+            extension=extension,
             source_package=source_package,
             installed_package=installed_package,
             source_app_package=(REPO / "NDNSF-DistributedInference" /
                                 "ndnsf_distributed_inference"),
-            topology=TOPO,
+            topology=args_cli.topology_file,
             policy=CONFIG,
             model_directory=OUT / "model",
             model_input=args_cli.model,
@@ -6190,6 +6197,7 @@ def main() -> None:
                 "modelSource": model_source,
                 "arguments": {
                     **vars(args_cli),
+                    "topology_file": str(args_cli.topology_file.resolve()),
                     "spec201_candidate": (
                         str(args_cli.spec201_candidate.expanduser().resolve())
                         if args_cli.spec201_candidate is not None else None),
@@ -6215,7 +6223,7 @@ def main() -> None:
                                    for row in native_candidate["components"].values()])
     Minindn.cleanUp()
     Minindn.verifyDependencies()
-    ndn = Minindn(topoFile=str(TOPO))
+    ndn = Minindn(topoFile=str(args_cli.topology_file), workDir=str(OUT / "nodes"), controller=None)
     procs = []
     control_detail_trace = args_cli.control_trace
     args = Args(
@@ -6434,13 +6442,13 @@ def main() -> None:
         ]
         if args_cli.native_providers:
             assert installed_package is not None
-            python_path_parts.insert(1, str(installed_package.parent))
+            python_path_parts.insert(0, str(installed_package.parent))
         env["PYTHONPATH"] = ":".join(python_path_parts)
         env["PYTHONNOUSERSITE"] = "1"
         print(
             "YOLO_LAYOUT_RUN_CONFIG "
             f"layout={layout} model={args_cli.model} input_size={args_cli.input_size} "
-            f"topology={TOPO} native_providers={str(args_cli.native_providers).lower()} "
+            f"topology={args_cli.topology_file} native_providers={str(args_cli.native_providers).lower()} "
             f"parallel_detect_scale_shards={str(args_cli.parallel_detect_scale_shards).lower()} "
             f"parallel_detect_replicated_backbone_shards={str(args_cli.parallel_detect_replicated_backbone_shards).lower()} "
             f"auto_parallel_detect_plan={str(args_cli.auto_parallel_detect_plan).lower()} "
@@ -6527,26 +6535,28 @@ def main() -> None:
         )
         if not wait_log(repo_log, "Installed provider permission", 60):
             raise RuntimeError(f"repo did not install permissions; see {repo_log}")
-        deployer_proc, deployer_log = start(ndn.net[AI_LAB_CONTROLLER_NODE], "controller-deployer",
-                                            python_cmd("controller.py", common + [
-                                                "--deploy-only",
-                                                "--deploy-artifact-references",
-                                                str(ARTIFACT_REFERENCES),
-                                                "--replication-factor",
-                                                "1",
-                                            ]),
-                                            {**env, "NDNSF_DI_STATE_ROOT": str(
-                                                runtime_state_dir / "controller-deployer")},
-                                            procs,
-                                            signing_identity=CONTROLLER_IDENTITY)
-        if not wait_log(deployer_log, "YOLO_2X2_CONTROLLER_REPO_DEPLOYED", 360,
-                        proc=deployer_proc):
-            deployer_rc = deployer_proc.poll()
-            deployer_tail = deployer_log.read_text(errors="replace")[-2000:] if deployer_log.exists() else ""
-            raise RuntimeError(
-                "controller did not deploy repo artifacts; "
-                f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
-        validate_di_repo_bindings(ARTIFACT_REFERENCES)
+        # The native requester prepares and publishes its own canonical model.
+        if native_assets is None:
+            deployer_proc, deployer_log = start(ndn.net[AI_LAB_CONTROLLER_NODE], "controller-deployer",
+                                                python_cmd("controller.py", common + [
+                                                    "--deploy-only",
+                                                    "--deploy-artifact-references",
+                                                    str(ARTIFACT_REFERENCES),
+                                                    "--replication-factor",
+                                                    "1",
+                                                ]),
+                                                {**env, "NDNSF_DI_STATE_ROOT": str(
+                                                    runtime_state_dir / "controller-deployer")},
+                                                procs,
+                                                signing_identity=CONTROLLER_IDENTITY)
+            if not wait_log(deployer_log, "YOLO_2X2_CONTROLLER_REPO_DEPLOYED", 360,
+                            proc=deployer_proc):
+                deployer_rc = deployer_proc.poll()
+                deployer_tail = deployer_log.read_text(errors="replace")[-2000:] if deployer_log.exists() else ""
+                raise RuntimeError(
+                    "controller did not deploy repo artifacts; "
+                    f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
+            validate_di_repo_bindings(ARTIFACT_REFERENCES)
 
         def start_compute_providers(phase_suffix: str,
                                     provider_env: dict[str, str]
@@ -6646,8 +6656,6 @@ def main() -> None:
         def build_warm_user_args() -> list[str]:
             warm_user_args = common + [
                 "--envelope-key-file", str(envelope_key_file),
-                "--artifact-references-file",
-                str(ARTIFACT_REFERENCES),
                 "--model", args_cli.model,
                 "--input-size", str(args_cli.input_size),
                 "--ack-timeout-ms", str(ack_timeout_ms),
@@ -6664,6 +6672,8 @@ def main() -> None:
                     "--canonical-package", str(native_assets["package_dir"]),
                     "--catalogue-registry", str(native_assets["catalogue_registry"]),
                 ])
+            else:
+                warm_user_args.extend(["--artifact-references-file", str(ARTIFACT_REFERENCES)])
             if warm_duration_s > 0:
                 warm_user_args.extend([
                     "--sequential-duration-s", str(warm_duration_s),
@@ -6740,8 +6750,6 @@ def main() -> None:
         native_request_count = cold_requests + warm_requests if native_assets is not None else cold_requests
         user_common = common + [
             "--envelope-key-file", str(envelope_key_file),
-            "--artifact-references-file",
-            str(ARTIFACT_REFERENCES),
             "--model", args_cli.model,
             "--input-size", str(args_cli.input_size),
             "--ack-timeout-ms", str(ack_timeout_ms),
@@ -6757,6 +6765,8 @@ def main() -> None:
                 "--canonical-package", str(native_assets["package_dir"]),
                 "--catalogue-registry", str(native_assets["catalogue_registry"]),
             ])
+        else:
+            user_common.extend(["--artifact-references-file", str(ARTIFACT_REFERENCES)])
         restart_gate = None
         if restart_after:
             restart_gate = OUT / "native-restart-gate" / native_candidate["runId"]

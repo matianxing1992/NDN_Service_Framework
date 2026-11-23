@@ -18,11 +18,19 @@ def main():
     parser.add_argument('--blueprint', type=Path)
     parser.add_argument('--candidate', type=Path, required=True)
     parser.add_argument('--sha256', default='')
+    parser.add_argument('--native-library-path', type=Path,
+                        help='single library directory of the staged native installation')
     args = parser.parse_args()
     # Freeze the installed RPATH selection used by MiniNDN launchers, without
     # shadowing a versioned SDK with the older default dependency prefix.
     # The validator still checks every resolved library path and digest.
-    os.environ['LD_LIBRARY_PATH'] = ''
+    library_dir = ''
+    if args.native_library_path is not None:
+        path = args.native_library_path.resolve(strict=True)
+        if not path.is_dir() or ':' in str(path):
+            parser.error('--native-library-path must name one directory')
+        library_dir = str(path)
+    os.environ['LD_LIBRARY_PATH'] = library_dir
     if args.operation == 'freeze':
         if args.blueprint is None:
             parser.error('--blueprint is required for freeze')

@@ -263,8 +263,10 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
     nativePlanningDigest(encoded.wire.data(), encoded.wire.size()));
   BOOST_CHECK(!wire.contains("candidate_artifacts"));
   BOOST_CHECK(!wire.contains("candidate_providers"));
+  const auto providerName = ndn::Name("/provider/1").toUri();
+  const auto requesterName = ndn::Name("/requester/1").toUri();
   const auto rosterOnly = encodeNativeRequestEnvelope(model, input, contract,
-    "/request/1", 1, 10000, std::nullopt, {"/provider/1"});
+    "/request/1", 1, 10000, std::nullopt, {providerName});
   BOOST_CHECK(rosterOnly.wire == encoded.wire);
   NativeCandidateArtifactInventoryV4 inventory;
   inventory.identities = NativeJson::array({NativeJson{
@@ -276,8 +278,8 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
   inventory.digest = nativePlanningDigest(nativeCanonicalJson(NativeJson(inventory.identities)));
   NativePlacementProbeAllowlistV4 probeAllowlist;
   const auto v4Encoded = encodeNativeRequestEnvelope(model, input, contract,
-    "/request/v4", 1, 10000, std::nullopt, {"/provider/1"}, inventory,
-    probeAllowlist, "/requester/1");
+    "/request/v4", 1, 10000, std::nullopt, {providerName}, inventory,
+    probeAllowlist, requesterName);
   const auto v4Wire = NativeJson::parse(v4Encoded.wire);
   BOOST_CHECK_EQUAL(v4Wire.at("task").at("placement_profile").get<std::string>(),
                     "DI_PLACEMENT_V4");
@@ -290,15 +292,64 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
   BOOST_CHECK(v4Wire.at("goodput_edges").empty());
   BOOST_CHECK_EQUAL(v4Wire.at("probe_scope_digest").get<std::string>(),
                     v4Encoded.probeScopeDigest);
-  BOOST_CHECK_EQUAL(v4Wire.at("requester_identity").get<std::string>(), "/requester/1");
+  BOOST_CHECK_EQUAL(v4Wire.at("requester_identity").get<std::string>(), requesterName);
   const auto encodeForRuntime = [&](const auto& candidateInventory) {
     return detail::encodeNativeRequestEnvelopeForRuntime(model, input, contract, "/request/v4",
-      1, 10000, std::nullopt, {"/provider/1"}, candidateInventory, probeAllowlist,
-      "/requester/1", "INLINE", {});
+      1, 10000, std::nullopt, {providerName}, candidateInventory, probeAllowlist,
+      requesterName, "INLINE", {});
   };
   const auto withinBudget = encodeForRuntime(inventory);
   BOOST_CHECK(withinBudget.wire == v4Encoded.wire);
   BOOST_REQUIRE(withinBudget.discoveryPayload);
+
+  std::vector<std::string> roster;
+  for (unsigned i = 0; i < 4; ++i)
+    roster.push_back(ndn::Name("/provider/" + std::string(175, 'a') + "/" +
+                              std::to_string(i)).toUri());
+  NativePlacementProbeAllowlistV4 networkScope;
+  for (const auto& from : roster) {
+    for (const auto& to : roster) {
+      if (from == to) continue;
+      networkScope.rttPairs.push_back({from, to});
+      networkScope.goodputEdges.push_back({from, to});
+    }
+  }
+  const auto fullV4 = encodeNativeRequestEnvelope(model, input, contract, "/request/v4",
+    1, 10000, std::nullopt, roster, inventory, networkScope, requesterName);
+  auto fullDiscovery = NativeJson::parse(fullV4.wire);
+  fullDiscovery["input_payload_b64"] = "";
+  fullDiscovery["options_payload_b64"] = "";
+  BOOST_REQUIRE_GT(nativeCanonicalJson(fullDiscovery).size(),
+    ndn_service_framework::RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE);
+  const auto compact = detail::encodeNativeRequestEnvelopeForRuntime(model, input, contract,
+    "/request/v4", 1, 10000, std::nullopt, roster, inventory, networkScope,
+    requesterName, "INLINE", {});
+  BOOST_CHECK(compact.wire == fullV4.wire);
+  BOOST_CHECK_EQUAL(compact.probeScopeDigest, fullV4.probeScopeDigest);
+  BOOST_REQUIRE(compact.discoveryPayload);
+  const std::string compactWire(compact.discoveryPayload->begin(), compact.discoveryPayload->end());
+  BOOST_CHECK_LE(compactWire.size(),
+    ndn_service_framework::RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE);
+  const auto decodedDiscovery = parseNativeRequestOffer(compactWire);
+  BOOST_REQUIRE(decodedDiscovery);
+  const auto fullRequest = NativeJson::parse(fullV4.wire);
+  for (const auto* key : {"rtt_pairs", "goodput_edges", "candidate_artifacts", "probe_scope_digest"})
+    BOOST_CHECK(decodedDiscovery->at(key) == fullRequest.at(key));
+  BOOST_CHECK_EQUAL(decodedDiscovery->at("request_contract_digest").get<std::string>(),
+    fullV4.requestContractDigest);
+  BOOST_CHECK(!decodedDiscovery->contains("input_payload_b64"));
+  BOOST_CHECK(!parseNativeRequestEnvelope(compactWire));
+  auto invalidDiscovery = NativeJson::parse(compactWire);
+  invalidDiscovery["rtt_pairs"][0][1] = 4;
+  BOOST_CHECK_THROW(parseNativeRequestOffer(nativeCanonicalJson(invalidDiscovery)),
+    std::invalid_argument);
+  invalidDiscovery = NativeJson::parse(compactWire);
+  invalidDiscovery["rtt_pairs"][1] = invalidDiscovery["rtt_pairs"][0];
+  BOOST_CHECK_THROW(parseNativeRequestOffer(nativeCanonicalJson(invalidDiscovery)),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(parseNativeRequestOffer(std::string(4097, ' ') + compactWire),
+    std::invalid_argument);
+
   auto largeInventory = inventory;
   for (unsigned rank = 1; rank <= 12; ++rank) {
     auto identity = inventory.identities.front();
@@ -309,8 +360,8 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
     [](const auto& a, const auto& b) { return nativeCanonicalJson(a) < nativeCanonicalJson(b); });
   largeInventory.digest = nativePlanningDigest(nativeCanonicalJson(largeInventory.identities));
   const auto largeV4 = encodeNativeRequestEnvelope(model, input, contract,
-    "/request/v4", 1, 10000, std::nullopt, {"/provider/1"}, largeInventory,
-    probeAllowlist, "/requester/1");
+    "/request/v4", 1, 10000, std::nullopt, {providerName}, largeInventory,
+    probeAllowlist, requesterName);
   auto overBudget = NativeJson::parse(largeV4.wire);
   overBudget["input_payload_b64"] = "";
   BOOST_REQUIRE_GT(nativeCanonicalJson(overBudget).size(),
@@ -329,15 +380,16 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
   BOOST_CHECK_NO_THROW(request.setDiscoveryPayload(ndn::Buffer(metadata.begin(), metadata.end())));
   auto expectedDiscovery = boundedWire;
   expectedDiscovery["input_payload_b64"] = "";
+  expectedDiscovery["options_payload_b64"] = "";
   BOOST_CHECK_EQUAL(std::string(metadata.begin(), metadata.end()),
                     nativeCanonicalJson(expectedDiscovery));
   const auto otherRequester = encodeNativeRequestEnvelope(model, input, contract,
-    "/request/v4", 1, 10000, std::nullopt, {"/provider/1"}, inventory,
-    probeAllowlist, "/requester/2");
+    "/request/v4", 1, 10000, std::nullopt, {providerName}, inventory,
+    probeAllowlist, ndn::Name("/requester/2").toUri());
   BOOST_CHECK_NE(otherRequester.probeScopeDigest, v4Encoded.probeScopeDigest);
   const auto laterDeadline = encodeNativeRequestEnvelope(model, input, contract,
-    "/request/v4", 1, 10001, std::nullopt, {"/provider/1"}, inventory,
-    probeAllowlist, "/requester/1");
+    "/request/v4", 1, 10001, std::nullopt, {providerName}, inventory,
+    probeAllowlist, requesterName);
   BOOST_CHECK_NE(laterDeadline.probeScopeDigest, v4Encoded.probeScopeDigest);
   NativeGenerationRecovery recovery;
   recovery.generationId = std::string(32, 'a');
@@ -345,11 +397,11 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
   recovery.recoveryRequestId = "/request/recovery";
   recovery.originalInputManifestDigest = encoded.inputManifestDigest;
   recovery.priorPlanDigest = nativePlanningDigest("prior-plan");
-  recovery.failedProvider = "/provider/1";
+  recovery.failedProvider = providerName;
   recovery.committedTokenIds = {1, 2};
   const auto recoveryEncoded = encodeNativeRequestEnvelope(
     model, input, contract, recovery.recoveryRequestId, 2, 10000,
-    recovery, {"/provider/1"}, inventory, probeAllowlist);
+    recovery, {providerName}, inventory, probeAllowlist);
   const auto recoveryWire = NativeJson::parse(recoveryEncoded.wire);
   BOOST_CHECK_EQUAL(recoveryWire.at("task").at("placement_profile").get<std::string>(),
                     "DI_PLACEMENT_V3");
@@ -362,11 +414,11 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
   auto mismatchedInventory = inventory;
   mismatchedInventory.digest = nativePlanningDigest("foreign-inventory");
   BOOST_CHECK_THROW(encodeNativeRequestEnvelope(model, input, contract,
-    "/request/v4", 1, 10000, std::nullopt, {"/provider/1"},
-    mismatchedInventory, probeAllowlist, "/requester/1"),
+    "/request/v4", 1, 10000, std::nullopt, {providerName},
+    mismatchedInventory, probeAllowlist, requesterName),
     std::invalid_argument);
   NativeProviderOfferV3Config provider;
-  provider.provider = "/provider/1"; provider.service = contract.serviceName;
+  provider.provider = providerName; provider.service = contract.serviceName;
   provider.bootEpoch = "boot-1"; provider.signerKeyId = nativePlanningDigest("key-1");
   provider.acceptedRoles = {"worker"}; provider.backends = {"onnxruntime"};
   provider.devices = {"cpu"};
@@ -455,6 +507,7 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeWorkObservationsPreserveWireAndCountRepresen
       BOOST_REQUIRE(encoded.discoveryPayload);
       auto expectedDiscovery = json;
       expectedDiscovery["input_payload_b64"] = "";
+      expectedDiscovery["options_payload_b64"] = "";
       const auto& discovery = *encoded.discoveryPayload;
       BOOST_CHECK_EQUAL(std::string(discovery.begin(), discovery.end()),
                         nativeCanonicalJson(expectedDiscovery));

@@ -1861,16 +1861,16 @@ BOOST_AUTO_TEST_CASE(NativeTensorC04WireGoldensBindCompleteEndpointAndSignedStri
   const auto raw = [](const std::string& text) {
     return ndn::name::Component(ndn::tlv::GenericNameComponent, text.begin(), text.end());
   };
-  // Independently assembled paper components and externally calculated C01
-  // uint16/tag + uint8/kind + uint64/length transcript golden.
+  // Independently assembled components and C01 transcript digests for both
+  // abbreviated labels and the tensor representation, including its framing.
   ndn::Name expected("/provider/0/NDNSF-DI/tensor/REQUEST");
   expected.append(raw("name=/8=request/54=%00/50=%01%00"));
   expected.append("ATTEMPT").append("1").append("ROUND").append("2");
-  expected.append("POSITION").append(raw("name=" + std::string(64, 'r')));
+  expected.append("POSITION").append(raw("name=" + std::string(64, 'r') + "~85778127ccafaad8"));
   expected.append("OP").append("PIPELINE").append("INDEX").append("1");
   expected.append("RANK").append("2").append("BATCH").append("3");
-  expected.append(raw("name=" + std::string(64, 't')));
-  const std::string key = "4fa08da752faefe896fabc2e823efd6de25173f72894352bc074483e6c3952f5";
+  expected.append(raw("name=" + std::string(64, 't') + "~c89f1da59a276cac"));
+  const std::string key = "4f6281bd61cab2c9d031263b7390617eb20ce76b9651e9aae9bcf95582ea766f";
   std::vector<std::uint8_t> keyBytes;
   for (std::size_t i = 0; i < key.size(); i += 2)
     keyBytes.push_back(static_cast<std::uint8_t>(std::stoul(key.substr(i, 2), nullptr, 16)));
