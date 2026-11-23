@@ -745,31 +745,41 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
     }
     try {
       const std::weak_ptr<RepoNode> owner = weak_from_this();
-      boost::asio::post(face.getIoContext(), [owner, &face, replies = std::move(replies)] {
+      boost::asio::post(face.getIoContext(), [owner, &face, replies = std::move(replies)] () mutable {
         const auto self = owner.lock();
-        for (const auto& reply : replies) {
-          if (!self || !self->isOriginalDataServingReady() ||
-              std::chrono::steady_clock::now() >= reply.deadline) {
-            NDN_LOG_DEBUG("original packet unavailable before put name=" << reply.data.getName());
-            continue;
+        bool queued = false;
+        const auto releaseAfterPuts = [&] {
+          // One drain callback retains this bounded batch through its queued puts.
+          if (queued) {
+            boost::asio::post(face.getIoContext(), [replies = std::move(replies)] {});
           }
-          detail::traceManifestRoot(reply.data.getName(), "repo-face-put");
-          face.put(reply.data);
-          const bool sampled =
-            detail::traceManifestSource(reply.data.getName(), "repo-submit-data");
-          NDN_LOG_DEBUG("original packet put name=" << reply.data.getName());
-          // Keep each lease through its own queued put, including when a later
-          // reply fails. Only the foreign-thread dispatch is shared by a batch.
-          if (sampled) {
-            boost::asio::post(face.getIoContext(),
-              [completion = reply.completion, name = reply.data.getName()] {
+        };
+        try {
+          for (auto& reply : replies) {
+            if (!self || !self->isOriginalDataServingReady() ||
+                std::chrono::steady_clock::now() >= reply.deadline) {
+              NDN_LOG_DEBUG("original packet unavailable before put name=" << reply.data.getName());
+              reply.completion.reset();
+              continue;
+            }
+            detail::traceManifestRoot(reply.data.getName(), "repo-face-put");
+            face.put(reply.data);
+            queued = true;
+            const bool sampled =
+              detail::traceManifestSource(reply.data.getName(), "repo-submit-data");
+            NDN_LOG_DEBUG("original packet put name=" << reply.data.getName());
+            if (sampled) {
+              boost::asio::post(face.getIoContext(), [name = reply.data.getName()] {
                 detail::traceManifestSource(name, "repo-put-queue-marker");
               });
-          }
-          else {
-            boost::asio::post(face.getIoContext(), [completion = reply.completion] {});
+            }
           }
         }
+        catch (...) {
+          releaseAfterPuts();
+          throw;
+        }
+        releaseAfterPuts();
       });
     }
     catch (const std::exception& error) {
