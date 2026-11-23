@@ -316,6 +316,7 @@ struct NativeProviderRunnerReuseCache::State
     std::string protectedIdentity;
     std::shared_ptr<const void> residentLease;
     std::optional<NativeProviderResidencyIdentityV4> residencyIdentity;
+    std::uint64_t requiredDeviceMemoryMb = 0;
     std::uint64_t lastUse = 0;
   };
 
@@ -448,6 +449,7 @@ NativeProviderRunnerReuseCache::bindPublisher(
   if (placementIdentity.isValid())
     storedIdentity = std::move(placementIdentity);
   return [state = m_state, key, keyDigest, identity, runtime, storedIdentity,
+          requiredDeviceMemoryMb = projection.assemblyContract().requiredDeviceMemoryMb,
           requestId = projection.requestId,
           provider = projection.provider.empty() ? providerIdentity : projection.provider,
           role = projection.assemblyContract().selectedRole]
@@ -477,7 +479,7 @@ NativeProviderRunnerReuseCache::bindPublisher(
     }
     state->entries.emplace(key, State::Entry{
       runner, std::move(protectedIdentityKey), std::move(residentLease),
-      storedIdentity, ++state->sequence});
+      storedIdentity, requiredDeviceMemoryMb, ++state->sequence});
     logRuntimeEvidence(
       std::string("NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_PUBLISHED") +
       " requestId=" + requestId + " provider=" + provider +
@@ -534,6 +536,38 @@ NativeProviderRunnerReuseCache::queryPlacementResidencyV4(
   result.rows.erase(std::unique(result.rows.begin(), result.rows.end()),
                     result.rows.end());
   return result;
+}
+
+std::size_t
+NativeProviderRunnerReuseCache::reclaimUnderDevicePressure(
+  const std::vector<NativeDeviceResourceObservationV3>& resources)
+{
+  const auto state = m_state;
+  std::vector<decltype(state->entries)::node_type> retired;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    for (auto it = state->entries.begin(); it != state->entries.end();) {
+      const auto& entry = it->second;
+      if (!entry.residencyIdentity || entry.residencyIdentity->deviceSet.size() != 1 ||
+          entry.runner.use_count() != 1) {
+        ++it;
+        continue;
+      }
+      const auto& device = entry.residencyIdentity->deviceSet.front();
+      const auto underPressure = [&] (const NativeDeviceResourceObservationV3& resource) {
+        return device.rfind("cuda:", 0) == 0 && device == resource.device &&
+          resource.freeMemoryMb < entry.requiredDeviceMemoryMb &&
+          entry.requiredDeviceMemoryMb <= resource.totalMemoryMb;
+      };
+      if (std::any_of(resources.begin(), resources.end(), underPressure))
+        retired.push_back(state->entries.extract(it++));
+      else
+        ++it;
+    }
+  }
+  // Session teardown can call the backend and release protection authority.
+  // Destroy the entries outside the cache lock.
+  return retired.size();
 }
 
 void
