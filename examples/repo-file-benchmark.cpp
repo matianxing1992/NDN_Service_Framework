@@ -51,7 +51,8 @@ namespace di = ndnsf::di;
 namespace repo = ndnsf_distributed_repo;
 using Clock = std::chrono::steady_clock;
 using Json = di::NativeJson;
-constexpr uint64_t FILE_BYTES = 500000000;
+constexpr uint64_t DEFAULT_FILE_BYTES = 500'000'000;
+constexpr uint64_t LARGE_FILE_BYTES = 20'000'000'000;
 constexpr size_t DEFAULT_CONTENT_BYTES = 7000;
 constexpr size_t LARGE_CONTENT_BYTES = 8400;
 constexpr uint32_t CERTIFICATE_GROUP_SEGMENTS = 2048;
@@ -150,9 +151,10 @@ run(int argc, char** argv)
     "--controller-identity", "--controller-certificate", "--trust-schema", "--repo-node",
     "--provider-identity", "--service-prefix", "--source", "--expected-sha256", "--report"};
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "ndnsf-repo-file-benchmark: native 500000000-byte original-packet file I/O\n";
+    std::cout << "ndnsf-repo-file-benchmark: native original-packet file I/O\n";
     for (const auto& option : required) std::cout << option << " VALUE ";
-    std::cout << "[--phase write|read|write-read] [--reference PATH] "
+    std::cout << "[--file-bytes 500000000|20000000000] "
+                 "[--phase write|read|write-read] [--reference PATH] "
                  "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
                  "[--manifest-read-pipeline serial|paired|quad] "
                  "[--manifest-read-total-window 32|48|64] "
@@ -161,7 +163,7 @@ run(int argc, char** argv)
                  "[--manifest-segment-bytes 7000|8400] "
                  "[--manifest-group-segments 2048|2560|3840] [--manifest-write-slots 3|5] ";
     std::cout << "\nUses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
-                 "whole-group reads, with a default of "
+                 "whole-group reads, with a default input of 500000000 bytes and "
               << di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS
               << " concurrent native commits. Deadline 1800 seconds. Report must not exist.\n";
     return 0;
@@ -169,6 +171,7 @@ run(int argc, char** argv)
   std::map<std::string, std::string> options;
   for (int i = 1; i < argc; i += 2) {
     const bool known = required.count(argv[i]) || std::string(argv[i]) == "--phase" ||
+      std::string(argv[i]) == "--file-bytes" ||
       std::string(argv[i]) == "--reference" || std::string(argv[i]) == "--authentication" ||
       std::string(argv[i]) == "--signing-certificate" ||
       std::string(argv[i]) == "--manifest-read-pipeline" ||
@@ -180,6 +183,13 @@ run(int argc, char** argv)
       std::string(argv[i]) == "--manifest-write-slots";
     require(i + 1 < argc && known && options.emplace(argv[i], argv[i + 1]).second,
             "invalid benchmark option");
+  }
+  auto fileBytes = DEFAULT_FILE_BYTES;
+  if (const auto configured = options.find("--file-bytes"); configured != options.end()) {
+    require(configured->second == "500000000" || configured->second == "20000000000",
+            "benchmark file bytes must be 500000000 or 20000000000");
+    if (configured->second == "20000000000")
+      fileBytes = LARGE_FILE_BYTES;
   }
   const std::string phaseOption = options.count("--phase") ? options.at("--phase") : "write-read";
   const std::string authentication = options.count("--authentication")
@@ -265,8 +275,8 @@ run(int argc, char** argv)
   const auto& source = phaseOption == "read" ? std::string{} : options.at("--source");
   if (phaseOption != "read")
     require(std::filesystem::is_regular_file(source) &&
-            !std::filesystem::is_symlink(source) && std::filesystem::file_size(source) == FILE_BYTES,
-            "benchmark input must be a regular 500000000-byte file");
+            !std::filesystem::is_symlink(source) && std::filesystem::file_size(source) == fileBytes,
+            "benchmark input must be a regular file of the selected size");
   const auto expected = options.at("--expected-sha256");
   require(expected.size() == 64 && std::all_of(expected.begin(), expected.end(), [](char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -409,7 +419,7 @@ run(int argc, char** argv)
         const auto reference = Json::parse(referenceInput, nullptr, false);
         require(!reference.is_discarded() &&
                 reference.at("schema") == "ndnsf-repo-file-benchmark-reference-v1" &&
-                reference.at("fileBytes") == FILE_BYTES &&
+                reference.at("fileBytes") == fileBytes &&
                 reference.at("sha256") == expected &&
                 reference.value("authentication", "digest") == authentication &&
                 (!useCertificate || reference.at("signingCertificate") ==
@@ -426,13 +436,14 @@ run(int argc, char** argv)
           require(group.packetCount > 0 &&
                   group.packetCount <= maxSourcePackets &&
                   group.payloadBytes > 0 && group.payloadBytes <= group.packetCount * contentBytes &&
+                  group.payloadBytes <= fileBytes - payloadBytes &&
                   group.wireBytes >= group.payloadBytes,
                   "benchmark reference group invalid");
           payloadBytes += group.payloadBytes;
           wireBytes += group.wireBytes;
           groups.push_back(std::move(group));
         }
-        require(payloadBytes == FILE_BYTES, "benchmark reference payload size mismatch");
+        require(payloadBytes == fileBytes, "benchmark reference payload size mismatch");
       }
       auto packetKeys = useCertificate ? std::make_unique<ndn::KeyChain>() :
         std::make_unique<ndn::KeyChain>("pib-memory:repo-file-benchmark",
@@ -463,7 +474,7 @@ run(int argc, char** argv)
       };
       const Measurement publicationTime;
       di::NativeModelCommitPipeline pipeline(current, NDNSF_DI_WIRE_LIMIT, writeCapacity);
-      while (payloadBytes < FILE_BYTES) {
+      while (payloadBytes < fileBytes) {
         const Measurement groupTime;
         Group group;
         group.prefix = ndn::Name(publication).append(std::to_string(groupIndex));
@@ -474,7 +485,7 @@ run(int argc, char** argv)
         }
         ndn::util::Sha256 wireHash;
         const auto groupPackets = std::min<uint64_t>(maxSourcePackets,
-          (FILE_BYTES - payloadBytes + contentBytes - 1) / contentBytes);
+          (fileBytes - payloadBytes + contentBytes - 1) / contentBytes);
         const auto appendOriginal = [&](const ndn::Data& packet) {
           const auto& wire = packet.wireEncode();
           wires.emplace_back(wire.begin(), wire.end());
@@ -496,7 +507,7 @@ run(int argc, char** argv)
           current();
           std::array<uint8_t, LARGE_CONTENT_BYTES> buffer;
           const auto count = static_cast<size_t>(std::min<uint64_t>(
-            contentBytes, FILE_BYTES - payloadBytes));
+            contentBytes, fileBytes - payloadBytes));
           auto manifestPayload = useManifest ? std::make_shared<ndn::Buffer>(count) : nullptr;
           auto* bytes = manifestPayload ? manifestPayload->data() : buffer.data();
           input.read(reinterpret_cast<char*>(bytes), count);
@@ -600,7 +611,7 @@ run(int argc, char** argv)
         const auto referencePath = options.at("--reference");
         const auto temporary = referencePath + ".tmp";
         Json reference{{"schema", "ndnsf-repo-file-benchmark-reference-v1"},
-          {"fileBytes", FILE_BYTES}, {"sha256", expected}, {"contentSegmentBytes", contentBytes},
+          {"fileBytes", fileBytes}, {"sha256", expected}, {"contentSegmentBytes", contentBytes},
           {"orderedWireSha256", digest(orderedWire)}, {"groups", referenceGroups}};
         if (useCertificate) {
           reference["authentication"] = authentication;
@@ -629,7 +640,7 @@ run(int argc, char** argv)
           {"status", "REFERENCE_WRITTEN"}});
         record(std::move(referenceRow));
         auto written = total.result();
-        written.update(Json{{"phase", "complete"}, {"pass", true}, {"fileBytes", FILE_BYTES},
+        written.update(Json{{"phase", "complete"}, {"pass", true}, {"fileBytes", fileBytes},
           {"sha256", expected}, {"wireBytes", wireBytes}, {"groups", groups.size()},
           {"contentSegmentBytes", contentBytes}, {"stagedPhase", "write"},
           {"publicationMode", "bounded-pipeline"},
@@ -771,7 +782,7 @@ run(int argc, char** argv)
         }
         throw;
       }
-      require(restoredBytes == FILE_BYTES && digest(restored) == expected,
+      require(restoredBytes == fileBytes && digest(restored) == expected,
               "benchmark reconstructed file SHA-256/size mismatch");
       auto retrieved = retrievalTime.result();
       retrieved.update(Json{{"phase", "retrieval-total"}, {"payloadBytes", restoredBytes},
@@ -780,7 +791,7 @@ run(int argc, char** argv)
         {"manifestReadWindowPerGroup", readWindow}});
       record(std::move(retrieved));
       auto result = total.result();
-      result.update(Json{{"phase", "complete"}, {"pass", true}, {"fileBytes", FILE_BYTES},
+      result.update(Json{{"phase", "complete"}, {"pass", true}, {"fileBytes", fileBytes},
         {"sha256", expected}, {"wireBytes", wireBytes}, {"groups", groups.size()},
         {"contentSegmentBytes", contentBytes},
         {"authentication", authentication},

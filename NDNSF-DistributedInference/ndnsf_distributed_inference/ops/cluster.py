@@ -357,6 +357,8 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
             argv += ['--phase', binary_phase, '--reference', repo_benchmark['reference']]
         if binary_phase != 'read':
             argv += ['--source', repo_benchmark['source']]
+        if 'file_bytes' in repo_benchmark:
+            argv += ['--file-bytes', str(repo_benchmark['file_bytes'])]
         if 'authentication' in repo_benchmark:
             argv += ['--authentication', repo_benchmark['authentication']]
         if 'signing_certificate' in repo_benchmark:
@@ -985,6 +987,8 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
             raise ClusterError('explicit Repo benchmark authentication requires local MiniNDN')
         elif repo_benchmark.get('phase', 'write-read') != 'write-read':
             raise ClusterError('independent Repo benchmark phases require local MiniNDN')
+        elif repo_benchmark.get('file_bytes', 500_000_000) != 500_000_000:
+            raise ClusterError('20 GB Repo benchmark requires local MiniNDN')
         elif config['platform']['kind'] != 'slurm-apptainer':
             raise ClusterError('Repo file benchmark requires MiniNDN or Slurm')
     if config['platform']['kind'] == 'slurm-apptainer':
@@ -1261,6 +1265,7 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_
         raise ClusterError('actor selection only applies to down')
     if action == 'benchmark-repo':
         options = {'sha256', 'source', 'authentication', 'signing_certificate', 'phase', 'reference',
+                   'file_bytes',
                    'cpu_placement',
                    *REPO_MANIFEST_BENCHMARK_OPTIONS}
         if (not isinstance(repo_benchmark, dict) or 'sha256' not in repo_benchmark or
@@ -1278,6 +1283,9 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_
         phase = repo_benchmark.get('phase', 'write-read')
         if phase not in ('write-read', 'write', 'read'):
             raise ClusterError('unsupported Repo benchmark phase')
+        file_bytes = repo_benchmark.get('file_bytes', 500_000_000)
+        if type(file_bytes) is not int or file_bytes not in (500_000_000, 20_000_000_000):
+            raise ClusterError('Repo benchmark file bytes must be 500000000 or 20000000000')
         for option, (choices, phase_limit) in REPO_MANIFEST_BENCHMARK_OPTIONS.items():
             if option in repo_benchmark and (authentication != 'manifest' or
                     repo_benchmark[option] not in choices or
@@ -1289,8 +1297,8 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_
         if phase != 'read':
             input_path = Path(repo_benchmark.get('source', ''))
             if (not input_path.is_absolute() or input_path.is_symlink() or
-                    not input_path.is_file() or input_path.stat().st_size != 500000000):
-                raise ClusterError('Repo benchmark requires a regular 500000000-byte input')
+                    not input_path.is_file() or input_path.stat().st_size != file_bytes):
+                raise ClusterError(f'Repo benchmark requires a regular {file_bytes}-byte input')
         elif 'source' in repo_benchmark:
             raise ClusterError('independent Repo benchmark read uses a reference file')
         if phase == 'write-read':

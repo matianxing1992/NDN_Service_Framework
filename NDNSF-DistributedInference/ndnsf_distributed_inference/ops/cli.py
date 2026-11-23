@@ -46,7 +46,9 @@ def build_parser():
             command.add_argument('--timing', action='store_true',
                                  help='enable native phase measurements for this boot')
         if name == 'benchmark-repo':
-            command.add_argument('--source', help='regular 500000000-byte file for publication')
+            command.add_argument('--source', help='regular file of the selected size for publication')
+            command.add_argument('--file-bytes', type=int, choices=(500_000_000, 20_000_000_000),
+                                 help='expected file size in both phases, default 500000000')
             command.add_argument('--expected-sha256', required=True)
             command.add_argument('--phase', choices=('write-read', 'write', 'read'),
                                  help='run both phases or use independent local MiniNDN boots')
@@ -108,7 +110,7 @@ def main(argv=None, *, deployment_factory=None, client_factory=None):
                 options = {}
                 if args.cluster_command == 'benchmark-repo':
                     options['repo_benchmark'] = dict(sha256=args.expected_sha256)
-                    for field in ('source', 'phase', 'reference'):
+                    for field in ('source', 'phase', 'reference', 'file_bytes'):
                         if getattr(args, field) is not None:
                             options['repo_benchmark'][field] = getattr(args, field)
                     if args.authentication is not None:

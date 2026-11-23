@@ -117,8 +117,9 @@ def test_repo_file_benchmark_rejects_small_input_before_launch(ops, tmp_path):
 
 @pytest.mark.parametrize('phase', ['write', 'read'])
 @pytest.mark.parametrize('tuned', [False, True])
+@pytest.mark.parametrize('large', [False, True])
 def test_repo_file_benchmark_forwards_independent_native_phase(ops, tmp_path, monkeypatch, phase,
-                                                              tuned):
+                                                              tuned, large):
     _, cli = ops
     cluster = importlib.import_module('_spec217_ops.cluster')
     config = tmp_path / 'deployment.json'
@@ -135,10 +136,14 @@ def test_repo_file_benchmark_forwards_independent_native_phase(ops, tmp_path, mo
     arguments = ['cluster', 'benchmark-repo', '--config', str(config),
                  '--expected-sha256', 'a' * 64, '--phase', phase, '--reference', str(reference)]
     expected = dict(sha256='a' * 64, phase=phase, reference=str(reference))
+    file_bytes = 20_000_000_000 if large else 500_000_000
+    if large:
+        arguments += ['--file-bytes', str(file_bytes)]
+        expected['file_bytes'] = file_bytes
     if phase == 'write':
         source = tmp_path / 'input.bin'
         with source.open('wb') as output:
-            output.truncate(500000000)
+            output.truncate(file_bytes)
         arguments += ['--source', str(source)]
         expected['source'] = str(source)
     else:
@@ -230,6 +235,17 @@ def test_repo_file_benchmark_reads_installed_manifest_before_launch(ops, tmp_pat
     with pytest.raises(RuntimeError, match=reason):
         cluster._up(tmp_path / 'deployment.json', tmp_path / 'state', 30,
                     repo_benchmark=dict(source='/input.bin', sha256='a' * 64))
+    assert not (tmp_path / 'state').exists()
+
+
+def test_repo_file_benchmark_rejects_large_slurm_profile_before_launch(ops, tmp_path, monkeypatch):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    monkeypatch.setattr(cluster, 'load_deployment', lambda *args, **kwargs:
+                        dict(operation='repo-benchmark', platform=dict(kind='slurm-apptainer')))
+    with pytest.raises(cluster.ClusterError, match='20 GB Repo benchmark requires local MiniNDN'):
+        cluster._up(tmp_path / 'deployment.json', tmp_path / 'state', 30,
+                    repo_benchmark=dict(source='/input.bin', sha256='a' * 64,
+                                        file_bytes=20_000_000_000))
     assert not (tmp_path / 'state').exists()
 
 
@@ -1280,10 +1296,12 @@ def test_periodic_sync_setting_survives_file_benchmark_requester(ops, deployment
     argv, env = cluster._native_launch(frozen, actor, root,
         dict(boot_id='a' * 32, configuration_sha256='b' * 64, runtime_timing=timing),
         repo_benchmark=dict(source='/input.bin', sha256='a' * 64, authentication='manifest',
-                            signing_certificate='/test/KEY/data/issuer/v=1'))
+                            signing_certificate='/test/KEY/data/issuer/v=1',
+                            file_bytes=20_000_000_000))
     assert Path(argv[0]).name == 'ndnsf-repo-file-benchmark'
     assert argv[argv.index('--authentication') + 1] == 'manifest'
     assert argv[argv.index('--signing-certificate') + 1] == '/test/KEY/data/issuer/v=1'
+    assert argv[argv.index('--file-bytes') + 1] == '20000000000'
     assert env['NDNSF_SVS_PERIODIC_SYNC_MS'] == '1000'
     assert env.get('NDNSF_REPO_SOURCE_TIMING') == ('1' if timing else None)
     assert '--core-svs-periodic-sync-ms' not in argv

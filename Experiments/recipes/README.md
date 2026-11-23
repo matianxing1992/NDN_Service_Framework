@@ -60,11 +60,13 @@ the Requester, Repo and control identities and `Experiments/Topology/spec270-wir
 deployment and performs file I/O. Generate the input in the private work root:
 
 ```sh
-python3 - "$work_root/repo-input.bin" <<'PY'
+repo_file_bytes=${repo_file_bytes:-500000000}
+input_sha256=$(python3 - "$work_root/repo-input.bin" "$repo_file_bytes" <<'PY'
 import hashlib
 import sys
 
-total = 500_000_000
+total = int(sys.argv[2])
+assert total in (500_000_000, 20_000_000_000)
 block_size = 1 << 20
 digest = hashlib.sha256()
 with open(sys.argv[1], "xb") as file:
@@ -73,8 +75,11 @@ with open(sys.argv[1], "xb") as file:
                                   index.to_bytes(8, "big")).digest(min(block_size, total - offset))
         file.write(block)
         digest.update(block)
-assert digest.hexdigest() == "78368e90250b5865c0e7ca1fa7d922bcea90ad0ae85a65f30d10610733abbb6d"
+if total == 500_000_000:
+    assert digest.hexdigest() == "78368e90250b5865c0e7ca1fa7d922bcea90ad0ae85a65f30d10610733abbb6d"
+print(digest.hexdigest())
 PY
+)
 ```
 
 Generate two configs with `ops.deployment_config.preparation_deployment`. Give them distinct
@@ -103,15 +108,16 @@ for phase in ("write", "read"):
 PY
 write_config="$work_root/repo-write.json"
 read_config="$work_root/repo-read.json"
-input_sha256=78368e90250b5865c0e7ca1fa7d922bcea90ad0ae85a65f30d10610733abbb6d
 ```
 
 ```sh
 sudo -n /usr/local/bin/ndnsf-di cluster benchmark-repo --config "$write_config" \
-  --authentication manifest --phase write --reference "$work_root/reference.json" \
+  --authentication manifest --phase write --file-bytes "$repo_file_bytes" \
+  --reference "$work_root/reference.json" \
   --source "$work_root/repo-input.bin" --expected-sha256 "$input_sha256"
 sudo -n /usr/local/bin/ndnsf-di cluster benchmark-repo --config "$read_config" \
-  --authentication manifest --phase read --reference "$work_root/reference.json" \
+  --authentication manifest --phase read --file-bytes "$repo_file_bytes" \
+  --reference "$work_root/reference.json" \
   --expected-sha256 "$input_sha256"
 ```
 
@@ -120,6 +126,15 @@ wire digest and the reconstructed file SHA-256. Record the installed binary and 
 topology and config digests, both Repo PIDs, complete native records, and nonforced cleanup.
 Use one write and read as a restart check. A throughput comparison additionally needs repeated
 matched trials and bare NFD replay of the same original wire in each applicable direction.
+
+For the local 20 GB test, set `repo_file_bytes=20000000000` before generating the input.
+Reserve space for the dense input and its original-wire Repo store. Set
+`storage.repo_root` in both configs to a new private directory for this trial.
+Allow `--timeout 1800` for each phase. Use ordered durable group completions and verified
+retrieval records to report throughput over cumulative payload intervals. Measure from each
+native phase start and retain the process and configuration evidence. After every trial,
+confirm that both deployments have stopped and retain their reports before removing the
+trial's private Repo store and generated source. Create a fresh private store for any retry.
 
 For the 8,400 B tuned comparison, set the Repo actor's `resources.cpus` to at least five
 and give its `parameters` the following native settings. This applies to the new write
