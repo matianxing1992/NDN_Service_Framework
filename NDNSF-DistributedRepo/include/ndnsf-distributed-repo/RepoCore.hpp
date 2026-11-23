@@ -8,6 +8,7 @@
 #include <ndn-cxx/interest.hpp>
 
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -193,6 +194,7 @@ public:
 
   RepoCatalogDelta catalogSnapshot() const;
 
+  /** Throws repo-catalog-delta-history-unavailable if sinceEpoch predates retained history. */
   RepoCatalogDelta catalogDelta(uint64_t sinceEpoch) const;
 
   RepoCatalogEntry catalogLookup(const std::string& objectName) const;
@@ -281,7 +283,14 @@ private:
   std::shared_ptr<RepoStoreBackend> m_store;
   uint64_t m_catalogEpoch = 0;
   bool m_catalogReconciliationRequired = false;
-  std::vector<RepoCatalogEntry> m_catalogChanges;
+  struct CatalogChange
+  {
+    RepoCatalogEntry entry;
+    size_t chargedBytes;
+  };
+  static constexpr size_t MAX_CATALOG_CHANGE_BYTES = 32U * 1024U * 1024U;
+  std::deque<CatalogChange> m_catalogChanges;
+  size_t m_catalogChangeBytes = 0;
 
   struct RangeReservation
   {

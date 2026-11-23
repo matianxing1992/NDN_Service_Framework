@@ -30,6 +30,32 @@ NDN_LOG_INIT(ndnsf_distributed_repo.RepoCore);
 
 namespace {
 
+size_t
+catalogChangeBytes(const RepoCatalogEntry& entry)
+{
+  const auto& manifest = entry.manifest;
+  size_t bytes = sizeof(entry) + sizeof(size_t) + manifest.packetOffsets.capacity() * sizeof(uint64_t);
+  for (const auto* text : {&entry.sourceRepo, &entry.repoMode, &entry.state,
+                          &manifest.objectName, &manifest.objectType, &manifest.sha256,
+                          &manifest.policyEpoch, &manifest.publicationIdentity,
+                          &manifest.protectionEpoch, &manifest.keyReferenceId,
+                          &manifest.keyReferenceVersion, &manifest.ciphertextManifestDigest,
+                          &manifest.servingLocator, &manifest.contentDigest,
+                          &manifest.writeConsistency, &manifest.operationId,
+                          &manifest.lifecycleState, &manifest.dataReceiptId,
+                          &manifest.dataReceiptRepoNode, &manifest.dataReceiptProviderIdentity,
+                          &manifest.dataPrefix}) {
+    bytes += text->capacity() + 1;
+  }
+  for (const auto* list : {&manifest.replicaNodes, &manifest.packetNames,
+                          &manifest.confirmedReplicaNodes}) {
+    bytes += list->capacity() * sizeof(std::string);
+    for (const auto& text : *list)
+      bytes += text.capacity() + 1;
+  }
+  return bytes;
+}
+
 ndn::Data
 decodeOwnedPacketWire(std::vector<uint8_t>& wire)
 {
@@ -2427,8 +2453,8 @@ RepoCore::catalogStatus() const
 RepoCatalogDelta
 RepoCore::catalogSnapshot() const
 {
-  const auto manifests = m_store->listManifests();
   std::lock_guard<std::mutex> lock(m_mutex);
+  const auto manifests = detail::listManifestSnapshots(*m_store);
   RepoCatalogDelta snapshot;
   snapshot.repoNode = m_capability.repoNode;
   snapshot.repoMode = m_capability.repoMode;
@@ -2436,7 +2462,7 @@ RepoCore::catalogSnapshot() const
   snapshot.catalogEpoch = m_catalogEpoch;
   snapshot.entries.reserve(manifests.size());
   for (const auto& manifest : manifests) {
-    snapshot.entries.push_back(makeCatalogEntry(manifest, "AVAILABLE", m_catalogEpoch));
+    snapshot.entries.push_back(makeCatalogEntry(*manifest, "AVAILABLE", m_catalogEpoch));
   }
   return snapshot;
 }
@@ -2445,12 +2471,17 @@ RepoCatalogDelta
 RepoCore::catalogDelta(uint64_t sinceEpoch) const
 {
   std::lock_guard<std::mutex> lock(m_mutex);
+  const auto historyFloor = m_catalogChanges.empty() ? m_catalogEpoch :
+    m_catalogChanges.front().entry.catalogEpoch - 1;
+  if (sinceEpoch < historyFloor)
+    throw std::runtime_error("repo-catalog-delta-history-unavailable");
   RepoCatalogDelta delta;
   delta.repoNode = m_capability.repoNode;
   delta.repoMode = m_capability.repoMode;
   delta.sinceEpoch = sinceEpoch;
   delta.catalogEpoch = m_catalogEpoch;
-  for (const auto& entry : m_catalogChanges) {
+  for (const auto& change : m_catalogChanges) {
+    const auto& entry = change.entry;
     if (entry.catalogEpoch > sinceEpoch) {
       delta.entries.push_back(entry);
     }
@@ -2624,17 +2655,26 @@ RepoCore::rememberCatalogChange(const RepoObjectManifest& manifest,
   catch (...) {
     // Locator retention is optional; the durable catalog remains authoritative.
   }
+  ++m_catalogEpoch;
   try {
-    const auto nextEpoch = m_catalogEpoch + 1;
-    m_catalogChanges.push_back(makeCatalogEntry(manifest, state, nextEpoch));
-    m_catalogEpoch = nextEpoch;
+    auto entry = makeCatalogEntry(manifest, state, m_catalogEpoch);
+    const auto bytes = catalogChangeBytes(entry);
+    if (bytes <= MAX_CATALOG_CHANGE_BYTES) {
+      while (m_catalogChangeBytes > MAX_CATALOG_CHANGE_BYTES - bytes) {
+        m_catalogChangeBytes -= m_catalogChanges.front().chargedBytes;
+        m_catalogChanges.pop_front();
+      }
+      m_catalogChanges.push_back({std::move(entry), bytes});
+      m_catalogChangeBytes += bytes;
+      return;
+    }
   }
   catch (...) {
-    // The durable store remains authoritative and catalogSnapshot() can
-    // reconstruct the current object set.  Keep the discrepancy observable
-    // instead of turning a successful durable commit into an API failure.
-    m_catalogReconciliationRequired = true;
+    // A missing change makes every older cursor require a snapshot.
   }
+  m_catalogChanges.clear();
+  m_catalogChangeBytes = 0;
+  m_catalogReconciliationRequired = true;
 }
 
 bool

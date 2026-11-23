@@ -305,7 +305,10 @@ The current service/API surface is:
 `CATALOG_STATUS` returns the repo node, mode, current catalog epoch, object
 count, and whether the repo accepts backup replicas. `CATALOG_SNAPSHOT` returns
 a full object-level snapshot for recovery. `CATALOG_DELTA` returns only changes
-after a caller-provided epoch. `CATALOG_LOOKUP` returns the catalog entry for
+after a caller-provided epoch from a bounded, process-local journal. On
+`repo-catalog-delta-history-unavailable`, replace the view of this Repo with
+its `CATALOG_SNAPSHOT` and continue from that snapshot's epoch.
+`CATALOG_LOOKUP` returns the catalog entry for
 one object name. `CATALOG_QUERY` returns matching object summaries filtered by
 object class, object type, publisher, state, metadata tags, exact metadata
 fields, and created/updated time ranges. These filters operate only on object

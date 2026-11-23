@@ -450,6 +450,52 @@ mutableArgv(std::vector<std::string>& arguments)
 
 BOOST_AUTO_TEST_SUITE(DistributedRepoPersistentService)
 
+BOOST_AUTO_TEST_CASE(CatalogDeltaRequiresSnapshotAfterByteBudgetEviction)
+{
+  TempRoot temp;
+  StorageCapability capability;
+  capability.repoNode = "/repo/catalog-budget";
+  capability.freeBytes = 1024 * 1024;
+  const std::string object = "/repo/catalog-budget/object";
+  const std::string removed = "/repo/catalog-budget/removed";
+  const std::vector<uint8_t> payload{1, 2, 3};
+  const std::string policyEpoch(512 * 1024, 'a');
+  const auto database = (temp.path() / "catalog.sqlite3").string();
+  {
+    RepoCore core(capability, makeSqliteRepoStore(database));
+    core.put(removed, payload);
+    BOOST_REQUIRE(core.remove(removed));
+    const auto early = core.catalogDelta(0);
+    BOOST_REQUIRE_EQUAL(early.entries.size(), 2U);
+    BOOST_CHECK_EQUAL(early.entries.back().state, "DELETED");
+    BOOST_CHECK_EQUAL(early.entries.back().manifest.objectName, removed);
+
+    for (size_t i = 0; i < 66; ++i) {
+      core.put(object, payload, "object", 1, policyEpoch);
+    }
+    const auto requiresSnapshot = [](const std::runtime_error& error) {
+      return std::string_view(error.what()) == "repo-catalog-delta-history-unavailable";
+    };
+    BOOST_CHECK_EXCEPTION(core.catalogDelta(early.catalogEpoch), std::runtime_error,
+                          requiresSnapshot);
+    const auto snapshot = core.catalogSnapshot();
+    BOOST_REQUIRE_EQUAL(snapshot.entries.size(), 1U);
+    BOOST_CHECK_EQUAL(snapshot.entries.front().manifest.objectName, object);
+    BOOST_CHECK(snapshot.entries.front().manifest.policyEpoch == policyEpoch);
+    BOOST_CHECK(core.get(object) == payload);
+
+    BOOST_REQUIRE(core.remove(object));
+    const auto delta = core.catalogDelta(snapshot.catalogEpoch);
+    BOOST_REQUIRE_EQUAL(delta.entries.size(), 1U);
+    BOOST_CHECK_EQUAL(delta.entries.front().state, "DELETED");
+    BOOST_CHECK_EQUAL(delta.entries.front().manifest.objectName, object);
+    core.put(object, payload);
+  }
+  RepoCore reopened(capability, makeSqliteRepoStore(database));
+  BOOST_CHECK(reopened.get(object) == payload);
+  BOOST_CHECK(!reopened.has(removed));
+}
+
 BOOST_AUTO_TEST_CASE(PersistentModeRejectsNonPersistentAndUnknownValues)
 {
   BOOST_CHECK(parseRepoServerMode("persistent") == RepoServerMode::Persistent);
