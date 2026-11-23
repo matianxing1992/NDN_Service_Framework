@@ -4,6 +4,7 @@ import re
 import sys
 
 import onnx
+from onnx import TensorProto, helper
 
 source, output = map(Path, sys.argv[1:3])
 family = sys.argv[3]
@@ -104,6 +105,33 @@ for _, wires in cloned.values():
             new_info = graph.value_info.add()
             new_info.CopyFrom(old_info)
             new_info.name = alias
+
+if family == "4b":
+    # Preserve the declared FP32 logits without rounding the projection output to FP16.
+    # The tied weight and the final hidden state retain their original FP16 storage.
+    projection, = (node for node in graph.node if node.name == "/lm_head/MatMul")
+    output_cast, = (node for node in graph.node if node.name == "/model/logits_output_cast")
+    assert (projection.domain, projection.op_type, len(projection.input)) == ("", "MatMul", 2)
+    assert (output_cast.domain, output_cast.op_type) == ("", "Cast")
+    assert list(projection.output) == list(output_cast.input) == ["logits_fp16"]
+    assert list(output_cast.output) == ["logits"]
+    assert sum("logits_fp16" in node.input for node in graph.node) == 1
+    logits, = (port for port in graph.output if port.name == "logits")
+    assert logits.type.tensor_type.elem_type == TensorProto.FLOAT
+    inputs = list(projection.input)
+    graph.node.remove(projection)
+    graph.node.remove(output_cast)
+    for index in range(len(graph.value_info) - 1, -1, -1):
+        if graph.value_info[index].name == "logits_fp16":
+            del graph.value_info[index]
+    for index, value in enumerate(inputs):
+        graph.node.append(helper.make_node(
+            "Cast", [value], [f"spec235_projection_fp32_input_{index}"],
+            name=f"/spec235/projection/Cast{index}", to=TensorProto.FLOAT))
+    graph.node.append(helper.make_node(
+        "MatMul", ["spec235_projection_fp32_input_0", "spec235_projection_fp32_input_1"],
+        ["logits"], name="/spec235/projection/MatMul"))
+
 onnx.save(model, str(output))
 print("HOST_SHAPE_SAME_OPERATOR_VARIANT", family, len(graph.node),
       attention_count, "one private shape branch per GQA", Counter(node.op_type for node in closure))
