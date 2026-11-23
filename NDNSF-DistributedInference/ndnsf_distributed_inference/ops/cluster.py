@@ -276,7 +276,7 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
             if 'wan_generation' in native:
                 _private_directory(Path(native['wan_generation']['output_directory']).parent)
                 for component_path, component, _ in wan_component_files(native):
-                    if component['model_input']['mode'] == 'source':
+                    if not source_cache and component['model_input']['mode'] == 'source':
                         for key in ('preparation_state_file', 'private_handle_file'):
                             path = component_path.parent / component['model_input'][key]
                             _private_directory(path.parent)
@@ -284,7 +284,7 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
         write_json(path, native)
         program = 'DI_NativeRequester' if kind == 'requester' else 'DI_NativeArtifactAuthority'
         argv = [str(prefix / program), '--config', str(path)]
-        if source_cache:
+        if source_cache and 'wan_generation' not in native:
             # Existing native compatibility form keeps planning, grants and
             # execution in C++; only model transport changes to local files.
             argv += ['--input', native['turns'][0]['input_file'],

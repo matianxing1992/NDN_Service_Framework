@@ -49,7 +49,7 @@ def installed_ledger(prefix, file_digest, capture_fixture_trace):
 
 def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_disk_mib,
             capture_fixture_trace, tile_dit=False, tensor_segment_bytes=None,
-            checkpoint_workload=None):
+            checkpoint_workload=None, local_model_cache=False):
     sys.path.insert(0, str(CHECKOUT / 'Experiments'))
     deployment = runpy.run_path(str(CHECKOUT / 'Experiments/prepare-native-deployment.py'))
     credentials = runpy.run_path(str(CHECKOUT / 'tests/fixtures/spec242/prepare-deployment.py'))
@@ -58,6 +58,8 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
     root.mkdir(mode=0o700)
     network = dict(group=namespace + '/group', service=namespace + '/infer',
                    artifact_service=namespace + '/grants', repo_service=namespace + '/repo-objects')
+    if local_model_cache:
+        del network['repo_service']
     requester = namespace + '/requester'
     authority = namespace + '/authority'
     model_family = '/Model/Test/Wan271'
@@ -91,14 +93,16 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
     shutil.copyfile(TOPOLOGY, topology)
     actor_rows = [('controller', 'controller', 'requester'),
                   ('authority', 'artifact-authority', 'requester'),
-                  ('repo', 'repo', 'requester'), ('requester', 'requester', 'requester')]
+                  ('requester', 'requester', 'requester')]
+    if not local_model_cache:
+        actor_rows.insert(2, ('repo', 'repo', 'requester'))
     actor_rows += [(provider, 'provider', host)
                    for provider, host in zip(providers, PROVIDERS)]
     identities = {actor: namespace + '/' + actor for actor, _, _ in actor_rows}
     actors = [dict(id=actor, kind=kind, node=node, identity=identities[actor],
                    resources=dict(cpus=1, allow_sharing=True), parameters={})
               for actor, kind, node in actor_rows]
-    if checkpoint_workload is not None:
+    if checkpoint_workload is not None and not local_model_cache:
         next(actor for actor in actors if actor['kind'] == 'repo')['parameters'].update({
             'request-timeout-ms': 60000,
         })
@@ -190,8 +194,38 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
             initializer_object_digest=source.get('initializer_digest', ''),
             artifact_profile_digest=catalog['recipe']['artifact_profile_digest'])
 
-    repo_target = dict(repo_node=identities['repo'], provider_identity=identities['repo'],
-                       service_prefix=network['repo_service'])
+    local_input = None
+    if local_model_cache:
+        cache = root / 'cache' / 'local-model-cache'
+        sources = {}
+        for component, (catalog, base) in catalogs.items():
+            source = catalog['source']
+            sources[component] = {}
+            for field, digest_field in (('file', 'digest'),
+                                        ('initializer_file', 'initializer_digest')):
+                if field not in source:
+                    continue
+                identity = source[digest_field]
+                hex_digest = identity[7:]
+                if (len(hex_digest) != 64 or identity != 'sha256:' + hex_digest or
+                        any(char not in '0123456789abcdef' for char in hex_digest)):
+                    raise ValueError('invalid Wan local-model-cache digest')
+                raw = (base / source[field]).resolve(strict=True)
+                target = cache / 'payloads/sha256' / hex_digest[:2] / hex_digest
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                if target.exists():
+                    if not target.samefile(raw):
+                        raise ValueError('duplicate Wan cache digest points to a different file')
+                else:
+                    os.link(raw, target)
+                sources[component][field] = identity
+        marker = dict(schema='ndnsf-di-model-source-cache-v1', sources=sources)
+        write_json(cache / 'cache-identity.json', marker)
+        local_input = dict(mode='source-cache', source_directory=str(cache),
+                           source_namespace=digest((cache/'cache-identity.json').read_bytes()))
+    else:
+        repo_target = dict(repo_node=identities['repo'], provider_identity=identities['repo'],
+                           service_prefix=network['repo_service'])
     grant = dict(authority_service=network['artifact_service'], authority_identity=authority,
                  requester_private_key_file=str(user_private),
                  authority_public_key_file=str(issuer_public), protection_epoch=epoch)
@@ -207,17 +241,22 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
     def requester_config(component):
         catalog, base = catalogs[component]
         catalog = copy.deepcopy(catalog)
-        if component == 'umt5' or checkpoint_workload is not None:
+        if local_model_cache:
+            catalog['source'].pop('file', None)
+            catalog['source'].pop('initializer_file', None)
+        elif component == 'umt5' or checkpoint_workload is not None:
             for name in ('file', 'initializer_file'):
                 if name in catalog['source']:
                     catalog['source'][name] = str(base / catalog['source'][name])
         candidate = layout[component]['candidate_digest']
+        model_input = {'mode': 'source'}
+        if not local_model_cache:
+            model_input.update(repo_target=repo_target,
+                               preparation_state_file=str(root/'models'/component/'preparation.json'),
+                               private_handle_file=str(root/'models'/component/'handle.json'))
         return dict(schema='ndnsf-di-native-requester-v1', core=core, grant=grant,
                     request=dict(request, task=requester_task(catalog)),
-                    catalog=catalog, model_input=dict(
-                        mode='source', repo_target=repo_target,
-                        preparation_state_file=str(root / 'models' / component / 'preparation.json'),
-                        private_handle_file=str(root / 'models' / component / 'handle.json')),
+                    catalog=catalog, model_input=model_input,
                     limits=dict(bootstrap_ms=7200000 if checkpoint_workload else 120000,
                                 max_prepared_entries=6,
                                 max_prepared_bytes=512 << 30 if checkpoint_workload else 512 << 20,
@@ -247,6 +286,8 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
         write_json(path, requester_config(component))
         wan[config_name] = str(path)
     main = requester_config('umt5')
+    if local_input:
+        main['model_input'] = local_input
     main.update(wan_generation=wan, fixed_placement={
         'role_providers': {role: identities[provider] for role, provider in by_role.items()}})
     if capture_fixture_trace:
@@ -349,6 +390,7 @@ def main():
     parser.add_argument('--tensor-segment-bytes', type=int)
     parser.add_argument('--capture-fixture-trace', action='store_true')
     parser.add_argument('--tile-dit', action='store_true')
+    parser.add_argument('--local-model-cache', action='store_true')
     args = parser.parse_args()
     if args.inline_limit_bytes <= 0:
         parser.error('--inline-limit-bytes must be positive')
@@ -359,7 +401,8 @@ def main():
     os.umask(0o077)
     if args.warm_from:
         if any((args.prefix, args.builder, args.output, args.mode, args.exact_packet_disk_mib,
-                args.capture_fixture_trace, args.tile_dit, args.tensor_segment_bytes,
+                args.capture_fixture_trace, args.tile_dit, args.local_model_cache,
+                args.tensor_segment_bytes,
                 args.checkpoint_workload)):
             parser.error('--warm-from uses the cold deployment paths')
         print(prepare_warm(args.warm_from.resolve()))
@@ -372,7 +415,8 @@ def main():
                       args.mode, args.namespace, args.inline_limit_bytes,
                       args.exact_packet_disk_mib, args.capture_fixture_trace, args.tile_dit,
                       args.tensor_segment_bytes,
-                      args.checkpoint_workload.resolve() if args.checkpoint_workload else None))
+                      args.checkpoint_workload.resolve() if args.checkpoint_workload else None,
+                      args.local_model_cache))
 
 
 if __name__ == '__main__':

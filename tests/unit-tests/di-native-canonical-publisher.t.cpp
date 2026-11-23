@@ -1573,10 +1573,17 @@ BOOST_AUTO_TEST_CASE(FilesystemMaterialCacheUsesCheckedExternalRanges)
     BOOST_REQUIRE(payload);
     BOOST_CHECK_EQUAL(nativePlanningDigest(payload->data(), payload->size()),
                       publication.materialDigests[i]);
-    if (name.size() == prefix.size() + 4 && name[-4] == ndn::name::Component("RANGE"))
+    if (name.size() == prefix.size() + 5 && name[-5] == ndn::name::Component("RANGE"))
       range = name;
   }
   BOOST_REQUIRE(range);
+  BOOST_CHECK_EQUAL(range->at(-4).toUri(), initializerDigest.substr(7));
+  auto legacyRange = ndn::Name(prefix).append("RANGE");
+  legacyRange.append(range->at(-3)).append(range->at(-2)).append(range->at(-1));
+  BOOST_CHECK(readNativeFilesystemArtifact(root, prefix, legacyRange, 1U << 20));
+  BOOST_REQUIRE(std::filesystem::remove(root / "cache-identity.json"));
+  BOOST_CHECK(readNativeFilesystemArtifact(root, prefix, *range, 1U << 20));
+  BOOST_CHECK(!readNativeFilesystemArtifact(root, prefix, legacyRange, 1U << 20));
   BOOST_CHECK(!readNativeFilesystemArtifact(root, ndn::Name("/foreign"), *range, 1U << 20));
   BOOST_CHECK(!readNativeFilesystemArtifact(root, prefix, *range, 1));
   {

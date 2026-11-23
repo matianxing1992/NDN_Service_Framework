@@ -749,7 +749,7 @@ writeWanClip(const std::filesystem::path& destination, std::uint32_t framesPerSe
 int
 runWanRequester(const ptree& config, const std::filesystem::path& base, Runtime& runtime,
                 const User& user, const PreparedModel& textEncoder,
-                const ndnsf_distributed_repo::RepoArtifactTarget& target,
+                const std::optional<ndnsf_distributed_repo::RepoArtifactTarget>& target,
                 const std::map<std::string, std::filesystem::path>& componentConfigs,
                 Milliseconds preparationTimeout, const RequestOptions& childOptions,
                 std::uint64_t traceMaxBytes)
@@ -808,8 +808,6 @@ runWanRequester(const ptree& config, const std::filesystem::path& base, Runtime&
     const auto& path = componentConfigs.at(key);
     const auto modelInput = readJson(path).get_child("model_input");
     const auto mode = modelInput.get<std::string>("mode");
-    const auto handle = relativeTo(path.parent_path(),
-                                   modelInput.get<std::string>("private_handle_file"));
     const auto remaining = std::chrono::duration_cast<Milliseconds>(
       options.deadline - std::chrono::steady_clock::now());
     const auto budget = std::min(remaining, preparationTimeout);
@@ -819,8 +817,17 @@ runWanRequester(const ptree& config, const std::filesystem::path& base, Runtime&
     if (mode != "source" && mode != "stored")
       throw std::invalid_argument("Wan secondary model must use source or stored mode");
     return ndnsf::examples::runInterruptiblePreparation([&] {
-      if (mode == "stored") return user.openStoredModel(key, handle, target, budget);
-      return user.prepareStoredModel(key, target,
+      if (!target) {
+        if (mode != "source" || modelInput.size() != 1)
+          throw std::invalid_argument("Wan local cache requires source-only component records");
+        PrepareOptions prepareOptions;
+        prepareOptions.timeout = budget;
+        return user.prepare(key, prepareOptions);
+      }
+      const auto handle = relativeTo(path.parent_path(),
+                                     modelInput.get<std::string>("private_handle_file"));
+      if (mode == "stored") return user.openStoredModel(key, handle, *target, budget);
+      return user.prepareStoredModel(key, *target,
         relativeTo(path.parent_path(), modelInput.get<std::string>("preparation_state_file")),
         handle, budget);
     }, current, [&runtime] { runtime.close(); });
@@ -1046,6 +1053,10 @@ run(int argc, char** argv)
   if (config.get<std::string>("schema", {}) != "ndnsf-di-native-requester-v1")
     throw std::invalid_argument("unsupported requester configuration schema");
   const auto modelInput = config.get_child_optional("model_input");
+  const auto wanConfig = config.get_child_optional("wan_generation");
+  const bool localWanCache = wanConfig && !modelInput &&
+    config.get<bool>("cache_compatibility.enabled", false) &&
+    !config.get<std::string>("cache_compatibility.source_directory", "").empty();
   const auto modelInputMode = modelInput
     ? modelInput->get<std::string>("mode", "") : std::string("source");
   if (modelInputMode != "source" && modelInputMode != "publish-stored" &&
@@ -1063,7 +1074,8 @@ run(int argc, char** argv)
   std::optional<ndnsf_distributed_repo::RepoArtifactTarget> storedModelRepository;
   std::filesystem::path storedPreparationState;
   std::filesystem::path storedPrivateHandle;
-  if (modelInputMode == "publish-stored" || (modelInputMode == "source" && !legacyArgs)) {
+  if (modelInputMode == "publish-stored" ||
+      (modelInputMode == "source" && !legacyArgs && !localWanCache)) {
     if ((modelInputMode == "publish-stored" && !prepareOnly) || modelRepository ||
         config.get_child_optional("encrypted_repository") ||
         config.get_child_optional("cache_compatibility"))
@@ -1109,7 +1121,9 @@ run(int argc, char** argv)
     storedPrivateHandle = relativeTo(base, *handleFile);
   }
   const auto& request = config.get_child("request");
-  const auto wanConfig = config.get_child_optional("wan_generation");
+  if (localWanCache && (modelRepository || config.get_child_optional("encrypted_repository") ||
+                        config.get_child_optional("repository")))
+    throw std::invalid_argument("Wan local cache cannot combine model publication modes");
   if (wanConfig) {
     const auto timeout = wanConfig->get<std::int64_t>("timeout_ms");
     if (timeout <= 0 || timeout > 259'200'000)
@@ -1344,7 +1358,7 @@ run(int argc, char** argv)
       return user.openStoredModel("default", storedPrivateHandle,
         *storedModelRepository, prepareOptions.timeout);
     }
-    if (!legacyArgs) {
+    if (!legacyArgs && !localWanCache) {
       if (!storedModelRepository)
         throw std::logic_error("source model Repo target was not configured");
       return user.prepareStoredModel("default", *storedModelRepository,
@@ -1414,7 +1428,7 @@ run(int argc, char** argv)
       std::cout << "NATIVE_FIXED_PLACEMENT strategy=" << fixedPlacementStrategyId << std::endl;
   }
   if (wanConfig) {
-    return runWanRequester(*wanConfig, base, *runtime, user, prepared, *storedModelRepository,
+    return runWanRequester(*wanConfig, base, *runtime, user, prepared, storedModelRepository,
                            wanComponentConfigs, prepareOptions.timeout, options,
                            traceMaxBytes);
   }

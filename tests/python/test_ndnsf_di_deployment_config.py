@@ -1656,6 +1656,8 @@ def minindn_deployment(deployment):
 
 @pytest.mark.parametrize('change, message', [
     ('normal', ''),
+    ('local-cache', ''),
+    ('local-cache-repo-component', 'local Wan cache requires a source-only component'),
     ('trace', ''),
     ('trace-limit', ''),
     ('trace-limit-disabled', 'requires test_wan_fixture_trace=true'),
@@ -1711,6 +1713,14 @@ def test_minindn_launches_wan_requester_with_isolated_component_paths(
         wan['decoder_config_file'] = wan['denoiser_config_file']
     if change == 'tokenizer-output':
         wan['output_directory'] = 'text'
+    local = change.startswith('local-cache')
+    if local:
+        cache = root / 'local-models'
+        cache.mkdir()
+        (cache / 'cache-identity.json').write_text('{}')
+        requester['model_input'] = {'mode': 'source-cache', 'source_directory': str(cache),
+                                    'source_namespace': 'sha256:' + 'a' * 64}
+        config['actors'] = [actor for actor in config['actors'] if actor['kind'] != 'repo']
     for key in ('dit', 'vae'):
         model = {
             'schema': 'ndnsf-di-native-requester-v1',
@@ -1728,6 +1738,9 @@ def test_minindn_launches_wan_requester_with_isolated_component_paths(
             model['model_input']['private_handle_file'] = '../clips/clip-1/vae-handle.json'
         if key == 'vae' and change == 'missing-weight':
             model['catalog']['source']['initializer_file'] = '../missing-weight.bin'
+        if local and (change == 'local-cache' or key == 'dit'):
+            model['model_input'] = {'mode': 'source'}
+            model['catalog']['source'] = {}
         (models / (key + '.json')).write_text(json.dumps(model))
     deployment = write_config(root, config)
     if message:
@@ -1754,7 +1767,14 @@ def test_minindn_launches_wan_requester_with_isolated_component_paths(
     assert native['wan_generation']['output_directory'] == str(root / 'clips/clip-1')
     assert (root / 'clips').is_dir()
     assert not (root / 'clips/clip-1').exists()
-    assert (models / 'private').stat().st_mode & 0o777 == 0o700
+    if local:
+        assert 'model_input' not in native
+        assert native['cache_compatibility']['source_directory'] == str(cache)
+        assert not (models / 'private').exists()
+        assert all(actor['parameters']['cache-compatibility-source-dir'] == str(cache)
+                   for actor in frozen['actors'] if actor['kind'] == 'provider')
+    else:
+        assert (models / 'private').stat().st_mode & 0o777 == 0o700
 
 
 @pytest.mark.parametrize('departure', [False, True])

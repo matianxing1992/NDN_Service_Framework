@@ -759,6 +759,7 @@ def wan_component_files(requester):
 
 
 def track_wan_component_paths(requester, paths):
+    local_cache = requester['model_input']['mode'] == 'source-cache'
     seen_private = {requester['model_input'][key] for key in
                     ('private_handle_file', 'preparation_state_file')
                     if key in requester['model_input']}
@@ -773,29 +774,33 @@ def track_wan_component_paths(requester, paths):
             paths(copies, fields, field, **options)
             return copies
 
-        model = _object(config.get('model_input'), location + '.model_input',
-                        required={'mode', 'private_handle_file'})
+        model = _object(config.get('model_input'), location + '.model_input', required={'mode'})
         mode = model['mode']
         if mode not in ('source', 'stored'):
             _fail(location + '.model_input.mode', 'expected source or stored')
-        if model.get('repo_target', requester['model_input']['repo_target']) != (
-                requester['model_input']['repo_target']):
-            _fail(location + '.model_input.repo_target', 'must match the Requester Repo target')
-        model_keys = ['private_handle_file']
-        if mode == 'source':
-            _object(model, location + '.model_input', required={'preparation_state_file'})
-            model_keys.append('preparation_state_file')
-        private = component_paths(model, model_keys, location + '.model_input',
-                                  exists=mode == 'stored')
-        if len(set(private.values())) != len(private) or seen_private.intersection(private.values()):
-            _fail(location + '.model_input', 'component private files must be distinct')
-        seen_private.update(private.values())
+        if local_cache:
+            if model != {'mode': 'source'}:
+                _fail(location + '.model_input', 'local Wan cache requires a source-only component')
+        else:
+            target = requester['model_input']['repo_target']
+            if model.get('repo_target', target) != target:
+                _fail(location + '.model_input.repo_target', 'must match the Requester Repo target')
+            model_keys = ['private_handle_file']
+            if mode == 'source':
+                model_keys.append('preparation_state_file')
+            _object(model, location + '.model_input', required=set(model_keys))
+            private = component_paths(model, model_keys, location + '.model_input',
+                                      exists=mode == 'stored')
+            if (len(set(private.values())) != len(private) or
+                    seen_private.intersection(private.values())):
+                _fail(location + '.model_input', 'component private files must be distinct')
+            seen_private.update(private.values())
         source = _object(_object(config.get('catalog'), location + '.catalog').get('source'),
                          location + '.catalog.source')
-        if mode == 'source':
+        if mode == 'source' and not local_cache:
             component_paths(source, ('file', 'initializer_file'), location + '.catalog.source')
         elif source.keys() & {'file', 'initializer_file'}:
-            _fail(location + '.catalog.source', 'stored mode cannot read source files')
+            _fail(location + '.catalog.source', 'use only the configured model store')
         for key, fields in (
                 ('core', ('trust_schema_file',)),
                 ('grant', ('requester_private_key_file', 'authority_public_key_file'))):
@@ -815,9 +820,9 @@ def _translate_requester(requester, network, security, controller, requester_ide
         _fail('requester.model_input.mode', 'expected source, publish-stored, stored or source-cache')
     wan = requester.get('wan_generation')
     if 'wan_generation' in requester:
-        if operation != 'run' or mode not in ('source', 'stored') or (
+        if operation != 'run' or mode not in ('source', 'stored', 'source-cache') or (
                 requester.keys() & {'turns', 'conversation', 'kv_handoff'}):
-            _fail('requester.wan_generation', 'requires source/stored generation without turns')
+            _fail('requester.wan_generation', 'requires a Wan model source without turns')
         field = 'requester.wan_generation'
         models = ('denoiser_config_file', 'decoder_config_file')
         _object(wan, field, required={*models, 'output_directory'})

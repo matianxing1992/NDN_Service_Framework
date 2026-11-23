@@ -164,11 +164,12 @@ def ed25519_key(openssl, stem, env, root):
 
 
 def policy_text(identities, network, provider_roles, tp_base_role):
-    repo_services = [network["repo_service"] + "/" + op for op in REPO_OPERATIONS]
+    repo_services = ([network["repo_service"] + "/" + op for op in REPO_OPERATIONS]
+                     if "repo" in identities else [])
     def rule(kind, identity, services):
         return "{}-policy {{ for {} allow {{ {} }} }}".format(kind, identity, "\n".join(services))
-    providers = [rule("provider", identities["repo"], repo_services),
-                 rule("provider", identities["authority"], [network["artifact_service"]])]
+    providers = [rule("provider", identities["repo"], repo_services)] if repo_services else []
+    providers.append(rule("provider", identities["authority"], [network["artifact_service"]]))
     for actor, roles in provider_roles.items():
         scoped_roles = ([tp_base_role] if tp_base_role else []) + roles
         providers.append(rule("provider", identities[actor], [network["service"]] +
@@ -176,7 +177,8 @@ def policy_text(identities, network, provider_roles, tp_base_role):
             ["/NDNSF/Network/Probe/v1"]))
     users = [rule("user", identities["requester"], repo_services + [
         network["service"], network["artifact_service"], "/NDNSF/Network/Probe/v1"])]
-    users += [rule("user", identities[actor], repo_services) for actor in provider_roles]
+    if repo_services:
+        users += [rule("user", identities[actor], repo_services) for actor in provider_roles]
     return ("name " + identities["controller"] + "/NDNSF/ControllerPolicy/v1\n" +
             "provider-policies {\n" + "\n".join(providers) + "\n}\n" +
             "user-policies {\n" + "\n".join(users) + "\n}\n")

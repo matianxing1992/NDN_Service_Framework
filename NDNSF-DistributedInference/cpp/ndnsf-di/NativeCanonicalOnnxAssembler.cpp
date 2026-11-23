@@ -1986,7 +1986,7 @@ effectiveFilesystemMaterialFetchers(const NativeCanonicalOnnxFetchers& base,
     if (name != root) return std::nullopt;
     return read(name, 4096);
   };
-  const auto limit = std::min<std::uint64_t>({64ULL * 1024 * 1024,
+  const auto limit = std::min<std::uint64_t>({NativeCanonicalMaterialPublicationMaxBytes,
     projection.assemblyContract().maxSourceBytes, projection.assemblyContract().maxAssembledBytes});
   result.fetchEncryptedLargeData = [read, limit,
     service = ndn::Name(projection.plan.serviceName)] (
