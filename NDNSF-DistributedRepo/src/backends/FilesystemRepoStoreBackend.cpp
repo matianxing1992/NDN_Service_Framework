@@ -31,6 +31,13 @@ namespace fs = std::filesystem;
 using ManifestStamp = std::array<uint64_t, 7>;
 constexpr std::size_t MANIFEST_FILE_SIZE_INDEX = 2;
 
+bool
+canShareBytePrefix(std::string_view first, std::string_view second)
+{
+  const auto length = std::min(first.size(), second.size());
+  return first.substr(0, length) == second.substr(0, length);
+}
+
 std::optional<ManifestStamp>
 tryManifestStamp(const fs::path& path)
 {
@@ -772,16 +779,19 @@ FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
       continue;
     const auto key = entry.path().filename().string();
     const auto stamp = manifestStamp(entry.path());
-    const auto known = m_manifestCollisionSummaries.find(key);
     std::shared_ptr<const RepoObjectManifest> manifest;
     ManifestCollisionSummary summary;
-    if (known != m_manifestCollisionSummaries.end() && known->second.stamp == stamp &&
-        isStableManifestStamp(stamp)) {
-      summary = known->second;
+    {
+      std::lock_guard<std::mutex> lock(m_manifestCollisionMutex);
+      const auto known = m_manifestCollisionSummaries.find(key);
+      if (known != m_manifestCollisionSummaries.end()) {
+        if (known->second.stamp == stamp && isStableManifestStamp(stamp))
+          summary = known->second;
+        else
+          m_manifestCollisionSummaries.erase(known);
+      }
     }
-    else {
-      if (known != m_manifestCollisionSummaries.end())
-        m_manifestCollisionSummaries.erase(known);
+    if (!summary.reusable) {
       ManifestObservation observation;
       manifest = cachedManifestUnlocked(entry.path(), &observation);
       if (!manifest)
@@ -803,6 +813,7 @@ FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
       }
       if (summary.reusable && summary.objectName.size() <= 4096 &&
           summary.objectType.size() <= 64) {
+        std::lock_guard<std::mutex> lock(m_manifestCollisionMutex);
         if (m_manifestCollisionSummaries.size() == MAX_SUMMARIES)
           m_manifestCollisionSummaries.erase(m_manifestCollisionSummaries.begin());
         m_manifestCollisionSummaries.emplace(key, summary);
@@ -816,8 +827,7 @@ FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
         result.matchingPackets.insert(canonical);
     }
     if (summary.objectType == "original-packet-set" &&
-        clipPrefix(incomingPrefix, summary.packetPrefix).size() ==
-          std::min(incomingPrefix.size(), summary.packetPrefix.size())) {
+        canShareBytePrefix(incomingPrefix, summary.packetPrefix)) {
       if (!manifest) {
         ManifestObservation observation;
         manifest = cachedManifestUnlocked(entry.path(), &observation);
@@ -833,12 +843,15 @@ FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
     }
     observed.emplace(key, std::move(summary));
   }
-  for (auto cached = m_manifestCollisionSummaries.begin();
-       cached != m_manifestCollisionSummaries.end();) {
-    if (!observed.count(cached->first))
-      cached = m_manifestCollisionSummaries.erase(cached);
-    else
-      ++cached;
+  {
+    std::lock_guard<std::mutex> lock(m_manifestCollisionMutex);
+    for (auto cached = m_manifestCollisionSummaries.begin();
+         cached != m_manifestCollisionSummaries.end();) {
+      if (!observed.count(cached->first))
+        cached = m_manifestCollisionSummaries.erase(cached);
+      else
+        ++cached;
+    }
   }
   result.recheck = [this, directory, observed = std::move(observed)] {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -874,6 +887,20 @@ FilesystemRepoStoreBackend::findPacketManifests(const std::string& canonical,
     if (!entry.is_regular_file() || entry.path().extension() != ".json")
       continue;
     const auto& path = entry.path();
+    // A stable summary may rule out a match; positives still load the exact index.
+    std::optional<ManifestStamp> disjoint;
+    {
+      std::lock_guard<std::mutex> lock(m_manifestCollisionMutex);
+      const auto known = m_manifestCollisionSummaries.find(path.filename().string());
+      if (known != m_manifestCollisionSummaries.end() &&
+          known->second.objectType == "original-packet-set" &&
+          !canShareBytePrefix(known->second.packetPrefix, canonical) &&
+          (prefixMatch || !canShareBytePrefix(known->second.packetPrefix, alternate))) {
+        disjoint = known->second.stamp;
+      }
+    }
+    if (disjoint && isStableManifestStamp(*disjoint) && manifestStamp(path) == *disjoint)
+      continue;
     auto cached = cachedManifestUnlocked(path);
     if (!cached) {
       cached = loadManifestUnlocked(path);

@@ -1747,6 +1747,43 @@ BOOST_AUTO_TEST_CASE(CatalogParseReuseRequiresExactCurrentBytes)
   BOOST_CHECK_GT(catalogParses.load(), parsesBeforeReopen);
 }
 
+BOOST_AUTO_TEST_CASE(PacketLookupRechecksDisjointCatalogSummaryAfterManifestChange)
+{
+  Fixture fixture;
+  const auto directory = fixture.root / "packet-summary";
+  auto store = std::make_shared<FilesystemRepoStoreBackend>(directory.string());
+  RepoCore repo(fixture.capability(), store);
+  AdmissionFile incoming(fixture, "summary-before", 2);
+  auto manifest = repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
+  const auto sidecar = std::filesystem::directory_iterator(directory / "manifests")->path();
+  const auto originalTime = std::filesystem::last_write_time(sidecar);
+  const ndn::Name replacement("/other/producer");
+  const auto canonical = replacement.toUri(ndn::name::UriFormat::CANONICAL);
+  const auto alternate = replacement.toUri(ndn::name::UriFormat::ALTERNATE);
+  const std::unordered_set<std::string_view> lookup{canonical};
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  const auto catalog = store->inspectOriginalPacketWriteCatalog(lookup);
+  BOOST_CHECK(catalog.matchingPackets.empty());
+  BOOST_REQUIRE_EQUAL(catalog.objectTypes.count(manifest.objectName), 1U);
+
+  BOOST_CHECK(store->findPacketManifests(canonical, alternate, false).empty());
+  BOOST_REQUIRE_EQUAL(store->findPacketManifests("/", "/", true).size(), 1U);
+  const auto& existingMember = manifest.packetNames.back();
+  BOOST_REQUIRE_EQUAL(store->findPacketManifests(existingMember, existingMember, false).size(), 1U);
+
+  manifest.packetNames.back() = alternate;
+  {
+    std::ofstream output(sidecar, std::ios::trunc);
+    output << manifest.toJson();
+    output.close();
+    BOOST_REQUIRE(output.good());
+  }
+  std::filesystem::last_write_time(sidecar, originalTime);
+  const auto matching = store->findPacketManifests(canonical, alternate, false);
+  BOOST_REQUIRE_EQUAL(matching.size(), 1U);
+  BOOST_CHECK_EQUAL(matching.front().packetNames.back(), alternate);
+}
+
 BOOST_AUTO_TEST_CASE(CatalogParseCacheEvictsBeyondEntryBound)
 {
   Fixture fixture;

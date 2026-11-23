@@ -192,7 +192,8 @@ private:
   mutable std::unordered_map<std::string, CachedManifest> m_catalogParseCache;
   mutable std::mutex m_catalogParseMutex;
   mutable size_t m_catalogEncodedBytes = 0;
-  // The store mutex owns this bounded projection of stable filesystem sidecars.
+  mutable std::mutex m_manifestCollisionMutex;
+  // A separate lock lets concurrent lookups consult these summaries during writes.
   mutable std::unordered_map<std::string, ManifestCollisionSummary> m_manifestCollisionSummaries;
 };
 

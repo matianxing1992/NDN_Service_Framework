@@ -2507,12 +2507,14 @@ RepoNode::insertWirePacketsImpl(
       traceStorage("worker-start");
       // Legacy mutations share the transaction fence with the single INSERT writer.
       std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+      traceStorage("worker-lock-acquired");
       if (requireActive)
         requireActive();
       if (storageBinding) {
         (void)reservePersistentOriginalPacketStorage(
           manifest, status.operationId, authenticatedWriter, *storageBinding, admission);
       }
+      traceStorage("reservation-ready");
       storedManifest = useOwnedSpool
         ? m_core.commitOwnedOriginalPacketSpool(manifest, commitReadRange, requireCurrent)
         : m_core.commitOriginalPacketReader(manifest, commitReadRange, requireCurrent);
@@ -2534,6 +2536,7 @@ RepoNode::insertWirePacketsImpl(
       const auto measured = measurePersistentUserStorageObject(storedManifest);
       traceStorage("owner-verify-finish");
       std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+      traceStorage("owner-lock-acquired");
       requireCurrent();
       const auto current = measurePersistentUserStorageObject(storedManifest, false);
       if (current.payloadWireBytes != measured.payloadWireBytes ||
