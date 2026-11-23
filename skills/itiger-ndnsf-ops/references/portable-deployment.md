@@ -43,6 +43,13 @@ Use `cluster prepare` only for the preparation workflow your configuration
 declares. Use `cluster down` for required closeout of that same deployment.
 One owner controls the allocation and its writers. If submit or status loses
 its response, reconcile the original job, boot and config digest before retrying.
+For an attached owner running as a Slurm job, size its own `--time` to cover
+its CLI wait and closeout. Check both jobs' actual time limits after submission.
+The queue delay counts against the running owner's wall time. Its SIGTERM
+handler can cancel the child when the owner expires. A normal account may be
+unable to extend an already running owner. If replacement is necessary, verify
+that the original deployment never acquired nodes before releasing a successor,
+and repoint the acceptance dependencies to the new verified receipt chain.
 When Slurm has evicted an old completed prerequisite, verify its exact
 `sacct` status, exit code and artifact identity before submitting. Use scheduler
 dependencies for still-active jobs and check the completed receipts again in
