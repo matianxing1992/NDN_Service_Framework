@@ -145,6 +145,15 @@ for the same intervals when investigating a slowdown as the store grows.
 After every trial, verify both deployments have stopped, retain the reports, and remove the
 trial's private Repo store and generated source. A new write trial uses a fresh private store.
 
+To isolate the effect of the host page cache, run two reads of the same private store with
+distinct deployment IDs and Repo processes. After the writer exits, sync the trial's regular
+Repo files, then advise `POSIX_FADV_DONTNEED` on those files. Verify page residency with
+`mincore` before launching the first read and again before the second read. Capture Repo
+`read_bytes` at `before-requester` and `after-requester` in the process statistics. The first
+sample includes startup inventory verification, which can populate the page cache before
+the Requester starts. Report startup and native read times separately. Keep the store only
+until both reads finish, then apply the per-trial cleanup above.
+
 For the 8,400 B tuned comparison, set the Repo actor's `resources.cpus` to at least five
 and give its `parameters` the following native settings. This applies to the new write
 and the independent read.
