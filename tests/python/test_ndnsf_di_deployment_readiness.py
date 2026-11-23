@@ -122,7 +122,7 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            adapter = Path(__file__).resolve().parents[1] / "fixtures" / "spec105_production_adapter.py"
+            adapter = Path(__file__).resolve().parents[1] / "fixtures" / "production_adapter.py"
             profile = root / "deployment.json"
             status_file = root / "status.json"
             metrics_file = root / "metrics.json"
@@ -171,12 +171,12 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
             }), encoding="utf-8")
             cases = [
                 (["provider", "--profile", str(profile), "--dry-run"],
-                 "spec105_production_adapter.py"),
+                 "production_adapter.py"),
                 (["run", "--profile", str(profile), "--plan", str(plan),
                   "--request", str(request), "--out", str(root / "result.json"),
-                  "--dry-run"], "spec105_production_adapter.py"),
+                  "--dry-run"], "production_adapter.py"),
                 (["bench", "--campaign", str(campaign), "--out", str(root / "bench"),
-                  "--dry-run"], "spec105_production_adapter.py"),
+                  "--dry-run"], "production_adapter.py"),
             ]
             for args, expected_adapter in cases:
                 with self.subTest(command=args[0]):
