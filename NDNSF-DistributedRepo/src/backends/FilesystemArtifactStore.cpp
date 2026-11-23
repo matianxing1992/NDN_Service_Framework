@@ -918,24 +918,17 @@ FilesystemArtifactPayloadStore::inspectCommitted(
   const ArtifactReference& artifact) const
 {
   const auto committed = committedPath(artifact);
-  std::error_code error;
-  const auto status = fs::symlink_status(committed, error);
-  if (error == std::errc::no_such_file_or_directory) {
-    return {};
+  struct stat status{};
+  if (::lstat(committed.c_str(), &status) != 0) {
+    if (errno == ENOENT)
+      return {};
+    throwSystem("repo-artifact-committed-stat-failed", "lstat", committed);
   }
-  if (error) {
-    throw std::runtime_error("repo-artifact-committed-stat-failed: " + error.message());
-  }
-  CommittedPayloadMetadata result;
-  result.exists = fs::exists(status);
-  result.regularFile = fs::is_regular_file(status);
-  if (result.regularFile) {
-    result.sizeBytes = fs::file_size(committed, error);
-    if (error) {
-      throw std::runtime_error("repo-artifact-committed-stat-failed: " + error.message());
-    }
-  }
-  return result;
+  if (!S_ISREG(status.st_mode))
+    return {true, false, 0};
+  if (status.st_size < 0)
+    throw std::runtime_error("repo-artifact-committed-stat-failed: negative payload size");
+  return {true, true, static_cast<uint64_t>(status.st_size)};
 }
 
 void

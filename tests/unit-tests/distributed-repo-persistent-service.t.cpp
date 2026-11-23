@@ -1784,6 +1784,24 @@ BOOST_AUTO_TEST_CASE(OwnerMetadataMeasurementUsesActualFileBytes)
   BOOST_CHECK_EQUAL(second.manifestWireBytes, first.manifestWireBytes + 1);
   BOOST_CHECK(second.manifest.hasSameMetadata(first.manifest));
   BOOST_CHECK(backend.get(manifest.objectName).payload == bytes);
+
+  const ArtifactReference reference{manifest.objectName, "sha256", manifest.sha256, bytes.size(),
+    "artifact-manifest-v2", "/producer/manifest/measured", "/producer", "epoch"};
+  FilesystemArtifactPayloadStore payloadStore(root.string(), 4096);
+  const auto committed = payloadStore.committedPath(reference);
+  const auto saved = root / "saved-payload";
+  std::filesystem::rename(committed, saved);
+  const auto missing = backend.probeObjectMetadata(manifest.objectName);
+  BOOST_CHECK(!missing.payloadPresent);
+  BOOST_CHECK(!missing.payloadRepresentationValid);
+  std::filesystem::create_symlink(saved, committed);
+  const auto symlink = backend.probeObjectMetadata(manifest.objectName);
+  BOOST_CHECK(symlink.payloadPresent);
+  BOOST_CHECK(!symlink.payloadRepresentationValid);
+  BOOST_CHECK_EQUAL(symlink.payloadSize, 0);
+  std::filesystem::remove(committed);
+  std::filesystem::rename(saved, committed);
+  BOOST_CHECK(backend.get(manifest.objectName).payload == bytes);
 }
 
 BOOST_AUTO_TEST_CASE(SqliteMetadataMeasurementPreservesEmptyPayloadRepresentation)

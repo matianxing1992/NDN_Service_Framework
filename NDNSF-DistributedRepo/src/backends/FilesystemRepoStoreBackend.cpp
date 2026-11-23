@@ -1146,9 +1146,11 @@ FilesystemRepoStoreBackend::probeObjectMetadataSnapshot(const std::string& objec
   try {
     result.manifest = readManifestUnlocked(objectName);
     const auto path = manifestPath(objectName);
-    if (!fs::is_regular_file(path))
+    struct stat metadata{};
+    if (::lstat(path.c_str(), &metadata) != 0 ||
+        !S_ISREG(metadata.st_mode) || metadata.st_size < 0)
       throw std::runtime_error("repo-file-manifest-measurement-unavailable");
-    result.manifestWireBytes = fs::file_size(path);
+    result.manifestWireBytes = static_cast<uint64_t>(metadata.st_size);
     result.manifestMeasurementAvailable = true;
   }
   catch (const std::out_of_range&) {
