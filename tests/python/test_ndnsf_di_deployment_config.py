@@ -3857,7 +3857,8 @@ def test_host_finite_keeps_native_arguments_separate_from_launcher(ops, tmp_path
     state = dict(boot_id='b'*32, configuration_sha256='a'*64,
                  evidence_root=str(tmp_path), launches=[])
     native = ['/opt/di/libexec/ndnsf-di/ndnsf-di-device-query', '--count', '1']
-    launcher = [sys.executable, '-c', 'import time; print("{}",flush=True); time.sleep(0.05)']
+    launcher = [sys.executable, '-c', 'import sys,time; print("{}",flush=True); '
+                'print("INFO: cleanup",file=sys.stderr,flush=True); time.sleep(0.05)']
     monkeypatch.setattr(owner, '_container_command',
         lambda args, argv, separate_session: launcher)
     env = owner.cluster._environment(tmp_path/'home', tmp_path/'nfd.sock', 'provider', state)
@@ -3867,6 +3868,7 @@ def test_host_finite_keeps_native_arguments_separate_from_launcher(ops, tmp_path
     row = state['launches'][0]
     assert row['native_argv'] == native and row['argv'] == launcher
     assert row['id'] == 'management-0' and row['exit_code'] == 0
+    assert Path(row['stderr_log']).read_text() == 'INFO: cleanup\n'
 
 
 def test_native_ready_and_withdrawal_use_namespace_pid(ops, tmp_path):
