@@ -108,11 +108,12 @@ struct UavPersonModelBackend::Impl
   Impl(const UavPersonTrackingProfile& profileValue,
        const std::filesystem::path& detectorModel,
        const std::filesystem::path& reidModel,
-       size_t batch)
+       size_t batch, UavPersonDetectorSession::ModelFormat detectorFormat)
     : profile(profileValue)
     , reid(reidModel, static_cast<size_t>(std::min<uint64_t>(batch, 32)))
     , detector(detectorModel, 0.1F, 0.7F,
-               static_cast<size_t>(profileValue.limits.at("maxPersonsPerFrame") + 1))
+               static_cast<size_t>(profileValue.limits.at("maxPersonsPerFrame") + 1),
+               detectorFormat)
   {
     if (profile.requestedDevice != "cpu") {
       throw std::invalid_argument("native person backend currently supports CPU only");
@@ -128,11 +129,15 @@ UavPersonModelBackend::UavPersonModelBackend(const UavPersonTrackingProfile& pro
                                              const std::filesystem::path& reidModel,
                                              size_t reidBatchSize)
 {
-  if (profile.detectorPreprocessId != "yolo-letterbox640-raw-box-v1") {
-    throw std::invalid_argument(
-      "native person backend supports the 640 letterbox detector preprocess only");
+  using Format = UavPersonDetectorSession::ModelFormat;
+  auto detectorFormat = Format::PERSON_RAW;
+  if (profile.detectorPreprocessId == "yolo-default640-stock-box-v1") {
+    detectorFormat = Format::PERSON_END_TO_END;
   }
-  m_impl = std::make_unique<Impl>(profile, detectorModel, reidModel, reidBatchSize);
+  else if (profile.detectorPreprocessId != "yolo-letterbox640-raw-box-v1") {
+    throw std::invalid_argument("unsupported native person detector preprocessing");
+  }
+  m_impl = std::make_unique<Impl>(profile, detectorModel, reidModel, reidBatchSize, detectorFormat);
 }
 
 UavPersonModelBackend::~UavPersonModelBackend() = default;
@@ -172,6 +177,7 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
   Json frames = Json::array();
   Json cameras = Json::object();
   uint64_t reidBatches = 0;
+  const bool rectangular = profile.detectorPreprocessId == "yolo-default640-stock-box-v1";
   for (size_t index = 0; index < 3; ++index) {
     if (stillAuthorized && !stillAuthorized()) {
       throw std::runtime_error("person backend cancelled between cameras");
@@ -182,8 +188,11 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
         rgb.height != static_cast<uint32_t>(expected.height)) {
       throw std::invalid_argument("admitted JPEG dimensions disagree with the window context");
     }
-    const auto letterboxed = letterboxPersonImage(rgb);
-    const auto candidates = m_impl->detector.detect(letterboxed.tensor, stillAuthorized);
+    constexpr auto size = static_cast<int>(UavPersonDetectorSession::INPUT_SIZE);
+    const auto detectorInput = rectangular ? letterboxRectangularImage(rgb) :
+      UavRectLetterboxedImage{letterboxPersonImage(rgb), size, size};
+    const auto& letterboxed = detectorInput.image;
+    const auto candidates = m_impl->detector.detect(detectorInput, stillAuthorized);
     if (candidates.size() > profile.limits.at("maxPersonsPerFrame")) {
       throw std::invalid_argument("person backend exceeded maxPersonsPerFrame");
     }

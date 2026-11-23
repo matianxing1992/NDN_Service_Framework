@@ -10,8 +10,14 @@ int
 main(int argc, char** argv)
 {
   try {
-    const auto describe = getOption(argc, argv, "--describe-person-computation", "");
-    if (hasFlag(argc, argv, "--describe-person-computation")) {
+    const bool describeNative = hasFlag(argc, argv, "--describe-native-person-computation");
+    const bool describeWorker = hasFlag(argc, argv, "--describe-person-computation");
+    if (describeNative || describeWorker) {
+      if (describeNative && describeWorker) {
+        throw std::invalid_argument("select one person computation descriptor");
+      }
+      const auto describe = getOption(argc, argv, describeNative ?
+        "--describe-native-person-computation" : "--describe-person-computation", "");
       if (describe != "stdout") throw std::invalid_argument("descriptor accepts stdout only");
       const auto requiredPath = [&] (const std::string& option) {
         const auto path = getOption(argc, argv, option, "");
@@ -20,10 +26,13 @@ main(int argc, char** argv)
         }
         return std::filesystem::path(path);
       };
-      std::cout << describeUavPersonComputation(
+      const auto manifest = describeNative ? describeUavPersonNativeComputation(
+        requiredPath("--model"), requiredPath("--tracking-profile"), requiredPath("--reid-model")) :
+        describeUavPersonComputation(
         requiredPath("--model"), requiredPath("--tracking-profile"),
         requiredPath("--reid-model"), requiredPath("--worker-python"),
-        requiredPath("--worker-script")) << std::endl;
+        requiredPath("--worker-script"));
+      std::cout << manifest << std::endl;
       return 0;
     }
     const auto appConfigPath = getOption(argc, argv, "--app-config", "");

@@ -372,6 +372,18 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
       (*beginWindow)(0);
       return;
     }
+    const auto& provider = sourceProviders[index];
+    if (!user.isRequestBootstrapReady(uav::SERVICE_TRACKING_SOURCE, {provider})) {
+      const auto elapsed = std::chrono::steady_clock::now() - bootstrapStarted;
+      if (elapsed >= std::chrono::milliseconds(controllerReadyTimeoutMs)) {
+        failBootstrap("source-info authorization readiness timeout for UAV" +
+                      std::to_string(index + 1));
+        return;
+      }
+      scheduler.schedule(ndn::time::milliseconds(controllerReadyRetryMs),
+        [self = shared_from_this(), index] { self->verifySourceInfos(index); });
+      return;
+    }
     uav::UavSourceInfoRequest request;
     request.cameraId = "UAV" + std::to_string(index + 1);
     if (sourceGenerations && !sourceGenerations->generations.empty()) {
@@ -388,14 +400,14 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
     nsf::RequestMessage message;
     message.setPayload(payload, payload.size());
     try {
-      (void)user.RequestServiceTargeted(
-        sourceProviders[index], uav::SERVICE_TRACKING_SOURCE, message, 5000,
+      const auto requestId = user.RequestServiceTargeted(
+        provider, uav::SERVICE_TRACKING_SOURCE, message, 5000,
         [self = shared_from_this(), index] (const ndn::Name&) {
           boost::asio::post(self->face.getIoContext(),
             [self, index] { self->failBootstrap("source-info timeout for UAV" +
                                                 std::to_string(index + 1)); });
         },
-        [self = shared_from_this(), index, request, expectedProvider = sourceProviders[index]]
+        [self = shared_from_this(), index, request, expectedProvider = provider]
         (const nsf::ResponseMessage& response) {
           const auto status = response.getStatus();
           const auto bytes = response.getPayload();
@@ -429,6 +441,9 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
               }
             });
         });
+      if (requestId.empty()) {
+        failBootstrap("source-info request not admitted for UAV" + std::to_string(index + 1));
+      }
     }
     catch (const std::exception& error) {
       failBootstrap(std::string("source-info could not start: ") + error.what());

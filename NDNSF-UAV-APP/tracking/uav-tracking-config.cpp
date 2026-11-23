@@ -261,9 +261,17 @@ validateTrackingProviderConfig(const UavTrackingProviderConfig& config)
     require(run.requestTimeoutMs > 1000 && run.requestTimeoutMs <= 1200000,
             "invalid prepared tracking request budget");
     reference(run.model, compute);
-    reference(run.workerPython, compute);
-    reference(run.workerScript, compute);
     const bool person = compute && run.mode == TrackingMode::PERSON;
+    if (compute && !person) {
+      require(run.model.path.extension() == ".onnx",
+              "vehicle compute requires a prepared raw ONNX detector");
+      require(run.workerPython.path.empty() && run.workerScript.path.empty(),
+              "native vehicle compute cannot load worker assets");
+    }
+    reference(run.workerPython, false);
+    reference(run.workerScript, false);
+    require(run.workerPython.path.empty() == run.workerScript.path.empty(),
+            "tracking worker executable and script must be supplied together");
     reference(run.profile, person);
     reference(run.reidModel, person);
     reference(run.computationManifest, person);

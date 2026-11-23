@@ -54,6 +54,7 @@ class PersonProcessTest(unittest.TestCase):
         compute = specs["compute"].command
         gs = specs["ground-station"].command
         for flag, expected in (("--tracking-profile", self.person["profile"]),
+                               ("--person-computation-manifest", self.person["computationManifest"]),
                                ("--reid-model", self.person["reidModel"]),
                                ("--worker-python", self.person["workerPython"])):
             self.assertEqual(compute[compute.index(flag) + 1], expected)
@@ -162,6 +163,29 @@ class PersonProcessTest(unittest.TestCase):
             self.assertNotIn("/host/", value["pythonpath"])
             self.assertIsNone(value["loader"])
 
+    def test_native_description_uses_main_binary_without_discovering_worker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "native-fixture"
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "import json, sys\n"
+                "assert '--describe-native-person-computation' in sys.argv\n"
+                "assert '--worker-python' not in sys.argv\n"
+                "print(json.dumps(dict(schema='uav-person-computation-manifest-v2', "
+                "backendKind='native-onnx')))\n")
+            executable.chmod(0o700)
+            with patch("run_multicamera_tracking_demo._installed_program",
+                       return_value=str(executable)) as installed, \
+                    patch("run_multicamera_tracking_demo._installed_tracking_script") as worker:
+                result = _describe_person_computation(
+                    {**self.person, "workerPython": None}, root / "yolo.onnx", root,
+                    application_mode="main")
+            installed.assert_called_once_with("UavDroneApp")
+            worker.assert_not_called()
+            self.assertIsNone(result["workerPython"])
+            self.assertIsNone(result["installedWorker"])
+
     def test_failed_description_invalidates_prior_success(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -196,7 +220,11 @@ class PersonProcessTest(unittest.TestCase):
                 deadline = time.monotonic() + 1
                 while time.monotonic() < deadline:
                     status = Path(f"/proc/{pid}/stat")
-                    if not status.exists() or status.read_text().split(")", 1)[1].split()[0] == "Z":
+                    try:
+                        state = status.read_text().split(")", 1)[1].split()[0]
+                    except (FileNotFoundError, ProcessLookupError):
+                        break
+                    if state == "Z":
                         break
                     time.sleep(.02)
                 else:

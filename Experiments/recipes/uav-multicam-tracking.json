@@ -55,12 +55,17 @@
   "consumers": [
     {
       "entry": "Experiments/UAV/run_multicamera_tracking_demo.py",
-      "args": ["--source", "<prepared root>", "--model", "<prepared root>/3UAVs_YOLOv8n.pt", "--license", "Apache-2.0"]
+      "args": ["--source", "<prepared root>", "--model", "<prepared root>/3UAVs_YOLOv8n.onnx", "--license", "Apache-2.0"]
     }
   ],
   "expectedFiles": {
     "detectorCheckpoint": "3UAVs_YOLOv8n.pt",
     "views": ["uav1_1min.mp4", "uav2_1min.mp4", "uav3_1min.mp4"]
   },
-  "knownGap": "The demo's own DEFAULT_MODEL constant names 3UAVs.pt, while the upstream artifact is 3UAVs_YOLOv8n.pt; a default run therefore reports a missing checkpoint even with the asset present. Pass --model explicitly, which the documented invocation already does."
+  "preparation": {
+    "entry": "Experiments/UAV/prepare_vehicle_detector.py",
+    "args": ["--checkpoint", "<prepared root>/3UAVs_YOLOv8n.pt", "--checkpoint-sha256", "c51091c489af103ab641c3db0580231b1ed622bfa1f95694ef0fa59607ff1117", "--output", "<prepared root>/3UAVs_YOLOv8n.onnx"],
+    "classNames": ["car", "truck", "van"],
+    "testedTools": {"ultralytics": "8.4.213", "torch": "2.2.2+cpu", "onnx": "1.17.0", "onnxruntime": "1.19.2"}
+  }
 }

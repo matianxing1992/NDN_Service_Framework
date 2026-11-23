@@ -303,7 +303,9 @@ def build(bld):
                     use='ndnsf-uav-tracking ndn-service-framework '
                         'NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL ONNXRUNTIME',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
-                    defines=['HAVE_TESTS'], rpath=tracking_rpath, install_path=None)
+                    defines=['HAVE_TESTS'] + (['NDNSF_UAV_TEST_HAS_OPENCV']
+                                              if bld.env.HAVE_UAV_OPENCV else []),
+                    rpath=tracking_rpath, install_path=None)
         bld.program(target='../uav-tracking-job-flow-tests',
                     name='uav-tracking-job-flow-tests',
                     source=[bld.path.find_node('main.cpp'),
@@ -1953,6 +1955,7 @@ def build(bld):
                             # contains sources this list already names and the link would then see
                             # every one of them twice.
                             'NDNSF-UAV-APP/tracking/uav-tracking-provider.cpp',
+                            'NDNSF-UAV-APP/tracking/uav-vehicle-model-backend.cpp',
                             'NDNSF-UAV-APP/tracking/uav-vehicle-tracking-engine.cpp',
                             'NDNSF-UAV-APP/shared/uav-person-window-admission.cpp',
                             'NDNSF-UAV-APP/shared/UavWindowBinding.cpp',
@@ -1999,7 +2002,8 @@ def build(bld):
                           '../NDNSF-UAV-APP/shared'],
                 use=('NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB ONNXRUNTIME '
                      'GSTREAMER GMODULE FFI PCRE DL TOKENIZER_BRIDGE sqlite3'
-                     + (' gtkmm' if 'uav' in bld.env.NDNSF_COMPONENTS else '')),
+                     + (' gtkmm' if 'uav' in bld.env.NDNSF_COMPONENTS else '')
+                     + (' UAV_OPENCV' if bld.env.HAVE_UAV_OPENCV else '')),
                 lib=['jpeg'] if 'uav' in bld.env.NDNSF_COMPONENTS else [],
                 # NAC-ABE exposes its test-only authority state under
                 # HAVE_TESTS.  The framework's generated config header does

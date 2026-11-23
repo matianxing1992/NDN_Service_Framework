@@ -107,7 +107,8 @@ def parse_person_profile(payload: bytes) -> PersonProfile:
     detector_preprocess = LEGACY_DETECTOR_PREPROCESS_ID
     if version_two:
         detector_preprocess = _ascii_string(value["detectorPreprocessId"])
-        if detector_preprocess not in (RAW_DETECTOR_PREPROCESS_ID, NMS50_DETECTOR_PREPROCESS_ID):
+        if detector_preprocess not in (LEGACY_DETECTOR_PREPROCESS_ID, RAW_DETECTOR_PREPROCESS_ID,
+                                       NMS50_DETECTOR_PREPROCESS_ID):
             raise ValueError("unsupported person profile: detectorPreprocessId")
     expected = {"trackingMode": "indoor-person-reid", "architecture": "osnet_x1_0"}
     for key, text in expected.items():

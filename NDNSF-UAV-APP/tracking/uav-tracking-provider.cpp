@@ -2,6 +2,7 @@
 #include "ndn-service-framework/configured-actor-name.hpp"
 #include "UavTrackingCoordinator.hpp"
 #include "uav-vehicle-tracking-engine.hpp"
+#include "uav-vehicle-model-backend.hpp"
 
 #ifdef NDNSF_UAV_TRACKING_TEST_SEAM
 #include "tests/fixtures/uav-tracking-provider-access.hpp"
@@ -570,12 +571,16 @@ struct LoadedVehicleComputation
   std::map<std::filesystem::path, std::string> assets;
 };
 
+int
+collectLoadedNativePath(dl_phdr_info* info, size_t size, void* context) noexcept;
+
 LoadedVehicleComputation
-loadVehicleComputation(const Options& options, const std::function<bool()>& stillAuthorized)
+loadVehicleComputation(const Options& options,
+                       const std::function<bool()>& stillAuthorized)
 {
   LoadedVehicleComputation result;
   uav::person_json::Json identity = {
-    {"schema", "uav-vehicle-native-computation-v1"},
+    {"schema", "uav-vehicle-native-computation-v2"},
     {"policy", uav::person_json::Json::parse(uav::VehicleTrackingPolicy().canonicalJson())}};
   const auto add = [&] (const std::string& label, const std::filesystem::path& path) {
     if (!std::filesystem::is_regular_file(path)) {
@@ -586,12 +591,21 @@ loadVehicleComputation(const Options& options, const std::function<bool()>& stil
     identity[label] = digest;
   };
   add("model", options.model);
-  add("workerPython", options.workerPython);
-  add("tracking_worker.py", options.workerScript);
-  const auto directory = std::filesystem::path(options.workerScript).parent_path();
-  for (const auto* helper : {"motion_estimator.py", "motion_schema.py", "observation_schema.py",
-                             "byte_track_state.py"}) {
-    add(helper, directory / helper);
+  identity["onnxRuntime"] = uav::personOnnxRuntimeId();
+  LoadedNativePaths paths;
+  if (dl_iterate_phdr(collectLoadedNativePath, &paths) != 0) {
+    if (paths.error) std::rethrow_exception(paths.error);
+    throw std::runtime_error("cannot enumerate vehicle native artifacts");
+  }
+  for (const auto& path : paths.libraries) {
+    const auto name = std::filesystem::path(path).filename().string();
+    for (const std::string_view library : {"libndnsf-uav-tracking.so", "libonnxruntime.so",
+                                          "libopencv_core.so", "libopencv_imgproc.so",
+                                          "libjpeg.so"}) {
+      if (std::string_view(name).substr(0, library.size()) == library) {
+        identity["library:" + name] = sha256File(path, 1024ULL * 1024 * 1024, stillAuthorized);
+      }
+    }
   }
   // Read the mapped executable, even if its installed path has since been replaced.
   identity["nativeExecutable"] = sha256File("/proc/self/exe", 1024ULL * 1024 * 1024,
@@ -677,12 +691,14 @@ loadPersonComputation(const Options& options,
       hashArtifact(options.reidModel) != result.profile.reidDigest) {
     throw std::invalid_argument("person model files do not match the tracking profile");
   }
-  const auto manifestWire = readBoundedPersonFile(options.computationManifest,
-                                                  uav::MAX_PERSON_COMPUTATION_BYTES);
-  const auto manifestRoot = uav::person_json::parseBounded(manifestWire,
-    uav::MAX_PERSON_COMPUTATION_BYTES);
-  if (manifestRoot.at("schema") == "uav-person-computation-manifest-v2") {
-    result.manifest = uav::parseUavPersonComputationManifest(manifestWire, result.profile);
+  std::optional<uav::UavPersonComputationManifest> expectedManifest;
+  if (options.describePersonComputation.empty()) {
+    const auto manifestWire = readBoundedPersonFile(options.computationManifest,
+                                                    uav::MAX_PERSON_COMPUTATION_BYTES);
+    expectedManifest = uav::parseUavPersonComputationManifest(manifestWire, result.profile);
+  }
+  if (expectedManifest && expectedManifest->backendKind == "native-onnx") {
+    result.manifest = *expectedManifest;
     if (result.manifest.backendKind != "native-onnx" ||
         result.manifest.trackerContract.empty() || result.manifest.ortRuntime.empty()) {
       throw std::invalid_argument("unsupported native person computation manifest");
@@ -745,6 +761,9 @@ loadPersonComputation(const Options& options,
     native.emplace("library:" + path, hashArtifact(path));
   }
   result.manifest = uav::makeUavPersonComputationManifest(result.profile, backend, native);
+  if (expectedManifest && expectedManifest->canonicalJson != result.manifest.canonicalJson) {
+    throw std::invalid_argument("person computation runtime or inventory changed");
+  }
   return result;
 }
 
@@ -1613,6 +1632,9 @@ struct ProviderRuntime
   std::shared_ptr<uav::UavPersonPublishedFrameStore> frames;
   std::shared_ptr<uav::UavTrackingWorkerSession> session;
   std::shared_ptr<uav::UavPersonModelBackend> personBackend;
+#ifdef NDNSF_UAV_TRACKING_TEST_SEAM
+  uav::UavTrackingProviderTestAccess::VehicleBackend testVehicleBackend;
+#endif
   nsf::ServiceProvider::RequestHandler requestHandler;
   std::function<void(nsf::ServiceProvider::CollaborationContext&, const nsf::RequestMessage&,
                      TerminalIntent&, const std::shared_ptr<std::atomic<bool>>&, std::mutex&)> roleHandler;
@@ -1641,37 +1663,68 @@ installRuntimeHandlers(ProviderRuntime& runtime,
     return sha256File(path, 1024ULL * 1024 * 1024, authorized);
   };
   const auto modelDigest = options.role == "compute" ? hashWorkerAsset(options.model) : std::string();
-  const auto workerImplementationDigest = options.role == "compute"
-    ? sha256(bufferFrom(hashWorkerAsset(options.workerScript) + hashWorkerAsset(
-        std::filesystem::path(options.workerScript).parent_path() / "motion_estimator.py")))
-    : std::string();
   const auto personComputation = options.trackingProfile.empty() ||
       options.role == "source"
     ? std::optional<LoadedPersonComputation>()
     : std::optional<LoadedPersonComputation>(loadPersonComputation(options, authorized));
+  const bool nativePersonComputation = personComputation &&
+    personComputation->manifest.backendKind == "native-onnx";
+  const bool nativeVehicleComputation = options.role == "compute" && !personComputation;
+  if (nativeVehicleComputation && std::filesystem::path(options.model).extension() != ".onnx") {
+    throw std::invalid_argument("vehicle compute requires a prepared raw ONNX detector");
+  }
+  const auto vehicleComputation = nativeVehicleComputation
+    ? std::optional<LoadedVehicleComputation>(loadVehicleComputation(options, authorized))
+    : std::optional<LoadedVehicleComputation>();
+  const auto backendImplementationDigest = nativeVehicleComputation
+    ? vehicleComputation->nativeDecisionDigest
+    : nativePersonComputation
+    ? personComputation->manifest.computationDigest
+    : options.role == "compute"
+      ? sha256(bufferFrom(hashWorkerAsset(options.workerScript) + hashWorkerAsset(
+          std::filesystem::path(options.workerScript).parent_path() / "motion_estimator.py")))
+      : std::string();
   if (personComputation && runtime.compatibility) {
     runtime.expectedProfile = personComputation->profile;
   }
-  const auto vehicleComputation = options.role == "compute" && !personComputation
-    ? std::optional<LoadedVehicleComputation>(loadVehicleComputation(options, authorized))
-    : std::optional<LoadedVehicleComputation>();
   if (options.role == "compute" && !personComputation &&
       (options.fault == "user-cancel-before-person-commit" ||
        options.fault == "unauthorized-frame-cache")) {
     throw std::invalid_argument("person compute fault requires person computation");
   }
+  if (options.role == "compute" && !nativeVehicleComputation &&
+      options.fault == "user-cancel-before-vehicle-commit") {
+    throw std::invalid_argument("vehicle precommit fault requires native vehicle computation");
+  }
   if (runtime.expectedComputation && (!personComputation ||
       runtime.expectedComputation->canonicalJson != personComputation->manifest.canonicalJson)) {
     throw std::invalid_argument("actual computation differs from the prepared provider catalog");
   }
-  const bool nativePersonComputation = personComputation &&
-    personComputation->manifest.backendKind == "native-onnx";
   const auto personBackend = nativePersonComputation && options.role == "compute"
     ? std::make_shared<uav::UavPersonModelBackend>(personComputation->profile,
         options.model, options.reidModel,
         static_cast<size_t>(personComputation->profile.limits.at("reidBatchSize")))
     : nullptr;
   runtime.personBackend = personBackend;
+  const auto vehicleBackend = nativeVehicleComputation
+#ifdef NDNSF_UAV_TRACKING_TEST_SEAM
+    && !runtime.testVehicleBackend
+#endif
+    ? std::make_shared<uav::UavVehicleModelBackend>(options.model)
+    : nullptr;
+  const auto runVehicleBackend = [vehicleBackend
+#ifdef NDNSF_UAV_TRACKING_TEST_SEAM
+                                  , testBackend = runtime.testVehicleBackend
+#endif
+                                 ] (const uav::VehicleWindowContext& window,
+                                    const std::array<ndn::Buffer, 3>& jpegs,
+                                    const std::string& state,
+                                    const std::function<bool()>& authorized) {
+#ifdef NDNSF_UAV_TRACKING_TEST_SEAM
+    if (testBackend) return testBackend(window, jpegs, state, authorized);
+#endif
+    return vehicleBackend->processWindow(window, jpegs, state, authorized);
+  };
   const auto personWorkerSession = personComputation && !nativePersonComputation &&
     options.role == "compute"
     ? std::make_shared<uav::UavTrackingWorkerSession>(personSessionArguments(options),
@@ -1755,9 +1808,10 @@ installRuntimeHandlers(ProviderRuntime& runtime,
         return makeResponse(output.str());
   };
   const auto injectedSink = runtime.injectedSink;
-  runtime.roleHandler = [options, identity, sourceGenerations, modelDigest, workerImplementationDigest,
+  runtime.roleHandler = [options, identity, sourceGenerations, modelDigest, backendImplementationDigest,
        personComputation, vehicleComputation, nativePersonComputation, personBackend,
-       personWindowAdmission, publishedFrameStore, personWorkerSession, authorized,
+       nativeVehicleComputation, runVehicleBackend,
+       personWindowAdmission, publishedFrameStore, personWorkerSession,
        shutdown, transactionMutex, compatibility, injectedSink]
       (nsf::ServiceProvider::CollaborationContext& context,
                          const nsf::RequestMessage& request, TerminalIntent& terminal,
@@ -2007,6 +2061,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
           vehicleContext.windowId = window;
           vehicleContext.sequence = index + 1;
           vehicleContext.observationMode = useObservations;
+          vehicleContext.nativeBackend = nativeVehicleComputation;
           vehicleContext.nativeDecisionDigest = vehicleComputation->nativeDecisionDigest;
           if (!motionJson.empty()) {
             vehicleContext.legacyMotion = uav::person_json::parseBounded(motionJson, 8 * 1024 * 1024);
@@ -2757,42 +2812,25 @@ installRuntimeHandlers(ProviderRuntime& runtime,
         const auto workerOutput = workerRoot / "tracking-result.json";
         const auto candidateState = workerRoot / "candidate-state" / (window + ".json");
         const auto personInputPath = workerRoot / "person-backend-input.json";
-        const auto vehicleInputPath = workerRoot / "vehicle-backend-input.json";
         const auto resultName = uav::makeUavMultiViewResultName(
           identity, mission, window, index + 1, 1);
-        const auto makeWorkerArguments = [&] {
-          return std::vector<std::string>{
-            options.workerPython, options.workerScript,
-            "--model", options.model, "--input-dir", inputRoot.string(),
-            "--output-json", workerOutput.string(),
-            "--annotated-dir", (workerRoot / "annotated").string(),
-            "--run-id", options.runId, "--mission-id", mission,
-            "--window-id", window, "--sequence", std::to_string(index + 1),
-            "--vehicle-window", vehicleInputPath.string()};
+        const auto stillAuthorized = [&] {
+          return !shutdown->load() &&
+                 !userCancellationReceived->load(std::memory_order_acquire) &&
+                 context.hasCurrentWorkAuthority();
         };
-        const auto runWorker = [&] (const std::vector<std::string>& arguments,
-                                   const std::string& jobId = std::string()) {
-          const auto stillAuthorized = [&] {
-            return !shutdown->load() &&
-                   !userCancellationReceived->load(std::memory_order_acquire) &&
-                   context.hasCurrentWorkAuthority();
-          };
-          if (vehicleComputation) verifyVehicleComputation(*vehicleComputation, stillAuthorized);
-          if (personComputation &&
-              loadPersonComputation(options, stillAuthorized).manifest.canonicalJson !=
+        const auto runPersonWorker = [&] (const std::string& jobId) {
+          if (loadPersonComputation(options, stillAuthorized).manifest.canonicalJson !=
                 personComputation->manifest.canonicalJson) {
             personWorkerSession->close();
             throw std::runtime_error("person computation artifacts changed after startup");
           }
-          if (personComputation) uav::emitUavPersonTrace(personTraceScope, "worker-start");
-          auto status = personComputation
-            ? personWorkerSession->exchange(personSessionRequest(personContext, jobId),
-                "SPEC219_PERSON_SESSION_DONE jobId=" + jobId + "\n",
-                std::chrono::milliseconds(personComputation->profile.limits.at("workerTimeoutMs")),
-                stillAuthorized)
-            : uav::runUavTrackingWorkerProcess(arguments, std::chrono::milliseconds(30000),
-                16 * 1024 * 1024, stillAuthorized);
-          if (personComputation) uav::emitUavPersonTrace(personTraceScope, "worker-end");
+          uav::emitUavPersonTrace(personTraceScope, "worker-start");
+          auto status = personWorkerSession->exchange(personSessionRequest(personContext, jobId),
+            "SPEC219_PERSON_SESSION_DONE jobId=" + jobId + "\n",
+            std::chrono::milliseconds(personComputation->profile.limits.at("workerTimeoutMs")),
+            stillAuthorized);
+          uav::emitUavPersonTrace(personTraceScope, "worker-end");
           std::cout << status.stdoutText;
           std::cerr << status.stderrText;
           if (status.outcome != uav::UavTrackingWorkerOutcome::SUCCESS) {
@@ -2809,7 +2847,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
           transactionIdentity << "uav-tracking-window-input-v1\n"
                               << options.runId << '\n' << mission << '\n' << window << '\n'
                               << observationEpoch << '\n' << modelDigest << '\n'
-                              << workerImplementationDigest << '\n';
+                              << backendImplementationDigest << '\n';
           if (personComputation) {
             transactionIdentity << personComputation->manifest.computationDigest << '\n';
           }
@@ -2903,23 +2941,9 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               vehicleEngine.emplace();
               vehicleEngine->restoreState(stateInput ? bufferText(readBytes(stateInput->string())) : "",
                                           vehicleContext);
-              uav::person_json::Json frames = uav::person_json::Json::array();
-              for (const auto& frame : vehicleContext.frames) {
-                frames.push_back({{"cameraId", frame.cameraId}, {"inputDigest", frame.inputDigest},
-                                  {"width", frame.width}, {"height", frame.height}});
-              }
-              const auto input = uav::person_json::Json{
-                {"schema", "uav-vehicle-backend-input-v1"}, {"runId", vehicleContext.runId},
-                {"missionId", mission}, {"windowId", window}, {"sequence", index + 1},
-                {"nativeDecisionDigest", vehicleContext.nativeDecisionDigest}, {"frames", frames},
-                {"previousBackendState", uav::person_json::parseBounded(
-                  vehicleEngine->backendStateJson(), 8 * 1024 * 1024)}}.dump();
-              if (input.size() > 8 * 1024 * 1024) throw std::invalid_argument("vehicle backend input byte bound");
-              writeBytes(vehicleInputPath, bufferFrom(input));
             }
-            const auto workerArguments = personComputation
-              ? std::vector<std::string>() : makeWorkerArguments();
             uav::UavTrackingWorkerProcessResult workerStatus;
+            std::optional<uav::VehicleBackendWindow> nativeVehicleResult;
             if (nativePersonComputation) {
               if (!personBackend || !personEngine) {
                 failRole("native person backend is unavailable");
@@ -2929,8 +2953,15 @@ installRuntimeHandlers(ProviderRuntime& runtime,
                         << window << std::endl;
               const std::array<ndn::Buffer, 3> jpegs{inputs[0], inputs[1], inputs[2]};
               const auto wire = personBackend->processWindow(personContext, jpegs,
-                personEngine->backendStateJson(), authorized);
+                personEngine->backendStateJson(), stillAuthorized);
               writeBytes(workerOutput, bufferFrom(wire));
+              workerStatus.outcome = uav::UavTrackingWorkerOutcome::SUCCESS;
+            }
+            else if (nativeVehicleComputation) {
+              std::cout << "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=" << window << std::endl;
+              const std::array<ndn::Buffer, 3> jpegs{inputs[0], inputs[1], inputs[2]};
+              nativeVehicleResult = runVehicleBackend(
+                vehicleContext, jpegs, vehicleEngine->backendStateJson(), stillAuthorized);
               workerStatus.outcome = uav::UavTrackingWorkerOutcome::SUCCESS;
             }
             else {
@@ -2938,7 +2969,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               // failures can be distinguished from worker execution failures.
               std::cout << "SPEC210_TRACKING_WORKER_INVOKED window="
                         << window << std::endl;
-              workerStatus = runWorker(workerArguments, inputDigest);
+              workerStatus = runPersonWorker(inputDigest);
             }
             if (personComputation &&
                 workerStatus.outcome == uav::UavTrackingWorkerOutcome::SUCCESS &&
@@ -2964,12 +2995,8 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               writeBytes(candidateState, bufferFrom(decision.candidateStateJson));
               writeBytes(workerOutput, result);
             }
-            if (vehicleComputation &&
-                workerStatus.outcome == uav::UavTrackingWorkerOutcome::SUCCESS &&
-                std::filesystem::is_regular_file(workerOutput)) {
-              const auto backend = uav::parseUavVehicleBackendWindow(
-                bufferText(readBytes(workerOutput.string())), vehicleContext);
-              const auto decision = vehicleEngine->processWindow(vehicleContext, backend);
+            if (nativeVehicleResult) {
+              const auto decision = vehicleEngine->processWindow(vehicleContext, *nativeVehicleResult);
               auto document = uav::person_json::parseBounded(decision.resultJson, 8 * 1024 * 1024);
               for (size_t cameraIndex = 0; cameraIndex < 3; ++cameraIndex) {
                 auto& frame = document["frames"][cameraIndex];
@@ -3008,17 +3035,23 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             result = readBytes(workerOutput.string());
             validateResult(result);
             const auto candidateStateBytes = readBytes(candidateState.string());
-            if (options.fault == "user-cancel-before-person-commit" && index == 0) {
+            const bool cancelBeforePersonCommit =
+              options.fault == "user-cancel-before-person-commit";
+            const bool cancelBeforeVehicleCommit =
+              options.fault == "user-cancel-before-vehicle-commit";
+            if ((cancelBeforePersonCommit || cancelBeforeVehicleCommit) && index == 0) {
               // Pause only the test ordering, outside the authority mutex.
               // Cancellation must still revoke the actual context before commit.
-              std::cout << "SPEC219_PERSON_PRECOMMIT_READY window=" << window << std::endl;
+              std::cout << (cancelBeforePersonCommit ? "SPEC219_PERSON_PRECOMMIT_READY window=" :
+                                                      "SPEC210_VEHICLE_PRECOMMIT_READY window=")
+                        << window << std::endl;
               const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
               while (!userCancellationReceived->load(std::memory_order_acquire) &&
                      !shutdown->load() && std::chrono::steady_clock::now() < deadline) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
               }
               if (!userCancellationReceived->load(std::memory_order_acquire)) {
-                throw std::runtime_error("person precommit cancellation test gate was not cancelled");
+                throw std::runtime_error("precommit cancellation test gate was not cancelled");
               }
             }
             bool committed = false;
@@ -3035,7 +3068,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               if (personWorkerSession) personWorkerSession->close();
               if (options.fault == "user-cancel-during-active-reference-fetch" ||
                   options.fault == "user-cancel-after-source-switch-during-active-reference-fetch" ||
-                  options.fault == "user-cancel-before-person-commit") {
+                  cancelBeforePersonCommit || cancelBeforeVehicleCommit) {
                 std::cout << "SPEC210_USER_CANCEL_CANDIDATE_DISCARDED window="
                           << window << std::endl;
               }
@@ -3890,6 +3923,10 @@ struct UavTrackingProvider::Impl : std::enable_shared_from_this<UavTrackingProvi
         }
         runtime->expectedComputation = parseUavPersonComputationManifest(
           verifiedText(definition.computationManifest), *runtime->expectedProfile);
+        if (runtime->expectedComputation->backendKind != "native-onnx" &&
+            definition.workerScript.path.empty()) {
+          throw std::invalid_argument("legacy person compute requires worker assets");
+        }
       }
       runtime->ready = true;
     }
@@ -4398,6 +4435,19 @@ UavTrackingProviderTestAccess::adoptIdleSession(
   auto runtime = std::make_shared<ProviderRuntime>();
   runtime->session = std::move(session);
   owner.m_impl->runs.emplace("test-owned-idle-child", std::move(runtime));
+}
+
+void
+UavTrackingProviderTestAccess::setVehicleBackend(UavTrackingProvider& owner,
+                                                const std::string& runId,
+                                                VehicleBackend backend)
+{
+  std::lock_guard<std::mutex> lock(owner.m_impl->gateMutex);
+  auto& runtime = *owner.m_impl->runs.at(runId);
+  if (!backend || runtime.roleHandler || owner.m_impl->activeCallbacks != 0) {
+    throw std::invalid_argument("vehicle backend probe requires an idle compute capability");
+  }
+  runtime.testVehicleBackend = std::move(backend);
 }
 #endif
 

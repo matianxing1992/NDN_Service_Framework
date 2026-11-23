@@ -12,6 +12,7 @@
 
 #include "NDNSF-UAV-APP/shared/UavObservationSource.hpp"
 #include "NDNSF-UAV-APP/shared/UavWindowBinding.hpp"
+#include "NDNSF-UAV-APP/shared/uav-person-onnx.hpp"
 #include "NDNSF-UAV-APP/shared/uav-person-published-frame.hpp"
 #include "NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.hpp"
 #include "NDNSF-UAV-APP/tracking/uav-tracking-provider.hpp"
@@ -100,8 +101,13 @@ struct ProviderFixture : JobFlowFixture
     if (watch >= 0) ::close(watch);
   }
 
-  void checkPersonSourceFailure(size_t missingSources)
+  void checkNativePersonWindow(size_t missingSources)
   {
+    if (missingSources == 0) {
+      // The successful result uses the maintained segmented-response path.
+      environment->user().fetchPermissionsFromController(environment->profile().attributeAuthority);
+      BOOST_REQUIRE(environment->user().hasRequestScopedDefault());
+    }
     const auto* assetRoot = std::getenv("NDNSF_SPEC226_PERSON_ASSETS");
     BOOST_REQUIRE_MESSAGE(assetRoot != nullptr, "set the frozen person asset root for this opt-in flow");
     const std::filesystem::path assets(assetRoot);
@@ -158,13 +164,10 @@ struct ProviderFixture : JobFlowFixture
     run.role = TrackingProviderRole::COMPUTE;
     run.cameraId.clear();
     run.observationStreamDirectory.clear();
-    run.acquisitionKind = "measured"; // SourceInfo is simulated; Compute must not guess its digest.
     run.model = model;
     run.profile = profile;
     run.reidModel = reid;
     run.computationManifest = computation;
-    run.workerPython = asset("/usr/bin/python3");
-    run.workerScript = asset(std::filesystem::absolute("NDNSF-UAV-APP/tracking/tracking_worker.py"));
     capability = std::make_unique<UavTrackingProvider>(providerConfig);
     capability->registerServices(environment->provider(3));
     environment->enableProductionIngressForTest();
@@ -197,13 +200,22 @@ struct ProviderFixture : JobFlowFixture
     BOOST_REQUIRE(job->start(definition) == TrackingAdmission::ACCEPTED);
     pumpUntilWithin([this] { return job->isDrained(); }, std::chrono::seconds(30));
     BOOST_REQUIRE(job->isDrained());
-    BOOST_CHECK(latest.state == TrackingJobState::FAILED);
     BOOST_CHECK_EQUAL(latest.cleanupState, "CLEAN");
     BOOST_CHECK_EQUAL(latest.selectedProviders.size(), 4);
-    BOOST_CHECK_EQUAL(latest.completedWindows, 0);
-    BOOST_CHECK(!latest.latestResult);
-    BOOST_CHECK(latest.reason.find("source UAV1: injected source produced no frame for the window") !=
-                std::string::npos);
+    if (missingSources == 0) {
+      BOOST_CHECK(latest.state == TrackingJobState::COMPLETED);
+      BOOST_CHECK_EQUAL(latest.completedWindows, 1);
+      BOOST_CHECK(latest.latestResult);
+      BOOST_REQUIRE(latest.presentation);
+      BOOST_CHECK_EQUAL(latest.presentation->frames.size(), 3);
+    }
+    else {
+      BOOST_CHECK(latest.state == TrackingJobState::FAILED);
+      BOOST_CHECK_EQUAL(latest.completedWindows, 0);
+      BOOST_CHECK(!latest.latestResult);
+      BOOST_CHECK(latest.reason.find(
+        "source UAV1: injected source produced no frame for the window") != std::string::npos);
+    }
     capability->stopAdmission();
     capability->cancelActiveWork();
     for (auto& source : sourceCapabilities) {
@@ -234,9 +246,11 @@ struct ProviderFixture : JobFlowFixture
     }
     BOOST_CHECK(publications("SPEC226_WINDOW_FAILURE_PUBLISHED") == expectedFailures);
     BOOST_CHECK(publications("SPEC226_WINDOW_BINDING_PUBLISHED") == expectedReady);
-    BOOST_CHECK(output.find("SPEC226_NATIVE_BACKEND_INVOKED") == std::string::npos);
+    const bool nativeBackendInvoked =
+      output.find("SPEC226_NATIVE_BACKEND_INVOKED") != std::string::npos;
+    BOOST_CHECK_EQUAL(nativeBackendInvoked, missingSources == 0);
     BOOST_CHECK(output.find("SPEC210_TRACKING_WORKER_INVOKED") == std::string::npos);
-    if (std::filesystem::exists(providerConfig.ownedWorkspace)) {
+    if (missingSources != 0 && std::filesystem::exists(providerConfig.ownedWorkspace)) {
       for (const auto& entry : std::filesystem::recursive_directory_iterator(providerConfig.ownedWorkspace)) {
         BOOST_CHECK_MESSAGE(entry.path().filename() != "manifest.json" ||
           entry.path().parent_path().filename() != "window-0", "failed window committed " << entry.path());
@@ -258,11 +272,10 @@ struct ProviderFixture : JobFlowFixture
     run.role = TrackingProviderRole::COMPUTE;
     run.cameraId.clear();
     run.observationStreamDirectory.clear();
-    const auto asset = root / "compute-placeholder";
+    const auto asset = root / "invalid-detector.onnx";
+    // The digest is valid, but ORT must reject the malformed detector.
     std::ofstream(asset) << "abc";
-    run.model = run.workerPython = run.workerScript = {asset, digestOf("abc")};
-    // These declared assets are valid; the existing vehicle initializer also
-    // requires motion_estimator.py beside its worker. It is deliberately absent.
+    run.model = {asset, digestOf("abc")};
     capability = std::make_unique<UavTrackingProvider>(providerConfig);
     capability->registerServices(environment->provider(3));
     install(false, false, false, false, {}, 0, 3);
@@ -312,45 +325,48 @@ struct ProviderFixture : JobFlowFixture
     BOOST_REQUIRE_EQUAL(::mkfifo(fifo.c_str(), 0600), 0);
     writer = ::open(fifo.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
     BOOST_REQUIRE(writer >= 0);
-    const auto script = root / "controlled-backend.sh";
     Json frames = Json::array();
     Json cameras = Json::object();
     for (const auto* camera : {"UAV1", "UAV2", "UAV3"}) {
       frames.push_back({{"cameraId", camera}, {"width", uint64_t(640)}, {"height", uint64_t(480)},
         {"detections", Json::array({{{"box", {10, 20, 50, 60}}, {"confidence", 0.9},
                                     {"class", "car"}, {"byteTrackId", nullptr}}})}});
-      cameras[camera] = nullptr;
+      cameras[camera] = {{"frameId", 1}, {"idHighWatermark", 0},
+                         {"tracked", Json::array()}, {"lost", Json::array()},
+                         {"removedIds", Json::array()}};
     }
-    const auto candidate = Json{{"schema", "uav-vehicle-backend-window-v1"},
+    const auto candidate = Json{{"schema", VEHICLE_NATIVE_BACKEND_WINDOW_SCHEMA},
       {"runId", definition.runId}, {"missionId", "tracking-" + definition.runId},
       {"windowId", "window-0"}, {"sequence", uint64_t(1)}, {"actualDevice", "cpu"},
-      {"frames", frames}, {"backendState", {{"schema", "uav-vehicle-backend-state-v1"},
+      {"frames", frames}, {"backendState", {{"schema", VEHICLE_NATIVE_BACKEND_STATE_SCHEMA},
                                             {"cameras", cameras}}}};
     std::ofstream(root / "controlled-candidate.json") << candidate.dump();
-    auto scriptText = "#!/bin/sh\n: > '" + (root / "compute-entered").string() +
-      "'\nIFS= read -r value < '" + fifo.string() + "'\n";
-    scriptText += successfulCandidate
-      ? "while [ \"$#\" -gt 0 ]; do case \"$1\" in --output-json) output=$2; shift 2;; *) shift;; esac; done\n"
-        "cat '" + (root / "controlled-candidate.json").string() + "' > \"$output\"\n"
-      : "exit 9\n";
-    std::ofstream(script) << scriptText;
-    for (const auto* helper : {"motion_estimator.py", "motion_schema.py", "observation_schema.py",
-                               "byte_track_state.py"}) {
-      std::ofstream(root / helper) << "controlled-backend-placeholder\n";
-    }
-    std::ofstream(root / "model") << "controlled-model\n";
-    const auto shellPath = std::filesystem::canonical("/bin/sh");
-    std::ifstream shell(shellPath, std::ios::binary);
-    const std::string shellBytes((std::istreambuf_iterator<char>(shell)), {});
+    const auto model = root / "controlled-model.onnx";
+    std::ofstream(model) << "controlled-model\n";
     providerConfig.producerIdentity = definition.computeIdentity;
     auto& run = providerConfig.runs[0];
     run.role = TrackingProviderRole::COMPUTE;
     run.cameraId.clear();
     run.observationStreamDirectory.clear();
-    run.model = {root / "model", digestOf("controlled-model\n")};
-    run.workerPython = {shellPath, digestOf(shellBytes)};
-    run.workerScript = {script, digestOf(scriptText)};
+    run.model = {model, digestOf("controlled-model\n")};
     capability = std::make_unique<UavTrackingProvider>(providerConfig);
+    UavTrackingProviderTestAccess::setVehicleBackend(*capability, definition.runId,
+      [this, successfulCandidate] (const auto& window, const auto&, const auto&,
+                                  const auto& authorized) {
+        std::ofstream(root / "compute-entered").close();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+        while (authorized() && std::chrono::steady_clock::now() < deadline) {
+          char signal[32];
+          if (::read(writer, signal, sizeof(signal)) > 0) {
+            if (!successfulCandidate) throw std::runtime_error("fixture detector failed");
+            std::ifstream input(root / "controlled-candidate.json");
+            std::string wire{std::istreambuf_iterator<char>(input), {}};
+            return parseUavVehicleBackendWindow(wire, window);
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        throw std::runtime_error("fixture detector cancelled or timed out");
+      });
     capability->registerServices(environment->provider(3));
     environment->provider(3).addService(SERVICE_TRACKING_SOURCE,
       [] (const nsf::RequestMessage&) {
@@ -414,6 +430,31 @@ struct ProviderFixture : JobFlowFixture
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(UavTrackingProviderLifecycle)
+
+BOOST_AUTO_TEST_CASE(DetectorLetterboxPreservesSquareAndStrideAlignedRectangle)
+{
+  UavRgbImage image;
+  image.width = 30;
+  image.height = 40;
+  image.rgb.assign(3 * image.width * image.height, 127);
+
+  const auto square = letterboxPersonImage(image);
+  BOOST_REQUIRE_EQUAL(square.tensor.size(), 3 * 640 * 640);
+  BOOST_CHECK_EQUAL(square.padX, 80);
+  BOOST_CHECK_EQUAL(square.tensor.front(), 114.0F / 255.0F);
+
+#ifdef NDNSF_UAV_TEST_HAS_OPENCV
+  const auto rectangular = letterboxRectangularImage(image);
+  BOOST_REQUIRE_EQUAL(rectangular.image.tensor.size(), 3 * 480 * 640);
+  BOOST_CHECK_EQUAL(rectangular.tensorWidth, 480);
+  BOOST_CHECK_EQUAL(rectangular.tensorHeight, 640);
+  BOOST_CHECK_EQUAL(rectangular.image.padX, 0);
+  BOOST_CHECK_EQUAL(rectangular.image.padY, 0);
+  BOOST_CHECK_EQUAL(rectangular.image.tensor.front(), 127.0F / 255.0F);
+#else
+  BOOST_CHECK_THROW(letterboxRectangularImage(image), std::runtime_error);
+#endif
+}
 
 BOOST_FIXTURE_TEST_CASE(InjectedSourceStartsAndStopsWithProvider, ProviderFixture)
 {
@@ -644,11 +685,11 @@ BOOST_FIXTURE_TEST_CASE(InitialAssetAndHandlerInspectionHonorsTheSynchronousAuth
     *capability, definition.runId, [handlerChecks] { return (*handlerChecks)++ == 0; }),
     std::runtime_error, cancelled);
   BOOST_CHECK(*handlerChecks >= 2);
-  // Positive authority reaches the actual existing helper dependency check.
+  // Positive authority reaches the real model loader.
   BOOST_CHECK_EXCEPTION(UavTrackingProviderTestAccess::initializeHandlers(
-    *capability, definition.runId, [] { return true; }), std::runtime_error,
+    *capability, definition.runId, [] { return true; }), std::exception,
     [] (const std::exception& error) {
-      return std::string(error.what()).find("motion_estimator.py") != std::string::npos;
+      return std::string(error.what()).find("invalid-detector.onnx") != std::string::npos;
     });
 }
 
@@ -682,7 +723,7 @@ BOOST_FIXTURE_TEST_CASE(FirstHandlerInitializationFailurePublishesWorkDrained, P
     BOOST_CHECK(!response.getStatus());
     const auto bytes = response.getPayload();
     const auto fields = decodeFields(std::string(bytes.begin(), bytes.end()));
-    BOOST_CHECK(fieldOr(fields, "failure_reason", "").find("motion_estimator.py") !=
+    BOOST_CHECK(fieldOr(fields, "failure_reason", "").find("invalid-detector.onnx") !=
                 std::string::npos);
     *responseReceived = true;
   };
@@ -724,16 +765,22 @@ BOOST_FIXTURE_TEST_CASE(FirstHandlerInitializationFailurePublishesWorkDrained, P
   environment->user().CancelCollaboration(request);
 }
 
+BOOST_FIXTURE_TEST_CASE(NativePersonCompletesWithoutWorkerAssets, ProviderFixture,
+                       *boost::unit_test::disabled())
+{
+  checkNativePersonWindow(0);
+}
+
 BOOST_FIXTURE_TEST_CASE(OnePersonSourceFailureDrainsWithoutInference, ProviderFixture,
                        *boost::unit_test::disabled())
 {
-  checkPersonSourceFailure(1);
+  checkNativePersonWindow(1);
 }
 
 BOOST_FIXTURE_TEST_CASE(AllPersonSourceFailuresDrainWithoutInference, ProviderFixture,
                        *boost::unit_test::disabled())
 {
-  checkPersonSourceFailure(3);
+  checkNativePersonWindow(3);
 }
 
 BOOST_FIXTURE_TEST_CASE(InitializationFailureLeavesTheJobFailedButClean, ProviderFixture)
@@ -847,7 +894,7 @@ BOOST_FIXTURE_TEST_CASE(ShutdownCancelsAnOwnedSourceReaderAndPreservesTheHostFac
   BOOST_CHECK(*alive);
 }
 
-BOOST_FIXTURE_TEST_CASE(OrdinaryServiceRepliesWhileNativeComputeOwnsItsWorker, ProviderFixture)
+BOOST_FIXTURE_TEST_CASE(OrdinaryServiceRepliesWhileNativeComputeOwnsItsCandidate, ProviderFixture)
 {
   startBlockingCompute();
   BOOST_REQUIRE(job->start(definition) == TrackingAdmission::ACCEPTED);

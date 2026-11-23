@@ -5,11 +5,32 @@
 The same `run_multicamera_tracking_demo.py` entrypoint supports three indoor
 video sources and one compute node running YOLO, ByteTrack and pretrained
 OSNet. Native C++ assigns the global person IDs; the Ground Station renders
-its validated results and frames retrieved from the source nodes. The CPU
-path uses PyTorch and does not require CUDA. Replay with fixed cameras
-simulates hovering UAVs; it does not qualify flight or moving-camera tracking.
+its validated results and frames retrieved from the source nodes. Replay with
+fixed cameras simulates hovering UAVs for indoor tracking tests.
 
-Prepare these inputs before launching:
+### Native ONNX replay
+
+Provide the detector and OSNet ONNX files and put their SHA-256 digests in the
+person profile. For YOLO26n, select profile schema
+`uav-person-tracking-profile-v2` and set `detectorPreprocessId` to
+`yolo-default640-stock-box-v1`. The detector needs dynamic image height and
+width and an end-to-end `[1,300,6]` output. The OSNet graph uses the profile's
+existing 512-dimensional GAP embedding contract.
+
+Pass both ONNX files to the existing launcher. It selects the installed main
+GS and Drone applications and generates the computation manifest with the
+same Drone executable that will run Compute. See the source manifest fields
+below. Keep the run duration equal to the source manifest duration.
+
+```bash
+python3 Experiments/UAV/run_multicamera_tracking_demo.py \
+  --run --headless --run-seconds 2 \
+  --model "$DETECTOR_ONNX" --reid-model "$REID_ONNX" \
+  --tracking-profile "$PERSON_PROFILE" --source-manifest "$SOURCE_MANIFEST" \
+  --output-dir "$RUN_DIRECTORY"
+```
+
+### Legacy checkpoint replay
 
 The maintained installer has a runtime-only action. It does not rebuild the
 native stack. Supply a Torchreid 1.4.0 wheel whose SHA-256 is admitted by the

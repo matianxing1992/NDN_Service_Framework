@@ -1,6 +1,7 @@
 #include "uav-vehicle-tracking-engine.hpp"
 
 #include "../shared/uav-byte-track-state.hpp"
+#include "../shared/uav-byte-tracker.hpp"
 #include "../shared/UavDigest.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
@@ -30,11 +31,39 @@ using person_json::unsignedNumber;
 constexpr size_t MAXIMUM_BYTES = 8 * 1024 * 1024;
 constexpr size_t MAXIMUM_DETECTIONS = 300;
 constexpr std::array<const char*, 3> CAMERAS = {"UAV1", "UAV2", "UAV3"};
+constexpr char LEGACY_BACKEND_WINDOW_SCHEMA[] = "uav-vehicle-backend-window-v1";
+constexpr char LEGACY_BACKEND_STATE_SCHEMA[] = "uav-vehicle-backend-state-v1";
 
 [[noreturn]] void
 rejectVehicle(const std::string& reason)
 {
   throw std::invalid_argument("vehicle-backend-invalid: " + reason);
+}
+
+const char*
+backendStateSchema(bool nativeBackend)
+{
+  return nativeBackend ? VEHICLE_NATIVE_BACKEND_STATE_SCHEMA : LEGACY_BACKEND_STATE_SCHEMA;
+}
+
+byte_track::TrackState
+checkBackendSnapshot(const Json& snapshot, bool nativeBackend)
+{
+  if (nativeBackend) {
+    if (snapshot.is_null() || unsignedNumber(snapshot.at("frameId")) == 0) {
+      rejectVehicle("missing native tracker frame");
+    }
+    return byte_track::checkTracker(snapshot, byte_track::TrackerConfig{}.maximumTracks,
+                                    byte_track::BackendStateFormat::COMPACT_CONFIRMED);
+  }
+  if (snapshot.is_null()) {
+    return {};
+  }
+  if (!snapshot.at("removed").is_array() || snapshot.at("removed").size() > 1000) {
+    rejectVehicle("removed history bound");
+  }
+  return byte_track::checkTracker(snapshot, std::numeric_limits<uint64_t>::max(),
+                                  byte_track::BackendStateFormat::LEGACY_CONFIRMED);
 }
 
 void
@@ -985,6 +1014,7 @@ contextIdentity(const VehicleWindowContext& context)
   return {{"runId", context.runId}, {"missionId", context.missionId},
           {"windowId", context.windowId}, {"sequence", context.sequence},
           {"nativeDecisionDigest", context.nativeDecisionDigest},
+          {"backendStateSchema", backendStateSchema(context.nativeBackend)},
           {"observationMode", context.observationMode}, {"sources", sourceBindings(context)},
           {"frames", frames}, {"legacyMotion", context.legacyMotion}};
 }
@@ -1026,7 +1056,8 @@ struct UavVehicleTrackingEngine::Impl
             {"nextLocal", nextLocal}, {"last", last}, {"nextGlobal", uint64_t(1)},
             {"mapping", Json::array()}, {"pending", pending}, {"motion", Json::array()},
             {"previousLegacy", Json::object()},
-            {"backendState", {{"schema", "uav-vehicle-backend-state-v1"}, {"cameras", cameras}}}};
+            {"backendState", {{"schema", backendStateSchema(context.nativeBackend)},
+                              {"cameras", cameras}}}};
   }
 
   static uint64_t positiveId(const Json& value)
@@ -1044,7 +1075,8 @@ struct UavVehicleTrackingEngine::Impl
     rejectVehicle("state camera");
   }
 
-  std::map<MotionKey, std::vector<MotionSample>> validateState(const Json& candidate)
+  std::map<MotionKey, std::vector<MotionSample>>
+  validateState(const Json& candidate, bool nativeBackend)
   {
     exactKeys(candidate, {"schema", "runId", "missionId", "nativeDecisionDigest", "observationMode",
                           "policy", "sources", "sequence", "nextLocal", "last", "nextGlobal",
@@ -1064,7 +1096,9 @@ struct UavVehicleTrackingEngine::Impl
     }
     const auto& backend = candidate.at("backendState");
     exactKeys(backend, {"schema", "cameras"});
-    if (text(backend.at("schema")) != "uav-vehicle-backend-state-v1") rejectVehicle("state backend schema");
+    if (text(backend.at("schema")) != backendStateSchema(nativeBackend)) {
+      rejectVehicle("state backend schema");
+    }
     exactKeys(backend.at("cameras"), {"UAV1", "UAV2", "UAV3"});
     std::map<std::pair<std::string, uint64_t>, uint64_t> mappings;
     const auto& mapping = candidate.at("mapping");
@@ -1124,12 +1158,9 @@ struct UavVehicleTrackingEngine::Impl
         }
       }
       const auto& snapshot = backend.at("cameras").at(camera);
-      if (!snapshot.is_null()) {
-        if (!snapshot.at("removed").is_array() || snapshot.at("removed").size() > 1000) {
-          rejectVehicle("state removed history bound");
-        }
-        byte_track::checkTracker(snapshot, std::numeric_limits<uint64_t>::max(),
-                                 byte_track::BackendStateFormat::LEGACY_CONFIRMED);
+      checkBackendSnapshot(snapshot, nativeBackend);
+      if (nativeBackend && unsignedNumber(snapshot.at("frameId")) > sequence) {
+        rejectVehicle("state tracker frame beyond window sequence");
       }
       const auto& pending = candidate.at("pending").at(camera);
       if (!pending.is_array()) rejectVehicle("state pending type");
@@ -1367,7 +1398,7 @@ UavVehicleTrackingEngine::restoreState(const std::string& committedStateJson,
   }
   else {
     candidate = parseBounded(committedStateJson, MAXIMUM_BYTES);
-    restored = m_impl->validateState(candidate);
+    restored = m_impl->validateState(candidate, nextContext.nativeBackend);
     if (text(candidate.at("runId")) != nextContext.runId ||
         text(candidate.at("missionId")) != nextContext.missionId ||
         text(candidate.at("nativeDecisionDigest")) != nextContext.nativeDecisionDigest ||
@@ -1415,6 +1446,23 @@ UavVehicleTrackingEngine::processWindow(const VehicleWindowContext& context,
     rejectVehicle("candidate was admitted for a different native context");
   }
   const auto& backendState = backend.m_backendState;
+  if (context.nativeBackend) {
+    const auto& previousCameras = m_impl->state.at("backendState").at("cameras");
+    const auto& nextCameras = backendState.at("cameras");
+    for (const auto* camera : CAMERAS) {
+      const auto& previous = previousCameras.at(camera);
+      const auto& next = nextCameras.at(camera);
+      const auto previousFrame = previous.is_null() ? 0 : unsignedNumber(previous.at("frameId"));
+      if (unsignedNumber(next.at("frameId")) != previousFrame + 1) {
+        rejectVehicle("native tracker frame did not advance once");
+      }
+      if (!previous.is_null() &&
+          unsignedNumber(next.at("idHighWatermark")) <
+            unsignedNumber(previous.at("idHighWatermark"))) {
+        rejectVehicle("native tracker ID watermark regressed");
+      }
+    }
+  }
   const auto previousTracks = m_impl->state.at("last");
   Json telemetry = Json::array();
   Json calibrations = Json::object();
@@ -1615,7 +1663,8 @@ parseUavVehicleBackendWindow(const std::string& wire, const VehicleWindowContext
   const auto root = parseBounded(wire, MAXIMUM_BYTES);
   exactKeys(root, {"schema", "runId", "missionId", "windowId", "sequence", "actualDevice",
                    "frames", "backendState"});
-  if (text(root.at("schema")) != "uav-vehicle-backend-window-v1" ||
+  if (text(root.at("schema")) != (expected.nativeBackend ? VEHICLE_NATIVE_BACKEND_WINDOW_SCHEMA
+                                                         : LEGACY_BACKEND_WINDOW_SCHEMA) ||
       text(root.at("runId")) != expected.runId ||
       text(root.at("missionId")) != expected.missionId ||
       text(root.at("windowId")) != expected.windowId ||
@@ -1626,7 +1675,7 @@ parseUavVehicleBackendWindow(const std::string& wire, const VehicleWindowContext
   const auto& frames = root.at("frames");
   const auto& state = root.at("backendState");
   exactKeys(state, {"schema", "cameras"});
-  if (text(state.at("schema")) != "uav-vehicle-backend-state-v1" ||
+  if (text(state.at("schema")) != backendStateSchema(expected.nativeBackend) ||
       !frames.is_array() || frames.size() != CAMERAS.size()) {
     rejectVehicle("backend schema/camera count");
   }
@@ -1646,15 +1695,7 @@ parseUavVehicleBackendWindow(const std::string& wire, const VehicleWindowContext
       rejectVehicle("decoded frame binding");
     }
     const auto& snapshot = cameras.at(CAMERAS[i]);
-    byte_track::TrackState admitted;
-    if (!snapshot.is_null()) {
-      // The byte bound limits full snapshots; preserve all stock removal history.
-      if (!snapshot.at("removed").is_array() || snapshot.at("removed").size() > 1000) {
-        rejectVehicle("removed history bound");
-      }
-      admitted = byte_track::checkTracker(snapshot, std::numeric_limits<uint64_t>::max(),
-                                         byte_track::BackendStateFormat::LEGACY_CONFIRMED);
-    }
+    const auto admitted = checkBackendSnapshot(snapshot, expected.nativeBackend);
     const auto& detections = input.at("detections");
     if (!detections.is_array() || detections.size() > MAXIMUM_DETECTIONS) {
       rejectVehicle("detection bound");

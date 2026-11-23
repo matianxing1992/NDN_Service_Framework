@@ -40,7 +40,7 @@ from types import MappingProxyType
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = Path(os.environ.get(
     "NDNSF_SPEC191_ASSET_ROOT", str(Path.home() / ".cache/ndnsf/spec191-assets")))
-DEFAULT_MODEL = DEFAULT_SOURCE / "3UAVs.pt"
+DEFAULT_MODEL = DEFAULT_SOURCE / "3UAVs_YOLOv8n.onnx"
 DEFAULT_OUTPUT = ROOT / "results/uav-tracking/spec191-local"
 DEFAULT_OBSERVATION_PROFILE = ROOT / "NDNSF-UAV-APP/configs/uav_observation_demo.json"
 DEFAULT_TRUST_SCHEMA = ROOT / "examples/trust-schema.conf"
@@ -55,6 +55,8 @@ REQUIRED_NATIVE_PROGRAMS = (
     "App_ServiceController",
     "UavTrackingGroundStation",
 )
+PERSON_WORKER_ASSETS = ("tracking_worker.py", "person_reid.py", "person_runtime.py",
+                        "requirements-person.lock", "byte_track_state.py")
 DEFAULT_TRACKING_LIBEXEC = Path(
     os.environ.get("NDNSF_UAV_TRACKING_LIBEXEC",
                    "/usr/local/libexec/ndnsf-uav/tracking"))
@@ -211,6 +213,8 @@ def _main_process_specs(root: Path, output: Path, *, model: Path, headless: bool
     for name in [*source_names, 'compute']:
         identity = TRACKING_ACTORS[name][1]
         is_compute = name == 'compute'
+        worker_python_path = person_tracking.get('workerPython') if person_tracking else None
+        needs_worker = is_compute and worker_python_path is not None
         camera = '' if is_compute else f'UAV{source_names.index(name) + 1}'
         run = {'runId': output.name, 'mode': mode, 'role': 'compute' if is_compute else 'source',
             'cameraId': camera, 'sourceProducers': producers, 'computeProducer': compute,
@@ -224,9 +228,9 @@ def _main_process_specs(root: Path, output: Path, *, model: Path, headless: bool
             'profile': profile if is_compute else None,
             'reidModel': _main_asset(Path(person_tracking['reidModel'])) if is_compute and person_tracking else None,
             'computationManifest': computation if is_compute else None,
-            'workerPython': _main_asset(Path(person_tracking['workerPython']) if person_tracking else worker_python,
-                                       interpreter=True) if is_compute else None,
-            'workerScript': _main_asset(_installed_tracking_script('tracking_worker.py')) if is_compute else None}
+            'workerPython': _main_asset(Path(worker_python_path),
+                                       interpreter=True) if needs_worker else None,
+            'workerScript': _main_asset(_installed_tracking_script('tracking_worker.py')) if needs_worker else None}
         provider_path = config / f'main-{name}.json'
         _, _, private = TRACKING_ACTORS[name]
         catalog = {'schema': 'uav-tracking-provider-v1', 'producerIdentity': identity,
@@ -262,9 +266,14 @@ def _main_plan_metadata(specs: Sequence[ProcessSpec], output: Path) -> dict[str,
                         'workerPython', 'workerScript'):
                 if run[key] is not None:
                     files.add(Path(run[key]['path']))
-    files.update(path for path in DEFAULT_TRACKING_LIBEXEC.glob('*.py') if path.is_file())
-    files.update(path for path in DEFAULT_TRACKING_LIBEXEC.glob('*.lock') if path.is_file())
-    for run in json.loads(Path(providers['compute']['path']).read_bytes())['runs']:
+    compute_runs = json.loads(Path(providers['compute']['path']).read_bytes())['runs']
+    has_worker = any(run['workerPython'] is not None for run in compute_runs)
+    for pattern in ('*.py', '*.lock'):
+        files.update(path for path in DEFAULT_TRACKING_LIBEXEC.glob(pattern)
+                     if path.is_file() and (has_worker or path.name not in PERSON_WORKER_ASSETS))
+    for run in compute_runs:
+        if run['workerPython'] is None:
+            continue
         environment = Path(run['workerPython']['path']).parent.parent
         files.update(path for path in (environment / 'pyvenv.cfg', environment / 'spec228-environment.json') if path.is_file())
         files.update(path for path in environment.glob('lib/python*/site-packages/*.pth') if path.is_file())
@@ -318,7 +327,7 @@ def _effective_paths(source: Path, model: Path, output: Path) -> tuple[Path, Pat
     if not source.is_dir():
         raise RunnerError(f"source directory is not available: {source}")
     if not model.is_file():
-        raise RunnerError(f"model checkpoint is not available: {model}")
+        raise RunnerError(f"model artifact is not available: {model}")
     output.mkdir(parents=True, exist_ok=True)
     return source, model, output
 
@@ -409,6 +418,7 @@ FAULTS = frozenset({
     "user-cancel-terminal-response-race",
     "user-cancel-terminal-response-cancel-wins-race",
     "user-cancel-before-person-commit",
+    "user-cancel-before-vehicle-commit",
     PERSON_SOURCE_EPOCH_RESTART_FAULT,
     "replay-committed-window",
     "alter-committed-window",
@@ -434,6 +444,9 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
         raise RunnerError("tracking request budget must be within 1001..1200000 ms")
     if fault == "user-cancel-before-person-commit" and person_tracking is None:
         raise RunnerError("person precommit cancellation fault requires person tracking")
+    if fault == "user-cancel-before-vehicle-commit" and (
+            person_tracking is not None or model.suffix != ".onnx" or application_mode != "compat"):
+        raise RunnerError("vehicle precommit cancellation fixture requires native vehicle compat")
     if fault in PERSON_BINDING_FAULTS and person_tracking is None:
         raise RunnerError("person binding fault requires person tracking")
     if fault == PERSON_SOURCE_EPOCH_RESTART_FAULT and person_tracking is None:
@@ -442,12 +455,17 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
         raise RunnerError("committed window replay requires person tracking")
     if fault == "unauthorized-frame-cache" and person_tracking is None:
         raise RunnerError("unauthorized cache fault requires person tracking")
+    if person_tracking is None and model.suffix != ".onnx":
+        raise RunnerError("vehicle tracking requires a prepared raw ONNX detector")
     if person_tracking is not None:
         if (not observation_enabled or motion_dir is not None or
                 external_source_adapter is not None or
                 observation_profile.get("deliveryMode") != "replay"):
             raise RunnerError("person processes require observation replay without legacy adapters")
-        for key in ("profile", "computationManifest", "reidModel", "workerPython"):
+        required_paths = ["profile", "computationManifest", "reidModel"]
+        if application_mode != "main" or person_tracking.get("workerPython") is not None:
+            required_paths.append("workerPython")
+        for key in required_paths:
             value = person_tracking.get(key)
             if not isinstance(value, str) or not Path(value).is_absolute():
                 raise RunnerError(f"person process path must be absolute: {key}")
@@ -482,7 +500,7 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
     "user-cancel-after-source-switch-during-active-reference-fetch",
     "user-cancel-terminal-response-race",
     "user-cancel-terminal-response-cancel-wins-race",
-    "user-cancel-before-person-commit"} else fault_args
+    "user-cancel-before-person-commit", "user-cancel-before-vehicle-commit"} else fault_args
     trust_args = ("--trust-schema", str(trust_schema))
     motion_args = () if motion_dir is None else ("--motion-dir", str(motion_dir))
     observation_stream_root = ("observation-pipes" if observation_profile.get("deliveryMode") == "live-push"
@@ -510,8 +528,12 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
         "--person-presentation-dir", str(presentation_root)))
     person_compute_args = (() if person_tracking is None else (
         "--tracking-profile", person_tracking["profile"],
+        "--person-computation-manifest", person_tracking["computationManifest"],
         "--reid-model", person_tracking["reidModel"]))
     worker_python = sys.executable if person_tracking is None else person_tracking["workerPython"]
+    worker_args = (() if person_tracking is None else
+                   ("--worker-python", worker_python, "--worker-script",
+                    str(_installed_tracking_script("tracking_worker.py"))))
     observation_request_args = (
         ("--observation-schema", "uav-observation-v2", "--source-epoch", str(source_epoch),
          "--source-uav1-id", source_ids["UAV1"], "--source-uav2-id", source_ids["UAV2"],
@@ -631,9 +653,7 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
                     ),
         _actor_spec("compute", root, output,
                     (tracking_node, *node_budget_args, "--role", "compute", "--display", display,
-                     "--model", str(model), "--worker-python", worker_python,
-                     "--worker-script",
-                     str(_installed_tracking_script("tracking_worker.py")),
+                     "--model", str(model), *worker_args,
                      *person_compute_args,
                      *observation_runtime_args,
                      *motion_args,
@@ -663,9 +683,9 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
     return [specs[0], *pushers, *external_sources, *specs[1:]]
 
 
-def _check_python_dependencies(*, model_dependencies: bool = True) -> list[str]:
+def _check_python_dependencies() -> list[str]:
     missing: list[str] = []
-    for module in (("cv2", "numpy", "ultralytics", "lap") if model_dependencies else ("cv2", "numpy")):
+    for module in ("cv2", "numpy"):
         try:
             __import__(module)
         except Exception as error:  # pragma: no cover - host-dependent
@@ -706,16 +726,21 @@ def _describe_person_computation(person_tracking: dict[str, Any], model: Path,
     descriptor.unlink(missing_ok=True)
     _required_native_programs(application_mode)
     executable = Path(_installed_program("UavDroneApp" if application_mode == "main" else "UavTrackingNode"))
-    worker = _installed_tracking_script("tracking_worker.py")
-    if (not executable.is_absolute() or not executable.is_file() or
-            not worker.is_absolute() or not worker.is_file()):
-        raise RunnerError("person description requires installed native Node and worker")
+    if not executable.is_absolute() or not executable.is_file():
+        raise RunnerError("person description requires an installed native Node")
+    worker_python = person_tracking.get("workerPython")
     command = [str(executable), *([] if application_mode == "main" else ["--role", "compute"]),
                "--model", str(model.resolve()),
                "--tracking-profile", person_tracking["profile"],
-               "--reid-model", person_tracking["reidModel"],
-               "--worker-python", person_tracking["workerPython"],
-               "--worker-script", str(worker), "--describe-person-computation", "stdout"]
+               "--reid-model", person_tracking["reidModel"]]
+    if worker_python is not None:
+        worker = _installed_tracking_script("tracking_worker.py")
+        if not worker.is_absolute() or not worker.is_file():
+            raise RunnerError("legacy person description requires an installed worker")
+        command.extend(("--worker-python", worker_python, "--worker-script", str(worker),
+                        "--describe-person-computation", "stdout"))
+    else:
+        command.extend(("--describe-native-person-computation", "stdout"))
     env = dict(os.environ, **_person_application_environment(output))
     override = os.environ.get("NDNSF_UAV_LIBRARY_PATH")
     if override is None:
@@ -757,14 +782,19 @@ def _describe_person_computation(person_tracking: dict[str, Any], model: Path,
     if not 0 < stdout_path.stat().st_size <= 64 * 1024:
         raise RunnerError("installed person computation descriptor exceeds byte bound")
     raw = stdout_path.read_bytes()
-    if not isinstance(json.loads(raw), dict):
+    manifest = json.loads(raw)
+    if not isinstance(manifest, dict):
         raise RunnerError("installed person computation descriptor must be an object")
+    if worker_python is None and (manifest.get("schema"), manifest.get("backendKind")) != (
+            "uav-person-computation-manifest-v2", "native-onnx"):
+        raise RunnerError("installed person computation descriptor must bind the native backend")
     temporary = descriptor.with_suffix(".tmp")
     temporary.write_bytes(raw)
     os.replace(temporary, descriptor)
     return {"computationManifest": str(descriptor), "computationManifestDigest": _sha256_bytes(raw),
-            "installedNode": str(executable), "installedWorker": str(worker),
-            "workerPython": person_tracking["workerPython"]}
+            "installedNode": str(executable),
+            "installedWorker": str(worker) if worker_python is not None else None,
+            "workerPython": worker_python}
 
 
 def _child_pythonpath() -> str:
@@ -901,7 +931,7 @@ def build_plan(*, source: Path, model: Path, output: Path, license_text: str,
     output = output.expanduser().resolve()
     trust_schema = trust_schema.expanduser().resolve()
     if not model.is_file():
-        raise RunnerError(f"model checkpoint is not available: {model}")
+        raise RunnerError(f"model artifact is not available: {model}")
     if not trust_schema.is_file():
         raise RunnerError(f"trust schema is not a regular file: {trust_schema}")
     output.mkdir(parents=True, exist_ok=True)
@@ -1223,11 +1253,13 @@ def _build_person_plan(person: dict[str, Any], model: Path, output: Path, *, hea
         "run_multicamera_tracking_demo.py", "person_run_receipt.py", "person_run_resources.py", "tracking_artifacts.py",
         "tracking_topology.py", "motion_fixture.py"))
     files.extend(Path(_installed_program(name)) for name in _required_native_programs(application_mode))
-    files.extend(_installed_tracking_script(name) for name in (
-        "tracking_worker.py", "tracking_display.py", "display_clock.py", "person_profile.py", "person_reid.py",
-        "person_runtime.py", "requirements-person.lock", "byte_track_state.py",
-        "observation_source.py", "observation_schema.py", "motion_schema.py", "motion_estimator.py")
-        if application_mode != "main" or name != "tracking_display.py")
+    scripts = ["display_clock.py", "person_profile.py", "observation_source.py",
+               "observation_schema.py", "motion_schema.py", "motion_estimator.py"]
+    if application_mode != "main":
+        scripts.append("tracking_display.py")
+    if person.get("workerPython") is not None:
+        scripts.extend(PERSON_WORKER_ASSETS)
+    files.extend(_installed_tracking_script(name) for name in scripts)
     files.extend(output / f"private/observations/{camera}/window-{index}.jsonl"
                  for camera in ("UAV1", "UAV2", "UAV3") for index in range(count))
     frozen = [{"path": str(path.resolve()), "digest": digest_file(path)} for path in files]
@@ -1405,10 +1437,19 @@ def _snapshot_observation_profile(observation: dict[str, Any], output: Path) -> 
     return profile
 
 
-def _video_presentation_timestamps(video: Path, *, end_time_us: int | None = None) -> list[int]:
+def _video_presentation_timestamps(video: Path, *, end_time_us: int | None = None,
+                                   sample_through_us: int | None = None) -> list[int]:
     """Read decoded video-frame PTS through ffprobe; never infer time from FPS."""
     interval = []
-    if end_time_us is not None:
+    if sample_through_us is not None:
+        if (end_time_us is not None or type(sample_through_us) is not int
+                or not 0 <= sample_through_us < 2**63 - 1000000):
+            raise RunnerError("invalid relative video PTS sample span")
+        # Read from the first packet so frame indices still match full-stream decode.
+        probe_span_us = sample_through_us + 1000000
+        interval = ["-read_intervals",
+                    f"%+{probe_span_us // 1000000}.{probe_span_us % 1000000:06d}"]
+    elif end_time_us is not None:
         if type(end_time_us) is not int or not 0 < end_time_us < 2**63:
             raise RunnerError("video PTS interval end must be a positive signed64-bit integer")
         # Empty start preserves original frame ordinals; do not seek into the video.
@@ -1431,6 +1472,10 @@ def _video_presentation_timestamps(video: Path, *, end_time_us: int | None = Non
         ]
     except (json.JSONDecodeError, KeyError, InvalidOperation, TypeError, ValueError) as error:
         raise RunnerError(f"video has missing or malformed decoded-frame PTS: {video}") from error
+    if sample_through_us is not None and (
+            not timestamps or timestamps[-1] - timestamps[0] < sample_through_us):
+        # Sparse PTS or decoder reorder can miss the last target at a packet cutoff.
+        return _video_presentation_timestamps(video)
     if not timestamps or any(current <= previous
                              for previous, current in zip(timestamps, timestamps[1:])):
         raise RunnerError(f"video frame PTS is empty or non-monotonic: {video}")
@@ -1457,7 +1502,8 @@ def _prepare_legacy_source_frame_files(source: Path, output: Path, *,
         camera_dir.mkdir(parents=True, exist_ok=True)
         paths: list[str] = []
         try:
-            timestamps = _video_presentation_timestamps(video)
+            timestamps = _video_presentation_timestamps(
+                video, sample_through_us=(window_count - 1) * 1_000_000)
             sampling[camera] = {"periodUs": 1_000_000, "frameIndices": [],
                                 "captureTimeUs": []}
             decoded_index = -1
@@ -1528,7 +1574,8 @@ def _prepare_source_frame_files(source: Path, output: Path, *, window_count: int
             raise RunnerError(f"video is unavailable for {camera}: {video}")
         timestamps = (_video_presentation_timestamps(
             video, end_time_us=person_view["videoStartUs"] + person_sources["durationUs"])
-            if person_view is not None else _video_presentation_timestamps(video))
+            if person_view is not None else _video_presentation_timestamps(
+                video, sample_through_us=(window_count - 1) * period_us))
         origin_us = person_view["videoStartUs"] if person_view is not None else timestamps[0]
         common_start_us = person_sources["commonStartUs"] if person_view is not None else 0
         if person_view is not None and (
@@ -1992,8 +2039,7 @@ def preflight(plan: dict[str, Any], *, run: bool, headless: bool) -> dict[str, A
     resource_probe = None
     person = plan.get("personTracking")
     if person is None:
-        errors.extend(_check_python_dependencies(model_dependencies=False)
-                      if plan.get("applicationMode") == "main" else _check_python_dependencies())
+        errors.extend(_check_python_dependencies())
     if person is not None or plan.get("applicationMode") == "main":
         try:
             import psutil
@@ -2005,41 +2051,47 @@ def preflight(plan: dict[str, Any], *, run: bool, headless: bool) -> dict[str, A
     if person is not None:
         try:
             _verify_person_plan(plan)
-            env = dict(os.environ, **_person_application_environment(
-                Path(person["preparationReceipt"]).parent))
-            probe = subprocess.run(
-                [person["workerPython"], "-c",
-                 "import sys,json,torch,ultralytics,lap,torchreid; d=sys.argv[1]; "
-                 "t=torch.empty(1,device=d); assert str(t.device)==d; "
-                 "print('SPEC219_DEVICE_PROBE '+json.dumps(dict(schema='uav-person-device-probe-v1',device=str(t.device))))",
-                 person["requestedDevice"]],
-                env=env, capture_output=True, timeout=15, check=False)
-            device_probe = {"returncode": probe.returncode,
-                            "stdout": probe.stdout[:8192].decode(errors="replace"),
-                            "stderr": probe.stderr[:8192].decode(errors="replace")}
-            if probe.returncode:
-                raise RunnerError("backend import/device probe exited " + str(probe.returncode))
-            prefix = b"SPEC219_DEVICE_PROBE "
-            records = [line[len(prefix):] for line in probe.stdout.splitlines() if line.startswith(prefix)]
-            if len(probe.stdout) > 64 * 1024 or len(records) != 1 or json.loads(records[0]) != {
-                    "schema": "uav-person-device-probe-v1", "device": person["requestedDevice"]}:
-                raise RunnerError("backend device probe has missing, duplicate or mismatched result")
+            if person.get("workerPython") is not None:
+                env = dict(os.environ, **_person_application_environment(
+                    Path(person["preparationReceipt"]).parent))
+                probe = subprocess.run(
+                    [person["workerPython"], "-c",
+                     "import sys,json,torch,ultralytics,lap,torchreid; d=sys.argv[1]; "
+                     "t=torch.empty(1,device=d); assert str(t.device)==d; "
+                     "print('SPEC219_DEVICE_PROBE '+json.dumps(dict(schema='uav-person-device-probe-v1',device=str(t.device))))",
+                     person["requestedDevice"]],
+                    env=env, capture_output=True, timeout=15, check=False)
+                device_probe = {"returncode": probe.returncode,
+                                "stdout": probe.stdout[:8192].decode(errors="replace"),
+                                "stderr": probe.stderr[:8192].decode(errors="replace")}
+                if probe.returncode:
+                    raise RunnerError("backend import/device probe exited " + str(probe.returncode))
+                prefix = b"SPEC219_DEVICE_PROBE "
+                records = [line[len(prefix):] for line in probe.stdout.splitlines() if line.startswith(prefix)]
+                if len(probe.stdout) > 64 * 1024 or len(records) != 1 or json.loads(records[0]) != {
+                        "schema": "uav-person-device-probe-v1", "device": person["requestedDevice"]}:
+                    raise RunnerError("backend device probe has missing, duplicate or mismatched result")
         except (OSError, ValueError, RunnerError, subprocess.TimeoutExpired) as error:
             errors.append("person execution preflight failed: " + str(error))
     if plan.get("applicationMode") == "main":
         try:
             catalog = json.loads(Path(plan["trackingMain"]["providerConfigs"]["compute"]["path"]).read_bytes())
             for candidate in catalog["runs"]:
-                script = ("import torch,ultralytics,lap; "
-                          "assert str(torch.empty(1,device='cpu').device)=='cpu'; ")
-                if candidate["mode"] == "person":
+                worker = candidate["workerPython"]
+                script = ""
+                if worker is not None:
+                    script = ("import torch,ultralytics,lap; "
+                              "assert str(torch.empty(1,device='cpu').device)=='cpu'; ")
+                if worker is not None and candidate["mode"] == "person":
                     script += "import torchreid; "
                 if not headless:
                     if not os.environ.get("DISPLAY"):
                         raise RunnerError("main GTK screenshots require an explicit X11 DISPLAY")
                     script += ("from PIL import ImageGrab; import os; "
                                "im=ImageGrab.grab(xdisplay=os.environ['DISPLAY']); assert im.width>0; ")
-                probe = subprocess.run([candidate["workerPython"]["path"], "-c", script],
+                if not script:
+                    continue
+                probe = subprocess.run([worker["path"] if worker else sys.executable, "-c", script],
                     env=dict(os.environ, **_person_application_environment(Path(plan["processes"][0]["privateDir"]).parents[1])),
                     capture_output=True, timeout=20)
                 if probe.returncode:
@@ -2061,16 +2113,16 @@ def preflight(plan: dict[str, Any], *, run: bool, headless: bool) -> dict[str, A
             f"missing installed native binary/program: {name}"
             for name in _required_native_programs(plan.get("applicationMode", "compat"))
             if shutil.which(name) is None)
-        errors.extend(
-            f"missing installed tracking script: {path}"
-            for path in (_installed_tracking_script("tracking_worker.py"),
-                         _installed_tracking_script("tracking_display.py"),
-                         _installed_tracking_script("motion_estimator.py"),
-                         _installed_tracking_script("motion_schema.py"),
-                         _installed_tracking_script("observation_schema.py"),
-                         _installed_tracking_script("observation_source.py"))
-            if not path.is_file() and not (plan.get("applicationMode") == "main" and
-                                          path.name == "tracking_display.py"))
+        tracking_scripts = ["motion_estimator.py", "motion_schema.py",
+                            "observation_schema.py", "observation_source.py"]
+        if plan.get("applicationMode") != "main":
+            tracking_scripts.append("tracking_display.py")
+        if person is not None and person.get("workerPython") is not None:
+            tracking_scripts.append("tracking_worker.py")
+        for name in tracking_scripts:
+            script = _installed_tracking_script(name)
+            if not script.is_file():
+                errors.append(f"missing installed tracking script: {script}")
         if observation.get("enabled") and observation.get("mode") != "live-push" and \
                 shutil.which("ffprobe") is None:
             errors.append("ffprobe is required to bind decoded replay frames to presentation timestamps")
@@ -2180,7 +2232,7 @@ def _capture_main_screen(plan: dict[str, Any], output: Path, job: dict[str, Any]
         return None
     compute = json.loads(Path(main['providerConfigs']['compute']['path']).read_bytes())
     run = next(value for value in compute['runs'] if value['runId'] == job['runId'])
-    python = run['workerPython']['path']
+    python = run['workerPython']['path'] if run['workerPython'] else sys.executable
     directory = output / 'screenshots'
     directory.mkdir(exist_ok=True)
     candidate = directory / '.main-capture.png'
@@ -2420,7 +2472,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
         if plan["settings"]["fault"] in {
                 "user-cancel-terminal-response-race",
                 "user-cancel-terminal-response-cancel-wins-race",
-                "user-cancel-before-person-commit"}:
+                "user-cancel-before-person-commit", "user-cancel-before-vehicle-commit"}:
             # Keep the deterministic callback hold off the Face loop itself.
             env.append("export NDNSF_HANDLER_THREADS=2")
         if child_pythonpath:
@@ -2659,9 +2711,13 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
         if person_mode:
             launch(by_name[display_name])
             wait_for(display_name, ("DISPLAY_READY",), 30)
-        if plan["settings"]["fault"] == "user-cancel-before-person-commit":
-            wait_for("compute", ("SPEC219_PERSON_PRECOMMIT_READY window=window-0",),
-                     wall_timeout_seconds)
+        precommit_markers = {
+            "user-cancel-before-person-commit": "SPEC219_PERSON_PRECOMMIT_READY",
+            "user-cancel-before-vehicle-commit": "SPEC210_VEHICLE_PRECOMMIT_READY",
+        }
+        precommit_marker = precommit_markers.get(plan["settings"]["fault"])
+        if precommit_marker is not None:
+            wait_for("compute", (f"{precommit_marker} window=window-0",), wall_timeout_seconds)
             ground_station_process = next(
                 process for name, process, _log in processes if name == "ground-station")
             ground_station_process.send_signal(signal.SIGUSR1)
@@ -3182,17 +3238,17 @@ def _run_person(plan: dict[str, Any], output: Path, *, headless: bool,
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--application-mode", choices=("compat", "main"), default="compat",
-                        help="main runs the installed NDNSF-UAV GS/Drone containers and GTK Tracking tab")
+    parser.add_argument("--application-mode", choices=("compat", "main"),
+                        help="the native person ONNX path uses main and the installed GS/Drone applications")
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--tracking-profile", type=Path,
                         help="strict indoor person profile with pinned model digests and device")
     parser.add_argument("--source-manifest", type=Path,
                         help="three distinct indoor videos and declared common media interval")
-    parser.add_argument("--reid-model", type=Path, help="pretrained OSNet checkpoint for person mode")
+    parser.add_argument("--reid-model", type=Path, help="OSNet ONNX or a legacy checkpoint for person mode")
     parser.add_argument("--worker-python", type=Path, default=Path(sys.executable),
-                        help="explicit installed model interpreter for person or main vehicle mode")
+                        help="explicit installed interpreter for the legacy person worker")
     parser.add_argument("--license", default="")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--prepare", action="store_true")
@@ -3224,6 +3280,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not (args.prepare or args.preflight or args.run):
         parser.error("one of --prepare, --preflight, or --run is required")
     try:
+        native_person = False
+        if args.reid_model is not None:
+            detector_is_onnx = args.model.suffix.lower() == ".onnx"
+            reid_is_onnx = args.reid_model.suffix.lower() == ".onnx"
+            if detector_is_onnx != reid_is_onnx:
+                raise RunnerError("native person tracking requires both detector and ReID ONNX models")
+            native_person = detector_is_onnx
+        if args.application_mode is None:
+            args.application_mode = "main" if native_person else "compat"
+        if native_person and args.application_mode != "main":
+            raise RunnerError("native person tracking requires --application-mode main")
         owner = (nullcontext() if any((args.tracking_profile, args.source_manifest, args.reid_model))
                  else _uav_run_ownership(args.output_dir))
         with owner:
@@ -3246,7 +3313,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         args.fault == PERSON_SOURCE_EPOCH_RESTART_FAULT))
                 person = {"profile": receipt["trackingProfile"],
                           "reidModel": str(args.reid_model.resolve()),
-                          "workerPython": str(args.worker_python.absolute())}
+                          "workerPython": None if native_person else str(args.worker_python.absolute())}
                 with (args.output_dir / ".person-source.lock").open("a") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     person.update(_describe_person_computation(person, args.model, args.output_dir,

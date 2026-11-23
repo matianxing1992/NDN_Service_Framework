@@ -221,6 +221,7 @@ def build(bld):
         bld.shlib(name='ndnsf-uav-tracking', target='ndnsf-uav-tracking',
                     source=[
                         '../NDNSF-UAV-APP/tracking/uav-tracking-provider.cpp',
+                        '../NDNSF-UAV-APP/tracking/uav-vehicle-model-backend.cpp',
                         '../NDNSF-UAV-APP/tracking/uav-vehicle-tracking-engine.cpp',
                         '../NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp',
                         '../NDNSF-UAV-APP/shared/UavObservationSource.cpp',
@@ -247,7 +248,8 @@ def build(bld):
                         '../NDNSF-UAV-APP/tracking/uav-tracking-presentation.cpp',
                     ],
                     includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-UAV-APP/tracking'],
-                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL ONNXRUNTIME',
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL ONNXRUNTIME'
+                        + (' UAV_OPENCV' if bld.env.HAVE_UAV_OPENCV else ''),
                     lib=['jpeg'],
                     defines=['NDNSF_UAV_TRACKING_TEST_SEAM'] if bld.env.WITH_TESTS else [],
                     cxxflags=uav_cxxflags,

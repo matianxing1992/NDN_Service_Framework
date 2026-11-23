@@ -22,7 +22,7 @@ def main_plan(tmp_path, monkeypatch, name="run-1", epoch=42, prepared=False):
         (binaries / binary_name).write_text('installed fixture ' + binary_name)
     monkeypatch.setattr(runner, '_installed_program', lambda name: str(binaries / name))
     monkeypatch.setattr(runner, '_installed_tracking_script', lambda name: binaries / name)
-    model, python, trust = [tmp_path / name for name in ('model.pt', 'python3', 'trust.conf')]
+    model, python, trust = [tmp_path / name for name in ('model.onnx', 'python3', 'trust.conf')]
     for path in (model, python, trust):
         path.write_text(path.name)
     runner._write_uav_trust_schema(trust)

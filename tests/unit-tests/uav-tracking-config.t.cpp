@@ -215,9 +215,7 @@ BOOST_AUTO_TEST_CASE(VehicleComputeRequiresTheSameObservationContextAsItsSources
   run.computeProducer = job.computeIdentity;
   run.windowCount = job.windowCount;
   run.sourceGenerations = job.sources[0].sourceManifest;
-  run.model = {"/var/tmp/model.pt", ABC_DIGEST};
-  run.workerPython = {"/var/tmp/python3", ABC_DIGEST};
-  run.workerScript = {"/var/tmp/tracking_worker.py", ABC_DIGEST};
+  run.model = {"/var/tmp/model.onnx", ABC_DIGEST};
   run.worldFrameId = "synthetic-local";
   run.acquisitionKind = "simulated";
   run.deliveryMode = "replay";
@@ -230,6 +228,23 @@ BOOST_AUTO_TEST_CASE(VehicleComputeRequiresTheSameObservationContextAsItsSources
     (config.runs[0].*member).clear();
     BOOST_CHECK_THROW(validateTrackingProviderConfig(config), std::invalid_argument);
   }
+  config.runs[0] = run;
+  config.runs[0].workerPython = {"/var/tmp/python3", ABC_DIGEST};
+  config.runs[0].workerScript = {"/var/tmp/tracking_worker.py", ABC_DIGEST};
+  BOOST_CHECK_THROW(validateTrackingProviderConfig(config), std::invalid_argument);
+  config.runs[0].mode = TrackingMode::PERSON;
+  config.runs[0].profile = {"/var/tmp/profile.json", ABC_DIGEST};
+  config.runs[0].reidModel = {"/var/tmp/reid.onnx", ABC_DIGEST};
+  config.runs[0].computationManifest = {"/var/tmp/computation.json", ABC_DIGEST};
+  BOOST_CHECK_NO_THROW(validateTrackingProviderConfig(config));
+  config.runs[0].workerScript = {};
+  BOOST_CHECK_THROW(validateTrackingProviderConfig(config), std::invalid_argument);
+  config.runs[0].workerPython = {};
+  BOOST_CHECK_NO_THROW(validateTrackingProviderConfig(config));
+
+  config.runs[0] = run;
+  config.runs[0].model = {"/var/tmp/model.pt", ABC_DIGEST};
+  BOOST_CHECK_THROW(validateTrackingProviderConfig(config), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

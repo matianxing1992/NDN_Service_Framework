@@ -142,6 +142,22 @@ ego-motion compensation. The independent trajectory is labeled
 `simulated-input` and remains an oracle, not an injected detection result;
 invalid telemetry or calibration produces `unknown`.
 
+Prepare the vehicle detector from the checkpoint and SHA-256 in
+`Experiments/recipes/uav-multicam-tracking.json`. Use an offline preparation
+environment with Ultralytics, PyTorch, ONNX and ONNX Runtime.
+
+```bash
+python Experiments/UAV/prepare_vehicle_detector.py \
+  --checkpoint /path/to/spec191-assets/3UAVs_YOLOv8n.pt \
+  --checkpoint-sha256 c51091c489af103ab641c3db0580231b1ed622bfa1f95694ef0fa59607ff1117 \
+  --output /path/to/spec191-assets/3UAVs_YOLOv8n.onnx
+```
+
+Use the resulting ONNX file as the vehicle model. The C++ Provider consumes
+this artifact with ONNX Runtime and OpenCV core/imgproc. The host launcher's
+video preparation still uses Python. Use the original checkpoint as input to
+the offline preparation command.
+
 Motion validation profiles are reproducible from the same entrypoint. The
 nominal profile is used by default; paired negative profiles are
 `missing-calibration`, `stale-telemetry`, `reversed-homography`,
@@ -150,7 +166,7 @@ nominal profile is used by default; paired negative profiles are
 ```bash
 sudo -E env PYTHONPATH="$(python3 -m site --user-site)" \
   python3 Experiments/UAV/run_multicamera_tracking_demo.py \
-  --source /path/to/spec191-assets --model /path/to/3UAVs.pt \
+  --source /path/to/spec191-assets --model /path/to/spec191-assets/3UAVs_YOLOv8n.onnx \
   --license local-test-accepted --output-dir /tmp/spec191-motion-negative \
   --motion-profile stale-telemetry --window-count 2 \
   --prepare --preflight --run --headless
