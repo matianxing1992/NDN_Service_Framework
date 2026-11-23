@@ -43,6 +43,10 @@ Use `cluster prepare` only for the preparation workflow your configuration
 declares. Use `cluster down` for required closeout of that same deployment.
 One owner controls the allocation and its writers. If submit or status loses
 its response, reconcile the original job, boot and config digest before retrying.
+When Slurm has evicted an old completed prerequisite, verify its exact
+`sacct` status, exit code and artifact identity before submitting. Use scheduler
+dependencies for still-active jobs and check the completed receipts again in
+the consuming job.
 
 For a physical two-node PP run, each node runs one owned NFD and one Provider.
 Configure each actor's local Unix socket, bidirectional TCP faces, exact

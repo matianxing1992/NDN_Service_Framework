@@ -19,6 +19,8 @@ ssh -o BatchMode=yes -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
 
 Before diagnosing missing keys or cluster access failure, verify the effective
 SSH user. Rejection of `ndn@itiger` does not establish failure of `tma1@itiger`.
+The bundled SSH helpers use the same default. Set `ITIGER_SSH_USER` to change
+the account for a bare host alias, or supply an explicit `USER@ALIAS` target.
 Keep credentials out of this skill and evidence.
 
 ## Locate the task and its owner
