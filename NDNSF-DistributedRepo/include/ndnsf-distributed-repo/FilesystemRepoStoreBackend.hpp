@@ -128,12 +128,12 @@ private:
                                          const std::string& wireSha256) const;
   RepoObjectManifest readManifest(const std::string& objectName) const;
   std::shared_ptr<const RepoObjectManifest>
-  readManifestUnlocked(const std::string& objectName) const;
+  readManifestUnlocked(const std::string& objectName, uint64_t* wireBytes = nullptr) const;
   std::shared_ptr<const RepoObjectManifest>
-  loadManifestUnlocked(const std::filesystem::path& path) const;
+  loadManifestUnlocked(const std::filesystem::path& path, uint64_t* wireBytes = nullptr) const;
   /** Pin an immutable parse while the complete current filesystem identity matches. */
   std::shared_ptr<const RepoObjectManifest>
-  cachedManifestUnlocked(const std::filesystem::path& path) const;
+  cachedManifestUnlocked(const std::filesystem::path& path, uint64_t* wireBytes = nullptr) const;
   std::shared_ptr<const RepoObjectManifest>
   parseManifestCachedUnlocked(const std::string& key, std::string encoded,
                               const std::filesystem::path* source = nullptr) const;

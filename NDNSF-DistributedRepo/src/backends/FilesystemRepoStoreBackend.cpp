@@ -29,17 +29,32 @@ namespace {
 namespace fs = std::filesystem;
 
 using ManifestStamp = std::array<uint64_t, 7>;
+constexpr std::size_t MANIFEST_FILE_SIZE_INDEX = 2;
+
+std::optional<ManifestStamp>
+tryManifestStamp(const fs::path& path)
+{
+  struct stat info{};
+  if (::lstat(path.c_str(), &info) != 0) {
+    if (errno == ENOENT)
+      return std::nullopt;
+    throw std::runtime_error("repo-file-manifest-unavailable: " + path.string());
+  }
+  if (!S_ISREG(info.st_mode) || info.st_size < 0)
+    throw std::runtime_error("repo-file-manifest-unavailable: " + path.string());
+  return ManifestStamp{static_cast<uint64_t>(info.st_dev), static_cast<uint64_t>(info.st_ino),
+    static_cast<uint64_t>(info.st_size), static_cast<uint64_t>(info.st_mtim.tv_sec),
+    static_cast<uint64_t>(info.st_mtim.tv_nsec), static_cast<uint64_t>(info.st_ctim.tv_sec),
+    static_cast<uint64_t>(info.st_ctim.tv_nsec)};
+}
 
 ManifestStamp
 manifestStamp(const fs::path& path)
 {
-  struct stat info{};
-  if (::lstat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
+  const auto stamp = tryManifestStamp(path);
+  if (!stamp)
     throw std::runtime_error("repo-file-manifest-unavailable: " + path.string());
-  return {static_cast<uint64_t>(info.st_dev), static_cast<uint64_t>(info.st_ino),
-    static_cast<uint64_t>(info.st_size), static_cast<uint64_t>(info.st_mtim.tv_sec),
-    static_cast<uint64_t>(info.st_mtim.tv_nsec), static_cast<uint64_t>(info.st_ctim.tv_sec),
-    static_cast<uint64_t>(info.st_ctim.tv_nsec)};
+  return *stamp;
 }
 
 bool
@@ -1144,13 +1159,7 @@ FilesystemRepoStoreBackend::probeObjectMetadataSnapshot(const std::string& objec
 {
   RepoObjectMetadataSnapshot result;
   try {
-    result.manifest = readManifestUnlocked(objectName);
-    const auto path = manifestPath(objectName);
-    struct stat metadata{};
-    if (::lstat(path.c_str(), &metadata) != 0 ||
-        !S_ISREG(metadata.st_mode) || metadata.st_size < 0)
-      throw std::runtime_error("repo-file-manifest-measurement-unavailable");
-    result.manifestWireBytes = static_cast<uint64_t>(metadata.st_size);
+    result.manifest = readManifestUnlocked(objectName, &result.manifestWireBytes);
     result.manifestMeasurementAvailable = true;
   }
   catch (const std::out_of_range&) {
@@ -1552,19 +1561,20 @@ FilesystemRepoStoreBackend::readManifest(const std::string& objectName) const
 }
 
 std::shared_ptr<const RepoObjectManifest>
-FilesystemRepoStoreBackend::readManifestUnlocked(const std::string& objectName) const
+FilesystemRepoStoreBackend::readManifestUnlocked(const std::string& objectName,
+                                                 uint64_t* wireBytes) const
 {
   const auto path = manifestPath(objectName);
-  if (!fs::exists(path)) {
-    throw std::out_of_range("repo-object-not-found: " + objectName);
-  }
-  if (auto cached = cachedManifestUnlocked(path)) {
+  if (auto cached = cachedManifestUnlocked(path, wireBytes)) {
     if (cached->objectName != objectName) {
       throw std::runtime_error("repo-file-metadata-key-mismatch");
     }
     return cached;
   }
-  auto manifest = loadManifestUnlocked(path);
+  if (!fs::exists(path)) {
+    throw std::out_of_range("repo-object-not-found: " + objectName);
+  }
+  auto manifest = loadManifestUnlocked(path, wireBytes);
   if (manifest->objectName != objectName) {
     throw std::runtime_error("repo-file-metadata-key-mismatch");
   }
@@ -1572,7 +1582,7 @@ FilesystemRepoStoreBackend::readManifestUnlocked(const std::string& objectName) 
 }
 
 std::shared_ptr<const RepoObjectManifest>
-FilesystemRepoStoreBackend::loadManifestUnlocked(const fs::path& path) const
+FilesystemRepoStoreBackend::loadManifestUnlocked(const fs::path& path, uint64_t* wireBytes) const
 {
   const auto stamp = manifestStamp(path);
   auto manifest = parseManifestCachedUnlocked(path.filename().string(), readText(path), &path);
@@ -1585,24 +1595,29 @@ FilesystemRepoStoreBackend::loadManifestUnlocked(const fs::path& path) const
     }
     throw std::runtime_error("repo-file-metadata-changed-during-read");
   }
+  // The size belongs to the same file identity that bracketed the parse.
+  if (wireBytes)
+    *wireBytes = stamp[MANIFEST_FILE_SIZE_INDEX];
   return manifest;
 }
 
 std::shared_ptr<const RepoObjectManifest>
-FilesystemRepoStoreBackend::cachedManifestUnlocked(const fs::path& path) const
+FilesystemRepoStoreBackend::cachedManifestUnlocked(const fs::path& path, uint64_t* wireBytes) const
 {
   std::lock_guard<std::mutex> lock(m_catalogParseMutex);
   const auto found = m_catalogParseCache.find(path.filename().string());
   if (found == m_catalogParseCache.end())
     return {};
-  const auto identity = manifestStamp(path);
-  if (identity != found->second.identity)
+  const auto identity = tryManifestStamp(path);
+  if (!identity || *identity != found->second.identity)
     return {};
   // Filesystem ctime can repeat for writes in the same clock tick, even when
   // nanoseconds are exposed. Read current bytes until that tick is safely old;
   // this is a cache bypass for recent files, not a stale-data grace period.
-  if (!isStableManifestStamp(identity))
+  if (!isStableManifestStamp(*identity))
     return {};
+  if (wireBytes)
+    *wireBytes = (*identity)[MANIFEST_FILE_SIZE_INDEX];
   return found->second.parsed;
 }
 

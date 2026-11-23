@@ -1296,6 +1296,8 @@ BOOST_AUTO_TEST_CASE(PhysicalMetadataSnapshotsPinIndexesButRecheckBackingFiles)
   original.size = payload.size();
   original.sha256 = sha256Hex(payload);
   backing->put(original, payload);
+  const auto sidecar = std::filesystem::directory_iterator(
+    fixture.root / "physical-snapshot/manifests")->path();
   // Recent filesystem identities intentionally require a byte read. Warm the
   // stat-valid parse only after the existing conservative timestamp boundary.
   std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -1305,17 +1307,21 @@ BOOST_AUTO_TEST_CASE(PhysicalMetadataSnapshotsPinIndexesButRecheckBackingFiles)
   BOOST_CHECK(pinned.manifest == core.probeObjectMetadataSnapshot(original.objectName).manifest);
   BOOST_CHECK(pinned.payloadPresent && pinned.payloadRepresentationValid);
   BOOST_CHECK_EQUAL(pinned.payloadSize, payload.size());
-  BOOST_CHECK(pinned.manifestMeasurementAvailable && pinned.manifestWireBytes > 0);
+  BOOST_CHECK(pinned.manifestMeasurementAvailable);
+  BOOST_CHECK_EQUAL(pinned.manifestWireBytes, std::filesystem::file_size(sidecar));
   auto owned = core.probeObjectMetadata(original.objectName);
   owned.manifest.packetNames.clear();
   BOOST_CHECK_EQUAL(pinned.manifest->packetNames.size(), packets.packets.size());
   auto updated = original;
   ++updated.generation;
-  updated.policyEpoch = "epoch-b";
+  updated.policyEpoch = "epoch-b-longer";
   backing->put(updated, payload);
   const auto current = core.probeObjectMetadataSnapshot(original.objectName);
   BOOST_REQUIRE(current.manifest);
-  BOOST_CHECK_EQUAL(current.manifest->policyEpoch, "epoch-b");
+  BOOST_CHECK_EQUAL(current.manifest->policyEpoch, updated.policyEpoch);
+  BOOST_CHECK(current.manifestMeasurementAvailable);
+  BOOST_CHECK_EQUAL(current.manifestWireBytes, std::filesystem::file_size(sidecar));
+  BOOST_CHECK_GT(current.manifestWireBytes, pinned.manifestWireBytes);
   BOOST_CHECK_EQUAL(pinned.manifest->policyEpoch, "epoch-a");
   const auto storedPayload = fixture.root / "physical-snapshot/payloads/sha256" /
     original.sha256.substr(0, 2) / original.sha256;
@@ -1326,8 +1332,6 @@ BOOST_AUTO_TEST_CASE(PhysicalMetadataSnapshotsPinIndexesButRecheckBackingFiles)
   std::filesystem::create_directory(storedPayload);
   const auto nonregular = core.probeObjectMetadataSnapshot(original.objectName);
   BOOST_CHECK(nonregular.payloadPresent && !nonregular.payloadRepresentationValid);
-  const auto sidecar = std::filesystem::directory_iterator(
-    fixture.root / "physical-snapshot/manifests")->path();
   {
     std::ofstream output(sidecar, std::ios::trunc);
     output << "{invalid json";
