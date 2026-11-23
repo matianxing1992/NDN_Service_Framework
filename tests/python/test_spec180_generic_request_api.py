@@ -354,6 +354,28 @@ def test_provider_context_rejects_name_or_size_only_repo_fetch():
         context.fetch_application_input()
 
 
+def test_provider_context_projects_signed_descriptor_to_protected_reader():
+    payload = b"image-bytes"
+    reference = repo_reference_for_payload(payload)
+    reference["authorizationScope"] = "/SERVICE/Inference/ObjectDetection"
+    reference["manifestDigest"] = digest("signed-descriptor-payload")
+    value = ApplicationInput.from_repo_ref(
+        task_name="object-detection", input_schema_digest=input_schema(),
+        options_schema_digest=options_schema(), reference=reference, options=b"{}")
+
+    class ProtectedReader:
+        def fetch_protected_request_input(self, candidate, timeout_ms):
+            assert candidate["manifestDigest"] == reference["manifestDigest"]
+            assert candidate["authorizationScope"] == reference["authorizationScope"]
+            assert timeout_ms == 1234
+            return payload
+
+    context = ProviderRuntimeContext(
+        ndnsf=ProtectedReader(), execution=object(), request=_request_wire(value),
+        role="BackboneNeck", input_ingress_owner=True, enforce_dataflow_ownership=True)
+    assert context.fetch_application_input(timeout_ms=1234) == payload
+
+
 def test_provider_context_rejects_tampered_repo_content():
     original = b"x" * (1024 * 1024)
     value = ApplicationInput.from_repo_ref(

@@ -31,17 +31,10 @@ def _publication_manifest_digest(*, data_name: str, object_id: str,
     Current publishers return the actual signed descriptor payload digest.
     Do not use this legacy transcript for a canonical publication.
     """
-    canonical = (
-        "version=1\n"
-        f"name={data_name}\n"
-        f"object_id={object_id}\n"
-        f"plaintext_size={int(plaintext_size)}\n"
-        f"content_digest={content_digest}\n"
-        f"authorization_scope={authorization_scope}\n"
-        f"protection_epoch={protection_epoch}\n"
-        "encrypted=1\n"
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+    from ndnsf import _ndnsf
+    return _ndnsf._legacy_publication_manifest_digest(
+        data_name, object_id, int(plaintext_size), content_digest,
+        authorization_scope, protection_epoch)
 
 
 @dataclass(frozen=True)

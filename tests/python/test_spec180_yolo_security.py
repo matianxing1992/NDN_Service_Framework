@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "pythonWrapper"))
 sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
 
-from ndnsf.service import CollaborationContext  # noqa: E402
+from ndnsf.service import CollaborationContext, parse_large_data_reference_payload  # noqa: E402
 from ndnsf_distributed_inference.adapters import ApplicationInput  # noqa: E402
 from ndnsf_distributed_inference.app_sdk.placement import (  # noqa: E402
     AutomaticPlanningCoordinator,
@@ -83,17 +83,28 @@ class _FakeNative:
     role = "BackboneNeck"
     local_provider = "/provider/backbone"
 
-    def fetch_large(self, _data_name, _key_scope, _timeout_ms):
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def fetch_large_reference(self, wire, key_scope, timeout_ms, producer):
+        self.calls.append((wire, key_scope, timeout_ms, producer))
         return self.payload
 
 
-def test_python_wrapper_reference_verification_accepts_bound_content():
+def test_python_wrapper_projects_reference_to_native_reader():
     payload = b"image-payload"
-    native = _FakeNative()
-    native.payload = payload
+    native = _FakeNative(payload)
     context = CollaborationContext(native)
     assert context.fetch_large_reference(
-        _reference(payload), "/service/object-detection/input", 1234) == payload
+        _reference(payload), "/service/object-detection/input", 1234,
+        expected_producer="/repo") == payload
+    [(wire, scope, timeout_ms, producer)] = native.calls
+    reference = parse_large_data_reference_payload(wire)
+    assert reference.data_name == "/repo/input/image-1"
+    assert reference.plaintext_size == len(payload)
+    assert reference.digest == _digest(payload)
+    assert (scope, timeout_ms, producer) == ("/service/object-detection/input", 1234, "/repo")
 
 
 @pytest.mark.parametrize(
@@ -105,21 +116,21 @@ def test_python_wrapper_reference_verification_accepts_bound_content():
         ({"protectionEpoch": ""}, "metadata is not authenticated"),
         ({"protectionEpoch": "plaintext-v1"},
          "metadata is not authenticated"),
-        ({"ciphertextDigest": _digest(b"different")}, "SHA-256 mismatch"),
+        ({"ciphertextDigest": "sha256:" + "z" * 64}, "metadata digest is invalid"),
     ],
 )
 def test_python_wrapper_reference_verification_rejects_tampering(
     overrides, expected,
 ):
     payload = b"image-payload"
-    native = _FakeNative()
-    native.payload = payload
+    native = _FakeNative(payload)
     with pytest.raises(ValueError, match=expected):
         CollaborationContext(native).fetch_large_reference(
             _reference(payload, **overrides),
             "/service/object-detection/input",
             1234,
         )
+    assert native.calls == []
 
 
 def test_provider_terminal_response_is_single_use():

@@ -42,6 +42,7 @@
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
+#include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/EncryptedLargeDataRangeStore.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
 #include "ndnsf-integration-fixture.hpp"
@@ -760,63 +761,50 @@ runNativeIngressCase(
         environment.userFace().put(*data);
   }
 
-  if (referenceCase != NativeIngressReferenceCase::Inline) {
-    const std::vector<uint8_t> inputPayload(inputText.begin(), inputText.end());
-    ndn::Name inputDataName(requesterName);
-    inputDataName.append("NDNSF").append("LARGE-DATA").append(serviceName);
-    inputDataName.append(requestId).append("native-request-input");
-    inputDataName.appendVersion();
-    if (referenceCase == NativeIngressReferenceCase::Valid ||
-        referenceCase == NativeIngressReferenceCase::SizeMismatch) {
-      const auto inputAdText = inputDataName.toUri() + "|REQUEST-LARGE|" +
-                               serviceName.toUri();
-      const ndn::Buffer inputAd(
-        reinterpret_cast<const uint8_t*>(inputAdText.data()), inputAdText.size());
-      const auto encryptedInput = hybridAesGcmEncrypt(
-        artifactKey.key,
-        ndn::span<const uint8_t>(inputPayload.data(), inputPayload.size()),
-        ndn::span<const uint8_t>(inputAd.data(), inputAd.size()));
-      HybridMessageEnvelope inputEnvelope;
-      inputEnvelope.setKeyId(artifactKey.keyId);
-      inputEnvelope.setEpochId(artifactKey.epochId);
-      inputEnvelope.setMessageType("REQUEST-LARGE");
-      inputEnvelope.setNonce(encryptedInput.nonce);
-      inputEnvelope.setCipherText(encryptedInput.ciphertext);
-      inputEnvelope.setAuthTag(encryptedInput.tag);
-      const auto inputBlock = inputEnvelope.WireEncode();
-      const ndn::Buffer inputWire(inputBlock.data(), inputBlock.size());
-      const auto inputSegments = artifactSegmenter.segment(
-        ndn::span<const uint8_t>(inputWire.data(), inputWire.size()),
-        inputDataName,
-        64,
-        ndn::time::milliseconds(60000));
-      if (inputSegments.empty()) {
-        throw std::runtime_error("native ingress test produced no input segments");
-      }
-      for (const auto& data : inputSegments) {
-        environment.user().cacheDataForTest(
-          *data, ndn::time::milliseconds(60000));
-        environment.userFace().put(*data);
-      }
+  if (referenceCase == NativeIngressReferenceCase::Malformed) {
+    requestWireText = "{\"schema\":\"ndnsf-di-request-envelope-v2\"";
+  }
+  else if (referenceCase != NativeIngressReferenceCase::Inline) {
+    auto publicationContext = environment.user().prepareServiceRequest(serviceName.toUri());
+    LargeDataPublishOptions options;
+    PublishedContentName contentName;
+    contentName.label = "native-request-input";
+    contentName.semanticRole = ContentSemanticRole::BlobObject;
+    options.contentName = std::move(contentName);
+    const ndn::Buffer inputPayload(inputText.begin(), inputText.end());
+    const auto published = environment.user().publishEncryptedLargeData(
+      publicationContext, inputPayload, "native-request-input",
+      ndn::time::milliseconds(60000), true, options);
+    BOOST_REQUIRE_MESSAGE(published.success, published.errorMessage);
+    BOOST_REQUIRE(!published.manifestName.empty());
+
+    auto referenceName = published.manifestName;
+    if (referenceCase == NativeIngressReferenceCase::Missing) {
+      // Select a different well-formed commitment in the same Producer namespace.
+      const auto digestIndex = referenceName[-1] == ndn::name::Component("MANIFEST") ? -2 : -1;
+      const auto missingDigest = makeNamingDigestComponent(std::string(64, '0'));
+      BOOST_REQUIRE(referenceName[digestIndex] != missingDigest);
+      referenceName.set(digestIndex, missingDigest);
+      const auto producer = ProtectedBlobManifest::inferProducer(referenceName);
+      BOOST_REQUIRE(producer && *producer == requesterName);
     }
 
-    if (referenceCase == NativeIngressReferenceCase::Malformed) {
-      requestWireText = "{\"schema\":\"ndnsf-di-request-envelope-v2\"";
-    }
-    else {
-      // The only request bytes on the wire are the reference envelope; the
-      // published plaintext is available only through Provider fetch/decrypt.
-      const auto declaredSize = referenceCase == NativeIngressReferenceCase::SizeMismatch
-        ? inputPayload.size() + 1 : inputPayload.size();
-      std::ostringstream referenceEnvelope;
-      referenceEnvelope << "{\"input_reference\":{\"dataName\":\""
-                        << inputDataName.toUri()
-                        << "\",\"plaintextSize\":" << declaredSize
-                        << "},\"input_transport\":\"REPO_REF\","
-                           "\"schema\":\"ndnsf-di-request-envelope-v2\","
-                           "\"schema_version\":2}";
-      requestWireText = referenceEnvelope.str();
-    }
+    const auto declaredSize = referenceCase == NativeIngressReferenceCase::SizeMismatch
+      ? published.plaintextSize + 1 : published.plaintextSize;
+    requestWireText = nativeCanonicalJson({
+      {"schema", "ndnsf-di-request-envelope-v2"},
+      {"schema_version", 2},
+      {"input_transport", "REPO_REF"},
+      {"input_reference", {
+        {"dataName", referenceName.toUri(ndn::name::UriFormat::CANONICAL)},
+        {"manifestDigest", published.manifestDigest},
+        {"plaintextSize", declaredSize},
+        {"ciphertextDigest", published.contentDigest},
+        {"authorizationScope", published.authorizationScope},
+        {"protectionEpoch", published.protectionEpoch},
+        {"encrypted", true},
+      }},
+    });
   }
 
   environment.providerPubSub().subscribeToProducer(
@@ -1044,8 +1032,7 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRejectsNativeRepositoryReferenceSizeMismat
   BOOST_CHECK(result.handlerEntered);
   BOOST_CHECK(!result.providerInputMatches);
   BOOST_CHECK(result.statusFailed);
-  BOOST_CHECK_EQUAL(result.statusMessage,
-                    "native DI request input plaintext size mismatch");
+  BOOST_CHECK_EQUAL(result.statusMessage, "DI_INPUT_REPO_SIZE_MISMATCH");
   BOOST_CHECK(!result.responseReceived);
   BOOST_CHECK(!result.timedOut);
 }
@@ -10463,10 +10450,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     return;
   }
 
+  const auto firstResult = first.result(std::chrono::milliseconds(0));
   BOOST_REQUIRE(first.status() == NativeRequestStatus::Succeeded);
   if (repositoryInput)
     BOOST_REQUIRE(repositoryReferenceObserved->load(std::memory_order_relaxed));
-  const auto firstResult = first.result(std::chrono::milliseconds(0));
   if (exerciseReplacement) {
     const auto counts = options.workStatistics->snapshot().counts;
     BOOST_CHECK_EQUAL(counts.at("core.controlInventoryComplete"), 1U);

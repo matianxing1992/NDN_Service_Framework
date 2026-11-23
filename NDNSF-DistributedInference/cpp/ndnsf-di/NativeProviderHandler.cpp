@@ -18,6 +18,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
@@ -1364,22 +1365,34 @@ initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationCo
         const auto& root = *parsed;
         const auto transport = root.value("input_transport", std::string{});
         if (transport == "REPO_REF") {
-          const auto dataName = root.at("input_reference").value("dataName", std::string{});
-          const auto plaintextSize = root.at("input_reference").value("plaintextSize", std::uint64_t{0});
-          if (dataName.empty() || dataName.front() != '/' || plaintextSize == 0) {
-            throw std::invalid_argument(
-              "native DI REPO_REF request has invalid input reference");
+          const auto& reference = root.at("input_reference");
+          ndn_service_framework::ProtectedRequestInputReference bound;
+          try {
+            (void)DataRef::fromPublishedMetadata(nativeCanonicalJson(reference));
+            bound.name = ndn::Name(reference.at("dataName").get_ref<const std::string&>());
+            bound.plaintextSize = reference.at("plaintextSize").get<std::uint64_t>();
+            bound.plaintextDigest = reference.at("ciphertextDigest").get<std::string>();
+            bound.manifestDigest = reference.at("manifestDigest").get<std::string>();
+            bound.protectionEpoch = reference.at("protectionEpoch").get<std::string>();
+            bound.authorizationScope = reference.at("authorizationScope").get<std::string>();
           }
-          auto fetched = ctx.fetchEncryptedLargeData(ndn::Name(dataName));
-          if (!fetched) {
-            throw std::runtime_error(
-              "failed to fetch native DI request input reference: " + dataName);
+          catch (const std::exception&) {
+            throw std::invalid_argument("DI_INPUT_REPO_DIGEST_UNVERIFIED");
           }
-          if (fetched->size() != plaintextSize) {
-            throw std::runtime_error(
-              "native DI request input plaintext size mismatch");
+          auto fetched = ctx.fetchProtectedRequestInput(bound);
+          if (fetched.errorMessage == "PROTECTED_REQUEST_INPUT_SIZE_MISMATCH") {
+            throw std::invalid_argument("DI_INPUT_REPO_SIZE_MISMATCH");
           }
-          payload = *fetched;
+          if (fetched.errorMessage == "PROTECTED_REQUEST_INPUT_COMMITMENT_MISMATCH" ||
+              fetched.errorMessage == "PROTECTED_REQUEST_INPUT_SCOPE_MISMATCH" ||
+              fetched.errorMessage == "PROTECTED_REQUEST_INPUT_PRODUCER_MISMATCH") {
+            throw std::invalid_argument("DI_INPUT_REPO_DIGEST_UNVERIFIED");
+          }
+          if (!fetched.success) {
+            throw std::runtime_error("failed to fetch native DI request input reference: " +
+                                     fetched.errorMessage);
+          }
+          payload = std::move(fetched.plaintext);
         }
         else if (transport == "INLINE") {
           const auto encoded = root.value("input_payload_b64", std::string{});

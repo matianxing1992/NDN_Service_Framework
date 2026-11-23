@@ -23,16 +23,16 @@ class CorePublicationReferenceTest(unittest.TestCase):
         cls.payload = bytes([0x42]) * 40000
         cls.records = []
         binary = os.environ.get("SPEC201_PUBLICATION_ORACLE_BINARY",
-                                str(ROOT / "build/integration-tests"))
+                                str(ROOT / "build/naming-original-packet-publication"))
         with tempfile.TemporaryDirectory(prefix="spec201-reference-") as directory:
             oracle = Path(directory) / "publications.txt"
             env = dict(os.environ, SPEC201_PUBLICATION_BINDING_ORACLE=str(oracle),
                        ASAN_OPTIONS="detect_leaks=1:halt_on_error=1",
                        UBSAN_OPTIONS="halt_on_error=1")
             result = subprocess.run([
-                binary, "--run_test=Spec201OriginalPacketPublication/"
+                binary, "--run_test=NamingOriginalPacketPublication/"
                 "SemanticManifestCategoriesKeepOriginalBlobPackets"],
-                cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cwd=directory, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, timeout=30)
             if result.returncode:
                 raise AssertionError(result.stdout)
@@ -149,6 +149,17 @@ class CorePublicationReferenceTest(unittest.TestCase):
         self.assertEqual(calls, [("/spec201/model", self.payload, "source", 60000,
                                  "/MATERIAL/MANIFEST")])
         self.assertEqual(result.manifest_name, self.records[0]["manifest_name"])
+
+
+class LegacyPublicationTranscriptTest(unittest.TestCase):
+    def test_legacy_text_transcript_keeps_the_original_digest(self):
+        self.assertEqual(
+            _publication_manifest_digest(
+                data_name="/historic/input/v=1", object_id="sample", plaintext_size=7,
+                content_digest="sha256:" + "1" * 64, authorization_scope="/SERVICE/Test",
+                protection_epoch="epoch-1"),
+            "sha256:f80e9b6673c1ce2b4a7723973741b372184b7a759de1880efd3537ee1b4e8d0b",
+        )
 
 
 if __name__ == "__main__":

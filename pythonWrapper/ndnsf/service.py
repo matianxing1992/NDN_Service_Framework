@@ -12,7 +12,6 @@ import asyncio
 import base64
 from collections import deque
 from dataclasses import dataclass, field
-import hashlib
 import json
 import os
 import threading
@@ -1417,39 +1416,10 @@ class CollaborationContext:
     ) -> str:
         """Publish a large collaboration object and advertise a standard reference."""
 
-        payload_bytes = bytes(payload)
-        data_name = (
-            self.publish_large_named(
-                key_scope,
-                data_name,
-                payload_bytes,
-                max_segment_size=max_segment_size,
-                freshness_ms=freshness_ms,
-            )
-            if data_name else
-            self.publish_large(
-                key_scope,
-                data_topic,
-                payload_bytes,
-                max_segment_size=max_segment_size,
-                freshness_ms=freshness_ms,
-            )
-        )
-        if not data_name:
-            raise RuntimeError(
-                "large collaboration object publication returned no Data name")
-        effective_digest = digest or ("sha256:" + hashlib.sha256(payload_bytes).hexdigest())
-        reference = encode_large_data_reference_payload(LargeDataReference(
-            data_name=data_name,
-            object_type=object_type,
-            object_id=object_id,
-            plaintext_size=len(payload_bytes),
-            encrypted=True,
-            digest=effective_digest,
+        return str(self._native.publish_large_reference(
+            key_scope, data_topic, ref_topic, bytes(payload),
+            object_type, object_id, digest, data_name, max_segment_size, freshness_ms,
         ))
-        self.publish(key_scope, ref_topic, reference)
-        return data_name
-
     def fetch_large(
         self,
         data_name: str,
@@ -1485,68 +1455,36 @@ class CollaborationContext:
         reference_payload: Union[bytes, Mapping[str, Any]],
         key_scope: str,
         timeout_ms: int = 5000,
+        *,
+        expected_producer: str = "",
     ) -> Optional[bytes]:
-        """Fetch and verify a large collaboration object reference.
-
-        The DI provider path passes the structured reference mapping directly
-        so that ``dataName``, size, content digest, encryption bit, and
-        authorization scope are checked before plaintext is returned. The
-        legacy wire-payload form remains supported for existing callers, but
-        it cannot supply the DI-only authorization-scope check.
-        """
-
-        structured = isinstance(reference_payload, Mapping)
-        reference = None
-        if structured:
+        """Resolve a collaboration reference under the current native dispatch."""
+        if isinstance(reference_payload, Mapping):
             value = dict(reference_payload)
             data_name = str(value.get("dataName", value.get("data_name", "")))
-            expected_size = int(value.get(
-                "plaintextSize", value.get("plaintext_size", 0)))
-            expected_digest = str(value.get(
-                "contentDigest", value.get(
-                    "digest", value.get("ciphertextDigest",
-                                        value.get("ciphertext_digest", "")))))
-            encrypted = value.get("encrypted") is True
-            reference_scope = str(value.get(
-                "authorizationScope", value.get("authorization_scope", "")))
-            protection_epoch = str(value.get(
-                "protectionEpoch", value.get("protection_epoch", "")))
-            if (not data_name.startswith("/") or expected_size <= 0
-                    or not expected_digest.startswith("sha256:")
-                    or len(expected_digest) != 71 or not encrypted
-                    or not reference_scope or reference_scope != str(key_scope)
-                    or not protection_epoch
-                    or protection_epoch == "plaintext-v1"):
-                raise ValueError("large reference metadata is not authenticated")
-            try:
-                int(expected_digest[7:], 16)
-            except ValueError as exc:
-                raise ValueError("large reference metadata digest is invalid") from exc
+            plaintext_size = int(value.get("plaintextSize", value.get("plaintext_size", 0)))
+            digest = str(value.get("contentDigest", value.get(
+                "digest", value.get("ciphertextDigest", value.get("ciphertext_digest", "")))))
+            reference_scope = str(value.get("authorizationScope", value.get(
+                "authorization_scope", "")))
+            protection_epoch = str(value.get("protectionEpoch", value.get("protection_epoch", "")))
+            wire = _ndnsf._encode_structured_large_reference(
+                data_name, plaintext_size, digest, value.get("encrypted") is True,
+                reference_scope, key_scope, protection_epoch)
         else:
-            reference = parse_large_data_reference_payload(bytes(reference_payload))
-            if reference is None:
-                data_name = bytes(reference_payload).decode()
-                expected_size = 0
-                expected_digest = ""
-            else:
-                data_name = reference.data_name
-                expected_size = reference.plaintext_size
-                expected_digest = reference.digest
-                if not reference.encrypted:
-                    raise ValueError("large reference is not encrypted")
-        payload = self.fetch_large(data_name, key_scope, timeout_ms)
-        if payload is None:
-            return None
-        if expected_size and len(payload) != expected_size:
-            raise ValueError(
-                f"large reference size mismatch: expected={expected_size} actual={len(payload)}")
-        if expected_digest:
-            digest = expected_digest
-            if digest.startswith("sha256:"):
-                digest = digest[len("sha256:"):]
-            if digest and hashlib.sha256(payload).hexdigest() != digest:
-                raise ValueError("large reference SHA-256 mismatch")
-        return payload
+            wire = bytes(reference_payload)
+        value = self._native.fetch_large_reference(wire, key_scope, timeout_ms, expected_producer)
+        return None if value is None else bytes(value)
+
+    def fetch_protected_request_input(
+        self, reference: Mapping[str, Any], timeout_ms: int
+    ) -> Optional[bytes]:
+        """Read this request's signed input descriptor under its dispatch authority."""
+        value = self._native.fetch_protected_request_input(
+            reference["dataName"], reference["plaintextSize"], reference["ciphertextDigest"],
+            reference["manifestDigest"], reference["protectionEpoch"],
+            reference["authorizationScope"], timeout_ms)
+        return None if value is None else bytes(value)
 
     def wait_one(
         self,

@@ -331,7 +331,7 @@ void runAuthorizedLocationRotationCase(bool authorizedObject = false)
   consumer.setHandlerThreads(0);
 }
 
-void runAdmissionCase(AdmissionCase mode, bool inBandXor = false)
+void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertiseLarge = false)
 {
   auto observed = std::make_shared<AdmissionObservations>();
   auto payload = std::make_shared<ndn::Buffer>(
@@ -351,7 +351,7 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false)
   environment.enableProductionIngressForTest();
   const bool notificationCase = mode == AdmissionCase::InboxOverload || mode == AdmissionCase::ReplayQuota ||
     mode == AdmissionCase::ImmutableGeneric || mode == AdmissionCase::CanonicalManifest || mode == AdmissionCase::LegacyReplay;
-  if (!notificationCase) environment.disconnectProviderPeerTransportForTest();
+  if (!notificationCase && !advertiseLarge) environment.disconnectProviderPeerTransportForTest();
   auto& source = environment.provider(0);
   auto& consumer = environment.provider(1);
   const ndn::Name root = ndn::Name(source.getName()).append("NDNSF").append("INPUT").appendVersion(1);
@@ -380,6 +380,7 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false)
   }
   std::optional<LargeDataPublishResult> canonicalPublication;
   ServiceProvider::DataProductReference canonicalReference;
+  ProtectedRequestInputReference canonicalRequestInput;
   if (mode == AdmissionCase::CanonicalManifest) {
     const auto publicationContext = environment.user().prepareServiceRequest(profile.serviceName.toUri());
     LargeDataPublishOptions options;
@@ -395,6 +396,14 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false)
     canonicalReference.producerName = environment.user().getName();
     canonicalReference.serviceName = profile.serviceName;
     canonicalReference.sizeBytes = 2;
+    canonicalRequestInput = {
+      canonicalPublication->manifestName,
+      canonicalPublication->plaintextSize,
+      canonicalPublication->contentDigest,
+      canonicalPublication->manifestDigest,
+      canonicalPublication->protectionEpoch,
+      canonicalPublication->authorizationScope,
+    };
   }
   ndn::signal::ScopedConnection interests = environment.providerFace(1).onSendInterest.connect(
     [&](const ndn::Interest& interest) {
@@ -464,8 +473,21 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false)
   limits.maxInputAcquisitionMs = mode == AdmissionCase::ImmutableGeneric ||
       mode == AdmissionCase::ReusableLarge || mode == AdmissionCase::CanonicalManifest ? 5000 : 300;
   auto sourceRegistration = source.addScopedCollaborationHandler(profile.serviceName, {"/source"}, ack,
-    [root, a, b, mode, inBandXor, observed, immutablePayload, &environment](ServiceProvider::CollaborationContext& context, const RequestMessage&) {
+    [root, a, b, mode, inBandXor, observed, immutablePayload, &environment,
+     advertiseLarge](ServiceProvider::CollaborationContext& context, const RequestMessage&) {
       if (mode == AdmissionCase::CanonicalManifest) { context.completeRole(); return; }
+      if (advertiseLarge) {
+        LargeDataReference reference;
+        reference.dataName = root;
+        reference.objectType = "test/plaintext";
+        reference.objectId = "finite-pair";
+        const auto name = context.publishLargeReference(
+          "input", ndn::Name("/large"), ndn::Name("/large-ref"), *immutablePayload,
+          std::move(reference), 64);
+        if (name != root) throw std::runtime_error("fixture reference publication failed");
+        context.completeRole();
+        return;
+      }
       if (mode == AdmissionCase::ImmutableGeneric) {
         const auto published = context.publishImmutableProtectedData(
           root.getPrefix(-1), *immutablePayload);
@@ -533,7 +555,9 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false)
   if (mode == AdmissionCase::RetainedCopy) limits.maxRetainedObjects = 1;
   const auto producer = source.getName();
   auto consumerRegistration = consumer.addScopedCollaborationHandler(profile.serviceName, {"/consumer"}, ack,
-    [root, a, b, producer, mode, observed, canonicalReference, immutablePayload, face = &environment.providerFace(1), service = profile.serviceName]
+    [root, a, b, producer, mode, observed, canonicalReference, canonicalRequestInput,
+     immutablePayload, advertiseLarge, face = &environment.providerFace(1),
+     service = profile.serviceName]
     (ServiceProvider::CollaborationContext& context, const RequestMessage&) {
       if (mode == AdmissionCase::LegacyReplay) {
         context.allowData("input", ndn::Name("/finite"));
@@ -586,6 +610,39 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false)
         input.maxPackets = 15;
       }
       if (mode == AdmissionCase::CanonicalManifest) {
+        const auto fetched = context.fetchProtectedRequestInput(canonicalRequestInput);
+        if (!fetched.success || fetched.plaintext != *immutablePayload) {
+          context.publishFinalFailureResponse({}, "fixture protected request read failed: " +
+                                              fetched.errorMessage);
+          return;
+        }
+        auto wrongEpoch = canonicalRequestInput;
+        wrongEpoch.protectionEpoch += "-stale";
+        auto wrongManifest = canonicalRequestInput;
+        wrongManifest.manifestDigest = "sha256:" + std::string(64, '0');
+        auto wrongDigest = canonicalRequestInput;
+        wrongDigest.plaintextDigest = wrongManifest.manifestDigest;
+        auto wrongSize = canonicalRequestInput;
+        ++wrongSize.plaintextSize;
+        auto wrongScope = canonicalRequestInput;
+        wrongScope.authorizationScope = "/SERVICE/wrong-service";
+        const auto expired = context.fetchProtectedRequestInput(
+          canonicalRequestInput, std::chrono::steady_clock::now());
+        const auto rejects = [&](const ProtectedRequestInputReference& changed,
+                                 std::string_view reason) {
+          const auto result = context.fetchProtectedRequestInput(changed);
+          return !result.success && result.plaintext.empty() && result.errorMessage == reason;
+        };
+        if (expired.success || !expired.plaintext.empty() ||
+            expired.errorMessage != "protected request input authority or deadline expired" ||
+            !rejects(wrongEpoch, "PROTECTED_REQUEST_INPUT_COMMITMENT_MISMATCH") ||
+            !rejects(wrongManifest, "PROTECTED_REQUEST_INPUT_COMMITMENT_MISMATCH") ||
+            !rejects(wrongDigest, "PROTECTED_REQUEST_INPUT_COMMITMENT_MISMATCH") ||
+            !rejects(wrongScope, "PROTECTED_REQUEST_INPUT_SCOPE_MISMATCH") ||
+            !rejects(wrongSize, "PROTECTED_REQUEST_INPUT_SIZE_MISMATCH")) {
+          context.publishFinalFailureResponse({}, "fixture protected request commitment mismatch");
+          return;
+        }
         input.object = canonicalReference;
         input.provenanceBinding = InputProvenanceBinding::AuthorizedObject;
         input.producerRole.clear();
@@ -615,6 +672,49 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false)
         input.digestKind = InputDigestKind::PlaintextSha256;
         input.maxPackets = 16;
         if (immutablePayload->size() > 4096) input.maxBytes = 64 * 1024;
+      }
+      if (advertiseLarge) {
+        const ndn::Name topic("/large-ref");
+        context.allowData("input", topic);
+        const auto notification = context.waitOne("input", topic, 1000);
+        const auto ref = notification ? parseLargeDataReferencePayload(notification->payload)
+                                      : std::nullopt;
+        if (!ref || notification->producer != producer || ref->dataName != root ||
+            ref->plaintextSize != immutablePayload->size() || !ref->encrypted ||
+            !ref->keyScope.empty() || ref->objectType != "test/plaintext" ||
+            ref->objectId != "finite-pair" ||
+            ref->digest != "sha256:48986d85f8c0a0601ef7c44afc939dd0a8b0ed7bc309c7e373cb0fe94e30c7aa") {
+          context.publishFinalFailureResponse({}, "fixture collaboration reference mismatch");
+          return;
+        }
+        input.object.digest = ref->digest;
+        input.object.sizeBytes = ref->plaintextSize;
+        const auto original = context.fetchLargeReference(notification->payload, "input",
+                                                          1000, producer);
+        if (!original || *original != *immutablePayload) {
+          context.publishFinalFailureResponse({}, "fixture referenced object mismatch");
+          return;
+        }
+        const auto rejects = [&](const ndn::Buffer& wire, const ndn::Name& expected,
+                                 std::string_view message) {
+          try {
+            context.fetchLargeReference(wire, "input", 1000, expected);
+          }
+          catch (const std::invalid_argument& error) {
+            return std::string_view(error.what()).find(message) != std::string_view::npos;
+          }
+          return false;
+        };
+        auto badDigest = *ref;
+        badDigest.digest = "sha256:" + std::string(64, '0');
+        auto badSize = *ref;
+        ++badSize.plaintextSize;
+        if (!rejects(encodeLargeDataReferencePayload(badDigest), producer, "SHA-256 mismatch") ||
+            !rejects(encodeLargeDataReferencePayload(badSize), producer, "size mismatch") ||
+            !rejects(notification->payload, ndn::Name("/unexpected"), "Producer mismatch")) {
+          context.publishFinalFailureResponse({}, "fixture unchecked collaboration reference");
+          return;
+        }
       }
       if (mode == AdmissionCase::ReusableLarge) {
         input.encoding = InputObjectEncoding::ReusableCollaborationObject;
@@ -1259,6 +1359,10 @@ BOOST_AUTO_TEST_CASE(CancelledAdmissionNeverComputes) { runAdmissionCase(Admissi
 BOOST_AUTO_TEST_CASE(UngrantedScopeRejectedBeforeRead) { runAdmissionCase(AdmissionCase::WrongScope); }
 BOOST_AUTO_TEST_CASE(AdmissionBudgetRejectedBeforeRead) { runAdmissionCase(AdmissionCase::Overloaded); }
 BOOST_AUTO_TEST_CASE(ProtectedGenericObjectIsDecodedByCore) { runAdmissionCase(AdmissionCase::GenericLarge); }
+BOOST_AUTO_TEST_CASE(AdvertisedLargeReferenceAuthenticatesTheOriginalObject)
+{
+  runAdmissionCase(AdmissionCase::GenericLarge, false, true);
+}
 BOOST_AUTO_TEST_CASE(ValidOriginalSignatureDoesNotReplaceAead) { runAdmissionCase(AdmissionCase::GenericBadTag); }
 BOOST_AUTO_TEST_CASE(ProtectionMetadataMismatchNeverReachesDomain) { runAdmissionCase(AdmissionCase::GenericMetadataMismatch); }
 BOOST_AUTO_TEST_CASE(DomainFailureDoesNotExposeExceptionAsProtocol) { runAdmissionCase(AdmissionCase::DomainRejected); }

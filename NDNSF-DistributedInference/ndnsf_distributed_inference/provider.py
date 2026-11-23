@@ -637,6 +637,7 @@ class DependencyPrefetcher:
                 ref.payload,
                 edge.key_scope,
                 fetch_timeout_ms,
+                expected_producer=ref.producer,
             )
             fetch_ms = _elapsed_ms(fetch_start)
             if payload is None:
@@ -791,19 +792,22 @@ class ProviderRuntimeContext:
 
         try:
             reference = LargeDataReference.from_mapping(request.input_reference)
-            expected_manifest = _publication_manifest_digest(
-                data_name=reference.data_name,
-                object_id=reference.object_id,
-                plaintext_size=reference.plaintext_size,
-                content_digest=reference.ciphertext_digest,
-                authorization_scope=reference.authorization_scope,
-                protection_epoch=reference.protection_epoch,
-            )
-            if reference.manifest_digest != expected_manifest:
-                raise ValueError("manifest digest mismatch")
+            signed_descriptor = reference.authorization_scope.startswith("/SERVICE/")
+            if not signed_descriptor:
+                expected_manifest = _publication_manifest_digest(
+                    data_name=reference.data_name,
+                    object_id=reference.object_id,
+                    plaintext_size=reference.plaintext_size,
+                    content_digest=reference.ciphertext_digest,
+                    authorization_scope=reference.authorization_scope,
+                    protection_epoch=reference.protection_epoch,
+                )
+                if reference.manifest_digest != expected_manifest:
+                    raise ValueError("manifest digest mismatch")
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("DI_INPUT_REPO_DIGEST_UNVERIFIED") from exc
-        fetch_reference = getattr(self.ndnsf, "fetch_large_reference", None)
+        reader = "fetch_protected_request_input" if signed_descriptor else "fetch_large_reference"
+        fetch_reference = getattr(self.ndnsf, reader, None)
         if not callable(fetch_reference):
             raise RuntimeError("DI_INPUT_REPO_DIGEST_UNVERIFIED")
         if timeout_ms is None:
@@ -814,8 +818,11 @@ class ProviderRuntimeContext:
         if int(timeout_ms) <= 0:
             raise TimeoutError("DI_INPUT_REPO_DEADLINE_EXPIRED")
         try:
-            payload = fetch_reference(
-                reference.to_dict(), reference.authorization_scope, int(timeout_ms))
+            if signed_descriptor:
+                payload = fetch_reference(reference.to_dict(), int(timeout_ms))
+            else:
+                payload = fetch_reference(
+                    reference.to_dict(), reference.authorization_scope, int(timeout_ms))
         except TimeoutError:
             raise
         except PermissionError as exc:

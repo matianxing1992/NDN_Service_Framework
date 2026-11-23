@@ -51,6 +51,7 @@
 #include <ndn-cxx/security/transform/public-key.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 #include <ndn-cxx/util/scope.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
 #include <openssl/crypto.h>
 
 #include <fcntl.h>
@@ -6614,6 +6615,38 @@ namespace ndn_service_framework
         return result;
     }
 
+    LargeDataFetchResult
+    ServiceProvider::CollaborationContext::fetchProtectedRequestInput(
+        const ProtectedRequestInputReference& reference,
+        std::chrono::steady_clock::time_point deadline)
+    {
+        constexpr std::string_view SERVICE_PREFIX = "/SERVICE";
+        try {
+            if (reference.authorizationScope.compare(
+                    0, SERVICE_PREFIX.size() + 1, "/SERVICE/") != 0 ||
+                ndn::Name(reference.authorizationScope.substr(SERVICE_PREFIX.size())) !=
+                    m_assignment.service) {
+                return {false, {}, "PROTECTED_REQUEST_INPUT_SCOPE_MISMATCH"};
+            }
+        }
+        catch (const std::exception&) {
+            return {false, {}, "PROTECTED_REQUEST_INPUT_SCOPE_MISMATCH"};
+        }
+        deadline = std::min(deadline, m_assignment.workDeadline);
+        const auto current = currentWorkPredicate(deadline);
+        if (!current()) {
+            return {false, {}, "protected request input authority or deadline expired"};
+        }
+        auto result = m_provider.fetchAndDecryptLargeDataUntil(
+            reference.name, m_assignment.service.toUri(), deadline, current,
+            DataNameReadMode::StrictCanonical, m_requesterName, m_objectKeys.get(),
+            {}, nullptr, {}, &reference);
+        if (result.success && !current()) {
+            return {false, {}, "protected request input authority or deadline expired"};
+        }
+        return result;
+    }
+
     std::optional<ndn::Buffer>
     ServiceProvider::CollaborationContext::fetchProtectedDataCurrent(
         const ndn::Name& dataName, const ndn::Name& expectedProducer,
@@ -7077,6 +7110,35 @@ namespace ndn_service_framework
                 CollaborationAdmissionLimits{}).maxRetainedBytes);
     }
 
+    ndn::Name
+    ServiceProvider::CollaborationContext::publishLargeReference(
+        KeyScope keyScope, Topic dataTopic, const Topic& referenceTopic,
+        const ndn::Buffer& payload, LargeDataReference reference,
+        size_t maxSegmentSize, int freshnessMs)
+    {
+        const auto current = currentWorkPredicate(m_assignment.workDeadline);
+        if (!current()) {
+            return {};
+        }
+        if (reference.digest.empty()) {
+            reference.digest = sha256DigestString(payload);
+        }
+        reference.plaintextSize = payload.size();
+        reference.encrypted = true;
+        reference.keyScope.clear();
+        reference.dataName = reference.dataName.empty()
+            ? publishLarge(keyScope, std::move(dataTopic), payload, maxSegmentSize, freshnessMs)
+            : publishLargeNamed(keyScope, reference.dataName, payload, maxSegmentSize, freshnessMs);
+        if (reference.dataName.empty() || !current() ||
+            !m_provider.publishCollaborationData(
+                m_requesterName, m_requestId, m_assignment.role, keyScope, referenceTopic,
+                encodeLargeDataReferencePayload(reference), {}, current,
+                m_workAuthorityCommitMutex)) {
+            return {};
+        }
+        return reference.dataName;
+    }
+
   ndn::Name
   ServiceProvider::CollaborationContext::publishReusableLargeNamed(
     KeyScope keyScope, const ndn::Name& dataName, const ndn::Buffer& payload,
@@ -7191,6 +7253,77 @@ namespace ndn_service_framework
         return m_provider.fetchCollaborationLargeData(
             m_requestId, std::move(keyScope), dataName, timeoutMs,
             expectedSegments, metrics, expectedProducer);
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchLargeReference(
+        const ndn::Buffer& wire, KeyScope keyScope, int timeoutMs,
+        const ndn::Name& expectedProducer)
+    {
+        auto reference = parseLargeDataReferencePayload(wire);
+        if (!reference) {
+            // Older callers sent the absolute Data name alone. A malformed reference
+            // wire payload must never be reinterpreted as that legacy form.
+            const std::string name(wire.begin(), wire.end());
+            if (name.empty() || name.front() != '/' ||
+                std::any_of(name.begin(), name.end(), [](unsigned char ch) { return ch <= ' '; })) {
+                throw std::invalid_argument("malformed large collaboration reference");
+            }
+            reference.emplace();
+            reference->dataName = ndn::Name(name);
+        }
+        if (!reference->encrypted) {
+            throw std::invalid_argument("large reference is not encrypted");
+        }
+        const auto& dataName = reference->dataName;
+        if (dataName.empty() || (!expectedProducer.empty() &&
+            (!expectedProducer.isPrefixOf(dataName) || expectedProducer.size() >= dataName.size()))) {
+            throw std::invalid_argument("large reference Producer mismatch");
+        }
+        if (timeoutMs <= 0) {
+            return std::nullopt;
+        }
+        const auto deadline = std::min(m_assignment.workDeadline,
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs));
+        const auto current = currentWorkPredicate(deadline);
+        if (!current()) {
+            return std::nullopt;
+        }
+        std::optional<ndn::Buffer> payload;
+        constexpr std::string_view SERVICE_PREFIX = "/SERVICE";
+        if (keyScope.compare(0, SERVICE_PREFIX.size() + 1, "/SERVICE/") == 0) {
+            auto result = m_provider.fetchAndDecryptLargeDataUntil(
+                dataName, keyScope.substr(SERVICE_PREFIX.size()), deadline, current,
+                DataNameReadMode::StrictCanonical, expectedProducer, m_objectKeys.get());
+            if (result.success) {
+                payload.emplace(std::move(result.plaintext));
+            }
+        }
+        else {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0) {
+                return std::nullopt;
+            }
+            payload = m_provider.fetchCollaborationLargeData(
+                m_requestId, keyScope, dataName, static_cast<int>(remaining), 0, nullptr,
+                expectedProducer, current);
+        }
+        if (!payload || !current()) {
+            return std::nullopt;
+        }
+        if (reference->plaintextSize != 0 && reference->plaintextSize != payload->size()) {
+            throw std::invalid_argument("large reference size mismatch: expected=" +
+                std::to_string(reference->plaintextSize) + " actual=" +
+                std::to_string(payload->size()));
+        }
+        if (!reference->digest.empty() && reference->digest != "sha256:") {
+            const auto actual = sha256DigestString(*payload);
+            if (reference->digest != actual && reference->digest != actual.substr(7)) {
+                throw std::invalid_argument("large reference SHA-256 mismatch");
+            }
+        }
+        return current() ? std::move(payload) : std::nullopt;
     }
 
     std::optional<ndn::Buffer>
@@ -11543,15 +11676,20 @@ namespace ndn_service_framework
         retireCollaborationInput(requestId);
     }
 
-    void ServiceProvider::publishCollaborationData(
+    bool ServiceProvider::publishCollaborationData(
         const ndn::Name& requesterName,
         const ndn::Name& requestId,
         const std::string& producerRole,
         const std::string& keyScope,
         const ndn::Name& topic,
         const ndn::Buffer& payload,
-        CollaborationLocalWorkObserver localWorkObserver)
+        CollaborationLocalWorkObserver localWorkObserver,
+        std::function<bool()> current,
+        std::shared_ptr<std::mutex> authorityMutex)
     {
+        if (current && !current()) {
+            return false;
+        }
         const uint64_t sequence =
             m_collaborationSequence.fetch_add(1, std::memory_order_relaxed);
         CollaborationDataMessage message;
@@ -11581,7 +11719,7 @@ namespace ndn_service_framework
         if (scopeKey.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
             NDN_LOG_ERROR("Missing collaboration scope key for request "
                           << requestId.toUri() << " scope=" << keyScope);
-            return;
+            return false;
         }
 
         const bool collaborationAuthTrace =
@@ -11605,6 +11743,8 @@ namespace ndn_service_framework
                                   plaintext = payload,
                                   message = std::move(message),
                                   collaborationAuthTrace,
+                                  current = std::move(current),
+                                  authorityMutex = std::move(authorityMutex),
                                   localWorkObserver = std::move(localWorkObserver)]() mutable {
             HybridMessageEnvelope envelope;
             const std::string keyId = "collab|" + requestId.toUri(ndn::name::UriFormat::CANONICAL) + "|" +
@@ -11663,6 +11803,7 @@ namespace ndn_service_framework
             boost::asio::post(m_face.getIoContext(),
                 [this, name, encoded = std::move(encoded),
                  requestId, collaborationAuthTrace,
+                 current = std::move(current), authorityMutex = std::move(authorityMutex),
                  localWorkObserver = std::move(localWorkObserver),
                  error = std::move(error)]() mutable {
                     const auto addCount = [&localWorkObserver] (std::string_view count) {
@@ -11696,6 +11837,13 @@ namespace ndn_service_framework
                                                  << name);
                                     return;
                                 }
+                                std::unique_lock<std::mutex> lock;
+                                if (authorityMutex) {
+                                    lock = std::unique_lock<std::mutex>(*authorityMutex);
+                                }
+                                if (current && !current()) {
+                                    return;
+                                }
                                 publishSvs(m_svsps, name, block);
                                 if (collaborationAuthTrace) {
                                     NDN_LOG_WARN("NDNSF_COLLAB_AUTH_TRACE event=svs_publish_done"
@@ -11719,6 +11867,7 @@ namespace ndn_service_framework
         // itself, delaying the receipt until the handler times out.  The
         // encrypted packet is still handed to the Face event loop below.
         encryptAndPublish();
+        return true;
     }
 
     ndn::Name ServiceProvider::publishCollaborationLargeData(
@@ -20107,7 +20256,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         const ndn::Name& explicitProducer, const ScopedProtectedObjectKeys* objectKeys,
         ndn::ConstBufferPtr authenticatedEnvelope,
         const ProtectedBlobManifest* authenticatedManifest,
-        std::shared_ptr<const HybridMessageKeyOriginals> authenticatedKeys)
+        std::shared_ptr<const HybridMessageKeyOriginals> authenticatedKeys,
+        const ProtectedRequestInputReference* requestInput)
     {
         ndn::Name encryptedDataName = referenceName;
         std::optional<ProtectedBlobManifest> expectedManifest;
@@ -20144,6 +20294,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         const auto manifestProducer = semanticData ? canonicalProducer :
             ProtectedBlobManifest::inferProducer(manifestName, readMode);
         const bool explicitProducerBound = !explicitProducer.empty();
+        const bool requestManifestBound = requestInput && manifestProducer && explicitProducerBound &&
+            *manifestProducer == explicitProducer && readMode == DataNameReadMode::StrictCanonical;
+        if (requestInput && !requestManifestBound) {
+            result.errorMessage = "PROTECTED_REQUEST_INPUT_PRODUCER_MISMATCH";
+            return result;
+        }
         if (authenticatedEnvelope && !explicitProducerBound) {
             result.errorMessage = "prevalidated envelope requires explicit Producer";
             return result;
@@ -20167,7 +20323,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             ProtectedBlobManifest::inferDataProducer(referenceName, readMode) == std::optional<ndn::Name>(explicitProducer);
         if (explicitProducerBound && !authenticatedManifest && (readMode != DataNameReadMode::StrictCanonical ||
             !explicitProducer.isPrefixOf(referenceName) || referenceName.size() <= explicitProducer.size() ||
-            ((!referenceName.at(-1).isVersion() || manifestProducer || canonicalData) && !authenticatedCanonicalData))) {
+            ((!referenceName.at(-1).isVersion() || manifestProducer || canonicalData) &&
+             !authenticatedCanonicalData && !requestManifestBound))) {
             result.errorMessage = "INVALID_IMMUTABLE_PROTECTED_DATA_NAME";
             return result;
         }
@@ -20293,6 +20450,22 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             }
             catch (const std::exception& error) {
                 result.errorMessage = error.what();
+                return result;
+            }
+        }
+
+        if (requestInput) {
+            if (!expectedManifest ||
+                expectedManifest->producer != explicitProducer ||
+                expectedManifest->protectionEpoch != requestInput->protectionEpoch ||
+                sha256DigestString(expectedManifest->encode(readMode)) != requestInput->manifestDigest ||
+                ("sha256:" + ndn::toHex(expectedManifest->plaintextDigest, false)) !=
+                    requestInput->plaintextDigest) {
+                result.errorMessage = "PROTECTED_REQUEST_INPUT_COMMITMENT_MISMATCH";
+                return result;
+            }
+            if (expectedManifest->plaintextBytes != requestInput->plaintextSize) {
+                result.errorMessage = "PROTECTED_REQUEST_INPUT_SIZE_MISMATCH";
                 return result;
             }
         }
@@ -23930,7 +24103,8 @@ opaque_selection_committed:
             ndn::Regex(selectionRegex),
             std::bind(&ServiceProvider::onServiceSelectionMessage, this, _1),
             true, false);
-        std::string collabRegex = "^(<>*)<NDNSF><COLLAB>(<>*)$";
+        const std::string collabRegex =
+            "^(<>*)" + NameToRegexString(ndn::Name("/NDNSF/COLLAB")) + "(<>*)$";
         NDN_LOG_DEBUG(collabRegex);
         m_svsps->subscribeWithRegex(ndn::Regex(collabRegex),
                                     std::bind(&ServiceProvider::onCollaborationDataMessage, this, _1),

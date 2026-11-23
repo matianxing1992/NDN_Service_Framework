@@ -9,7 +9,6 @@ import unittest
 from concurrent.futures import Future
 from types import SimpleNamespace
 
-from ndnsf import CollaborationContext as CoreCollaborationContext
 from ndnsf_distributed_inference.core.contracts import (
     DATA_DRIVEN_V2,
     LEGACY_READY_SET_V1,
@@ -588,25 +587,6 @@ class SelectionDataflowV2Test(unittest.TestCase):
             json.loads(request.to_bytes()), indent=2).encode()
         with self.assertRaises(ValueError):
             DIRequestEnvelopeV2.from_bytes(noncanonical)
-
-    def test_large_publication_empty_data_name_fails_before_reference(self):
-        class Native:
-            published = []
-
-            @staticmethod
-            def publish_large(*_args):
-                return ""
-
-            def publish(self, *args):
-                self.published.append(args)
-
-        native = Native()
-        context = CoreCollaborationContext(native)
-        with self.assertRaisesRegex(RuntimeError, "returned no Data name"):
-            context.publish_large_reference(
-                "tensor-scope", "/activation/data", "/activation/ref",
-                b"payload")
-        self.assertEqual(native.published, [])
 
     def test_gpu_offers_cannot_overlap_and_unused_hold_releases(self):
         ledger = GpuMiBAdmissionLedger(

@@ -102,6 +102,17 @@ namespace ndn_service_framework{
         std::string errorMessage;
     };
 
+    /** Commitments to a signed descriptor supplied in the current User request. */
+    struct ProtectedRequestInputReference
+    {
+        ndn::Name name;
+        uint64_t plaintextSize = 0;
+        std::string plaintextDigest;
+        std::string manifestDigest;
+        std::string protectionEpoch;
+        std::string authorizationScope;
+    };
+
     class ImmutableProtectedPublicationStore;
 
     struct ImmutableProtectedDataResult
@@ -665,6 +676,11 @@ namespace ndn_service_framework{
                 LargeDataFetchResult fetchEncryptedLargeDataResult(
                     const ndn::Name& dataName,
                     const ndn::Name& serviceName = ndn::Name());
+                /** Resolve the current User's canonical protected input under this dispatch. */
+                LargeDataFetchResult fetchProtectedRequestInput(
+                    const ProtectedRequestInputReference& reference,
+                    std::chrono::steady_clock::time_point deadline =
+                        std::chrono::steady_clock::time_point::max());
                 std::optional<ndn::Buffer> fetchEncryptedLargeData(
                     const ndn::Name& dataName,
                     const ndn::Name& serviceName = ndn::Name());
@@ -789,6 +805,15 @@ namespace ndn_service_framework{
                                             size_t maxSegmentSize,
                                             int freshnessMs,
                                             CollaborationTransferMetrics* metrics);
+                /**
+                 * Publish an object, then advertise its reference in the same collaboration.
+                 * An empty result means that object publication or reference submission failed.
+                 * Queued advertisements expire with the work that submitted them.
+                 */
+                ndn::Name publishLargeReference(
+                    KeyScope keyScope, Topic dataTopic, const Topic& referenceTopic,
+                    const ndn::Buffer& payload, LargeDataReference reference,
+                    size_t maxSegmentSize = 7000, int freshnessMs = 60000);
                 /** Reuse immutable ciphertext across authorized invocations.
                  * A private per-object key is granted only through this
                  * invocation's scope. Same-name content/protection changes fail.
@@ -837,6 +862,13 @@ namespace ndn_service_framework{
                     int timeoutMs,
                     std::size_t expectedSegments = 0,
                     CollaborationTransferMetrics* metrics = nullptr);
+                /**
+                 * Resolve a collaboration wire reference within the current work deadline.
+                 * Pass the validated notification's Producer to bind the object to it.
+                 */
+                std::optional<ndn::Buffer> fetchLargeReference(
+                    const ndn::Buffer& wire, KeyScope keyScope, int timeoutMs,
+                    const ndn::Name& expectedProducer = {});
                 /** Fetch under this dispatch's original authority and deadline.
                  * An authority change cancels the active segmented transfer. */
                 std::optional<ndn::Buffer> fetchLargeFromProducerCurrent(
@@ -2394,7 +2426,8 @@ namespace ndn_service_framework{
                 const ScopedProtectedObjectKeys* objectKeys = nullptr,
                 ndn::ConstBufferPtr authenticatedEnvelope = {},
                 const ProtectedBlobManifest* authenticatedManifest = nullptr,
-                std::shared_ptr<const HybridMessageKeyOriginals> authenticatedKeys = {});
+                std::shared_ptr<const HybridMessageKeyOriginals> authenticatedKeys = {},
+                const ProtectedRequestInputReference* requestInput = nullptr);
             struct ImmutablePublicationOperation
             {
                 std::shared_ptr<std::mutex> authorityMutex;
@@ -2620,13 +2653,15 @@ namespace ndn_service_framework{
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 std::string selectionDigest = "");
-            void publishCollaborationData(const ndn::Name& requesterName,
+            bool publishCollaborationData(const ndn::Name& requesterName,
                                           const ndn::Name& requestId,
                                           const std::string& producerRole,
                                           const std::string& keyScope,
                                           const ndn::Name& topic,
                                           const ndn::Buffer& payload,
-                                          CollaborationLocalWorkObserver localWorkObserver = {});
+                                          CollaborationLocalWorkObserver localWorkObserver = {},
+                                          std::function<bool()> current = {},
+                                          std::shared_ptr<std::mutex> authorityMutex = {});
             ndn::Name publishCollaborationLargeData(
                 const ndn::Name& requesterName,
                 const ndn::Name& requestId,

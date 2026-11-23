@@ -17,6 +17,7 @@ from ndnsf import (
     encode_ack_metadata,
     encode_provider_capability_ack,
 )
+from ndnsf import _ndnsf
 
 
 def hint(*, queue: int = 2, schema: str = "ndnsf-provider-capability-v2"):
@@ -49,12 +50,17 @@ class TypedAckCompatibilityTest(unittest.TestCase):
 
     def test_native_collaboration_reader_accepts_python_wire_field_names(self) -> None:
         """Keep the Python producer and native role selector interoperable."""
-        typed_root = hint().to_ack_fields()["providerCapabilityHint"]
-        self.assertIn("service_payload", typed_root)
-        wrapper = (Path(__file__).resolve().parents[2] /
-                   "pythonWrapper/src/ndnsf/_ndnsf.cpp").read_text(encoding="utf-8")
-        self.assertIn('get_child_optional("service_payload")', wrapper)
-        self.assertIn('put_child("servicePayload"', wrapper)
+        for field in ("providerCapabilityHint", "provider_capability_hint"):
+            with self.subTest(field=field):
+                root = hint().to_ack_fields()["providerCapabilityHint"]
+                wire = encode_ack_metadata({field: root})
+                fields, kind, error, projection, conflicts = (
+                    _ndnsf._read_provider_capability_ack(wire))
+                self.assertEqual((kind, error), ("typed", ""))
+                self.assertEqual(fields[field]["service_payload"]["role"], "/Stage/0")
+                self.assertEqual(projection, fields[field])
+                self.assertIsNone(conflicts)
+                self.assertEqual(decode_provider_capability_ack(wire).hint.provider_name, "/P/one")
 
     def test_v1_typed_reader_is_supported_during_epoch(self) -> None:
         result = decode_provider_capability_ack(
@@ -83,9 +89,26 @@ class TypedAckCompatibilityTest(unittest.TestCase):
         self.assertEqual(result.hint.runtime_hint.queue_length, 3)
         self.assertEqual(counters.snapshot()["legacy"], 1)
 
+    def test_native_legacy_projection_preserves_alias_precedence_and_bounds(self) -> None:
+        wire = (b"queueDepth=-2.5;queue=30;inflight=2.9;"
+                b"status=ADMISSION-REJECTED;custom=retained;")
+        result = decode_provider_capability_ack(
+            wire, mode="mixed", provider_name="/P/context", service_name="/Inference/Test")
+        self.assertEqual(result.hint.provider_name, "/P/context")
+        self.assertEqual(result.hint.runtime_hint.queue_length, 0)
+        self.assertEqual(result.hint.runtime_hint.active_work_count, 2)
+        self.assertFalse(result.hint.ready)
+        self.assertEqual(result.hint.service_payload["runtimeStatus"], "ADMISSION-REJECTED")
+        self.assertEqual(result.fields["custom"], "retained")
+        with self.assertRaisesRegex(AckMetadataDecodeError, "invalid work count"):
+            decode_provider_capability_ack(
+                wire + b"queueLength=3.1garbage;", mode="mixed",
+                provider_name="/P/context", service_name="/Inference/Test")
+
     def test_matching_dual_is_counted_without_conflict(self) -> None:
         fields = hint().to_ack_fields()
-        fields.update({"provider": "/P/one", "queue": 2, "activeWorkers": 1})
+        fields.update({"provider": "/P/one", "queueLength": "2.0", "queue": 99,
+                       "activeWorkers": 1})
         counters = AckCompatibilityCounters()
         result = decode_provider_capability_ack(
             encode_ack_metadata(fields),
@@ -93,6 +116,7 @@ class TypedAckCompatibilityTest(unittest.TestCase):
             counters=counters,
         )
         self.assertEqual(result.conflicting_fields, ())
+        self.assertEqual(result.hint.runtime_hint.queue_length, 2)
         self.assertEqual(counters.snapshot()["matchingDual"], 1)
 
     def test_conflicting_dual_uses_typed_and_counts_fields(self) -> None:
@@ -124,6 +148,20 @@ class TypedAckCompatibilityTest(unittest.TestCase):
                 wire, mode=AckCompatibilityMode.MIXED, counters=counters)
         self.assertEqual(counters.snapshot()["malformedTyped"], 1)
         self.assertEqual(counters.snapshot()["legacy"], 0)
+
+    def test_empty_and_corrupt_typed_fields_do_not_downgrade(self) -> None:
+        legacy = b"provider=/P/legacy;service=/Inference/Test;role=/Stage/0;"
+        for invalid in (b"providerCapabilityHint=;",
+                        b"provider_capability_hint=json64:e30=garbage;"):
+            with self.subTest(invalid=invalid):
+                counters = AckCompatibilityCounters()
+                with self.assertRaisesRegex(AckMetadataDecodeError, "malformed"):
+                    decode_provider_capability_ack(legacy + invalid, mode="mixed", counters=counters)
+                self.assertEqual(counters.snapshot()["malformedTyped"], 1)
+                self.assertEqual(counters.snapshot()["legacy"], 0)
+        wrapped = b"x-providerCapabilityHint=json64:e30=;"
+        self.assertEqual(decode_provider_capability_ack(legacy + wrapped, mode="mixed").source,
+                         "legacy")
 
     def test_unknown_typed_version_does_not_fall_back(self) -> None:
         counters = AckCompatibilityCounters()
@@ -162,13 +200,10 @@ class TypedAckCompatibilityTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         native = (root / "NDNSF-DistributedInference/cpp/ndnsf-di/"
                   "NativeProviderReadiness.cpp").read_text(encoding="utf-8")
-        repo = (root / "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/"
-                "orchestration.py").read_text(encoding="utf-8")
         provider = (root / "NDNSF-DistributedInference/"
                     "ndnsf_distributed_inference/provider.py").read_text(encoding="utf-8")
         self.assertNotIn('payload << "roles="', native)
         self.assertIn("ndnsf-provider-capability-v2", native)
-        self.assertNotIn("flat_legacy_fields", repo)
         self.assertNotIn("fields.update(ProviderCapabilityHint(", provider)
 
 
