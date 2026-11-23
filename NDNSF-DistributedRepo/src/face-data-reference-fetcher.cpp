@@ -452,6 +452,9 @@ struct FetchState : std::enable_shared_from_this<FetchState>
           {"timeout_lifetime_max_ms", std::to_string(maxTimedOutLifetime.count())},
           {"refill_yields", std::to_string(refillYields)},
           {"cwnd_deficit_slot_ns", std::to_string(cwndDeficitSlotNs)},
+          {"cwnd_idle_slot_ns", std::to_string(cwndIdleSlotNs)},
+          {"sendable_idle_slot_ns", std::to_string(sendableIdleSlotNs)},
+          {"drain_idle_slot_ns", std::to_string(drainIdleSlotNs)},
           {"source_tail_ns", std::to_string(lastFirstSend && finishedAt
             ? std::chrono::duration_cast<std::chrono::nanoseconds>(
                 *finishedAt - *lastFirstSend).count() : 0)},
@@ -484,11 +487,20 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       if (observedHasUnsent) {
         cwndDeficitSlotNs += (windowCapacity - observedWindow) * elapsed;
       }
+      if (observedHasWork) {
+        cwndIdleSlotNs += (windowCapacity - std::max(observedInFlight, observedWindow)) * elapsed;
+        sendableIdleSlotNs += (observedWindow - std::min(observedWindow, observedInFlight)) *
+                              elapsed;
+      }
+      else {
+        drainIdleSlotNs += (windowCapacity - observedInFlight) * elapsed;
+      }
     }
     lastObservation = now;
     observedInFlight = inFlight;
     observedWindow = congestion.size();
     observedHasUnsent = nextPacket < packetCount;
+    observedHasWork = observedHasUnsent || !retryQueue.empty();
     peakInFlight = std::max(peakInFlight, inFlight);
     for (std::size_t i = 0; i < windowReachedNs.size(); ++i) {
       if (windowReachedNs[i] < 0 && congestion.size() >= (32U << i)) {
@@ -1050,11 +1062,15 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   std::size_t observedInFlight = 0;
   std::size_t observedWindow = 0;
   bool observedHasUnsent = false;
+  bool observedHasWork = false;
   std::size_t peakInFlight = 0;
   long double inFlightNs = 0;
   uint64_t windowFullNs = 0;
   uint64_t timeoutSlotNs = 0;
   uint64_t cwndDeficitSlotNs = 0;
+  uint64_t cwndIdleSlotNs = 0;
+  uint64_t sendableIdleSlotNs = 0;
+  uint64_t drainIdleSlotNs = 0;
   std::chrono::milliseconds maxTimedOutLifetime{0};
   uint64_t rttTotalNs = 0;
   uint64_t rttMinNs = 0;
