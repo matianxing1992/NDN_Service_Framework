@@ -441,6 +441,12 @@ struct FetchState : std::enable_shared_from_this<FetchState>
           {"rto_ns", std::to_string(congestion.rto().count())},
           {"losses", std::to_string(congestion.losses())},
           {"timeouts", std::to_string(timeoutRetries)},
+          {"timeout_slot_ns", std::to_string(timeoutSlotNs)},
+          {"timeout_lifetime_max_ms", std::to_string(maxTimedOutLifetime.count())},
+          {"cwnd_deficit_slot_ns", std::to_string(cwndDeficitSlotNs)},
+          {"source_tail_ns", std::to_string(lastFirstSend && finishedAt
+            ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                *finishedAt - *lastFirstSend).count() : 0)},
           {"nacks", std::to_string(nackRetries)},
           {"marks", std::to_string(congestion.marks())},
           {"decreases", std::to_string(congestion.decreases())}});
@@ -467,10 +473,14 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       inFlightNs += static_cast<long double>(observedInFlight) * elapsed;
       if (observedInFlight >= observedWindow)
         windowFullNs += elapsed;
+      if (observedHasUnsent) {
+        cwndDeficitSlotNs += (windowCapacity - observedWindow) * elapsed;
+      }
     }
     lastObservation = now;
     observedInFlight = inFlight;
     observedWindow = congestion.size();
+    observedHasUnsent = nextPacket < packetCount;
     peakInFlight = std::max(peakInFlight, inFlight);
     for (std::size_t i = 0; i < windowReachedNs.size(); ++i) {
       if (windowReachedNs[i] < 0 && congestion.size() >= (32U << i)) {
@@ -674,6 +684,9 @@ struct FetchState : std::enable_shared_from_this<FetchState>
       pending->second.attempt = attempt;
       pending->second.lifetime = lifetime;
       pending->second.sentAt = std::chrono::steady_clock::now();
+      if (measureWindow && attempt == 1 && index == packetCount - 1) {
+        lastFirstSend = pending->second.sentAt;
+      }
       // expressInterest posts registration to the Face io_context. Keep the
       // state lock until its handle is installed so an early callback or a
       // sibling failure cannot remove a placeholder before registration.
@@ -854,10 +867,17 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         return;
       }
       pending->second.handle.cancel();
-      if (timedOut)
+      if (timedOut) {
         ++timeoutRetries;
-      else
+        if (measureWindow) {
+          const auto age = std::chrono::steady_clock::now() - pending->second.sentAt;
+          timeoutSlotNs += std::chrono::duration_cast<std::chrono::nanoseconds>(age).count();
+          maxTimedOutLifetime = std::max(maxTimedOutLifetime, pending->second.lifetime);
+        }
+      }
+      else {
         ++nackRetries;
+      }
       congestion.loss();
       // Fresh ACKs for other packets may lower the shared estimate. Preserve
       // this packet's recovery backoff under the original lifetime/deadline caps.
@@ -986,13 +1006,18 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   const bool measureWindow = ndn_service_framework::controlTimingEnvEnabled();
   std::optional<std::chrono::steady_clock::time_point> firstSent;
   std::optional<std::chrono::steady_clock::time_point> finishedAt;
+  std::optional<std::chrono::steady_clock::time_point> lastFirstSend;
   std::chrono::steady_clock::time_point lastObservation;
   std::array<int64_t, 4> windowReachedNs{{-1, -1, -1, -1}};
   std::size_t observedInFlight = 0;
   std::size_t observedWindow = 0;
+  bool observedHasUnsent = false;
   std::size_t peakInFlight = 0;
   long double inFlightNs = 0;
   uint64_t windowFullNs = 0;
+  uint64_t timeoutSlotNs = 0;
+  uint64_t cwndDeficitSlotNs = 0;
+  std::chrono::milliseconds maxTimedOutLifetime{0};
   uint64_t rttTotalNs = 0;
   uint64_t rttMinNs = 0;
   uint64_t rttMaxNs = 0;
