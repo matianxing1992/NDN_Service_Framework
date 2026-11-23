@@ -1966,16 +1966,21 @@ RepoCore::commitOriginalPacketReaderImpl(const RepoObjectManifest& manifest,
   const std::unordered_set<std::string_view> incomingNames(manifest.packetNames.begin(),
                                                            manifest.packetNames.end());
   bool verifyStoredSpool = stageTogether && existing.has_value();
+  auto compactCatalog = stageTogether
+    ? detail::inspectOriginalPacketWriteCatalog(*m_store, incomingNames,
+                                                existing ? &*existing : nullptr)
+    : std::nullopt;
+  // Overlapping owners still go through the full name and payload checks.
+  if (compactCatalog && compactCatalog->hasOtherReplayHolder)
+    compactCatalog.reset();
   std::unordered_set<std::string> replayNames;
-  if (verifyStoredSpool) {
+  if (verifyStoredSpool && !compactCatalog) {
     for (const auto& packetName : manifest.packetNames) {
       const ndn::Name name(packetName);
       replayNames.insert(name.toUri(ndn::name::UriFormat::CANONICAL));
       replayNames.insert(name.toUri(ndn::name::UriFormat::ALTERNATE));
     }
   }
-  auto compactCatalog = stageTogether && !existing
-    ? detail::inspectOriginalPacketWriteCatalog(*m_store, incomingNames) : std::nullopt;
   auto indexedPacketNames = compactCatalog ? std::move(compactCatalog->matchingPackets)
                                            : std::unordered_set<std::string>{};
   std::map<std::string, std::shared_ptr<const RepoObjectManifest>> catalogMetadata;

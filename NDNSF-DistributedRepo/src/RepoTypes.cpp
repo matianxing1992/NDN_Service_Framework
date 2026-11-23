@@ -1435,10 +1435,11 @@ public:
   }
 
   std::optional<detail::OriginalPacketWriteCatalog>
-  inspectOriginalPacketWriteCatalog(const std::unordered_set<std::string_view>& incoming) const
+  inspectOriginalPacketWriteCatalog(const std::unordered_set<std::string_view>& incoming,
+                                    const RepoObjectManifest* replay) const
   {
     std::lock_guard<std::mutex> lock(m_authorityMutex);
-    auto catalog = detail::inspectOriginalPacketWriteCatalog(*m_authoritativeStore, incoming);
+    auto catalog = detail::inspectOriginalPacketWriteCatalog(*m_authoritativeStore, incoming, replay);
     if (catalog) {
       catalog->recheck = [this, recheck = std::move(catalog->recheck)] {
         std::lock_guard<std::mutex> lock(m_authorityMutex);
@@ -1779,12 +1780,13 @@ detail::listManifestSnapshots(const RepoStoreBackend& store, RecheckManifestCata
 
 std::optional<detail::OriginalPacketWriteCatalog>
 detail::inspectOriginalPacketWriteCatalog(const RepoStoreBackend& store,
-                                          const std::unordered_set<std::string_view>& incoming)
+                                          const std::unordered_set<std::string_view>& incoming,
+                                          const RepoObjectManifest* replay)
 {
   if (const auto tiered = dynamic_cast<const TieredRepoStore*>(&store))
-    return tiered->inspectOriginalPacketWriteCatalog(incoming);
+    return tiered->inspectOriginalPacketWriteCatalog(incoming, replay);
   if (const auto filesystem = dynamic_cast<const FilesystemRepoStoreBackend*>(&store))
-    return filesystem->inspectOriginalPacketWriteCatalog(incoming);
+    return filesystem->inspectOriginalPacketWriteCatalog(incoming, replay);
   return std::nullopt;
 }
 

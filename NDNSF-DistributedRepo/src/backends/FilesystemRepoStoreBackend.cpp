@@ -807,7 +807,7 @@ FilesystemRepoStoreBackend::retainManifestSummary(const std::string& key,
 
 detail::OriginalPacketWriteCatalog
 FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
-  const std::unordered_set<std::string_view>& incoming) const
+  const std::unordered_set<std::string_view>& incoming, const RepoObjectManifest* replay) const
 {
   if (incoming.empty())
     throw std::invalid_argument("repo-original-packet-catalog-empty");
@@ -815,6 +815,29 @@ FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
   for (const auto name : incoming)
     incomingPrefix = clipPacketPrefix(incomingPrefix, name);
 
+  std::unordered_set<std::string> replayNames;
+  std::string canonicalPrefix;
+  std::string alternatePrefix;
+  std::string replayDigest;
+  if (replay) {
+    replayDigest = sha256Hex(toBytes(replay->toJson()));
+    for (const auto& name : replay->packetNames) {
+      const ndn::Name typed(name);
+      auto canonical = typed.toUri(ndn::name::UriFormat::CANONICAL);
+      auto alternate = typed.toUri(ndn::name::UriFormat::ALTERNATE);
+      if (replayNames.empty()) {
+        canonicalPrefix = canonical.substr(0, MAX_PACKET_PREFIX_BYTES);
+        alternatePrefix = alternate.substr(0, MAX_PACKET_PREFIX_BYTES);
+      }
+      else {
+        canonicalPrefix.resize(clipPacketPrefix(canonicalPrefix, canonical).size());
+        alternatePrefix.resize(clipPacketPrefix(alternatePrefix, alternate).size());
+      }
+      replayNames.insert(std::move(canonical));
+      replayNames.insert(std::move(alternate));
+    }
+  }
+  bool foundReplay = false;
   detail::OriginalPacketWriteCatalog result;
   std::unordered_map<std::string, ManifestCollisionSummary> observed;
   const auto directory = fs::path(m_rootPath) / "manifests";
@@ -847,13 +870,26 @@ FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
     }
     if (!result.objectTypes.emplace(summary.objectName, summary.objectType).second)
       throw std::runtime_error("repo-original-packet-catalog-changed");
-    if (summary.objectType == "ndn-data-wire") {
+    const bool isReplay = replay && summary.objectName == replay->objectName;
+    if (isReplay) {
+      if (summary.metadataDigest != replayDigest)
+        throw std::runtime_error("repo-original-packet-catalog-changed");
+      foundReplay = true;
+    }
+    else if (replay && replayNames.count(summary.objectName)) {
+      result.hasOtherReplayHolder = true;
+    }
+    if (!replay && summary.objectType == "ndn-data-wire") {
       const auto canonical = ndn::Name(summary.objectName).toUri(ndn::name::UriFormat::CANONICAL);
       if (incoming.count(canonical))
         result.matchingPackets.insert(canonical);
     }
-    if (summary.objectType == "original-packet-set" &&
-        canShareBytePrefix(incomingPrefix, summary.packetPrefix)) {
+    const bool mayMatch = replay
+      ? !isReplay && !result.hasOtherReplayHolder &&
+        (canShareBytePrefix(canonicalPrefix, summary.packetPrefix) ||
+         canShareBytePrefix(alternatePrefix, summary.packetPrefix))
+      : canShareBytePrefix(incomingPrefix, summary.packetPrefix);
+    if (summary.objectType == "original-packet-set" && mayMatch) {
       if (!manifest) {
         ManifestObservation observation;
         manifest = cachedManifestUnlocked(entry.path(), &observation);
@@ -862,13 +898,22 @@ FilesystemRepoStoreBackend::inspectOriginalPacketWriteCatalog(
         if (observation.stamp != summary.stamp)
           throw std::runtime_error("repo-original-packet-catalog-changed");
       }
-      for (const auto& name : manifest->packetNames) {
-        if (incoming.count(name))
-          result.matchingPackets.insert(name);
+      if (replay) {
+        result.hasOtherReplayHolder =
+          std::any_of(manifest->packetNames.begin(), manifest->packetNames.end(),
+                      [&](const auto& name) { return replayNames.count(name) != 0; });
+      }
+      else {
+        for (const auto& name : manifest->packetNames) {
+          if (incoming.count(name))
+            result.matchingPackets.insert(name);
+        }
       }
     }
     observed.emplace(key, std::move(summary));
   }
+  if (replay && !foundReplay)
+    throw std::runtime_error("repo-original-packet-catalog-changed");
   {
     std::lock_guard<std::mutex> lock(m_manifestCollisionMutex);
     for (auto cached = m_manifestCollisionSummaries.begin();

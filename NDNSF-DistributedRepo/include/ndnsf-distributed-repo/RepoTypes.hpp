@@ -269,6 +269,7 @@ struct OriginalPacketWriteCatalog
 {
   std::map<std::string, std::string> objectTypes;
   std::unordered_set<std::string> matchingPackets;
+  bool hasOtherReplayHolder = false;
   std::function<void()> recheck;
 };
 } // namespace detail

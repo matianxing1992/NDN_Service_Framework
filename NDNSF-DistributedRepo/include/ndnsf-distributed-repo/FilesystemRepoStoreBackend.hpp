@@ -55,9 +55,10 @@ public:
   using ManifestSnapshots = std::vector<std::shared_ptr<const RepoObjectManifest>>;
   using RecheckManifestCatalog = std::function<ManifestSnapshots()>;
   ManifestSnapshots listManifestSnapshots(RecheckManifestCatalog* recheck = nullptr) const;
-  /** Inspect current collisions for a new owned original packet set. */
+  /** Inspect collisions for an owned original packet set or an exact replay. */
   detail::OriginalPacketWriteCatalog inspectOriginalPacketWriteCatalog(
-    const std::unordered_set<std::string_view>& incoming) const;
+    const std::unordered_set<std::string_view>& incoming,
+    const RepoObjectManifest* replay = nullptr) const;
   /** Internal locator integration: copy matching metadata under the existing lock. */
   std::vector<RepoObjectManifest>
   findPacketManifests(const std::string& canonical, const std::string& alternate,

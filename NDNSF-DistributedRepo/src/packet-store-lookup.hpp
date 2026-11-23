@@ -28,10 +28,11 @@ using RecheckManifestCatalog =
 std::vector<std::shared_ptr<const RepoObjectManifest>>
 listManifestSnapshots(const RepoStoreBackend& store, RecheckManifestCatalog* recheck = nullptr);
 
-/** Compact new-owned-write catalog when the authoritative backend supports it. */
+/** Compact owned-write catalog when the authoritative backend supports it. */
 std::optional<OriginalPacketWriteCatalog>
 inspectOriginalPacketWriteCatalog(const RepoStoreBackend& store,
-                                  const std::unordered_set<std::string_view>& incoming);
+                                  const std::unordered_set<std::string_view>& incoming,
+                                  const RepoObjectManifest* replay = nullptr);
 
 /** Observe current physical state without copying an owned backend's immutable packet index. */
 RepoObjectMetadataSnapshot

@@ -1907,6 +1907,14 @@ BOOST_AUTO_TEST_CASE(CatalogParseCacheHonorsEncodedByteBound)
       BOOST_CHECK_EQUAL(inspected->objectTypes.size(), first.size());
       BOOST_CHECK(inspected->matchingPackets.empty());
       BOOST_CHECK_EQUAL(catalogParses.load(), 0U);
+      const auto& replay = *first.front();
+      BOOST_REQUIRE_EQUAL(replay.packetNames.size(), 1U);
+      const std::unordered_set<std::string_view> replayNames{replay.packetNames.front()};
+      const auto replayCatalog = detail::inspectOriginalPacketWriteCatalog(*store, replayNames, &replay);
+      BOOST_REQUIRE(replayCatalog);
+      BOOST_CHECK(!replayCatalog->hasOtherReplayHolder);
+      BOOST_CHECK_NO_THROW(replayCatalog->recheck());
+      BOOST_CHECK_EQUAL(catalogParses.load(), 0U);
       {
         std::ofstream output(directory / "manifests" / "small.json", std::ios::app);
         output << '\n';
@@ -1920,6 +1928,56 @@ BOOST_AUTO_TEST_CASE(CatalogParseCacheHonorsEncodedByteBound)
       });
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(CompactReplayCatalogPreservesOtherHolderAndIdentityChecks)
+{
+  Fixture fixture;
+  const auto root = fixture.root / "replay-catalog";
+  auto store = makeFilesystemRepoStore(root.string());
+  const auto path = root / "manifests";
+  const auto packet = ndn::Name("/actual/producer/replay").appendSegment(7);
+  const auto canonical = packet.toUri(ndn::name::UriFormat::CANONICAL);
+  const auto alternate = packet.toUri(ndn::name::UriFormat::ALTERNATE);
+  BOOST_REQUIRE_NE(canonical, alternate);
+  const auto writeManifest = [&](const char* file, const RepoObjectManifest& manifest) {
+    std::ofstream output(path / file);
+    output << manifest.toJson();
+    output.close();
+    BOOST_REQUIRE(output.good());
+  };
+  RepoObjectManifest replay;
+  replay.objectName = canonical;
+  replay.objectType = "original-packet-set";
+  replay.packetNames = {canonical};
+  writeManifest("replay.json", replay);
+  RepoObjectManifest other;
+  other.objectName = "/actual/producer/unrelated";
+  other.objectType = "original-packet-set";
+  other.packetNames = {"/actual/producer/unrelated/packet"};
+  writeManifest("other.json", other);
+  const std::unordered_set<std::string_view> incoming{canonical};
+  const auto disjoint = detail::inspectOriginalPacketWriteCatalog(*store, incoming, &replay);
+  BOOST_REQUIRE(disjoint);
+  BOOST_CHECK(!disjoint->hasOtherReplayHolder);
+  BOOST_CHECK_NO_THROW(disjoint->recheck());
+
+  other.packetNames = {alternate};
+  writeManifest("other.json", other);
+  const auto overlap = detail::inspectOriginalPacketWriteCatalog(*store, incoming, &replay);
+  BOOST_REQUIRE(overlap);
+  BOOST_CHECK(overlap->hasOtherReplayHolder);
+  BOOST_CHECK_EXCEPTION(disjoint->recheck(), std::runtime_error, [](const auto& error) {
+    return std::string_view(error.what()) == "repo-original-packet-catalog-changed";
+  });
+
+  auto changed = replay;
+  changed.policyEpoch = "different";
+  writeManifest("replay.json", changed);
+  BOOST_CHECK_EXCEPTION(detail::inspectOriginalPacketWriteCatalog(*store, incoming, &replay),
+    std::runtime_error, [](const auto& error) {
+      return std::string_view(error.what()) == "repo-original-packet-catalog-changed";
+    });
 }
 
 BOOST_AUTO_TEST_CASE(CatalogParseRejectsOversizedMetadataWithSizeDiagnostic)
