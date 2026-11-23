@@ -37,6 +37,14 @@
   expiry before an expensive retry. In Tiger job `306364`, warm planning
   retained the pinned placement 704.779 seconds after the last cold cache
   install, beyond the cache's 600-second TTL.
+- When a Provider emits the last token and waits for checkpoint COMMIT, trace
+  receipt publication, requester verification and the actual commit separately.
+  In Spec 235's first 1:2 run, the 86-state role's receipt approached the signed
+  SVS packet limit before encapsulation. Segmentation conflicts with the
+  producer-bound collaboration packet subscription. The installed codec test
+  reduced 86 state digests from 7,988 to 5,297 bytes of payload, preserving all
+  digests and the canonical commitment. Keep the same signer/name admission
+  checks and verify the whole asymmetric cold/warm workload.
 - In the 27B FP16 case, warm token 24 diverged. The same warm activation on the
   same GPU type reproduced the CUDA full-vocabulary projection's ranking change.
   Disallowing reduced-precision GEMM reduction restored the CPU result in that
