@@ -2366,6 +2366,47 @@ BOOST_AUTO_TEST_CASE(FilteredExactReadsUseProofHintsButRecheckCurrentMetadataAnd
                     std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(ProofEvictionRetainsRestartPacketLocations)
+{
+  Fixture fixture;
+  PacketSet selected("/actual/proof-eviction-selected");
+  std::vector<std::string> otherRoots;
+  {
+    auto writer = std::make_shared<RepoCore>(fixture.capability(), fixture.store("proof-eviction"));
+    RepoEncryptedLargeDataStore backend(writer);
+    const auto commit = [&](const PacketSet& set) {
+      std::size_t cursor = 0;
+      return backend.commitOriginalDataPackets(set.manifest.getName(), set.options,
+        [&]() -> std::optional<std::pair<ndn::Name, std::vector<uint8_t>>> {
+          if (cursor == set.packets.size())
+            return std::nullopt;
+          return set.packets[cursor++];
+        });
+    };
+    BOOST_REQUIRE(commit(selected));
+    for (unsigned index = 0; index < 17; ++index) {
+      PacketSet other("/actual/proof-eviction-" + std::to_string(index), 1);
+      BOOST_REQUIRE(commit(other));
+      otherRoots.push_back(other.options.manifestName);
+    }
+  }
+
+  auto store = std::make_shared<CountingStore>(fixture.store("proof-eviction"));
+  RepoCore reopened(fixture.capability(), store);
+  BOOST_CHECK(reopened.getDataPacket(selected.options.manifestName) == selected.packets.front().second);
+  for (const auto& root : otherRoots)
+    BOOST_CHECK(!reopened.getDataPacket(root).empty());
+  store->enumerations = 0;
+  const auto admit = [&](const RepoObjectManifest& manifest) {
+    return manifest.objectName == selected.options.manifestName;
+  };
+  const auto& [name, wire] = selected.packets.back();
+  BOOST_CHECK(reopened.getDataPacket(name.toUri(), admit) == wire);
+  BOOST_CHECK_EQUAL(store->enumerations, 0U);
+  BOOST_CHECK(reopened.getDataPacket(selected.options.manifestName, admit) ==
+              selected.packets.front().second);
+}
+
 BOOST_AUTO_TEST_CASE(PrefixReadSkipsUnrelatedIndexesAndStillAdmitsItsHolder)
 {
   Fixture fixture;

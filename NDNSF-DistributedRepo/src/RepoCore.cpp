@@ -225,14 +225,15 @@ RepoCore::buildPacketBaseIndex() const
         manifest.packetNames.empty() || manifest.objectName != manifest.packetNames.front())
       continue;
     const auto canonical = ndn::Name(manifest.objectName).toUri(ndn::name::UriFormat::CANONICAL);
-    addPacketBaseHint(index, bytes, MAX_PACKET_INDEX_BYTES,
+    addPacketBaseHint(index, bytes, MAX_PACKET_BASE_BYTES,
                       packetBaseName(canonical), manifest.objectName);
   }
   std::scoped_lock lock(m_packetBaseIndexMutex, m_packetIndexProofMutex);
   if (m_packetBaseIndexBuilt) return;
   m_packetIndexProofs.clear();
   m_packetBaseIndex = std::move(index);
-  m_packetIndexProofBytes = bytes;
+  m_packetBaseBytes = bytes;
+  m_packetIndexProofBytes = 0;
   m_packetBaseIndexBuilt = true;
 }
 
@@ -294,10 +295,10 @@ RepoCore::extendPacketBaseIndex(const RepoObjectManifest& manifest) const
       manifest.packetNames.empty() || manifest.objectName != manifest.packetNames.front())
     return;
   const auto canonical = ndn::Name(manifest.objectName).toUri(ndn::name::UriFormat::CANONICAL);
-  std::scoped_lock lock(m_packetBaseIndexMutex, m_packetIndexProofMutex);
+  std::lock_guard<std::mutex> lock(m_packetBaseIndexMutex);
   if (!m_packetBaseIndexBuilt)
     return;
-  addPacketBaseHint(m_packetBaseIndex, m_packetIndexProofBytes, MAX_PACKET_INDEX_BYTES,
+  addPacketBaseHint(m_packetBaseIndex, m_packetBaseBytes, MAX_PACKET_BASE_BYTES,
                     packetBaseName(canonical), manifest.objectName);
 }
 
@@ -310,7 +311,7 @@ RepoCore::findIndexedOriginalPacket(const ndn::Name& name, const std::string& ca
   const auto base = packetBaseName(canonical);
   std::vector<std::string> candidates;
   {
-    std::scoped_lock lock(m_packetBaseIndexMutex, m_packetIndexProofMutex);
+    std::lock_guard<std::mutex> lock(m_packetBaseIndexMutex);
     const auto found = m_packetBaseIndex.find(base);
     if (found == m_packetBaseIndex.end()) return std::nullopt;
     candidates = found->second;
@@ -1689,7 +1690,7 @@ RepoCore::findPacketRecord(const ndn::Name& name,
           name.toUri(ndn::name::UriFormat::ALTERNATE), acceptObject))
       return std::make_pair(*indexed->first, indexed->second);
     // The bounded index is a locator hint, not an absence proof. Startup records
-    // root bases only; other packet bases are learned lazily and may be evicted.
+    // root bases only; other packet bases are learned lazily within the locator budget.
     // A miss must still consult the durable catalog, including alternate holders.
   }
   catch (const std::exception&) {
@@ -1778,13 +1779,13 @@ RepoCore::getPacketIndexProof(const RepoObjectManifest& manifest,
   try {
     size_t bytes = sizeof(PacketIndexProof) + sizeof(std::string) + 4 * sizeof(void*);
     const auto charge = [&bytes](size_t amount) {
-      if (amount > MAX_PACKET_INDEX_BYTES - bytes)
+      if (amount > MAX_PACKET_INDEX_PROOF_BYTES - bytes)
         return false;
       bytes += amount;
       return true;
     };
-    if (manifest.packetNames.size() > MAX_PACKET_INDEX_BYTES / sizeof(std::string) ||
-        manifest.packetOffsets.size() > MAX_PACKET_INDEX_BYTES / sizeof(uint64_t) ||
+    if (manifest.packetNames.size() > MAX_PACKET_INDEX_PROOF_BYTES / sizeof(std::string) ||
+        manifest.packetOffsets.size() > MAX_PACKET_INDEX_PROOF_BYTES / sizeof(uint64_t) ||
         !charge(manifest.objectName.size() + 1) ||
         !charge(manifest.packetNames.size() * sizeof(std::string)) ||
         !charge(manifest.packetOffsets.size() * sizeof(uint64_t)))
@@ -1810,7 +1811,6 @@ RepoCore::getPacketIndexProof(const RepoObjectManifest& manifest,
     validated = true;
     proof->names = manifest.packetNames;
     proof->offsets = manifest.packetOffsets;
-    size_t hints = 0;
     for (auto& [base, positions] : proof->segments) {
       std::sort(positions.begin(), positions.end(), [](const auto& a, const auto& b) {
         return a.segment < b.segment || (a.segment == b.segment && a.packetIndex < b.packetIndex);
@@ -1818,11 +1818,7 @@ RepoCore::getPacketIndexProof(const RepoObjectManifest& manifest,
       if (!charge(sizeof(std::string) + base.size() + 1 + 4 * sizeof(void*) +
                   sizeof(positions) + positions.capacity() * sizeof(PacketIndexProof::SegmentPosition)))
         return {};
-      const auto hint = packetBaseKeyCharge(base) + packetBaseHolderCharge(manifest.objectName);
-      if (hint > MAX_PACKET_INDEX_BYTES - hints) return {};
-      hints += hint;
     }
-    if (hints > MAX_PACKET_INDEX_BYTES - bytes) return {};
     proof->chargedBytes = bytes;
     if (owner.get() == &manifest) proof->validatedManifest = owner;
     std::scoped_lock lock(m_packetBaseIndexMutex, m_packetIndexProofMutex);
@@ -1836,22 +1832,21 @@ RepoCore::getPacketIndexProof(const RepoObjectManifest& manifest,
       m_packetIndexProofs.erase(found);
     }
     if (m_packetIndexProofs.size() >= MAX_PACKET_INDEX_PROOFS ||
-        bytes + hints > MAX_PACKET_INDEX_BYTES - m_packetIndexProofBytes) {
+        bytes > MAX_PACKET_INDEX_PROOF_BYTES - m_packetIndexProofBytes) {
+      // Startup and learned locations remain useful when proof geometry turns over.
       m_packetIndexProofs.clear();
-      m_packetBaseIndex.clear();
       m_packetIndexProofBytes = 0;
     }
     try {
       m_packetIndexProofs.emplace(manifest.objectName, proof);
       m_packetIndexProofBytes += bytes;
       for (const auto& [base, positions] : proof->segments)
-        addPacketBaseHint(m_packetBaseIndex, m_packetIndexProofBytes, MAX_PACKET_INDEX_BYTES,
+        addPacketBaseHint(m_packetBaseIndex, m_packetBaseBytes, MAX_PACKET_BASE_BYTES,
                           base, manifest.objectName);
     }
     catch (const std::bad_alloc&) {
       // Validation already succeeded; retaining its optimization is optional.
       m_packetIndexProofs.clear();
-      m_packetBaseIndex.clear();
       m_packetIndexProofBytes = 0;
     }
     return proof;
@@ -2610,11 +2605,11 @@ RepoCore::rememberCatalogChange(const RepoObjectManifest& manifest,
         auto& holders = base->second;
         const auto holder = std::find(holders.begin(), holders.end(), manifest.objectName);
         if (holder != holders.end()) {
-          m_packetIndexProofBytes -= packetBaseHolderCharge(*holder);
+          m_packetBaseBytes -= packetBaseHolderCharge(*holder);
           holders.erase(holder);
         }
         if (holders.empty()) {
-          m_packetIndexProofBytes -= packetBaseKeyCharge(base->first);
+          m_packetBaseBytes -= packetBaseKeyCharge(base->first);
           base = m_packetBaseIndex.erase(base);
         }
         else ++base;

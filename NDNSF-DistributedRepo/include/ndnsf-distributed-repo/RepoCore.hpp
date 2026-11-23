@@ -314,7 +314,9 @@ private:
 
   mutable std::mutex m_packetBaseIndexMutex;
   mutable std::unordered_map<std::string, std::vector<std::string>> m_packetBaseIndex;
+  mutable size_t m_packetBaseBytes = 0;
   mutable bool m_packetBaseIndexBuilt = false;
+  static constexpr size_t MAX_PACKET_BASE_BYTES = 1U * 1024U * 1024U;
 
   struct PacketIndexProof
   {
@@ -334,10 +336,9 @@ private:
   // checks its current visibility/claims; this cache never admits an object.
   mutable std::mutex m_packetIndexProofMutex;
   mutable std::unordered_map<std::string, std::shared_ptr<PacketIndexProof>> m_packetIndexProofs;
-  // Combined logical charge of prefix hints and immutable proof geometry/tables.
   mutable size_t m_packetIndexProofBytes = 0;
   static constexpr size_t MAX_PACKET_INDEX_PROOFS = 16;
-  static constexpr size_t MAX_PACKET_INDEX_BYTES = 8U * 1024U * 1024U;
+  static constexpr size_t MAX_PACKET_INDEX_PROOF_BYTES = 7U * 1024U * 1024U;
 };
 
 } // namespace ndnsf_distributed_repo
