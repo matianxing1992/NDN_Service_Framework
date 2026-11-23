@@ -124,13 +124,14 @@ if family == "4b":
     for index in range(len(graph.value_info) - 1, -1, -1):
         if graph.value_info[index].name == "logits_fp16":
             del graph.value_info[index]
+    # The Qwen TP assembler groups these nodes in its egress-only HEAD entry.
     for index, value in enumerate(inputs):
         graph.node.append(helper.make_node(
             "Cast", [value], [f"spec235_projection_fp32_input_{index}"],
-            name=f"/spec235/projection/Cast{index}", to=TensorProto.FLOAT))
+            name=f"/lm_head/spec235_fp32/Cast{index}", to=TensorProto.FLOAT))
     graph.node.append(helper.make_node(
         "MatMul", ["spec235_projection_fp32_input_0", "spec235_projection_fp32_input_1"],
-        ["logits"], name="/spec235/projection/MatMul"))
+        ["logits"], name="/lm_head/spec235_fp32/MatMul"))
 
 onnx.save(model, str(output))
 print("HOST_SHAPE_SAME_OPERATOR_VARIANT", family, len(graph.node),
