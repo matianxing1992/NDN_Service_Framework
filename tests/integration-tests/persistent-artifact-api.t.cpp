@@ -3340,8 +3340,11 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     input.compactSegmentManifestInsert = request.schemaVersion == 4;
     repo::RepoOperationOptions options;
     options.deadline = std::chrono::steady_clock::now() + 15s;
-    return prepared ? manifestWriter.publishPreparedManifest(input, manifestPublication, options)
-                    : manifestWriter.publishData(input, options);
+    if (!prepared)
+      return manifestWriter.publishData(input, options);
+    // Keep the fixture's original packet set as an oracle, and transfer an independent owner.
+    return manifestWriter.publishPreparedManifest(input, ManifestPublication(manifestPublication),
+                                                  options);
   };
   const auto commitManifest = [&](const repo::RepoUserStorageInsertRequest& request,
                                   bool prepared = false) {

@@ -1102,7 +1102,8 @@ commitOriginalPacketPublication(
   const std::function<std::optional<std::vector<uint8_t>>()>& nextOriginalPacket,
   const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
   int ackCollectionTimeMs, int timeoutMs, const std::function<void()>& requireCurrent,
-  const ndn_service_framework::ManifestPublication* prepared)
+  const ndn_service_framework::ManifestPublication* prepared,
+  std::unique_ptr<ndn_service_framework::ManifestPublication>* preparedOwner = nullptr)
 {
   validateUserStorageClientTarget(target, timeoutMs);
   if (writer.isOnIoThread())
@@ -1378,6 +1379,10 @@ commitOriginalPacketPublication(
       toLowerHex(digest.toString()) != request.reference.expectedSha256)
     throw std::invalid_argument("repo-original-publication-digest-or-size-mismatch");
 
+  const auto packetSource = preparedOwner ? "prepared-owned" : prepared ? "prepared" : "wire";
+  if (preparedOwner)
+    preparedOwner->reset();
+
   measure(packetLoopStarted, packetLoop);
   auto installStarted = stamp(measurePreparation);
   auto installed = std::make_shared<std::promise<void>>();
@@ -1485,7 +1490,7 @@ commitOriginalPacketPublication(
       };
       ndn_service_framework::logControlTiming("repo-client", "producer-preparation",
         ndn::Name(request.reference.objectName), {
-          {"operation_id", request.operationId}, {"packet_source", prepared ? "prepared" : "wire"},
+          {"operation_id", request.operationId}, {"packet_source", packetSource},
           {"total_packets", std::to_string(names.size())},
           {"sampled_packets", std::to_string(sampledPackets)},
           {"face_admission_ns", nanoseconds(faceAdmission)},
@@ -3575,9 +3580,19 @@ RepoClient::publishPreparedManifest(
 }
 
 RepoPublishResult
+RepoClient::publishPreparedManifest(
+  const RepoDataPublication& input, ndn_service_framework::ManifestPublication&& prepared,
+  const RepoOperationOptions& options)
+{
+  auto owned = std::make_unique<ndn_service_framework::ManifestPublication>(std::move(prepared));
+  return publishDataImpl(input, owned.get(), options, &owned);
+}
+
+RepoPublishResult
 RepoClient::publishDataImpl(const RepoDataPublication& input,
                             const ndn_service_framework::ManifestPublication* prepared,
-                            const RepoOperationOptions& options)
+                            const RepoOperationOptions& options,
+                            std::unique_ptr<ndn_service_framework::ManifestPublication>* owner)
 {
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
@@ -3714,7 +3729,8 @@ RepoClient::publishDataImpl(const RepoDataPublication& input,
   constexpr int PUBLICATION_ACK_COLLECTION_MS = 1000;
   const auto manifest = commitOriginalPacketPublication(
     *m_impl->user, target, request, nextPacket, verifySignature,
-    PUBLICATION_ACK_COLLECTION_MS, remainingMs(options.deadline), options.requireCurrent, prepared);
+    PUBLICATION_ACK_COLLECTION_MS, remainingMs(options.deadline), options.requireCurrent,
+    prepared, owner);
   RepoPublishResult result;
   // Deliberately no operationReference: the Repo's status service does not resolve an insert
   // operation by id (`repo-publish-operation-not-found`), so handing the caller an id it

@@ -138,6 +138,11 @@ public:
     const RepoDataPublication& input, const ndn_service_framework::ManifestPublication& prepared,
     const RepoOperationOptions& options);
 
+  /** Take ownership of the local packet set and release it once its verified wire is staged. */
+  RepoPublishResult publishPreparedManifest(
+    const RepoDataPublication& input, ndn_service_framework::ManifestPublication&& prepared,
+    const RepoOperationOptions& options);
+
   /** Retrieve an artifact by exactly one of a committed handle or a file reference. */
   RepoFetchResult fetchFile(const RepoFileFetch& input,
                             const RepoOperationOptions& options) const;
@@ -178,7 +183,9 @@ public:
 private:
   RepoPublishResult publishDataImpl(const RepoDataPublication& input,
                                     const ndn_service_framework::ManifestPublication* prepared,
-                                    const RepoOperationOptions& options);
+                                    const RepoOperationOptions& options,
+                                    std::unique_ptr<ndn_service_framework::ManifestPublication>*
+                                      owner = nullptr);
   struct Impl;
   explicit RepoClient(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> m_impl;

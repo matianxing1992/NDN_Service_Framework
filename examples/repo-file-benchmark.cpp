@@ -371,6 +371,7 @@ run(int argc, char** argv)
       };
       const auto commitSecured = [&](di::NativeStoredModelPacketIo::PacketWires wires,
                                      repo::PacketSource packetSource,
+                                     ndn_service_framework::ManifestPublication* manifest,
                                      const Group& group, const std::function<void()>& active) {
         repo::RepoClient client = makePacketClient(user, target);
         const repo::RepoOperationOptions operation{deadline, active, {}};
@@ -391,20 +392,21 @@ run(int argc, char** argv)
         auto& source = *publication.packets;
         source.expectedDigest = "sha256:" + group.wireDigest;
         source.expectedWireBytes = group.wireBytes;
-        source.next = [&wires, index = size_t{0}](std::vector<uint8_t>& wire) mutable {
-          if (index == wires.size()) return false;
-          wire = std::move(wires[index++]);
-          return true;
-        };
-        if (useManifest) {
+        if (manifest) {
           publication.segmentManifest =
-            std::make_shared<ndn_service_framework::SegmentManifestScope>(
-              manifestScope(identity, group.prefix));
+            std::make_shared<ndn_service_framework::SegmentManifestScope>(manifest->scope());
         }
         else {
+          source.next = [&wires, index = size_t{0}](std::vector<uint8_t>& wire) mutable {
+            if (index == wires.size()) return false;
+            wire = std::move(wires[index++]);
+            return true;
+          };
           publication.verifyWire = verifyWire;
         }
-        const auto committed = client.publishData(publication, operation);
+        const auto committed = manifest
+          ? client.publishPreparedManifest(publication, std::move(*manifest), operation)
+          : client.publishData(publication, operation);
         require(committed.packetSet && committed.packetSet->wireDigest == source.expectedDigest &&
                 ndn::Name(committed.packetSet->objectName) == ndn::Name(object),
                 "benchmark signed publication did not commit the original packet set");
@@ -488,7 +490,8 @@ run(int argc, char** argv)
           (fileBytes - payloadBytes + contentBytes - 1) / contentBytes);
         const auto appendOriginal = [&](const ndn::Data& packet) {
           const auto& wire = packet.wireEncode();
-          wires.emplace_back(wire.begin(), wire.end());
+          if (!useManifest)
+            wires.emplace_back(wire.begin(), wire.end());
           wireHash.update(ndn::span<const uint8_t>(wire.data(), wire.size()));
           group.wireBytes += wire.size();
           if (useCertificate) {
@@ -529,12 +532,13 @@ run(int argc, char** argv)
           group.payloadBytes += count;
           payloadBytes += count;
         }
+        std::optional<ndn_service_framework::ManifestPublication> manifest;
         if (useManifest) {
-          const auto manifest = ndn_service_framework::ManifestPublication::prepare(*packetKeys,
+          manifest.emplace(ndn_service_framework::ManifestPublication::prepare(*packetKeys,
             ndn::security::signingByCertificate(certificate), manifestScope(identity, group.prefix),
             {manifestGroupSize, repo::REPO_USER_STORAGE_OBJECT_MAX_BYTES,
-             static_cast<uint32_t>(groupPackets)}, manifestContent, {}, ndn::time::seconds(60));
-          for (const auto& packet : manifest.packets()) {
+             static_cast<uint32_t>(groupPackets)}, manifestContent, {}, ndn::time::seconds(60)));
+          for (const auto& packet : manifest->packets()) {
             appendOriginal(packet);
           }
         }
@@ -545,13 +549,14 @@ run(int argc, char** argv)
         const auto index = groupIndex;
         pipeline.submit(prepared->wireBytes,
           [&, commit = io.commitConcurrent, wires = std::move(wires),
-           packetSource = std::move(packetSource), prepared, index,
+           packetSource = std::move(packetSource), manifest = std::move(manifest), prepared, index,
            preparationEnd, groupTime](const di::NativeModelCommitPipeline::CurrentCheck& active)
             mutable {
             const Measurement commitTime;
             try {
               if (useCertificate) {
-                commitSecured(std::move(wires), std::move(packetSource), *prepared, active);
+                commitSecured(std::move(wires), std::move(packetSource),
+                              manifest ? &*manifest : nullptr, *prepared, active);
               }
               else {
                 commit(std::move(wires), "sha256:" + prepared->wireDigest, active);
