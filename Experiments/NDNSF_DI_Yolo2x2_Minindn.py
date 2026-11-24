@@ -6149,6 +6149,8 @@ def main() -> None:
                     Path(native_assets["requester_config"]).parent / "trust-schema.conf",
                     Path(native_assets["authority_binary_config"]).parent / "trust-schema.conf"):
                 schema_path.write_text(anchored_schema, encoding="utf-8")
+            from ndnsf_distributed_inference.policy import load_or_generate_deployment
+            native_deployment = load_or_generate_deployment(CONFIG, GEN_POLICY)
         source_package = REPO / "pythonWrapper/ndnsf"
         extension = resolve_yolo_extension_pair(installed_package, source_package, naming_candidate)
         candidate_components = {
@@ -6169,12 +6171,19 @@ def main() -> None:
                           Path(__file__), PY_DIR / "user.py",
                           REPO / "Experiments/native_yolo_requester.py"]
         if native_assets is not None:
+            candidate_components["controller"] = (
+                Path(args_cli.native_authority_binary).with_name("App_ServiceController"),
+                REPO / "build/examples/App_ServiceController")
             candidate_components["sourceInspector"] = (
                 source_inspector, REPO / "build/native-source-inspect")
             candidate_components["authority"] = (
                 Path(args_cli.native_authority_binary),
                 REPO / "build/examples/DI_NativeArtifactAuthority")
             runtime_inputs.extend([*native_assets["runtime_inputs"],
+                                   Path(native_deployment.policy_file),
+                                   Path(native_deployment.trust_schema),
+                                   Path(native_deployment.native_execution_plan_file),
+                                   Path(native_deployment.service_manifest_file),
                                    REPO / "Experiments/native_placement_evidence.py"])
         native_candidate = build_yolo_native_candidate(
             run_id=native_run_id,
@@ -6492,11 +6501,22 @@ def main() -> None:
         write_ndnping_rtt_summary(ndn, providers, env, procs)
 
         common = ["--config", str(CONFIG), "--generated-policy-dir", GEN_POLICY]
+        controller_command = python_cmd("controller.py", common)
+        controller_ready = "ServiceController listening"
+        if native_assets is not None:
+            # The native role owns signal delivery and runtime error propagation.
+            controller_command = "exec " + " ".join(perf.shell_quote(str(value)) for value in [
+                Path(args_cli.native_authority_binary).with_name("App_ServiceController"),
+                "--controller-prefix", CONTROLLER_IDENTITY,
+                "--policy-file", native_deployment.policy_file,
+                "--trust-schema", native_deployment.trust_schema,
+            ])
+            controller_ready = "NDNSF_CONTROLLER_READY identity=" + CONTROLLER_IDENTITY
         _, controller_log = start(
             ndn.net[AI_LAB_CONTROLLER_NODE], "controller",
-            python_cmd("controller.py", common), bootstrap_env, procs,
+            controller_command, bootstrap_env, procs,
             signing_identity=CONTROLLER_IDENTITY)
-        if not wait_log(controller_log, "ServiceController listening", 20):
+        if not wait_log(controller_log, controller_ready, 20):
             raise RuntimeError(f"controller did not become ready; see {controller_log}")
         time.sleep(4)
         if native_assets is not None:
