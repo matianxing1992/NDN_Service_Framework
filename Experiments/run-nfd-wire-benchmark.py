@@ -48,6 +48,7 @@ def run(args):
     if args.direction == "read":
         sender_actor, receiver_actor = receiver_actor, sender_actor
     sender, receiver = sender_actor["node"], receiver_actor["node"]
+    forwarding_hint = sender_actor["identity"] if args.repo_forwarding_hint else None
     nodes = {node["id"]: node for node in config["nodes"]}
     if sender == receiver or args.router not in nodes or args.router in (sender, receiver):
         raise RuntimeError("replay needs two distinct endpoints and a router")
@@ -115,7 +116,8 @@ def run(args):
         raise
     for node in nodes.values():
         node["nfd"]["socket"] = str(root / (node["id"] + ".sock"))
-    config["network"]["routes"].append({"to": sender, "prefix": replay_prefix})
+    if forwarding_hint is None:
+        config["network"]["routes"].append({"to": sender, "prefix": replay_prefix})
     config_digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     state = dict(schema="ndnsf-di-host-operation-v1", deployment_id="nfd-wire-replay",
                  boot_id=uuid.uuid4().hex, configuration_sha256=config_digest,
@@ -164,6 +166,8 @@ def run(args):
                        str(trial + 1), str(4096 * len(groups)), str(producer_cpu), str(consumer_cpu),
                        args.interest_mode, str(args.seconds),
                        nodes[sender]["nfd"]["socket"], str(router_pid), replay_prefix, str(wire)]
+                if forwarding_hint is not None:
+                    cmd.append(forwarding_hint)
                 row = dict(command=cmd, window=window, trial=trial + 1)
                 measurements.append(row)
                 result = subprocess.run(cmd, env=env, cwd=root, capture_output=True, text=True,
@@ -192,6 +196,7 @@ def run(args):
             if len(samples) == args.samples:
                 rates[window] = statistics.median(samples)
         result = dict(direction=args.direction, interestMode=args.interest_mode,
+                      forwardingHint=forwarding_hint,
                       endpoints=dict(sender=sender, receiver=receiver),
                       cpuAffinity=sorted(os.sched_getaffinity(0)),
                       nfdAffinity={row["id"]: row["cpu_affinity"] for row in state["launches"]
@@ -215,6 +220,8 @@ def main():
     parser.add_argument("--direction", choices=("write", "read"), required=True)
     parser.add_argument("--interest-mode", choices=("digest", "ordinary"), default="digest",
                         help="replay the same stored Data using full digest or ordinary names")
+    parser.add_argument("--repo-forwarding-hint", action="store_true",
+                        help="use the Writer identity on write replay and the Repo identity on read replay")
     parser.add_argument("--cpu-placement", type=Path)
     parser.add_argument("--router", default="router")
     parser.add_argument("--group", type=int, default=0)

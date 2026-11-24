@@ -79,6 +79,7 @@ struct Run
   const std::vector<ndn::Data>& packets;
   const std::vector<ndn::Name>& names;
   const std::vector<std::size_t>& payloadSizes;
+  const ndn::Name& forwardingHint;
   const Clock::time_point until;
   bool traceSources = false;
   std::size_t next = 0;
@@ -114,6 +115,8 @@ struct Run
     ndn::Interest request(names[i]);
     request.setCanBePrefix(false);
     request.setInterestLifetime(ndn::time::milliseconds(1500));
+    if (!forwardingHint.empty())
+      request.setForwardingHint({forwardingHint});
     interestWire += request.wireEncode().size();
     const bool trace = traceSources && sampleSource(packets[i].getName());
     if (trace) traceSource(packets[i].getName(), "request-express");
@@ -147,10 +150,10 @@ struct Run
 int
 main(int argc, char** argv)
 {
-  if (argc != 14) {
+  if (argc != 14 && argc != 15) {
     std::cerr << "Usage: ndnsf-nfd-wire-benchmark CONSUMER_SOCKET PAYLOAD WINDOW SAMPLE "
                  "MAX_PACKETS PRODUCER_CPU CONSUMER_CPU MODE SECONDS PRODUCER_SOCKET "
-                 "ROUTER_PID PREFIX WIRE_FILE\n";
+                 "ROUTER_PID PREFIX WIRE_FILE [FORWARDING_HINT]\n";
     return argc == 2 && std::string(argv[1]) == "--help" ? 0 : 2;
   }
   try {
@@ -164,8 +167,10 @@ main(int argc, char** argv)
     const std::string mode = argv[8];
     const auto duration = std::chrono::seconds(std::stoul(argv[9]));
     const std::string producerSocket = argv[10];
+    const ndn::Name forwardingHint = argc == 15 ? ndn::Name(argv[14]) : ndn::Name{};
     if ((payload != 7000 && payload != 8400) || window == 0 || window > 4096 || records < window ||
         records > MAX_REPLAY_RECORDS || (mode != "ordinary" && mode != "digest") ||
+        (argc == 15 && forwardingHint.empty()) ||
         duration < std::chrono::seconds(1) || duration > std::chrono::seconds(120)) {
       return 2;
     }
@@ -225,6 +230,9 @@ main(int argc, char** argv)
     const bool traceSources = traceSetting != nullptr && std::string_view(traceSetting) == "1";
     producer.setInterestFilter(ndn::InterestFilter(prefix),
       [&] (const ndn::InterestFilter&, const ndn::Interest& request) {
+        const auto& hint = request.getForwardingHint();
+        if (forwardingHint.empty() ? !hint.empty() : hint.size() != 1 || hint[0] != forwardingHint)
+          throw std::runtime_error("unexpected replay forwarding hint");
         bool trace = false;
         if (traceSources && traceProducer.load(std::memory_order_relaxed)) {
           const auto& name = request.getName();
@@ -241,7 +249,8 @@ main(int argc, char** argv)
         if (trace) traceSource(data.getName(), "producer-submit-data");
         producer.put(data);
         producerCount.fetch_add(1);
-      },
+      });
+    producer.registerPrefix(forwardingHint.empty() ? prefix : forwardingHint,
       [&] (const ndn::Name&) { registered.set_value(); },
       [&] (const ndn::Name&, const std::string& error) {
         registered.set_exception(std::make_exception_ptr(std::runtime_error(error)));
@@ -260,7 +269,8 @@ main(int argc, char** argv)
       clockid_t producerClock;
       if (pthread_getcpuclockid(server.native_handle(), &producerClock) != 0)
         throw std::runtime_error("cannot read private Producer CPU clock");
-      Run initial{consumer, packets, names, payloadSizes, Clock::now() + std::chrono::seconds(5)};
+      Run initial{consumer, packets, names, payloadSizes, forwardingHint,
+                  Clock::now() + std::chrono::seconds(5)};
       initial.start(window);
       if (initial.complete == 0 || initial.complete != initial.next ||
           initial.timeouts || initial.nacks || initial.bad)
@@ -270,7 +280,8 @@ main(int argc, char** argv)
       const auto startCpu = threadCpu();
       const auto start = Clock::now();
       if (traceSources) traceProducer.store(true, std::memory_order_relaxed);
-      Run measured{consumer, packets, names, payloadSizes, start + duration, traceSources};
+      Run measured{consumer, packets, names, payloadSizes, forwardingHint, start + duration,
+                   traceSources};
       measured.start(window);
       const auto wall = std::chrono::duration<double>(Clock::now() - start).count();
       const auto cpu = threadCpu() - startCpu;

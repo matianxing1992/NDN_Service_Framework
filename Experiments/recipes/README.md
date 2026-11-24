@@ -199,6 +199,9 @@ sudo -n /usr/bin/python3 -I Experiments/run-nfd-wire-benchmark.py \
 The digest and size in the write reference identify the original-wire file. Replay checks each
 returned packet byte for byte with NFD caching disabled. The result includes all attempts and
 only reports a sustained median for windows whose entire sample set completed without errors.
+Add `--repo-forwarding-hint` to match the Repo transfer's Interest routing. Write replay
+uses the Writer identity and read replay uses the Repo identity. The selected hint is
+recorded in the result and verified at the replay sender.
 Use `--samples 1 --seconds 1 --windows 16` for a connectivity check.
 Use `--group N --groups 4` to replay four consecutive complete groups starting at group `N`.
 The groups must share a publication prefix, and each original-wire file is checked against its
