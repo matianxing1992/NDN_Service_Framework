@@ -9,6 +9,10 @@
   unsplit CPU oracle on the admitted effective graph, bound to the actual
   deployment. Capture actual CUDA compute on both Provider nodes, authenticated
   state progression, actual warm reuse and nonforced cleanup.
+- For correctness runs, another physical node pair with the same GPU model can
+  be used after verifying the frozen artifacts, runtime and role resources.
+  Record the actual host/device identities. For timing, group samples by actual
+  node pair and distinguish concurrent runs that share a host.
 - For shared native or runtime changes, qualify the affected installed CPU
   checks and pass same-SIF 0.6B CUDA cold/warm before spending 27B GPU time.
   An operator, dtype or runtime incompatibility can justify a distinct graph
@@ -25,12 +29,24 @@
   subsequent job on the same host cannot read the original profile path. When
   raw profiles are required, archive them from the original allocation before
   teardown. Verify the job, boot, configuration, provider and profile request
-  bindings, then hash the copied files. Confirm any attached collection step
-  exits before the final process audit. Record whether the archive contains
-  the raw profile or the per-operator assignments extracted at admission.
+  bindings, then hash the copied files. Attach the collector after both
+  Providers and the Requester have started, and confirm it exits before the
+  final process audit. For TP, retain every original file listed in the cold
+  Providers' `finalExecutionEvidence.entryProfiles` and verify each digest.
+  If teardown already removed a profile, record the original as missing and
+  give any recapture its own job identity.
 
 ## Diagnose the actual boundary
 
+- If the allocation succeeds and a GPU Provider's `srun --cpu-bind=threads`
+  fails to lay out its CPUs, compare the allocated CPU IDs with the CPU mask
+  visible inside a typed-GPU step. An unbound step can run with a truncated CPU
+  set. If GRES locality caused the mismatch, request
+  `sbatch --gres-flags=enforce-binding` when creating the GPU allocation (or
+  set `SBATCH_GRES_FLAGS=enforce-binding` for the owner command that submits
+  it). Verify `GresEnforceBind=Yes`, the complete CPU set and disjoint actor
+  masks before relaunching inference. Treat pending compatible resources as a
+  scheduling wait.
 - The 27B CUDA GQA graph needed host-side INT32 length metadata and layer-owned
   shape/position subgraphs. Check the type, provider assignment and consumers
   before cutting; host shape values crossing the boundary used by model
