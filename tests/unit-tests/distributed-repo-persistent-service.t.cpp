@@ -166,6 +166,23 @@ struct RepoNodeTestAccess
     return node.enqueueOriginalDataInterest(interest);
   }
 
+  static void
+  enqueueWave(RepoNode& node, const std::vector<ndn::Interest>& interests,
+              std::chrono::steady_clock::time_point now)
+  {
+    // Make the entire wave visible to the real worker in one turn.
+    std::lock_guard<std::mutex> lock(node.m_originalDataMutex);
+    for (const auto& interest : interests) {
+      const auto bytes = interest.wireEncode().size() + sizeof(RepoNode::OriginalDataJob) +
+                         ndn::MAX_NDN_PACKET_SIZE;
+      const auto deadline = now + std::chrono::milliseconds(interest.getInterestLifetime().count());
+      node.m_originalDataQueue.push_back({interest, deadline, bytes});
+      node.m_originalDataPending->fetch_add(1);
+      node.m_originalDataPendingBytes->fetch_add(bytes);
+    }
+    node.m_originalDataWake.notify_one();
+  }
+
   static std::size_t
   queued(RepoNode& node)
   {
@@ -4997,6 +5014,36 @@ BOOST_AUTO_TEST_CASE(InterleavedOriginalPacketBatchesKeepIndependentAdmissionAnd
     }
     BOOST_CHECK_EQUAL(pendingBytes(), 0U);
   }
+
+  // The later group must exclude an expired bad digest without losing its
+  // valid siblings. Hold the first group's lookup after the whole queue drains.
+  received.clear();
+  auto expired = b[1].getName();
+  expired.appendImplicitSha256Digest(wrongDigest);
+  const auto makeRequest = [](const ndn::Name& name, int lifetimeMs) {
+    ndn::Interest request(name);
+    request.setCanBePrefix(false);
+    request.setInterestLifetime(ndn::time::milliseconds(lifetimeMs));
+    return request;
+  };
+  const auto wave = std::vector<ndn::Interest>{makeRequest(a[0].getFullName(), 4000),
+    makeRequest(b[0].getFullName(), 4000), makeRequest(a[1].getFullName(), 4000),
+    makeRequest(expired, 400), makeRequest(b[1].getFullName(), 4000)};
+  auto guard = RepoCorePacketIndexTestAccess::holdPacketReads(fixture.node->core());
+  const auto waveStart = std::chrono::steady_clock::now();
+  RepoNodeTestAccess::enqueueWave(*fixture.node, wave, waveStart);
+  BOOST_REQUIRE(pumpUntil([&] { return RepoNodeTestAccess::queued(*fixture.node) == 0; }));
+  BOOST_REQUIRE(std::chrono::steady_clock::now() < waveStart + 400ms);
+  BOOST_REQUIRE_EQUAL(pending(), wave.size());
+  std::this_thread::sleep_until(waveStart + 400ms);
+  guard.unlock();
+  BOOST_REQUIRE(pumpUntil([&] { return pending() == 0; }));
+  BOOST_REQUIRE_EQUAL(received.size(), 4U);
+  BOOST_CHECK(received[0] == a[0].wireEncode());
+  BOOST_CHECK(received[1] == b[0].wireEncode());
+  BOOST_CHECK(received[2] == a[1].wireEncode());
+  BOOST_CHECK(received[3] == b[1].wireEncode());
+  BOOST_CHECK_EQUAL(pendingBytes(), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(UnbootstrappedSelectedRepoRequestWaitsUntilTimeoutOrCancellation)

@@ -703,7 +703,14 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
                       << " reason=" << error.what());
       }
     }
-    const auto prepareBatch = [&](const std::vector<std::size_t>& positions) {
+    const auto prepareBatch = [&](std::vector<std::size_t>& positions) {
+      // An earlier group may have occupied the worker past these deadlines.
+      // Expired Interests must not participate in admission of the live group.
+      const auto now = std::chrono::steady_clock::now();
+      positions.erase(std::remove_if(positions.begin(), positions.end(), [&](const auto position) {
+        return reads[position].job.deadline <= now;
+      }), positions.end());
+      if (positions.size() < 2) return;
       try {
         std::vector<ndn::Interest> interests;
         interests.reserve(positions.size());
@@ -745,7 +752,7 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
             groups[name.getPrefix(components - 1)].push_back(position);
           }
         }
-        for (const auto& [prefix, group] : groups) {
+        for (auto& [prefix, group] : groups) {
           if (group.size() > 1) prepareBatch(group);
         }
       }
