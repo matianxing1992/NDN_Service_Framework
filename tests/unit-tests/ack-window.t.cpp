@@ -254,6 +254,40 @@ spec231DeliverAck(AckWindowFixture& fixture, const RequestMessage& request,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(CollaborationAssignmentCarriesWideScopeKeySet)
+{
+  CollaborationAssignmentEnvelope assignment;
+  assignment.role = "/vae/rank-0";
+  assignment.opaquePayload = ndn::Buffer{0x41};
+  const ndn::Buffer key(HybridMessageCrypto::MESSAGE_KEY_SIZE);
+  for (size_t i = 0; i < 1307; ++i) {
+    assignment.scopeKeys.emplace("vae/edge-" + std::to_string(i), key);
+  }
+
+  const auto wire = encodeCollaborationAssignmentEnvelope(assignment);
+  BOOST_REQUIRE_GT(wire.size(), 64U * 1024);
+  CollaborationAssignmentEnvelope decoded;
+  BOOST_REQUIRE(decodeCollaborationAssignmentEnvelope(wire, decoded));
+  BOOST_CHECK(decoded.scopeKeys == assignment.scopeKeys);
+  BOOST_CHECK(decoded.opaquePayload == assignment.opaquePayload);
+
+  for (size_t i = 1307; i < 2400; ++i) {
+    assignment.scopeKeys.emplace("vae/edge-" + std::to_string(i), key);
+  }
+  const auto isScopeKeyLimit = [] (const std::exception& error) {
+    return std::string(error.what()) == "collaboration assignment scope-key set exceeds bounds";
+  };
+  BOOST_CHECK_EXCEPTION(encodeCollaborationAssignmentEnvelope(assignment), std::invalid_argument,
+                        isScopeKeyLimit);
+
+  ndn::Block oversized(tlv::CollaborationAssignmentEnvelopeType);
+  const ndn::Buffer oversizedKeys(128U * 1024 + 1);
+  oversized.push_back(ndn::makeBinaryBlock(tlv::CollaborationScopeKeysType, oversizedKeys));
+  oversized.encode();
+  BOOST_CHECK_EXCEPTION(decodeCollaborationAssignmentEnvelope(
+    ndn::Buffer(oversized.begin(), oversized.end()), decoded), std::runtime_error, isScopeKeyLimit);
+}
+
 BOOST_FIXTURE_TEST_CASE(Spec231PlanRejectsInvalidCommitWithoutSelection, AckWindowFixture)
 {
   RequestMessage published;

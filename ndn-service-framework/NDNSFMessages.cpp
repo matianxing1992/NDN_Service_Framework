@@ -35,6 +35,8 @@ detail::matchResponseProviderIdentity(
 
 namespace {
 
+constexpr size_t MAX_COLLABORATION_SCOPE_KEY_SET_BYTES = 128 * 1024;
+
 std::string
 hexEncodeBytes(const uint8_t* bytes, size_t size)
 {
@@ -1692,6 +1694,7 @@ encodeCollaborationAssignmentEnvelope(
         assignment.provisioningTimeoutMs));
     if (!assignment.scopeKeys.empty()) {
         ndn::Block scopeKeys(tlv::CollaborationScopeKeysType);
+        size_t scopeKeysBytes = 0;
         for (const auto& [scope, key] : assignment.scopeKeys) {
             if (scope.empty() || scope.size() > 1024 ||
                 key.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
@@ -1705,6 +1708,9 @@ encodeCollaborationAssignmentEnvelope(
                 tlv::CollaborationScopeKeyValueType,
                 {key.data(), key.size()}));
             entry.encode();
+            if (entry.size() > MAX_COLLABORATION_SCOPE_KEY_SET_BYTES - scopeKeysBytes)
+                throw std::invalid_argument("collaboration assignment scope-key set exceeds bounds");
+            scopeKeysBytes += entry.size();
             scopeKeys.push_back(entry);
         }
         scopeKeys.encode();
@@ -1798,7 +1804,7 @@ decodeCollaborationAssignmentEnvelope(
                     ndn::readNonNegativeInteger(element);
                 break;
             case tlv::CollaborationScopeKeysType:
-                if (element.value_size() > 64 * 1024) {
+                if (element.value_size() > MAX_COLLABORATION_SCOPE_KEY_SET_BYTES) {
                     throw std::runtime_error(
                         "collaboration assignment scope-key set exceeds bounds");
                 }
