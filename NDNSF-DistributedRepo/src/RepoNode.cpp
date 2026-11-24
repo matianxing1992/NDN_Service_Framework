@@ -27,6 +27,7 @@
 #include <openssl/sha.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -662,6 +663,53 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
     std::optional<ndn::Data> batchData;
     bool rejected = false;
   };
+  const auto dispatchReplies = [this, &face](std::vector<Reply> replies) {
+    if (replies.empty()) {
+      return;
+    }
+    try {
+      const std::weak_ptr<RepoNode> owner = weak_from_this();
+      boost::asio::post(face.getIoContext(), [owner, &face, replies = std::move(replies)] () mutable {
+        const auto self = owner.lock();
+        bool queued = false;
+        const auto releaseAfterPuts = [&] {
+          // One drain callback retains this bounded batch through its queued puts.
+          if (queued) {
+            boost::asio::post(face.getIoContext(), [replies = std::move(replies)] {});
+          }
+        };
+        try {
+          for (auto& reply : replies) {
+            if (!self || !self->isOriginalDataServingReady() ||
+                std::chrono::steady_clock::now() >= reply.deadline) {
+              NDN_LOG_DEBUG("original packet unavailable before put name=" << reply.data.getName());
+              reply.completion.reset();
+              continue;
+            }
+            detail::traceManifestRoot(reply.data.getName(), "repo-face-put");
+            face.put(reply.data);
+            queued = true;
+            const bool sampled =
+              detail::traceManifestSource(reply.data.getName(), "repo-submit-data");
+            NDN_LOG_DEBUG("original packet put name=" << reply.data.getName());
+            if (sampled) {
+              boost::asio::post(face.getIoContext(), [name = reply.data.getName()] {
+                detail::traceManifestSource(name, "repo-put-queue-marker");
+              });
+            }
+          }
+        }
+        catch (...) {
+          releaseAfterPuts();
+          throw;
+        }
+        releaseAfterPuts();
+      });
+    }
+    catch (const std::exception& error) {
+      NDN_LOG_DEBUG("original packet dispatch failed reason=" << error.what());
+    }
+  };
   for (;;) {
     std::vector<Read> reads;
     std::vector<Reply> replies;
@@ -736,11 +784,12 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
         NDN_LOG_DEBUG("original packet batch rejected reason=" << error.what());
       }
     };
+    std::map<ndn::Name, std::vector<std::size_t>> groups;
+    std::array<std::vector<std::size_t>*, RepoCore::MAX_ORIGINAL_PACKET_READ_BATCH> groupAt{};
     try {
       if (reads.size() > 1 && m_core.supportsConcurrentCommittedReads()) {
         // Group exact segmented Interests before storage lookup. Core resolves
         // the actual holder and checks every Interest in each candidate group.
-        std::map<ndn::Name, std::vector<std::size_t>> groups;
         for (std::size_t position = 0; position < reads.size(); ++position) {
           const auto& interest = reads[position].job.interest;
           const auto& name = interest.getName();
@@ -749,11 +798,10 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
           const auto components = size - digest;
           if (!interest.getCanBePrefix() && components != 0 &&
               name[components - 1].isSegment()) {
-            groups[name.getPrefix(components - 1)].push_back(position);
+            auto& group = groups[name.getPrefix(components - 1)];
+            group.push_back(position);
+            groupAt[position] = &group;
           }
-        }
-        for (auto& [prefix, group] : groups) {
-          if (group.size() > 1) prepareBatch(group);
         }
       }
     }
@@ -761,9 +809,24 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
       NDN_LOG_DEBUG("original packet grouping failed reason=" << error.what());
       continue;
     }
-    for (auto& read : reads) {
+    bool dispatchedPrefix = false;
+    for (std::size_t position = 0; position < reads.size(); ++position) {
       if (!isOriginalDataServingReady()) return;
+      auto& read = reads[position];
       if (read.rejected || std::chrono::steady_clock::now() >= read.job.deadline) continue;
+      if (!read.batchData) {
+        // Dispatch a completed prefix before another storage lookup can delay it.
+        // Keep at most one early post per drain and preserve dequeue order.
+        if (!dispatchedPrefix && replies.size() > 1) {
+          dispatchedPrefix = true;
+          dispatchReplies(std::exchange(replies, {}));
+        }
+        if (auto* group = groupAt[position]; group && group->size() > 1) {
+          prepareBatch(*group);
+          group->clear();
+          if (read.rejected || std::chrono::steady_clock::now() >= read.job.deadline) continue;
+        }
+      }
       try {
         if (read.batchData) {
           replies.push_back({std::move(*read.batchData), read.job.deadline, read.completion});
@@ -785,51 +848,7 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
                       << " reason=" << error.what());
       }
     }
-    if (replies.empty()) {
-      continue;
-    }
-    try {
-      const std::weak_ptr<RepoNode> owner = weak_from_this();
-      boost::asio::post(face.getIoContext(), [owner, &face, replies = std::move(replies)] () mutable {
-        const auto self = owner.lock();
-        bool queued = false;
-        const auto releaseAfterPuts = [&] {
-          // One drain callback retains this bounded batch through its queued puts.
-          if (queued) {
-            boost::asio::post(face.getIoContext(), [replies = std::move(replies)] {});
-          }
-        };
-        try {
-          for (auto& reply : replies) {
-            if (!self || !self->isOriginalDataServingReady() ||
-                std::chrono::steady_clock::now() >= reply.deadline) {
-              NDN_LOG_DEBUG("original packet unavailable before put name=" << reply.data.getName());
-              reply.completion.reset();
-              continue;
-            }
-            detail::traceManifestRoot(reply.data.getName(), "repo-face-put");
-            face.put(reply.data);
-            queued = true;
-            const bool sampled =
-              detail::traceManifestSource(reply.data.getName(), "repo-submit-data");
-            NDN_LOG_DEBUG("original packet put name=" << reply.data.getName());
-            if (sampled) {
-              boost::asio::post(face.getIoContext(), [name = reply.data.getName()] {
-                detail::traceManifestSource(name, "repo-put-queue-marker");
-              });
-            }
-          }
-        }
-        catch (...) {
-          releaseAfterPuts();
-          throw;
-        }
-        releaseAfterPuts();
-      });
-    }
-    catch (const std::exception& error) {
-      NDN_LOG_DEBUG("original packet dispatch failed reason=" << error.what());
-    }
+    dispatchReplies(std::move(replies));
   }
 }
 

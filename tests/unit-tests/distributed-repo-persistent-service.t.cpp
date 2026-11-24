@@ -5015,8 +5015,6 @@ BOOST_AUTO_TEST_CASE(InterleavedOriginalPacketBatchesKeepIndependentAdmissionAnd
     BOOST_CHECK_EQUAL(pendingBytes(), 0U);
   }
 
-  // The later group must exclude an expired bad digest without losing its
-  // valid siblings. Hold the first group's lookup after the whole queue drains.
   received.clear();
   auto expired = b[1].getName();
   expired.appendImplicitSha256Digest(wrongDigest);
@@ -5026,6 +5024,28 @@ BOOST_AUTO_TEST_CASE(InterleavedOriginalPacketBatchesKeepIndependentAdmissionAnd
     request.setInterestLifetime(ndn::time::milliseconds(lifetimeMs));
     return request;
   };
+  // A ready prefix can be dispatched while an independent later group is
+  // being resolved. Its failure must neither retract nor duplicate that prefix.
+  for (const bool invalid : {false, true}) {
+    received.clear();
+    const std::vector<ndn::Interest> orderedWave{makeRequest(a[0].getFullName(), 4000),
+      makeRequest(a[1].getFullName(), 4000), makeRequest(b[0].getFullName(), 4000),
+      makeRequest(invalid ? expired : b[1].getFullName(), 4000)};
+    RepoNodeTestAccess::enqueueWave(*fixture.node, orderedWave, std::chrono::steady_clock::now());
+    BOOST_REQUIRE(pumpUntil([&] { return pending() == 0; }));
+    BOOST_REQUIRE_EQUAL(received.size(), invalid ? 2U : 4U);
+    BOOST_CHECK(received[0] == a[0].wireEncode());
+    BOOST_CHECK(received[1] == a[1].wireEncode());
+    if (!invalid) {
+      BOOST_CHECK(received[2] == b[0].wireEncode());
+      BOOST_CHECK(received[3] == b[1].wireEncode());
+    }
+    BOOST_CHECK_EQUAL(pendingBytes(), 0U);
+  }
+
+  // The later group must exclude an expired bad digest without losing its
+  // valid siblings. Hold the first group's lookup after the whole queue drains.
+  received.clear();
   const auto wave = std::vector<ndn::Interest>{makeRequest(a[0].getFullName(), 4000),
     makeRequest(b[0].getFullName(), 4000), makeRequest(a[1].getFullName(), 4000),
     makeRequest(expired, 400), makeRequest(b[1].getFullName(), 4000)};
