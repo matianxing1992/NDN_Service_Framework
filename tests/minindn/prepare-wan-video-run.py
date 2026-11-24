@@ -120,9 +120,13 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
     openssl = shutil.which('openssl')
     if not openssl:
         raise RuntimeError('openssl is required by the existing artifact key generator')
-    key = deployment['ed25519_key']
-    issuer_private, issuer_public, _ = key(openssl, key_root / 'issuer', environments['authority'], root)
-    user_private, user_public, _ = key(openssl, key_root / 'requester', environments['requester'], root)
+    def make_key(stem, actor):
+        return deployment['ed25519_key'](openssl, key_root / stem,
+                                         key_root / (stem + '-public.pem'),
+                                         environments[actor], root)
+
+    issuer_private, issuer_public, _ = make_key('issuer', 'authority')
+    user_private, user_public, _ = make_key('requester', 'requester')
     content = key_root / 'content.bin'
     credentials['secure_random'](content)
     recipients, offer_keys, offer_entries = {}, {}, []
@@ -131,8 +135,8 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
         if name not in provider_roles:
             continue
         env = environments[name]
-        private, public, _ = key(openssl, key_root / (name + '-recipient'), env, root)
-        offer, offer_public, signer = key(openssl, key_root / (name + '-offer'), env, root)
+        private, public, _ = make_key(name + '-recipient', name)
+        offer, offer_public, signer = make_key(name + '-offer', name)
         recipients[identity], offer_keys[signer] = str(public), str(offer_public)
         mapping = key_root / (name + '-recipient.json')
         write_json(mapping, {identity: str(private)})

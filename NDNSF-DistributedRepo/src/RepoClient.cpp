@@ -4376,6 +4376,7 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
   {
     std::mutex mutex;
     bool abandoned = false;
+    std::atomic<bool> needsDispatch{true};
   };
   if (user.isOnIoThread())
     throw std::logic_error("repo-request-on-io-thread: blocking request cannot run on the Face");
@@ -4396,17 +4397,25 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
     std::lock_guard<std::mutex> guard(dispatch->mutex);
     dispatch->abandoned = true;
   });
-  user.postToIo([userPtr = &user, state, dispatch, providerIdentity, serviceName,
-                 request = RepoClientCompat::makeRequest(payload), deadline, timeoutMessage,
-                 failurePrefix] () mutable {
+  const auto request = std::make_shared<const ndn_service_framework::RequestMessage>(
+    RepoClientCompat::makeRequest(payload));
+  const std::vector<ndn::Name> providers{providerIdentity};
+  const auto startRequest = [userPtr = &user, state, dispatch, providers, serviceName,
+                             request, deadline, timeoutMessage, failurePrefix] {
     std::lock_guard<std::mutex> startGuard(dispatch->mutex);
     const auto now = std::chrono::steady_clock::now();
     if (dispatch->abandoned || now >= deadline)
       return;
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
     try {
-      userPtr->RequestService(
-        std::vector<ndn::Name>{providerIdentity}, serviceName, std::move(request),
+      // A cold User receives permission, signed service status and its DKEY
+      // asynchronously. Recheck on the Face before submitting any Request.
+      if (!userPtr->isRequestBootstrapReady(serviceName, providers)) {
+        dispatch->needsDispatch.store(true);
+        return;
+      }
+      const auto requestId = userPtr->RequestService(
+        providers, serviceName, *request,
         std::max(1, static_cast<int>(remaining.count())),
         [state, timeoutMessage] (const ndn::Name&) {
           std::lock_guard<std::mutex> guard(state->mutex);
@@ -4427,6 +4436,12 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
           state->arrived.notify_all();
         },
         ndn_service_framework::tlv::FirstResponding);
+      if (requestId.empty()) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->failure = "repo-request-start-failed: Core rejected Provider request";
+        state->done = true;
+        state->arrived.notify_all();
+      }
     }
     catch (...) {
       std::lock_guard<std::mutex> lock(state->mutex);
@@ -4434,17 +4449,17 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
       state->done = true;
       state->arrived.notify_all();
     }
-  });
+  };
   std::unique_lock<std::mutex> lock(state->mutex);
   while (!state->done) {
     if (requireCurrent)
       requireCurrent();
-    if (state->arrived.wait_for(lock, std::chrono::milliseconds(20),
-                                [&] { return state->done; })) {
-      break;
-    }
     if (std::chrono::steady_clock::now() >= deadline)
       throw TargetedReplyFailure(timeoutMessage, true);
+    if (dispatch->needsDispatch.exchange(false))
+      user.postToIo(startRequest);
+    state->arrived.wait_until(lock, std::min(deadline, std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(20)), [&] { return state->done; });
   }
   if (state->startFailure)
     std::rethrow_exception(state->startFailure);

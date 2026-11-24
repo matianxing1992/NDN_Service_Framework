@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -158,6 +159,8 @@ def main():
     parser.add_argument("--kept-service", required=True)
     parser.add_argument("--revoked-service", required=True)
     args = parser.parse_args()
+    peek = shutil.which("ndnpeek")
+    require(peek, "ndnpeek is required for historical wire and cache checks")
     source = args.config.resolve(strict=True)
     root = source.parent
     os.chdir(root)
@@ -275,7 +278,7 @@ def main():
     def old_parameters(obj, local_only=False):
         # HopLimit 1 is decremented at the Producer's NFD. A local-only
         # Interest cannot reach the Controller on its separate node.
-        argv = ["ndnpeek", "-f", "-w", "1500", "-l", "1200"]
+        argv = [peek, "-f", "-w", "1500", "-l", "1200"]
         if local_only:
             argv.extend(["-H", "1"])
         result = subprocess.run([*argv, obj["parameters"]], env=env(producer),
@@ -422,7 +425,7 @@ def main():
                 "origin did not put every original during the native read")
         origin_digest = hashlib.sha256()
         for name in names:
-            wire = subprocess.run(["ndnpeek", "-F", old_obj["publication"], "-w", "3000", "-l", "2500", name],
+            wire = subprocess.run([peek, "-F", old_obj["publication"], "-w", "3000", "-l", "2500", name],
                                   env=env(reader), capture_output=True, timeout=5, check=True).stdout
             origin_digest.update(wire)
         require("sha256:" + origin_digest.hexdigest() == old_wire.lower(),
@@ -447,7 +450,7 @@ def main():
                         "missing authenticated scoped denial")
             aggregate = hashlib.sha256()
             for name in original_names(obj):
-                wire = subprocess.run(["ndnpeek", "-F", route, "-w", "3000", "-l", "2500", name],
+                wire = subprocess.run([peek, "-F", route, "-w", "3000", "-l", "2500", name],
                                       env=read_env, stdout=subprocess.PIPE, timeout=5, check=True).stdout
                 key = Name.to_bytes(Name.normalize(name))
                 require(wire and key not in recovered, "missing or reused original name")
@@ -480,7 +483,7 @@ def main():
         run(["nfdc", "cs", "config", "capacity", "1024", "admit", "off", "serve", "off"],
             work / "cache-only-isolate.log", env=control)
         for name in names:
-            denied = subprocess.run(["ndnpeek", "-F", blackhole, "-w", "800", "-l", "500", name],
+            denied = subprocess.run([peek, "-F", blackhole, "-w", "800", "-l", "500", name],
                                     env=env(producer), capture_output=True, timeout=3)
             require(denied.returncode in (3, 4), f"cache-only hint reached upstream {name}")
 
@@ -490,7 +493,7 @@ def main():
         run(["nfdc", "cs", "config", "admit", "on"], work / "cache-only-prime.log", env=control)
         for name in names:
             key = Name.to_bytes(Name.normalize(name))
-            seeded = subprocess.run(["ndnpeek", "-F", route, "-w", "3000", "-l", "2500", name],
+            seeded = subprocess.run([peek, "-F", route, "-w", "3000", "-l", "2500", name],
                                     env=env(producer), capture_output=True, timeout=5, check=True).stdout
             require(hashlib.sha256(seeded).hexdigest() == recovered[key],
                     f"cache seed differs from restarted Repo original {name}")
@@ -506,7 +509,7 @@ def main():
         initial_hits = cache_snapshot("frozen")
         snapshot_time = time.monotonic()
         for name in names:
-            wire = subprocess.run(["ndnpeek", "-H", "1", "-w", "1500", "-l", "1000", name],
+            wire = subprocess.run([peek, "-H", "1", "-w", "1500", "-l", "1000", name],
                                   env=env(producer), capture_output=True, timeout=3, check=True).stdout
             require(hashlib.sha256(wire).hexdigest() == recovered[Name.to_bytes(Name.normalize(name))],
                     f"local cache returned different original wire for {name}")
