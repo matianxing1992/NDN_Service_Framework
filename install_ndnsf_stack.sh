@@ -3063,6 +3063,15 @@ minindn_python_site() {
   printf '%s/ndnsf/mini-ndn/v0.7.0/%s/site-packages\n' "$GLOBAL_LIBRARY_DIR" "$python_tag"
 }
 
+write_minindn_site_registration() {
+  local mini_site="$1" registration="$2"
+  "$PYTHON_BIN" -I - "$mini_site" > "$registration" <<'PY'
+import sys
+
+print("import sys; sys.path.insert(0, " + repr(sys.argv[1]) + ")")
+PY
+}
+
 check_minindn_runtime() {
   local tool mini_site
   for tool in mn mnexec ip tc ovs-vsctl nfd nfdc ndnsec infoedit infoconv; do
@@ -3158,7 +3167,7 @@ PY
   run "${pip_env[@]}" "$PYTHON_BIN" -m pip --isolated install \
     --no-cache-dir --no-compile --target "$mini_stage" \
     "python-ndn==$(selected_python_ndn_version)"
-  printf '%s\n' "$mini_site" > "$stage_root$system_site/ndnsf-minindn.pth"
+  write_minindn_site_registration "$mini_site" "$stage_root$system_site/ndnsf-minindn.pth"
   printf '%s\n' "$MININDN_COMMIT" "$MININET_COMMIT" > "$(dirname -- "$mini_stage")/source-commits"
   while IFS= read -r -d '' topology; do
     install -m 0644 "$topology" "$stage_root/usr/local/etc/mini-ndn/"

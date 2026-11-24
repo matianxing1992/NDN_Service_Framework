@@ -36,6 +36,42 @@ def shell(code, *args, env=None):
         )
 
 
+def test_minindn_registration_precedes_older_global_packages(tmp_path):
+    managed = tmp_path / "managed 'mini' site"
+    older = tmp_path / "older-site"
+    system_site = tmp_path / "system-site"
+    system_site.mkdir()
+    for directory in (managed, older):
+        for name in ("minindn", "mininet"):
+            package = directory / name
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("")
+    registration = system_site / "ndnsf-minindn.pth"
+    result = shell(
+        DEFINITIONS + "\nwrite_minindn_site_registration "
+        + shlex.quote(str(managed)) + " " + shlex.quote(str(registration)),
+        "--deps-only", "--no-system-packages", "--no-dependencies")
+    assert result.returncode == 0, result.stderr
+    probe = """
+import importlib
+from pathlib import Path
+import site
+import sys
+
+sys.path.insert(0, sys.argv[1])
+site.addsitedir(sys.argv[2])
+for name in ("minindn", "mininet"):
+    module = importlib.import_module(name)
+    expected = Path(sys.argv[3]) / name / "__init__.py"
+    assert Path(module.__file__).resolve() == expected.resolve(), module.__file__
+"""
+    checked = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", probe,
+         str(older), str(system_site), str(managed)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=10)
+    assert checked.returncode == 0, checked.stderr
+
+
 def test_yolo_launcher_preflights_its_prefix_outside_checkout(tmp_path):
     prefix = tmp_path / "prefix"
     bin_dir = prefix / "bin"
