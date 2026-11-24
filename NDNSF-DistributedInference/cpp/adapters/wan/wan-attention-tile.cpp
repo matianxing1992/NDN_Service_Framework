@@ -57,7 +57,8 @@ makeAttentionTileUpdate(const AttentionTileShape& shape, std::uint64_t scoreByte
     constant->set_data_type(onnx::TensorProto::FLOAT);
     constant->add_float_data(value);
   };
-  scalar("scale", static_cast<float>(1.0 / std::sqrt(static_cast<double>(shape.headWidth))));
+  const auto headScale = 1.0 / std::sqrt(static_cast<double>(shape.headWidth));
+  scalar("operand-scale", static_cast<float>(std::sqrt(headScale)));
   scalar("masked-score", std::numeric_limits<float>::lowest());
   scalar("zero", 0);
   auto* axes = graph->add_initializer();
@@ -79,8 +80,10 @@ makeAttentionTileUpdate(const AttentionTileShape& shape, std::uint64_t scoreByte
   transpose->set_name("perm");
   transpose->set_type(onnx::AttributeProto::INTS);
   for (auto value : {0, 1, 3, 2}) transpose->add_ints(value);
-  emit("MatMul", "dot-products", {"query", "transposed-key"});
-  emit("Mul", "scaled-scores", {"dot-products", "scale"});
+  // Scale both operands before the dot product, matching Wan's math attention.
+  emit("Mul", "scaled-query", {"query", "operand-scale"});
+  emit("Mul", "scaled-key", {"transposed-key", "operand-scale"});
+  emit("MatMul", "scaled-scores", {"scaled-query", "scaled-key"});
   emit("Where", "scores", {"valid", "scaled-scores", "masked-score"});
   emit("ReduceMax", "tile-max", {"scores", "last-axis"});
   emit("Max", "next-max", {"prior-max", "tile-max"});

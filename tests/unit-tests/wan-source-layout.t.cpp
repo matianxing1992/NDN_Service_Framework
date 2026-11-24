@@ -2617,6 +2617,7 @@ BOOST_AUTO_TEST_CASE(AttentionTilesMatchDenseMaskedReferenceWithLargeScores)
   Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "wan-attention-tile");
   Ort::SessionOptions options;
   options.SetIntraOpNumThreads(1);
+  options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
   Ort::Session session(env, wire.data(), wire.size(), options);
   const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
   const std::array<std::int64_t, 4> valueShape{1, 1, 2, 2};
@@ -2726,6 +2727,19 @@ BOOST_AUTO_TEST_CASE(AttentionTilesMatchDenseMaskedReferenceWithLargeScores)
   const auto* maskedValues = masked.front().GetTensorData<float>();
   BOOST_CHECK_EQUAL(maskedValues[2], 0);
   BOOST_CHECK_EQUAL(maskedValues[3], 0);
+
+  // The unscaled dot product overflows FP32, but the scaled score stays finite.
+  query[0] = query[1] = 1.6e19F;
+  contextKeys[0] = contextKeys[1] = 1.2e19F;
+  contextMask.fill(false);
+  contextMask[0] = true;
+  const auto highScore = blockSession.Run(Ort::RunOptions{}, blockPorts.data(), blockInputs.data(),
+                                          blockInputs.size(), &attentionPort, 1);
+  const auto* highScoreValues = highScore.front().GetTensorData<float>();
+  BOOST_CHECK_EQUAL(highScoreValues[0], contextValues[0]);
+  BOOST_CHECK_EQUAL(highScoreValues[1], contextValues[1]);
+  BOOST_CHECK_EQUAL(highScoreValues[2], 0);
+  BOOST_CHECK_EQUAL(highScoreValues[3], 0);
 }
 
 BOOST_AUTO_TEST_CASE(ProductionContextUsesSingleBoundedLoopBody)
