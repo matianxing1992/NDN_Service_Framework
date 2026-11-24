@@ -19,8 +19,8 @@ class DocumentedApiTest(unittest.TestCase):
         for name in ("InferenceApplication", "InferenceClient", "InferenceProvider"):
             self.assertIn(name, english)
             self.assertIn(name, chinese)
-        self.assertIn("application.request", english)
-        self.assertIn("application.request", chinese)
+        self.assertIn("application.request_preplanned(", english)
+        self.assertIn("application.request_preplanned(", chinese)
 
     def test_canonical_example_builds_a_signed_definition_without_optional_backend(self):
         path = ROOT / "examples/python/NDNSF-DistributedInference/spec116_user_api.py"

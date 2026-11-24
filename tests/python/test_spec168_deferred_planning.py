@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import unittest
-import warnings
 
 from ndnsf_distributed_inference.app_sdk.application import (
     ApplicationDefinitionSigner,
@@ -35,10 +34,6 @@ class Client:
         self.deployments = Deployments()
         self.calls = []
         self.requests = object()
-
-    def request_model(self, **kwargs):
-        self.calls.append(("model", kwargs))
-        return "model-handle"
 
     def request_preplanned(self, deployment, **kwargs):
         self.calls.append(("preplanned", deployment, kwargs))
@@ -90,13 +85,6 @@ class Spec168DeferredPlanningTest(unittest.TestCase):
         self.assertEqual(self.model.semantics_digest, TOKENIZER)
         self.assertTrue(self.model.intent_digest.startswith("sha256:"))
 
-    def test_public_model_request_requires_immutable_revision(self):
-        moving = ModelRef(
-            name="Qwen/Qwen3-0.6B", content_digest=DIGEST,
-            tokenizer_digest=TOKENIZER)
-        with self.assertRaisesRegex(ValueError, "immutable model revision"):
-            self.application.request(
-                model=moving, input=self.input, generation=self.generation)
 
     def test_wrong_request_ack_snapshot_is_rejected_before_planning(self):
         foreign = type("Closed", (), {
@@ -116,30 +104,15 @@ class Spec168DeferredPlanningTest(unittest.TestCase):
             AutomaticPlanningCoordinator._validate_ack_closed_binding(
                 wrong_candidate, "/spec168/request/expected")
 
-    def test_public_request_is_model_first_and_forwards_strategy(self):
-        strategy = object()
-        result = self.application.request(
-            model=self.model, input=self.input, generation=self.generation,
-            strategy=strategy)
-        self.assertEqual(result, "model-handle")
-        kind, kwargs = self.client.calls[-1]
-        self.assertEqual(kind, "model")
-        self.assertIs(kwargs["strategy"], strategy)
-        self.assertEqual(kwargs["generation"].max_new_tokens, 8)
 
-    def test_preplanned_path_is_explicit_and_positional_shim_is_counted(self):
-        explicit = self.application.request_preplanned(
-            "deployment-1", input=b"prompt")
-        self.assertEqual(explicit, "preplanned-handle")
-        self.assertEqual(self.application.preplanned_compatibility_uses, 0)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            legacy = self.application.request("deployment-2", input=b"prompt")
-        self.assertEqual(legacy, "preplanned-handle")
-        self.assertEqual(self.application.preplanned_compatibility_uses, 1)
-        self.assertTrue(any(item.category is DeprecationWarning for item in caught))
-        with self.assertRaises(TypeError):
-            self.application.request(deployment="deployment-3", input=b"prompt")
+    def test_preplanned_path_forwards_explicit_deployment(self):
+        deployment = object()
+        result = self.application.request_preplanned(
+            deployment, input=b"prompt", timeout=5)
+        self.assertEqual(result, "preplanned-handle")
+        self.assertEqual(self.client.calls, [
+            ("preplanned", deployment, {"input": b"prompt", "timeout": 5,
+                                       "deadline": None, "options": None})])
 
     def test_generation_contract_rejects_empty_prompt_and_unbounded_tokens(self):
         with self.assertRaises(ValueError):

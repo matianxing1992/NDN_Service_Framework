@@ -9,10 +9,11 @@ Application runtime 配置和生成的 policy bundle 也必须显式提供 `grou
 GUI 的 Actor 字段初始为空，应加载明确配置或输入部署身份。LLM policy 输出 helper
 要求显式传入既有 controller/group/user/provider-prefix 参数；示例由调用方明确提供身份。
 
-## 推荐用户 API（Spec 116）
+## 签名部署与显式预规划请求（Spec 116）
 
-新应用只从 `ndnsf_distributed_inference.api` 导入。主流程是直接对
-Application 签名的意图发出请求；单独调用部署只是可选预热，不是正确性前提。
+正常推理由公开原生 `Runtime` 负责。以下签名部署接口服务于现有部署和日志工作流，
+从 `ndnsf_distributed_inference.api` 导入，并显式使用 `request_preplanned`。
+`InferenceApplication.request` 及其位置参数兼容分支已退役。
 
 ```python
 from datetime import timedelta
@@ -24,7 +25,7 @@ application = InferenceApplication.from_config(
     envelope_key_file="/run/secrets/ndnsf-di-envelope-key",
 )
 definition = application.define(...)  # 类型化意图，由 Application 签名
-request = application.request(
+request = application.request_preplanned(
     definition, input={"prompt": "Hello"}, timeout=timedelta(minutes=5))
 print(request.deployment_status())
 result = request.result()

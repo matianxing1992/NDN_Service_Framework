@@ -216,7 +216,7 @@ other component budgets remain operator assertions for the configured workload,
 not validated context-dependent memory estimates. Rank-sharded and native
 postprocessing roles do not use this unsharded initializer check.
 
-## Preferred user API (Spec 116)
+## Signed deployment and preplanned requests (Spec 116)
 
 Native warm invocations retain their authenticated fixed-role reference.
 Invocation transport V3 retains base endpoints and a signed generation range,
@@ -228,9 +228,10 @@ Small transient Core control publications retain their bounded private files
 and original signed packets instead of adding a copy to the model Repo store.
 Durable publication and model-sized transient publication keep their Repo paths.
 
-New applications import only `ndnsf_distributed_inference.api`. The primary
-workflow is a request against signed Application intent; a separate deployment
-call is optional prewarming, not a correctness prerequisite.
+The public native `Runtime` owns normal inference requests. The signed-deployment
+interface below serves existing deployment and journal workflows. Import it from
+`ndnsf_distributed_inference.api` and use `request_preplanned` explicitly;
+`InferenceApplication.request` and its positional compatibility shim have retired.
 
 ```python
 from datetime import timedelta
@@ -242,7 +243,7 @@ application = InferenceApplication.from_config(
     envelope_key_file="/run/secrets/ndnsf-di-envelope-key",
 )
 definition = application.define(...)  # typed intent, signed by the Application
-request = application.request(
+request = application.request_preplanned(
     definition, input={"prompt": "Hello"}, timeout=timedelta(minutes=5))
 print(request.deployment_status())
 result = request.result()

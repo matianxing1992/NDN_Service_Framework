@@ -17,9 +17,6 @@ from ndnsf_distributed_inference.adapters import (  # noqa: E402
     ApplicationInput,
     InputTransportMode,
 )
-from ndnsf_distributed_inference.app_sdk.application import (  # noqa: E402
-    InferenceApplication,
-)
 from ndnsf_distributed_inference.app_sdk.client import InferenceClient  # noqa: E402
 from ndnsf_distributed_inference.app_sdk.placement import (  # noqa: E402
     AutomaticPlanningCoordinator,
@@ -270,50 +267,8 @@ def test_repo_reference_round_trips_without_plaintext_on_request_wire():
     assert validate_request_input_boundary(envelope) == "REPO_REF"
 
 
-def test_generic_application_request_reaches_existing_coordinator_without_provider_list():
-    captured = {}
-
-    class FakeClient:
-        def request_task(self, **kwargs):
-            captured.update(kwargs)
-            return "handle"
-
-    app = InferenceApplication.__new__(InferenceApplication)
-    app._client = FakeClient()
-    value = ApplicationInput.from_repo_ref(
-        task_name="object-detection",
-        input_schema_digest=input_schema(),
-        options_schema_digest=options_schema(),
-        reference=repo_reference(),
-        options=b"{}",
-    )
-    result = app.request(
-        model=model_ref(), task=task_ref(), input=value,
-        task_options=TaskOptions(options_schema(), b"{}"), timeout_ms=5000,
-    )
-    assert result == "handle"
-    assert captured["task"] == task_ref()
-    assert captured["input"].transport_mode is InputTransportMode.REPO_REF
-    assert "providers" not in captured
-    assert "deployment" not in captured
 
 
-def test_generic_application_request_rejects_missing_task_or_ambiguous_options():
-    app = InferenceApplication.__new__(InferenceApplication)
-    app._client = SimpleNamespace(request_task=lambda **_: "unused")
-    value = ApplicationInput.from_inline(
-        task_name="object-detection",
-        input_schema_digest=input_schema(),
-        options_schema_digest=options_schema(),
-        payload=b"x",
-        options=b"{}",
-    )
-    with pytest.raises(TypeError, match="InferenceTaskRef"):
-        app.request(model=model_ref(), input=value, timeout_ms=1000)
-    with pytest.raises(TypeError, match="task_options"):
-        app.request(
-            model=model_ref(), task=task_ref(), input=value,
-            options=object(), timeout_ms=1000)
 
 
 def test_generic_client_requests_close_ack_window_at_deadline_not_role_coverage():
