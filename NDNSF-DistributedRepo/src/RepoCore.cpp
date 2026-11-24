@@ -728,9 +728,7 @@ RepoCore::commitRangesLocked(const RepoObjectManifest& manifest, bool bindDigest
   if (reservation != m_rangeReservations.end()) {
     commitManifest.generation = reservation->second.generation;
     auto identityManifest = parseManifestJson(reservation->second.canonicalIdentity);
-    auto candidateManifest = manifest;
-    candidateManifest.generation = reservation->second.generation;
-    if (candidateManifest.toJson() != identityManifest.toJson()) {
+    if (!commitManifest.hasSameMetadata(identityManifest)) {
       throw std::runtime_error("repo-generation-conflict: commit reservation identity mismatch");
     }
     commitManifest = std::move(identityManifest);
