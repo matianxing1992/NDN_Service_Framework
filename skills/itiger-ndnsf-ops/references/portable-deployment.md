@@ -50,6 +50,11 @@ handler can cancel the child when the owner expires. A normal account may be
 unable to extend an already running owner. If replacement is necessary, verify
 that the original deployment never acquired nodes before releasing a successor,
 and repoint the acceptance dependencies to the new verified receipt chain.
+For a pending independent CPU reference, compare `squeue --start` with the
+runtime measured for the same candidate and host. An explicit `TimeMin` can
+let Slurm use a shorter backfill gap while retaining the requested `TimeLimit`.
+Use a minimum that covers the measured workload with margin, then record the
+limit Slurm actually assigned. A timed-out reference remains incomplete.
 After cancelling a held job, use the verified numeric ID for accounting if the
 name/time query returns no rows. Match its owner, boot-qualified job name and
 submission time. Confirm from duplicate-aware accounting that it never started
