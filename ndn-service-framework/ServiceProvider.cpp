@@ -20776,6 +20776,24 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         if (maxPending == 0) {
             return;
         }
+        if (!interest.getCanBePrefix()) {
+            const auto bucket = m_pendingImsInterestsByName.find(interest.getName());
+            if (bucket != m_pendingImsInterestsByName.end()) {
+                auto& pending = bucket->second;
+                const auto existing = std::find_if(pending.begin(), pending.end(),
+                    [&] (const PendingImsInterest& item) {
+                        return item.interest.getMustBeFresh() == interest.getMustBeFresh();
+                    });
+                if (existing != pending.end()) {
+                    // One exact Data reply covers every matching PIT entry on this Face.
+                    // A renewal extends its existing waiter without using another slot.
+                    const auto expiresAt = ndn::time::steady_clock::now() +
+                                           interest.getInterestLifetime();
+                    existing->expiresAt = std::max(existing->expiresAt, expiresAt);
+                    return;
+                }
+            }
+        }
         while (m_pendingImsInterestCount >= maxPending &&
                !m_pendingImsInsertionOrder.empty()) {
             const auto oldestName = m_pendingImsInsertionOrder.front();

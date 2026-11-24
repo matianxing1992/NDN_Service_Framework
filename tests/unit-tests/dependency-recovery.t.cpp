@@ -11,11 +11,13 @@
 #include "ndn-service-framework/detail/collaboration-input-budget.hpp"
 #include "ndn-service-framework/exact-data-congestion-window.hpp"
 #include <algorithm>
+#include <cstdlib>
 #include <map>
 #include <mutex>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/scheduler.hpp>
+#include <ndn-cxx/util/scope.hpp>
 #include <ndn-cxx/util/signal/scoped-connection.hpp>
 
 namespace ndn_service_framework::test {
@@ -1461,6 +1463,73 @@ BOOST_AUTO_TEST_CASE(AdmittedManifestSwitchesSpeculativeBatchToPublishedRetry)
   BOOST_CHECK_GT(firstLifetimes[2].count(), firstLifetimes[1].count());
   BOOST_CHECK_LT(firstLifetimes[2].count(), firstLifetimes[0].count());
   BOOST_CHECK_LT(secondLifetimes.front().count(), firstLifetimes[0].count());
+}
+
+BOOST_AUTO_TEST_CASE(ExactInterestRenewalKeepsOtherPendingNames)
+{
+  using namespace std::chrono_literals;
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+  environment.disconnectProviderPeerTransportForTest();
+
+  constexpr auto limit = "NDNSF_PENDING_IMS_INTEREST_MAX";
+  std::optional<std::string> previous;
+  if (const auto* value = std::getenv(limit)) {
+    previous = value;
+  }
+  BOOST_REQUIRE_EQUAL(::setenv(limit, "2", 1), 0);
+  const auto restoreLimit = ndn::make_scope_exit([&] {
+    if (previous) {
+      ::setenv(limit, previous->c_str(), 1);
+    }
+    else {
+      ::unsetenv(limit);
+    }
+  });
+
+  auto& producer = environment.provider(0);
+  auto& face = environment.providerFace(0);
+  const auto base = ndn::Name(producer.getName()).append("NDNSF").append("PENDING-BATCH");
+  const auto first = ndn::Name(base).appendSegment(0);
+  const auto renewed = ndn::Name(base).appendSegment(1);
+  std::vector<ndn::Name> replies;
+  ndn::signal::ScopedConnection packets = face.onSendData.connect([&] (const ndn::Data& data) {
+    if (base.isPrefixOf(data.getName())) {
+      replies.push_back(data.getName());
+    }
+  });
+  const auto inject = [&] (const ndn::Name& name, uint32_t nonce) {
+    ndn::Interest interest(name);
+    interest.setCanBePrefix(false).setInterestLifetime(ndn::time::milliseconds(5000));
+    interest.setNonce(ndn::Interest::Nonce(nonce));
+    face.receive(interest);
+    face.processEvents(ndn::time::milliseconds(5));
+    face.getIoContext().restart();
+  };
+  inject(first, 1);
+  inject(renewed, 2);
+  inject(renewed, 3);
+  BOOST_CHECK(replies.empty());
+
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "/consumer";
+  assignment.service = profile.serviceName;
+  assignment.inputAdmissionProfile = "data-admission-v1";
+  assignment.selectionDigest = "spec271-exact-interest-renewal";
+  assignment.scopeKeys["input"] = ndn::Buffer(32, 0x51);
+  assignment.workDeadline = std::chrono::steady_clock::now() + 8s;
+  assignment.workCurrent = [] { return true; };
+  ServiceProvider::CollaborationContext publisher(producer, profile.userIdentity,
+    ndn::Name("/spec271/exact-batch/renewal"), RequestMessage{}, assignment);
+  BOOST_REQUIRE(publisher.publishSignedExactData(
+    "input", {{first, ndn::Buffer{7}}, {renewed, ndn::Buffer{9}}}));
+  face.processEvents(ndn::time::milliseconds(5));
+  BOOST_CHECK_EQUAL(std::count(replies.begin(), replies.end(), first), 1);
+  BOOST_CHECK_EQUAL(std::count(replies.begin(), replies.end(), renewed), 1);
 }
 
 BOOST_AUTO_TEST_CASE(SixthFutureInterestRemainsAliveUntilTheOriginalDeadline)
