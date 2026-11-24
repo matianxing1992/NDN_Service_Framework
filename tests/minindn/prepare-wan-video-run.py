@@ -51,7 +51,7 @@ def installed_ledger(prefix, file_digest, capture_fixture_trace, local_model_cac
 
 def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_disk_mib,
             capture_fixture_trace, tile_dit=False, tensor_segment_bytes=None,
-            checkpoint_workload=None, local_model_cache=False):
+            checkpoint_workload=None, local_model_cache=False, vae_no_progress_ms=None):
     sys.path.insert(0, str(CHECKOUT / 'Experiments'))
     deployment = runpy.run_path(str(CHECKOUT / 'Experiments/prepare-native-deployment.py'))
     credentials = runpy.run_path(str(CHECKOUT / 'tests/fixtures/spec242/prepare-deployment.py'))
@@ -257,8 +257,11 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
             model_input.update(repo_target=repo_target,
                                preparation_state_file=str(root/'models'/component/'preparation.json'),
                                private_handle_file=str(root/'models'/component/'handle.json'))
+        component_request = dict(request, task=requester_task(catalog))
+        if component == 'vae' and vae_no_progress_ms is not None:
+            component_request['no_progress_ms'] = vae_no_progress_ms
         return dict(schema='ndnsf-di-native-requester-v1', core=core, grant=grant,
-                    request=dict(request, task=requester_task(catalog)),
+                    request=component_request,
                     catalog=catalog, model_input=model_input,
                     limits=dict(bootstrap_ms=7200000 if checkpoint_workload else 120000,
                                 max_prepared_entries=6,
@@ -392,6 +395,8 @@ def main():
     parser.add_argument('--inline-limit-bytes', type=int, default=4096)
     parser.add_argument('--exact-packet-disk-mib', type=int, default=0)
     parser.add_argument('--tensor-segment-bytes', type=int)
+    parser.add_argument('--vae-no-progress-ms', type=int,
+                        help='override the checkpoint decoder request no-progress interval')
     parser.add_argument('--capture-fixture-trace', action='store_true')
     parser.add_argument('--tile-dit', action='store_true')
     parser.add_argument('--local-model-cache', action='store_true')
@@ -402,6 +407,9 @@ def main():
         parser.error('--exact-packet-disk-mib must be nonnegative')
     if args.tensor_segment_bytes is not None and args.tensor_segment_bytes <= 0:
         parser.error('--tensor-segment-bytes must be positive')
+    if args.vae_no_progress_ms is not None:
+        if not args.checkpoint_workload or not 0 < args.vae_no_progress_ms <= 3600000:
+            parser.error('--vae-no-progress-ms requires a checkpoint and must be in [1, 3600000]')
     os.umask(0o077)
     if args.warm_from:
         if any((args.prefix, args.builder, args.output, args.mode, args.exact_packet_disk_mib,
@@ -420,7 +428,7 @@ def main():
                       args.exact_packet_disk_mib, args.capture_fixture_trace, args.tile_dit,
                       args.tensor_segment_bytes,
                       args.checkpoint_workload.resolve() if args.checkpoint_workload else None,
-                      args.local_model_cache))
+                      args.local_model_cache, args.vae_no_progress_ms))
 
 
 if __name__ == '__main__':
