@@ -2635,70 +2635,11 @@ Stage 1: hidden-state npz -> layers 8-16 -> hidden-state npz
 Stage 2: hidden-state npz -> layers 16-24 -> logits/top token
 ```
 
-The MiniNDN script supports this runtime with `--runtime qwen-onnx`:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --warmup-requests 3 \
-  --measured-duration-s 60 \
-  --request-interval-ms 200
-```
-
-To force the full-context input through the standard large-data/reference path:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 1 \
-  --publish-input-reference
-```
-
-To validate append-only context-delta handling while preserving the expected
-top token:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 2 \
-  --context-input-mode append-empty-delta-after-first \
-  --publish-input-reference
-```
-
-To validate real append-delta correctness, append one or more token IDs and
-compare the distributed result with a locally recomputed full-context ONNX
-pipeline result:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 2 \
-  --context-input-mode append-token-delta-after-first \
-  --delta-token-ids 2 \
-  --publish-input-reference
-```
-
-The same regression is wired into the DI regression suite and the optional
-MiniNDN quick-suite case:
-
-```bash
-python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
-  --case llm-pipeline-qwen-onnx-delta-minindn
-
-python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py \
-  --case di-llm-qwen-onnx-delta-minindn
-```
+The former Python MiniNDN execution harness has retired. Maintained network
+execution uses `Experiments/native_deployment_entrypoint.py` with an explicit
+native deployment configuration and installed C++ actors. The offline export
+and independent reference helpers above remain available. The measurements
+below describe the historical Python pipeline and do not qualify native delivery.
 
 Recorded 60-second result on `AI_Lab.conf`:
 

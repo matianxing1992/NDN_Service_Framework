@@ -47,15 +47,6 @@ class ProviderDependencyDeadlineTest(unittest.TestCase):
         )
         self.assertEqual(_assignment_deadline_ms(b"not-an-assignment"), 0)
 
-    def test_qwen_handlers_do_not_restore_fixed_dependency_waits(self) -> None:
-        source = (
-            ROOT
-            / "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py"
-        ).read_text(encoding="utf-8")
-        self.assertNotIn("ref_timeout_ms=30000", source)
-        self.assertNotIn("fetch_timeout_ms=30000", source)
-        self.assertNotIn("timeout_ms=60000", source)
-
 
 if __name__ == "__main__":
     unittest.main()

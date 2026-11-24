@@ -148,32 +148,6 @@
       "qualificationNote": "Only the `ndnsf` system branch exercises NDNSF actors (App_ServiceController / App_WifiMobilityProvider / App_WifiMobilityUser); `grpc` and `nsc` are network-facility baselines and carry no NDNSF claim."
     },
     {
-      "id": "qwen36-legacy-python-pipeline-repo",
-      "entry": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
-      "kind": "legacy-inference",
-      "supportedStatus": "unresolved",
-      "components": [
-        "core",
-        "di",
-        "repo"
-      ],
-      "inputRecipes": [
-        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-qwen-onnx-stage-manifest.py",
-        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-qwen-generation-policy.py"
-      ],
-      "tools": [
-        "MiniNDN",
-        "native Repo service and authorized ServiceUser"
-      ],
-      "facilities": [
-        "explicit Qwen3.6 model and tokenizer assets",
-        "retired Python Repo constructor requires a native publication/fetch port"
-      ],
-      "installFiles": [],
-      "preflight": "tests/python/test_spec162_t009_live_source_bundle.py",
-      "oracle": "tests/python/test_spec161_qwen_generation.py retains the failed publication check"
-    },
-    {
       "id": "concurrent-fault-confirmation-v2",
       "entry": "Experiments/run_spec130_concurrent_fault_matrix.py",
       "kind": "historical-campaign",

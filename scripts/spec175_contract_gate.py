@@ -69,8 +69,6 @@ IN_SCOPE_FILES = {
     "scripts/seal_spec175_gate_prerequisite.py",
     "scripts/spec175_g3_manifest.py",
     "scripts/spec175_source_seal.py",
-    "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py",
-    "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
     "Experiments/spec175_repo_bootstrap.py",
     "tests/wscript",
     "tests/python/test_streamed_invocation_api.py",
@@ -187,86 +185,6 @@ def check_tlv_contract(project_root: Path, feature_dir: Path) -> tuple[dict[str,
     }, issues
 
 
-def _contains_per_token_distributed_call(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    source = _read(path)
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return bool(
-            re.search(r"for\s+token_index\s+in\s+range", source)
-            and "distributed_inference(" in source
-        )
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.For, ast.AsyncFor)):
-            continue
-        target_names = {
-            child.id for child in ast.walk(node.target) if isinstance(child, ast.Name)
-        }
-        if not ({"token_index", "tokenIndex", "token_epoch"} & target_names):
-            continue
-        for child in ast.walk(node):
-            if not isinstance(child, ast.Call):
-                continue
-            function = child.func
-            if isinstance(function, ast.Attribute) and function.attr in {
-                "distributed_inference", "async_distributed_inference"
-            }:
-                return True
-    return False
-
-
-def _streaming_qwen_option_drift(path: Path) -> list[str]:
-    """Return unsafe option markers from functions that submit request_streaming.
-
-    The legacy diagnostic token loop may intentionally use ``useCache=false``.
-    It is not a Spec175 subject.  Scope this check to the nested production
-    function that actually calls ``request_streaming`` so the gate catches a
-    full-context implementation without banning the labelled diagnostic.
-    """
-    if not path.is_file():
-        return ["missing-user-source"]
-    try:
-        tree = ast.parse(textwrap.dedent(_read(path)))
-    except SyntaxError:
-        return ["unparseable-user-source"]
-    drift: list[str] = []
-    for function in (
-            node for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))):
-        has_stream_submit = any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "request_streaming"
-            for node in ast.walk(function)
-        )
-        if not has_stream_submit:
-            continue
-        options: dict[str, object] = {}
-        for node in ast.walk(function):
-            if not isinstance(node, ast.Dict):
-                continue
-            for key, value in zip(node.keys, node.values):
-                if not isinstance(key, ast.Constant) or key.value not in {
-                        "useCache", "outputMode"}:
-                    continue
-                if isinstance(value, ast.Constant):
-                    options[str(key.value)] = value.value
-        if options.get("useCache") is not True:
-            drift.append("request_streaming does not require useCache=true")
-        if options.get("outputMode") != "TOKEN_STREAMING":
-            drift.append(
-                "request_streaming does not seal outputMode=TOKEN_STREAMING")
-    if not any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "request_streaming"
-            for node in ast.walk(tree)):
-        drift.append("request_streaming call is absent")
-    return drift
-
-
 def check_source_contract(project_root: Path) -> list[dict[str, str]]:
     """Check the production source seams frozen by Spec175."""
     required_symbols = {
@@ -357,22 +275,6 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
             issues.append(_issue(code, f"missing exporter boundary: {marker}",
                                  exporter_relative))
 
-    user_relative = "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
-    user_path = project_root / user_relative
-    if _contains_per_token_distributed_call(user_path):
-        issues.append(_issue(
-            "PER_TOKEN_DISTRIBUTED_INFERENCE",
-            "generation loop issues one distributed_inference call per token",
-            user_relative,
-        ))
-    option_drift = _streaming_qwen_option_drift(user_path)
-    if option_drift:
-        issues.append(_issue(
-            "QWEN_STREAMING_FULL_CONTEXT_OPTIONS",
-            "; ".join(option_drift),
-            user_relative,
-        ))
-
     coordinator_relative = (
         "NDNSF-DistributedInference/ndnsf_distributed_inference/"
         "app_sdk/placement.py"
@@ -409,7 +311,12 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
     executable_path = project_root / executable_relative
     executable_source = (
         _read(executable_path) if executable_path.is_file() else "")
-    executable_markers = (
+    executable_markers = ("installNativeProviderGroupCoordinatorFactory(",)
+    protected_relative = "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.cpp"
+    protected_path = project_root / protected_relative
+    protected_source = _read(protected_path) if protected_path.is_file() else ""
+    protected_markers = (
+        "installNativeProviderGroupCoordinatorFactory(",
         'fields.find("executionPlanDigest")',
         "capability.planDigest != authenticatedPlanDigest",
     )
@@ -417,7 +324,9 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
         marker for marker in handler_markers
         if marker not in handler_source) + tuple(
         marker for marker in executable_markers
-        if marker not in executable_source)
+        if marker not in executable_source) + tuple(
+        marker for marker in protected_markers
+        if marker not in protected_source)
     if missing_native:
         issues.append(_issue(
             "NATIVE_STREAM_EPOCH_RUNTIME_DISABLED",
@@ -537,7 +446,7 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
     epoch_source = _read(epoch_path) if epoch_path.is_file() else ""
     text_output_markers = (
         "candidateText =",
-        "textDelta = candidateText.substr",
+        "textDelta = stableCandidateText.substr",
         "requireTextOutput",
         "textDelta",
     )
@@ -557,7 +466,7 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
     # always-empty implementation can retain the field while discarding the
     # newly decoded suffix.  Bind the delta to the exact previously emitted
     # text length so a source mutation is caught before a broad run.
-    text_delta_semantics = "candidateText.substr(generatedText.size())"
+    text_delta_semantics = "stableCandidateText.substr(generatedText.size())"
     if text_delta_semantics not in epoch_source:
         issues.append(_issue(
             "NATIVE_TEXT_DELTA_SEMANTICS_MISSING",
@@ -579,7 +488,9 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
         "boundDeviceInputs",
         "streamingStateExecution",
         "stateDeviceToHostBytes",
-        "complete CUDA allocation must not cross",
+        "if (residentState && effectiveContext.streamingStateExecution)",
+        "NativeOpaqueStateHandleV1 stateHandle;",
+        '"__ndnsf_provider_decode_state"',
         "supportsOpaqueStateHandles",
         "stateHandleSnapshot",
         "PROVIDER_OPAQUE_STATE_HANDLE_MISSING",
@@ -647,22 +558,13 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
         "Spec175NativeTinyOnnxI02TwoProviderEpochCoordinator",
         "Spec175NativeTinyOnnxI03FourProviderEpochCoordinator",
     )
-    minindn_relative = "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py"
-    minindn_path = project_root / minindn_relative
-    minindn_source = _read(minindn_path) if minindn_path.is_file() else ""
-    minindn_markers = tuple(f'"M{index:02d}"' for index in range(1, 15))
     missing_cases = tuple(
         marker for marker in integration_markers if marker not in integration_source)
-    missing_cases += tuple(
-        marker for marker in minindn_markers if marker not in minindn_source)
     if missing_cases:
         issues.append(_issue(
             "SPEC175_PRODUCTION_CASE_COVERAGE_MISSING",
-            "production 1/2/4-role or M01-M14 coverage is missing " +
-            ", ".join(missing_cases),
-            integration_relative if any(
-                marker in integration_markers for marker in missing_cases)
-            else minindn_relative,
+            "production 1/2/4-role coverage is missing " + ", ".join(missing_cases),
+            integration_relative,
         ))
     return issues
 

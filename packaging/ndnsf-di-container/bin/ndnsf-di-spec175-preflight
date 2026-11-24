@@ -211,8 +211,6 @@ runtime_imports_status = {
 runtime_files = {
     "repoBootstrap": "/opt/ndnsf-di/replay/repo/Experiments/spec175_repo_bootstrap.py",
     "trustSchema": "/opt/ndnsf-di/replay/repo/examples/trust-schema.conf",
-    "provider": "/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
-    "user": "/opt/ndnsf-di/replay/repo/examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
     "repoNode": "/opt/ndnsf-di/replay/repo/specs/162-itiger-qwen36-generation/jobs/run-repo-node.py",
     "repoRegistration": "/opt/ndnsf-di/replay/repo/specs/162-itiger-qwen36-generation/jobs/register-qwen36-repo.py",
 }

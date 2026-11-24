@@ -32,23 +32,6 @@
       "inputMode": "REPO_REF",
       "decodePolicy": null,
       "maxNewTokens": null
-    },
-    "qwen-functional": {
-      "job": "qwen-functional.sbatch",
-      "nodes": 1,
-      "ntasks": 1,
-      "gres": "gpu:rtx_6000:3",
-      "memory": "96G",
-      "time": "01:00:00",
-      "providerCount": 3,
-      "modelProviderCount": 3,
-      "mergeProviderCount": 0,
-      "gpuProviderDevices": [0, 1, 2],
-      "mergeCudaVisibleDevices": null,
-      "requestCount": 2,
-      "inputMode": "INLINE",
-      "decodePolicy": "greedy",
-      "maxNewTokens": 8
     }
   },
   "allowedRunRecordFields": [

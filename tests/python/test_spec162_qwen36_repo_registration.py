@@ -212,22 +212,3 @@ class Qwen36RepoRegistrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-def test_qwen_runtime_selection_dataflow_mode_is_retired_at_argument_time():
-    """The retired Repo publication must fail on the command line, not mid-run.
-
-    The launcher rejects cold Repo publication in the legacy runtime before
-    constructing any MiniNDN actors.
-    """
-    import subprocess
-
-    completed = subprocess.run(
-        [sys.executable, str(ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"),
-         "--runtime", "qwen-onnx", "--selection-dataflow-v3"],
-        cwd=ROOT, text=True, capture_output=True, check=False,
-    )
-    combined = completed.stdout + completed.stderr
-    assert "--selection-dataflow-v3 with a Qwen runtime is retired" in combined, combined
-    assert "ndnsf-di cluster up" in combined
-    assert "tiny-onnx fixture path is still supported" in combined

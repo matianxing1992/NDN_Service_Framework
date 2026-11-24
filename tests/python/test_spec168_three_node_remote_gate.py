@@ -227,117 +227,6 @@ class Spec168ThreeNodeRemoteGateTest(unittest.TestCase):
                     RuntimeError, "DEPENDENCY_EVIDENCE_MISSING:rank=1"):
                 remote.analyze(args)
 
-    def test_launch_surface_uses_full_copy_up_overlay_and_no_fixed_settle(self):
-        rank = (JOBS / "spec168-three-node-rank-inner.sh.txt").read_text()
-        outer_rank = (JOBS / "spec168-three-node-rank.sh.txt").read_text()
-        sbatch = (JOBS / "gate-e-small-single.sbatch.txt").read_text()
-        overlay = (JOBS / "spec168-overlay-entrypoint.sh.txt").read_text()
-        gate_c = (JOBS / "gate-c-exact-sif-cuda.sbatch.txt").read_text()
-        compat = (JOBS / "generation-rank-inner.sh.txt").read_text()
-        compat_child = (JOBS / "spec168-compat-child-abi-check.py.txt").read_text()
-        self.assertIn("/scratch/python-overlay", rank)
-        self.assertIn(
-            "exec bash /source/jobs/spec168-overlay-entrypoint.sh", rank)
-        self.assertIn("SPEC168_REQUIRE_SELECTION_FANOUT_ABI=1", rank)
-        self.assertIn(
-            'control_plane_canary="${SPEC168_CONTROL_PLANE_CANARY:-0}"',
-            outer_rank,
-        )
-        self.assertIn("model_bind_args=()", outer_rank)
-        self.assertIn("model_env_args=()", outer_rank)
-        self.assertIn('cp "$SPEC168_POLICY" "$scratch/policy.yaml"', outer_rank)
-        self.assertIn(
-            '--env "SPEC168_CONTROL_PLANE_CANARY=${control_plane_canary}"',
-            outer_rank,
-        )
-        self.assertIn("model_bind_args=(--bind", outer_rank)
-        self.assertNotIn("cp -a /source/ndnsf/ndnsf/.", rank)
-        self.assertIn("--nodes=3", sbatch)
-        self.assertIn("spec168-three-node-analyzer.py", sbatch)
-        self.assertIn(
-            '"partition_digest": manifest["candidateDigest"]', compat)
-        self.assertIn('"adapter_id": manifest["adapterId"]', compat)
-        self.assertIn(
-            '"adapter_version": manifest["adapterVersion"]', compat)
-        self.assertNotRegex(compat, r"(^|[;&|])\s*sleep\s+300(?:\.0+)?")
-        self.assertIn(
-            'LD_LIBRARY_PATH="/opt/ndn-base/lib:${LD_LIBRARY_PATH:-/opt/ndnsf-app/lib}"',
-            compat,
-        )
-        self.assertNotIn(
-            'LD_LIBRARY_PATH="/opt/ndn-base/lib:/opt/ndnsf-app/lib:${LD_LIBRARY_PATH:-}"',
-            compat,
-        )
-        self.assertIn("spec168-compat-child-abi-check.py", compat)
-        self.assertIn("SPEC168_COMPAT_CHILD_NATIVE_ABI_PASS", compat_child)
-        self.assertIn("SPEC168_COMPAT_CHILD_NATIVE_CORE_SHADOWED", compat_child)
-        self.assertIn("--request-gate-output", compat)
-        self.assertIn("mode=REQUEST_FIRST", (
-            ROOT / "examples/python/NDNSF-DistributedInference/"
-            "llm_pipeline/user.py").read_text())
-        self.assertIn('--model-identity-digest "$model_identity_digest"', compat)
-        self.assertIn('--workload-digest "$workload_digest"', compat)
-        self.assertIn('chmod -R u+w "$SPEC168_OVERLAY_ROOT"', overlay)
-        self.assertIn(
-            'LD_LIBRARY_PATH="/source/native/lib:${LD_LIBRARY_PATH:-}"',
-            overlay,
-        )
-        self.assertIn('${PYTHONPATH:+:${PYTHONPATH}}', overlay)
-        self.assertIn("SPEC168_NATIVE_ABI_CLOSURE_PASS", overlay)
-        self.assertIn("SPEC168_NATIVE_PYTHON_EXTENSION", overlay)
-        self.assertIn("SPEC168_SELECTION_FANOUT_ABI_PASS", overlay)
-        self.assertIn("NDNSF_SELECTION_PROVIDER_PROJECTION", overlay)
-        self.assertIn("SELECTION_TARGETED_PREFETCH_ISSUED", overlay)
-        self.assertIn('test ! -e "$SPEC168_OUTPUT_DIR/python-overlay"', gate_c)
-        self.assertNotIn(
-            'find "$SPEC168_OUTPUT_DIR/python-overlay" -mindepth 1 -delete',
-            gate_c,
-        )
-        self.assertIn("removedSecretFileCount", sbatch)
-        self.assertIn("SPEC168_CONTROL_PLANE_CANARY", sbatch)
-        self.assertIn("spec168-control-plane-canary-analyzer.py", sbatch)
-        self.assertIn('control_plane_canary="${SPEC168_CONTROL_PLANE_CANARY:-0}"', sbatch)
-        self.assertIn('if test "$control_plane_canary" = 0; then', sbatch)
-        self.assertIn(': "${SPEC168_POLICY:?}"', sbatch)
-
-        self.assertIn("spec168-prepare-single-campaign.py", sbatch)
-        self.assertIn("--mode canary", sbatch)
-
-        canary_user = compat.split(
-            'if test "$control_plane_canary" = 1; then\n'
-            '    /opt/venv/bin/python /source/llm_pipeline/user.py',
-            1,
-        )[1].split("\n  else", 1)[0]
-        self.assertIn("--runtime fake", canary_user)
-        self.assertIn("--measured-requests 1", canary_user)
-        self.assertNotIn("--generation-campaign-manifest", canary_user)
-        self.assertNotIn("--automatic-planning-manifest", canary_user)
-        self.assertNotIn("--qwen-stage-manifest", canary_user)
-        self.assertNotIn("--repo-registration-output", canary_user)
-        self.assertNotIn("--model-identity-digest", canary_user)
-        self.assertNotIn("--workload-digest", canary_user)
-        self.assertIn("provider_runtime=fake", compat)
-        self.assertIn("provider_runtime_args=()", compat)
-        self.assertNotIn("provider_runtime_args=(--selection-dataflow-v2)", compat)
-        model_setup = compat.split(
-            'if test "$control_plane_canary" = 0; then\n'
-            '  repo_free_bytes=',
-            1,
-        )[1].split("\nelse\n  provider_runtime=fake", 1)[0]
-        self.assertIn("run-repo-node.py", model_setup)
-        self.assertIn("build-automatic-planning-manifest.py", model_setup)
-        self.assertIn("native_core_digest=", sbatch)
-        self.assertIn("native_extension_digest=", sbatch)
-        self.assertIn("--expected-native-core-digest", sbatch)
-        self.assertIn("--expected-native-extension-digest", sbatch)
-
-        native_builder = (JOBS / "build-native-closure.sh.txt").read_text()
-        self.assertIn('CFLAGS="-O1 -g0"', native_builder)
-        self.assertIn('--out="$work_dir/core"', native_builder)
-        self.assertIn('NDNSF_LIBRARY_DIR="$work_dir/core"', native_builder)
-        self.assertIn('pythonWrapper', native_builder)
-        self.assertIn('NDNSF-DistributedRepo/pythonWrapper', native_builder)
-        self.assertIn('SPEC168_NATIVE_CLOSURE_PASS', native_builder)
 
     def test_control_plane_canary_requires_three_projections_without_model_work(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -522,19 +411,6 @@ class Spec168ThreeNodeRemoteGateTest(unittest.TestCase):
             self.assertNotIn("SPEC168_MODEL_IDENTITY_DIGEST", invocation)
             self.assertNotIn("SPEC168_WORKLOAD_DIGEST", invocation)
 
-    def test_three_node_launch_closes_cross_node_certificate_matrix_before_request(self):
-        compat = (JOBS / "generation-rank-inner.sh.txt").read_text()
-        user = (ROOT / "examples/python/NDNSF-DistributedInference/"
-                "llm_pipeline/user.py").read_text()
-
-        self.assertNotIn('provider-certificate-${rank}.cert', compat)
-        self.assertNotIn('fetch_certificate_exact', compat)
-        self.assertNotIn('ndnpeek', compat)
-        self.assertNotIn('ndnsec cert-install', compat)
-        self.assertNotIn('--identity-certificate-output', compat)
-        self.assertNotIn('--startup-barrier-file', compat)
-        self.assertIn('ON_DEMAND_NETWORK_FETCH', user)
-        self.assertNotIn('SLURM_JOB_ID', compat)
 
     def test_collaboration_selection_uses_bounded_provider_projections(self):
         user_source = (
@@ -576,20 +452,6 @@ class Spec168ThreeNodeRemoteGateTest(unittest.TestCase):
             "selection prefetch must follow the producer-owned naming contract",
         )
 
-    def test_overlay_precedes_installed_package_and_rank_failure_aborts_waits(self):
-        outer = (JOBS / "spec168-three-node-rank.sh.txt").read_text()
-        compat = (JOBS / "generation-rank-inner.sh.txt").read_text()
-        self.assertIn(
-            'export PYTHONPATH="/source/llm_pipeline:${PYTHONPATH:-/opt/ndnsf-app/python}"',
-            compat,
-        )
-        self.assertNotIn(
-            'PYTHONPATH="/source/llm_pipeline:/opt/ndnsf-app/python:${PYTHONPATH:-}"',
-            compat,
-        )
-        self.assertIn("RANK_ABORTED_WHILE_WAITING", compat)
-        self.assertIn("touch /shared/rank-abort", compat)
-        self.assertIn('touch "$SPEC168_SHARED/rank-abort"', outer)
 
     def test_repo_policy_reconciles_existing_services_to_repo_identities(self):
         import yaml

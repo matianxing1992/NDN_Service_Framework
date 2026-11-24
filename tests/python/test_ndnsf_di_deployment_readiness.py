@@ -141,7 +141,6 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
             }), encoding="utf-8")
             profile.write_text(json.dumps({
                 "deployment": {
-                    "harness": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
                     "status_file": str(status_file),
                     "metrics_file": str(metrics_file),
                     "telemetry_max_age_ms": 2000,
@@ -209,7 +208,6 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
 
             default_campaign = root / "default-campaign.json"
             default_campaign.write_text(json.dumps({
-                "runner": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
                 "campaignId": "fixture-campaign",
                 "performance": {"measurementSeconds": 60, "offeredRps": 1.0},
             }), encoding="utf-8")
@@ -217,11 +215,9 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
                 cli + ["bench", "--campaign", str(default_campaign),
                        "--out", str(root / "default-bench"), "--dry-run"],
                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            self.assertEqual(default_bench.returncode, 0, default_bench.stderr)
-            default_command = json.loads(default_bench.stdout)["command"]
-            self.assertIn("--runtime", default_command)
-            self.assertIn("qwen-onnx-cpu-native", default_command)
-            self.assertNotIn("--runner-mode", default_command)
+            self.assertEqual(default_bench.returncode, 2)
+            self.assertIn("benchmark campaign requires an explicit command", default_bench.stderr)
+            self.assertFalse((root / "default-bench").exists())
 
             broken = root / "broken-profile.json"
             broken.write_text(json.dumps({"deployment": {
@@ -413,99 +409,6 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
         self.assertEqual(second.terminal_reason,
                          RecoveryReason.NO_COMPATIBLE_REPLACEMENT)
 
-    def test_native_open_loop_driver_reports_generation_level_progress(self) -> None:
-        pipeline_dir = (
-            Path(__file__).resolve().parents[2] /
-            "examples/python/NDNSF-DistributedInference/llm_pipeline"
-        )
-        sys.path.insert(0, str(pipeline_dir))
-        try:
-            spec = importlib.util.spec_from_file_location(
-                "spec105_qwen_user_fixture", pipeline_dir / "user.py")
-            self.assertIsNotNone(spec)
-            self.assertIsNotNone(spec.loader)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-        finally:
-            sys.path.pop(0)
-
-        calls: list[tuple[str, int, dict]] = []
-        module._native_step_payload = (
-            lambda _context, _manifest, token_index, _mode:
-            str(token_index).encode("ascii")
-        )
-
-        def requirements(_manifest, session_id, token_index, _mode):
-            calls.append((session_id, token_index, {}))
-            return {}
-
-        module._native_role_requirements = requirements
-
-        class Result:
-            status = True
-            error = ""
-            payload = b"logits"
-
-        module._decode_native_tensor_bundle = (
-            lambda _payload: {"logits": [[[0.0, 1.0]]]}
-        )
-
-        class Client:
-            shutdown_wait = None
-
-            def async_distributed_inference(self, *_args, **kwargs):
-                self_outer.assertNotIn("on_result", kwargs)
-                self_outer.assertNotIn("on_error", kwargs)
-                future = Future()
-                future.set_result(Result())
-                return future
-
-            def shutdown(self, wait=True):
-                self.shutdown_wait = wait
-
-        self_outer = self
-        client = Client()
-        args = SimpleNamespace(
-            request_interval_ms=1.0,
-            measured_duration_s=0.002,
-            max_new_tokens=2,
-            native_first_kv_mode="full-context",
-            request_id="scheduler-fixture",
-            deployment_revision="sha256:" + "1" * 64,
-            ack_timeout_ms=1500,
-            timeout_ms=120000,
-            campaign_id="spec105-r1-scheduler-fixture",
-        )
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            result = module._run_native_open_loop(
-                client,
-                args,
-                {"inputIds": [[7]], "attentionMask": [[1]]},
-                {"stages": []},
-                [1, 1],
-                None,
-            )
-
-        self.assertEqual(result, 0)
-        self.assertEqual(client.shutdown_wait, False)
-        per_session: dict[str, list[int]] = {}
-        for session_id, token_index, _ in calls:
-            per_session.setdefault(session_id, []).append(token_index)
-        self.assertEqual(per_session, {
-            "scheduler-fixture-open-0": [0, 1],
-            "scheduler-fixture-open-1": [0, 1],
-        })
-        rendered = output.getvalue()
-        self.assertIn("offered=2 completed=2 failed=0 unfinished=0", rendered)
-        self.assertIn("generationWorkers=4", rendered)
-        self.assertIn("campaignId=spec105-r1-scheduler-fixture", rendered)
-        self.assertIn("expectedTokenCount=2", rendered)
-        self.assertIn("expectedTokenDigest=", rendered)
-        self.assertNotIn("expectedTokens=", rendered)
-        self.assertIn(
-            'tokenProgress={"scheduler-fixture-open-0":2,'
-            '"scheduler-fixture-open-1":2}', rendered)
 
     def test_generation_scheduler_owns_full_generation_before_next_job(self) -> None:
         observed: list[tuple[str, int]] = []

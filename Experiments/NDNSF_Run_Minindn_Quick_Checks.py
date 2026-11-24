@@ -100,7 +100,6 @@ def checks() -> dict[str, QuickCheck]:
                 "Experiments/NDNSF_DI_YoloSplit_Minindn.py "
                 "Experiments/NDNSF_DI_RuntimeCompatibility_Smoke.py "
                 "Experiments/NDNSF_DI_LlmPipeline_Smoke.py "
-                "Experiments/NDNSF_DI_LlmPipeline_Minindn.py "
                 "Experiments/NDNSF_DI_TransformersPipeline_LocalSmoke.py "
                 "Experiments/NDNSF_DI_QwenPipeline_LocalProof.py "
                 "Experiments/NDNSF_DI_LlamaServer_Smoke.py "

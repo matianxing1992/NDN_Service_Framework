@@ -1201,17 +1201,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"
-      ],
-      "currentOwner": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
-      "proposedCanonicalOwner": "experiments",
-      "rollbackRelease": "pre-spec111-worktree",
-      "status": "inventoried",
-      "surfaceId": "deployment-caller:Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
-      "surfaceKind": "deployment-caller"
-    },
-    {
-      "callers": [
         "Experiments/NDNSF_DI_LlmPipeline_Smoke.py"
       ],
       "currentOwner": "Experiments/NDNSF_DI_LlmPipeline_Smoke.py",
@@ -2044,39 +2033,6 @@
       "rollbackRelease": "pre-spec111-worktree",
       "status": "inventoried",
       "surfaceId": "deployment-caller:examples/python/NDNSF-DistributedInference/llm_pipeline/llm_pipeline_lib.py",
-      "surfaceKind": "deployment-caller"
-    },
-    {
-      "callers": [
-        "examples/python/NDNSF-DistributedInference/llm_pipeline/plan_pipeline.py"
-      ],
-      "currentOwner": "examples/python/NDNSF-DistributedInference/llm_pipeline/plan_pipeline.py",
-      "proposedCanonicalOwner": "operations",
-      "rollbackRelease": "pre-spec111-worktree",
-      "status": "inventoried",
-      "surfaceId": "deployment-caller:examples/python/NDNSF-DistributedInference/llm_pipeline/plan_pipeline.py",
-      "surfaceKind": "deployment-caller"
-    },
-    {
-      "callers": [
-        "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py"
-      ],
-      "currentOwner": "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
-      "proposedCanonicalOwner": "operations",
-      "rollbackRelease": "pre-spec111-worktree",
-      "status": "inventoried",
-      "surfaceId": "deployment-caller:examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py",
-      "surfaceKind": "deployment-caller"
-    },
-    {
-      "callers": [
-        "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
-      ],
-      "currentOwner": "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
-      "proposedCanonicalOwner": "operations",
-      "rollbackRelease": "pre-spec111-worktree",
-      "status": "inventoried",
-      "surfaceId": "deployment-caller:examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
       "surfaceKind": "deployment-caller"
     },
     {
@@ -4094,17 +4050,6 @@
     },
     {
       "callers": [
-        "tools/ndnsf-di/run_spec107_live_faults.py"
-      ],
-      "currentOwner": "tools/ndnsf-di/run_spec107_live_faults.py",
-      "proposedCanonicalOwner": "experiments",
-      "rollbackRelease": "pre-spec111-worktree",
-      "status": "inventoried",
-      "surfaceId": "deployment-caller:tools/ndnsf-di/run_spec107_live_faults.py",
-      "surfaceKind": "deployment-caller"
-    },
-    {
-      "callers": [
         "tools/ndnsf-di/run_spec107_operations.py"
       ],
       "currentOwner": "tools/ndnsf-di/run_spec107_operations.py",
@@ -4576,7 +4521,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -4599,7 +4543,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -4670,7 +4613,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -4782,7 +4724,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -4805,7 +4746,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -4947,7 +4887,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -4970,7 +4909,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5005,7 +4943,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5028,7 +4965,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5051,7 +4987,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5074,7 +5009,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5185,7 +5119,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5284,7 +5217,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5425,7 +5357,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5474,7 +5405,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5497,7 +5427,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5534,7 +5463,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5557,7 +5485,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5580,7 +5507,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5879,7 +5805,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5902,7 +5827,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -5973,7 +5897,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -6299,7 +6222,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -6322,7 +6244,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",
@@ -6458,7 +6379,6 @@
     },
     {
       "callers": [
-        "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
         "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py",

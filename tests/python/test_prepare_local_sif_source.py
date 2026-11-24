@@ -59,8 +59,6 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     assert "tests/fixtures/spec180/native-evidence-probe.cpp" not in names
     assert "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py" in names
     assert "examples/trust-schema.conf" in names
-    assert "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py" in names
-    assert "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py" in names
     for required in (
         "install_ndnsf_stack.sh", "scripts/configure_dependencies.py", "scripts/host_profile.py",
         "scripts/build-safe.sh", "scripts/build-storage.py", "scripts/ndnsf-di-workspace.py",
@@ -174,7 +172,6 @@ def test_export_filters_generated_rust_and_unrelated_uav_data(tmp_path):
     paths = {p.as_posix() for p in select(tmp_path)}
     assert paths == {"wscript", "cpp/backend.cpp", "NDNSF-UAV-APP/tools/app.cpp",
                      "NDNSF-UAV-APP/tracking/worker.py", "examples/app.cpp"}
-
 
 
 def test_source_sealer_does_not_define_host_substrate_dependency_archives():

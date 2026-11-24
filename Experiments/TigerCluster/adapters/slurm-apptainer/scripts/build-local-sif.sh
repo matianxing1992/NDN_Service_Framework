@@ -263,7 +263,6 @@ host_only_prefixes = (
     "scripts/",
 )
 runtime_archive_paths = {
-    "packaging/ndnsf-di-container/jobs/spec175/replay-exact-sif.py",
     "packaging/ndnsf-di-container/jobs/spec175/workload.json",
     "scripts/build_spec175_workload.py",
     # Spec180's remote supervisor enters the sealed image and invokes this

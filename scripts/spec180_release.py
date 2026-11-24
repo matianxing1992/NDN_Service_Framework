@@ -25,7 +25,7 @@ SCHEMA = "spec180-profile-v1"
 RUN_SCHEMA = "spec180-run-record-v1"
 RENDER_SCHEMA = "spec180-render-v1"
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-_GATES = ("yolo-functional", "qwen-functional")
+_GATES = ("yolo-functional",)
 _PROFILE_KEYS = {"schema", "profileId", "fixed", "gates", "allowedRunRecordFields"}
 _FIXED_KEYS = {
     "apptainerPath", "apptainerVersion", "cwd", "exportMode", "runtime",
@@ -47,14 +47,7 @@ _EXPECTED_GATES = {
         "mergeCudaVisibleDevices": None, "requestCount": 1,
         "inputMode": "REPO_REF", "decodePolicy": None, "maxNewTokens": None,
     },
-    "qwen-functional": {
-        "job": "qwen-functional.sbatch", "nodes": 1, "ntasks": 1,
-        "gres": "gpu:rtx_6000:3", "memory": "96G", "time": "01:00:00",
-        "providerCount": 3, "modelProviderCount": 3,
-        "mergeProviderCount": 0, "gpuProviderDevices": [0, 1, 2],
-        "mergeCudaVisibleDevices": None, "requestCount": 2,
-        "inputMode": "INLINE", "decodePolicy": "greedy", "maxNewTokens": 8,
-    },
+
 }
 _RUN_KEYS = {
     "schema", "runId", "gate", "profileId", "profileSha256", "candidate",
@@ -151,76 +144,6 @@ def _verify_file_digest(path: str, expected: str, label: str) -> None:
         raise ReleaseError("FILE_READ_FAILED:" + label) from exc
     if actual != expected:
         raise ReleaseError("FILE_DIGEST_MISMATCH:" + label)
-
-
-def _validate_qwen_model_manifest(path: str) -> None:
-    """Verify the signed external QWEN-F identity before scheduler mutation.
-
-    The remote job repeats object/stage checks inside the image.  This host
-    check deliberately verifies only the signed identity and fixed runtime
-    policy; it must not accept a profile or workload value as an authority.
-    """
-    manifest_path = Path(path)
-    manifest = load_json(manifest_path)
-    if manifest.get("schema") != "spec180-model-manifest-v1":
-        raise ReleaseError("MODEL_MANIFEST_SCHEMA_UNSUPPORTED")
-    if manifest.get("modelFamily") != "Qwen3.6-27B":
-        raise ReleaseError("MODEL_MANIFEST_MODEL_FAMILY_MISMATCH")
-    model = manifest.get("model")
-    model_id = model.get("id") if isinstance(model, Mapping) else model
-    if model_id != "Qwen/Qwen3.6-27B":
-        raise ReleaseError("MODEL_MANIFEST_MODEL_ID_MISMATCH")
-    required = (
-        "manifestRevision", "modelRevision", "sourceRevision", "modelIdentityDigest",
-        "graph", "initializers", "stages", "stageManifest", "tokenizer",
-        "chatTemplate", "stopPolicy", "runtime", "prompt", "signature",
-    )
-    missing = [field for field in required if field not in manifest]
-    if missing:
-        raise ReleaseError("MODEL_MANIFEST_FIELD_MISSING:" + ",".join(missing))
-    runtime = manifest.get("runtime")
-    if not isinstance(runtime, Mapping):
-        raise ReleaseError("MODEL_MANIFEST_RUNTIME_INVALID")
-    if runtime.get("backend") not in {"onnxruntime", "onnxruntime-cuda"}:
-        raise ReleaseError("MODEL_MANIFEST_BACKEND_INVALID")
-    if runtime.get("executionProvider") != "cuda":
-        raise ReleaseError("MODEL_MANIFEST_EXECUTION_PROVIDER_INVALID")
-    if runtime.get("cpuFallback") is not False:
-        raise ReleaseError("MODEL_MANIFEST_CPU_FALLBACK_ENABLED")
-    stages = manifest.get("stages")
-    if not isinstance(stages, list) or len(stages) != 3:
-        raise ReleaseError("MODEL_MANIFEST_STAGE_COUNT_INVALID")
-
-    # Load the shared contract gate with an explicit sys.modules entry.  The
-    # gate owns canonical serialization and the registered public-key digest;
-    # this release layer must not duplicate cryptographic semantics.
-    import sys
-    registry_path = ROOT / "specs/180-ack-driven-cross-model-qualification" \
-        / "contracts/trust-root-registry-v1.json"
-    gate_path = ROOT / "scripts/spec180_contract_gate.py"
-    spec = importlib.util.spec_from_file_location(
-        "spec180_release_contract_gate", gate_path)
-    if spec is None or spec.loader is None:
-        raise ReleaseError("MODEL_MANIFEST_CONTRACT_GATE_IMPORT_FAILED")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-        registry, registry_issues = module.load_trust_registry(registry_path.parent.parent)
-        if registry_issues or registry is None:
-            codes = ",".join(issue.code for issue in registry_issues) or "missing"
-            raise ReleaseError("MODEL_MANIFEST_TRUST_ROOT_INVALID:" + codes)
-        valid, issues = module.verify_signed_manifest(
-            manifest,
-            registry["modelManifest"],
-            feature_dir=registry_path.parent.parent,
-            model_family="Qwen3.6-27B",
-        )
-        if not valid:
-            codes = ",".join(issue.code for issue in issues) or "invalid"
-            raise ReleaseError("MODEL_MANIFEST_SIGNATURE_INVALID:" + codes)
-    finally:
-        sys.modules.pop(spec.name, None)
 
 
 def _validate_dispatch_workload(path: str, expected_digest: str,
@@ -390,8 +313,6 @@ def _validate_run_record(run: Mapping[str, Any], profile: Mapping[str, Any],
     _absolute_path(model.get("root"), "model.root")
     if check_files:
         _verify_file_digest(manifest_path, manifest_digest, "model.manifest")
-        if gate == "qwen-functional":
-            _validate_qwen_model_manifest(manifest_path)
 
     workload = run.get("workload")
     if not isinstance(workload, Mapping):

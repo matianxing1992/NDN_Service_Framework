@@ -15,7 +15,6 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests/fixtures/legacy-exact-sif-gate"
 PREFLIGHT_PATH = FIXTURES / "spec168_exact_sif_cuda_preflight.py"
-BUILDER_PATH = FIXTURES / "build-gate-c-source-bundle.py"
 
 
 def load_module(name: str, path: Path):
@@ -27,7 +26,6 @@ def load_module(name: str, path: Path):
 
 
 preflight = load_module("spec168_exact_sif_cuda_preflight", PREFLIGHT_PATH)
-builder = load_module("spec168_gate_c_bundle", BUILDER_PATH)
 
 
 class ExactSifCudaPreflightTest(unittest.TestCase):
@@ -98,79 +96,6 @@ class ExactSifCudaPreflightTest(unittest.TestCase):
                 with self.assertRaisesRegex(
                         preflight.PreflightError, "RUNTIME_SIF_DIGEST_MISMATCH"):
                     preflight.verify_static_inputs(args)
-
-    def test_source_bundle_contains_no_model_payload(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "bundle"
-            digest = builder.build(output)
-            paths = [
-                line.split("  ", 1)[1]
-                for line in (output / "source-files.sha256").read_text().splitlines()
-            ]
-            modes = json.loads((output / "source-modes.json").read_text())
-        self.assertTrue(digest.startswith("sha256:"))
-        self.assertIn("jobs/spec168_exact_sif_cuda_preflight.py", paths)
-        self.assertIn("di/ndnsf_distributed_inference/core/execution.py", paths)
-        self.assertIn("di/ndnsf_distributed_inference/compatibility/manifest.json", paths)
-        self.assertIn("ndnsf/ndnsf/service.py", paths)
-        self.assertIn("repo/py_repoclient/artifact_transfer.py", paths)
-        self.assertIn("llm_pipeline/user.py", paths)
-        self.assertIn("jobs/gate-e-small-single.sbatch", paths)
-        self.assertIn("jobs/gate-e-small-repeated.sbatch", paths)
-        self.assertIn("jobs/spec168-cold-warm-analyzer.py", paths)
-        self.assertIn("jobs/spec168_cold_warm_contract.py", paths)
-        self.assertIn("jobs/prepare-qwen36.py", paths)
-        self.assertIn("jobs/spec168-overlay-entrypoint.sh", paths)
-        self.assertIn("compat/spec162/generation-rank-inner.sh", paths)
-        self.assertEqual("0555", modes["jobs/spec168-overlay-entrypoint.sh"])
-        self.assertEqual("0444", modes["source-modes.json"])
-        self.assertFalse(any(path.endswith((".pt", ".sif", ".bin")) for path in paths))
-
-    def test_source_bundle_can_pin_native_core_overlay(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            native = root / "libndn-service-framework.so"
-            native.write_bytes(b"pinned-native-core-fixture")
-            extension = root / "_ndnsf.cpython-310-x86_64-linux-gnu.so"
-            extension.write_bytes(b"pinned-native-extension-fixture")
-            repo_extension = (
-                root / "_py_repoclient.cpython-310-x86_64-linux-gnu.so"
-            )
-            repo_extension.write_bytes(b"pinned-repo-extension-fixture")
-            output = root / "bundle"
-            builder.build(output, native, extension, repo_extension)
-            manifest = (output / "source-files.sha256").read_text()
-            copied = output / "native/lib/libndn-service-framework.so.0.1.0"
-            copied_extension = output / f"native/python/{extension.name}"
-            copied_repo_extension = (
-                output / f"repo/py_repoclient/{repo_extension.name}"
-            )
-            copied_bytes = copied.read_bytes()
-            copied_extension_bytes = copied_extension.read_bytes()
-            copied_repo_extension_bytes = copied_repo_extension.read_bytes()
-        self.assertIn("native/lib/libndn-service-framework.so.0.1.0", manifest)
-        self.assertIn(f"native/python/{extension.name}", manifest)
-        self.assertIn(f"repo/py_repoclient/{repo_extension.name}", manifest)
-        self.assertEqual(b"pinned-native-core-fixture", copied_bytes)
-        self.assertEqual(
-            b"pinned-native-extension-fixture", copied_extension_bytes)
-        self.assertEqual(
-            b"pinned-repo-extension-fixture", copied_repo_extension_bytes)
-
-    def test_source_bundle_rejects_incomplete_native_abi_closure(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            native = root / "libndn-service-framework.so"
-            native.write_bytes(b"core-only-is-unsafe")
-            with self.assertRaisesRegex(ValueError, "CORE_NDNSF_AND_REPO"):
-                builder.build(root / "bundle", native)
-
-    def test_source_bundle_closure_rejects_missing_with_name_dependency(self):
-        selected = {
-            "jobs/owner.py": FIXTURES / "build-generation-policy.py.txt",
-        }
-        with self.assertRaisesRegex(ValueError, "prepare-qwen36.py"):
-            builder.validate_bundle_closure(selected)
 
 
 if __name__ == "__main__":

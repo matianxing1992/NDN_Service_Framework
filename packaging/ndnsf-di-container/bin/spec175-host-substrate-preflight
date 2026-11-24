@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the host substrate for the Spec175 host-orchestrated G4 replay.
+"""Validate the host MiniNDN and pinned Apptainer substrate.
 
 This gate intentionally does not inspect the candidate SIF.  It verifies the
 host-only MiniNDN/Mininet/OVS/NLSR layer and the launcher that will invoke the
@@ -58,7 +58,6 @@ def main() -> int:
     parser.add_argument("--host-gate-manifest", required=True, type=Path)
     parser.add_argument("--repository-root", required=True, type=Path)
     parser.add_argument("--topology-file", required=True, type=Path)
-    parser.add_argument("--replay-driver", required=True, type=Path)
     parser.add_argument("--apptainer", required=True)
     parser.add_argument("--expected-apptainer", default="1.5.3")
     parser.add_argument("--output", required=True, type=Path)
@@ -93,51 +92,6 @@ def main() -> int:
     checks["topology"] = {"path": str(topology), "exists": topology.is_file()}
     if not topology.is_file():
         errors.append("HOST_TOPOLOGY_MISSING")
-
-    driver = args.replay_driver.resolve()
-    driver_text = driver.read_text(encoding="utf-8") if driver.is_file() else ""
-    production_runner = (args.repository_root.resolve() /
-                         "Experiments/NDNSF_DI_LlmPipeline_Minindn.py")
-    production_text = (production_runner.read_text(encoding="utf-8")
-                       if production_runner.is_file() else "")
-    driver_checks = {
-        "path": str(driver),
-        "exists": driver.is_file(),
-        "productionRunner": str(production_runner),
-        "productionRunnerExists": production_runner.is_file(),
-        "usesApptainer": (
-            "sif_exec_prefix" in production_text and
-            "--cleanenv" in production_text and
-            "SPEC175_SIF_HOST_PROCESS_FALLBACK" in production_text
-        ),
-        "usesExactSif": "SPEC175_RUNTIME_SIF" in driver_text,
-        "doesNotEmbedMiniNdn": "replay_root" not in driver_text,
-        "usesManifestDrivenEntries": (
-            'host["entries"]' in driver_text and
-            'for index, registered in enumerate(host_entries)' in driver_text
-        ),
-        "doesNotRequireHistoricalMatrix": "EXPECTED_ENTRIES" not in driver_text,
-        "usesPerCaseWatchdog": (
-            "CASE_WATCHDOG_SECONDS" in driver_text and
-            "communicate(timeout=timeout)" in driver_text
-        ),
-        "requiresAllFourProviderReadiness": (
-            "allFourReady" in driver_text and
-            "readyCount" in driver_text
-        ),
-        "emitsNotRunRows": (
-            '"notRunEntries"' in driver_text and
-            '"NOT_RUN_AFTER_FIRST_INCOMPLETE"' in driver_text
-        ),
-        "forwardsControllerCertificate": (
-            'NDNSF_CONTROLLER_CERT_FILE="${NDNSF_CONTROLLER_CERT_FILE:-}"'
-            in production_text
-        ),
-    }
-    checks["replayDriver"] = driver_checks
-    for key, value in driver_checks.items():
-        if key != "path" and not value:
-            errors.append("HOST_REPLAY_DRIVER_INVALID:" + key)
 
     apptainer = Path(args.apptainer)
     actual = version(str(apptainer)) if apptainer.is_file() else ""

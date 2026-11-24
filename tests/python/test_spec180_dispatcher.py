@@ -48,12 +48,7 @@ def _workload(module, *, gate: str = "yolo-functional") -> dict[str, object]:
         "case": registered["case"],
         "entrypoint": registered["entrypoint"],
         "args": list(registered["args"]),
-        "environment": (_yolo_environment() if gate == "yolo-functional" else {
-            "SPEC180_QWEN_MODEL": "Qwen/Qwen3.6-27B",
-            "SPEC180_QWEN_REVISION": "model-revision-1",
-            "SPEC180_QWEN_MODEL_IDENTITY_DIGEST": "sha256:" + "a" * 64,
-            "SPEC180_QWEN_PROMPT_DIGEST": "sha256:" + "b" * 64,
-        }),
+        "environment": _yolo_environment(),
         "evidenceSchema": module.EVIDENCE_SCHEMA,
     }
 
@@ -65,32 +60,6 @@ def test_yolo_dispatch_workload_is_closed_and_normalized():
     assert value["entrypoint"] == "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py"
     assert value["args"] == ["--case", "Y-B"]
     assert set(value["environment"]) == set(module.YOLO_ENVIRONMENT_FIELDS)
-
-
-def test_qwen_dispatch_workload_keeps_formal_gate_identity():
-    module = load_dispatcher()
-    value = module.validate_workload(
-        _workload(module, gate="qwen-functional"), "qwen-functional")
-    assert value["case"] == "QWEN-F"
-    assert value["entrypoint"] == "Experiments/NDNSF_DI_QwenAckDriven_Minindn.py"
-    assert value["args"] == ["--case", "QWEN-F"]
-    assert "SPEC180_QWEN_MODEL_MANIFEST" not in value["environment"]
-
-
-def test_qwen_dispatch_never_falls_back_to_spec175_wrapper(tmp_path: Path):
-    module = load_dispatcher()
-    workload = _workload(module, gate="qwen-functional")
-    assert "StreamedGeneration" not in workload["entrypoint"]
-    with pytest.raises(module.DispatcherError, match="ENTRYPOINT_MISSING"):
-        module.build_dispatch_command(workload, tmp_path)
-
-
-def test_qwen_identity_metadata_requires_content_digest():
-    module = load_dispatcher()
-    workload = _workload(module, gate="qwen-functional")
-    workload["environment"]["SPEC180_QWEN_PROMPT_DIGEST"] = "prompt-v1"
-    with pytest.raises(module.DispatcherError, match="INVALID_DIGEST"):
-        module.validate_workload(workload, "qwen-functional")
 
 
 @pytest.mark.parametrize("mutation, error", [

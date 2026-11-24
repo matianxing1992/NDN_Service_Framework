@@ -2107,67 +2107,10 @@ Stage 1: hidden-state npz -> layers 8-16 -> hidden-state npz
 Stage 2: hidden-state npz -> layers 16-24 -> logits/top token
 ```
 
-MiniNDN 脚本可以用 `--runtime qwen-onnx` 运行这个 runtime：
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --warmup-requests 3 \
-  --measured-duration-s 60 \
-  --request-interval-ms 200
-```
-
-如果要强制完整 context 输入走标准 large-data/reference 路径：
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 1 \
-  --publish-input-reference
-```
-
-如果要验证 append-only context-delta 处理，同时保持 expected top token 不变：
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 2 \
-  --context-input-mode append-empty-delta-after-first \
-  --publish-input-reference
-```
-
-如果要验证真正的非空 append-delta correctness，可以追加一个或多个 token IDs，并将
-分布式结果和本地重新计算的 full-context ONNX pipeline 结果对比：
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 2 \
-  --context-input-mode append-token-delta-after-first \
-  --delta-token-ids 2 \
-  --publish-input-reference
-```
-
-同一个回归已经接入 DI regression suite 和可选 MiniNDN quick-suite case：
-
-```bash
-python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
-  --case llm-pipeline-qwen-onnx-delta-minindn
-
-python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py \
-  --case di-llm-qwen-onnx-delta-minindn
-```
+旧 Python MiniNDN 执行入口已退役。现行网络执行使用
+`Experiments/native_deployment_entrypoint.py`、显式原生部署配置和已安装 C++ 角色。
+上述离线导出及独立参考 helper 保留。下列测量属于历史 Python pipeline，
+不能用于证明当前原生交付资格。
 
 在 `AI_Lab.conf` 上记录的 60 秒结果：
 

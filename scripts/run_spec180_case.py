@@ -47,17 +47,6 @@ YOLO_ENVIRONMENT_FIELDS = frozenset({
     "SPEC180_YOLO_CONFIG",
 })
 
-# These names are metadata bindings for the external QWEN-F runner; no ambient
-# host path or private credential is accepted. The external 27B qualification
-# is deliberately not routed to the Spec175 local wrapper: doing so would
-# silently run the tiny fixture under a QWEN-F label.
-QWEN_ENVIRONMENT_FIELDS = frozenset({
-    "SPEC180_QWEN_MODEL",
-    "SPEC180_QWEN_REVISION",
-    "SPEC180_QWEN_MODEL_IDENTITY_DIGEST",
-    "SPEC180_QWEN_PROMPT_DIGEST",
-})
-
 _PATH_FIELDS = frozenset({
     "SPEC180_YOLO_CANONICAL_PACKAGE",
     "SPEC180_YOLO_CATALOGUE_REGISTRY",
@@ -67,26 +56,13 @@ _PATH_FIELDS = frozenset({
     "SPEC180_YOLO_TOPOLOGY",
     "SPEC180_YOLO_CONFIG",
 })
-_QWEN_DIGEST_FIELDS = frozenset({
-    "SPEC180_QWEN_MODEL_IDENTITY_DIGEST",
-    "SPEC180_QWEN_PROMPT_DIGEST",
-})
-
 _REGISTERED = {
     "yolo-functional": {
         "case": "Y-B",
         "entrypoint": "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py",
         "args": ("--case", "Y-B"),
     },
-    "qwen-functional": {
-        "case": "QWEN-F",
-        # This is the dedicated production entrypoint for the external
-        # Qwen3.6-27B ONNX workload. It validates the signed manifest/object
-        # set itself; routing to the Spec175 M11 wrapper would be a false
-        # qualification of the tiny local fixture.
-        "entrypoint": "Experiments/NDNSF_DI_QwenAckDriven_Minindn.py",
-        "args": ("--case", "QWEN-F"),
-    },
+
 }
 
 _FIXED_RUNTIME_FIELDS = frozenset({
@@ -163,8 +139,7 @@ def _check_argument_vector(value: Any, expected: Sequence[str], label: str) -> t
 def _check_environment(value: Any, gate: str) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise DispatcherError("ENVIRONMENT_NOT_OBJECT")
-    allowed = (YOLO_ENVIRONMENT_FIELDS if gate == "yolo-functional"
-               else QWEN_ENVIRONMENT_FIELDS)
+    allowed = YOLO_ENVIRONMENT_FIELDS
     keys = list(value)
     if any(not isinstance(key, str) or not _KEY_RE.fullmatch(key)
            for key in keys):
@@ -178,8 +153,6 @@ def _check_environment(value: Any, gate: str) -> dict[str, str]:
             raise DispatcherError("ENVIRONMENT_VALUE_INVALID:" + key)
         if _SHELL_RE.search(raw) or _SECRET_RE.search(raw):
             raise DispatcherError("ENVIRONMENT_VALUE_FORBIDDEN:" + key)
-        if key in _QWEN_DIGEST_FIELDS:
-            _require_digest(raw, key)
         if key in _PATH_FIELDS:
             path = Path(raw)
             if (not path.is_absolute() or ".." in path.parts or
@@ -189,9 +162,6 @@ def _check_environment(value: Any, gate: str) -> dict[str, str]:
         result[key] = raw
     if gate == "yolo-functional" and set(result) != set(YOLO_ENVIRONMENT_FIELDS):
         missing = sorted(YOLO_ENVIRONMENT_FIELDS - set(result))
-        raise DispatcherError("ENVIRONMENT_FIELD_MISSING:" + ",".join(missing))
-    if gate == "qwen-functional" and set(result) != set(QWEN_ENVIRONMENT_FIELDS):
-        missing = sorted(QWEN_ENVIRONMENT_FIELDS - set(result))
         raise DispatcherError("ENVIRONMENT_FIELD_MISSING:" + ",".join(missing))
     return result
 
