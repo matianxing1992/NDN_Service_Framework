@@ -479,13 +479,14 @@ Input Input::text(std::string utf8)
   return value;
 }
 
-Input Input::repository(DataRef reference)
+Input Input::repository(DataRef reference, std::vector<std::uint8_t> applicationOptions)
 {
   if (reference.m_canonical.empty())
     throw DiError("INVALID_DATA_REFERENCE", "local", "input", "repository reference is empty");
   Input value;
   value.m_kind = Kind::Repository;
   value.m_reference = std::move(reference);
+  value.m_applicationOptions = std::move(applicationOptions);
   return value;
 }
 
@@ -1050,11 +1051,16 @@ RequestHandle PreparedModel::requestInternal(
   try {
     auto nativeHandle = client->requestCooperative(
       model, nativeInput, std::move(splitter), std::move(placement), nativeOptions);
-    nativeHandle.retain(m_lease);
+    std::shared_ptr<void> requestLease = m_lease;
+    if (input.m_reference.m_servingLease) {
+      requestLease = std::make_shared<std::pair<std::shared_ptr<void>, std::shared_ptr<void>>>(
+        m_lease, input.m_reference.m_servingLease);
+    }
+    nativeHandle.retain(requestLease);
     auto native = std::make_shared<NativeInferenceHandle>(std::move(nativeHandle));
     auto state = std::make_shared<RequestHandle::State>();
     state->client = client;
-    state->packageLease = m_lease;
+    state->packageLease = std::move(requestLease);
     state->defaultTimeout = options.timeout;
     state->id = [native] { return native->requestId(); };
     state->status = [native] {

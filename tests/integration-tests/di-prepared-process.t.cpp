@@ -722,6 +722,22 @@ BOOST_AUTO_TEST_CASE(InstalledHostFourStageCancel, *boost::unit_test::disabled()
                             "--host-cancel-after-event", "3"}, {});
 }
 
+BOOST_AUTO_TEST_CASE(NativeFourStageRepositoryInput, *boost::unit_test::disabled())
+{
+  runProcessCase("stream", {"--four-stage", "--repository-input"}, {});
+}
+
+BOOST_AUTO_TEST_CASE(InstalledHostRepositoryInput, *boost::unit_test::disabled())
+{
+  runProcessCase("stream", {"--four-stage", "--host-requester", "--repository-input"}, {});
+}
+
+BOOST_AUTO_TEST_CASE(InstalledHostRepositoryCancel, *boost::unit_test::disabled())
+{
+  runProcessCase("stream", {"--four-stage", "--host-requester", "--repository-input",
+                            "--host-cancel-after-event", "3"}, {});
+}
+
 BOOST_AUTO_TEST_CASE(StoredModelSurvivesPreparerExitForIndependentUsers)
 {
   runProcessCase("stream", {"--stored-model-reuse"}, {});

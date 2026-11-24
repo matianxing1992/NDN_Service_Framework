@@ -1479,6 +1479,12 @@ namespace ndnsf::di {
 
 struct DiPreparedModelTestAccess
 {
+  static NativeApplicationInput
+  encodeInput(const PreparedModel& model, const Input& input)
+  {
+    return model.encodeInput(input);
+  }
+
   static std::shared_ptr<const PreparedModelPackage>
   package(const PreparedModel& model)
   {
@@ -4147,8 +4153,60 @@ BOOST_AUTO_TEST_CASE(PreparedRequestValidatesProtectedReferenceMetadata)
                           return error.code() == "INVALID_DATA_REFERENCE" &&
                                  error.boundary() == "input";
                         });
+  const std::vector<std::uint8_t> applicationOptions = {'{', '"', 'x', '"', ':', '1', '}'};
+  const auto encoded = ndnsf::di::DiPreparedModelTestAccess::encodeInput(
+    prepared, Input::repository(data, applicationOptions));
+  BOOST_CHECK(encoded.transportMode == NativeInputTransportMode::RepositoryReference);
+  BOOST_CHECK_EQUAL(encoded.repositoryReference, data.canonicalMetadata());
+  BOOST_CHECK_EQUAL_COLLECTIONS(encoded.options.begin(), encoded.options.end(),
+                                applicationOptions.begin(), applicationOptions.end());
+  BOOST_CHECK_EXCEPTION(runtime->user().publishInput(prepared, {}), DiError,
+                        [] (const DiError& error) { return error.code() == "INVALID_INPUT"; });
+  BOOST_CHECK_EXCEPTION(runtime->user().publishInput(prepared, std::vector<std::uint8_t>(33)),
+                        DiError, [] (const DiError& error) {
+                          return error.code() == "INVALID_INPUT";
+                        });
+  BOOST_CHECK_EXCEPTION(runtime->user().publishInput(prepared, {1}, std::chrono::milliseconds(0)),
+                        DiError, [] (const DiError& error) {
+                          return error.code() == "INVALID_INPUT_PUBLICATION_BUDGET";
+                        });
+  auto foreignRuntime = Runtime::open(runtimeConfig(fixture));
+  BOOST_CHECK_EXCEPTION(foreignRuntime->user().publishInput(prepared, {1}), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "MODEL_RUNTIME_MISMATCH";
+                        });
+  foreignRuntime->close();
+  BOOST_CHECK(foreignRuntime->drain(std::chrono::seconds(2)));
+
+  // Exercise the real Core worker while this fixture pumps its borrowed Face.
+  // Only the request owns the temporary input after submission; the native
+  // process oracle separately verifies actual Provider fetch and execution.
+  auto published = std::make_shared<std::optional<DataRef>>();
+  const std::vector<std::uint8_t> inputBytes(32, 3); // exact verified adapter bound
+  auto publication = startBooleanResultObservation([user = runtime->user(), prepared,
+                                                   published, inputBytes] {
+    published->emplace(user.publishInput(prepared, inputBytes, std::chrono::seconds(2)));
+    return true;
+  });
+  pumpUntilBooleanResultReady(*binding.environment, publication, std::chrono::seconds(3));
+  BOOST_REQUIRE(publication->get());
+  BOOST_REQUIRE(published->has_value());
+  const auto metadata = nativeParseJson((*published)->canonicalMetadata());
+  BOOST_CHECK_EQUAL(metadata.at("plaintextSize").get<std::uint64_t>(), 32U);
+  BOOST_CHECK_EQUAL(metadata.at("ciphertextDigest").get<std::string>(),
+                    nativePlanningDigest(inputBytes.data(), inputBytes.size()));
+  auto referenceRequest = [&] {
+    auto value = Input::repository(std::move(**published), applicationOptions);
+    published->reset();
+    return runtime->user().request(prepared, value);
+  }();
+  referenceRequest.cancel();
   runtime->close();
-  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+  BOOST_CHECK_EXCEPTION(runtime->user().publishInput(prepared, {1}), DiError,
+                        [] (const DiError& error) { return error.code() == "RUNTIME_CLOSED"; });
+  BOOST_CHECK(drainWithInProcessPump(binding, runtime, std::chrono::seconds(2)));
+  BOOST_CHECK(referenceRequest.status() == RequestStatus::Cancelled ||
+              referenceRequest.status() == RequestStatus::Failed);
 }
 
 #if defined(SPEC189_REQUEST_SELECTOR)

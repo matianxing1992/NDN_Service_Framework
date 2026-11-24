@@ -333,6 +333,14 @@ public:
     const ndnsf_distributed_repo::RepoArtifactTarget& repository,
     Milliseconds timeout = Milliseconds{300000}) const;
 
+  /** Publish protected application input using this Runtime's Core User.
+   * The prepared model supplies the execution service and logical input bound.
+   * The returned reference and submitted requests pin serving until released.
+   * Blocking: do not call on the Face or Runtime worker thread.
+   */
+  DataRef publishInput(const PreparedModel& model, const std::vector<std::uint8_t>& payload,
+                       Milliseconds timeout = Milliseconds{30000}) const;
+
   /** Submit one request on behalf of this User using a prepared model. */
   RequestHandle request(const PreparedModel& model, const Input& input,
                         const RequestOptions& options = {}) const;

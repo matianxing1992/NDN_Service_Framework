@@ -586,7 +586,8 @@ bindDistributedInference(py::module_& module)
     .def_static("inline_bytes", &di::Input::inlineBytes,
                 py::arg("payload"), py::arg("application_options") = std::vector<std::uint8_t>{})
     .def_static("text", &di::Input::text, py::arg("utf8"))
-    .def_static("repository", &di::Input::repository, py::arg("reference"));
+    .def_static("repository", &di::Input::repository, py::arg("reference"),
+                py::arg("application_options") = std::vector<std::uint8_t>{});
 
   py::class_<di::Result>(module, "Result")
     .def_readonly("payload", &di::Result::payload)
@@ -1415,6 +1416,14 @@ bindDistributedInference(py::module_& module)
     .def_property_readonly("counters", &di::Provider::counters);
 
   py::class_<di::User>(module, "User")
+    .def("publish_input", [] (const di::User& user, const di::PreparedModel& model,
+                              const std::vector<std::uint8_t>& payload,
+                              const py::object& timeout) {
+      const auto budget = timeoutMilliseconds(timeout, 30000);
+      py::gil_scoped_release release;
+      return user.publishInput(model, payload, budget);
+    }, py::arg("model"), py::arg("payload"), py::kw_only(),
+       py::arg("timeout_s") = py::none())
     .def("prepare", [] (const di::User& user, const std::string& modelKey,
                          di::PrepareOptions options, const py::object& timeout) {
       const auto normalized = prepareOptionsWithTimeout(std::move(options), timeout);

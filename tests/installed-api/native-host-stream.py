@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cancel-after-event", type=int, choices=(0, 3), default=0)
+    parser.add_argument("--repository-input", action="store_true")
     args = parser.parse_args()
     receipt = {"events": [], "completed": [], "errors": [], "terminal_events": 0,
                "status": "NOT_STARTED", "first_failure": None,
@@ -41,8 +42,14 @@ def main():
         options.stream = api.StreamOptions()
         # Preserve the exact operator options; C++ parses generation and IDs.
         application_options = (configuration.parent / request["options_file"]).read_bytes()
-        value = api.Input.inline_bytes(list(args.input.read_bytes()), list(application_options))
+        if args.repository_input:
+            reference = user.publish_input(model, list(args.input.read_bytes()), timeout_s=30)
+            value = api.Input.repository(reference, list(application_options))
+            del reference
+        else:
+            value = api.Input.inline_bytes(list(args.input.read_bytes()), list(application_options))
         handle = user.request(model, value, options=options)
+        del value
 
         def on_completion(error, result):
             if error is not None:

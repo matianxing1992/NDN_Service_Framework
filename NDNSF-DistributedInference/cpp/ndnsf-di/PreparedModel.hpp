@@ -50,8 +50,11 @@ private:
   {
   }
   std::string m_canonical;
+  // Local serving ownership; never serialized or treated as authorization.
+  std::shared_ptr<void> m_servingLease;
   friend class Input;
   friend class PreparedModel;
+  friend class User;
 };
 
 /** Owning application input.  No caller buffer is borrowed by a request. */
@@ -61,7 +64,8 @@ public:
   static Input inlineBytes(std::vector<std::uint8_t> payload,
                            std::vector<std::uint8_t> applicationOptions = {});
   static Input text(std::string utf8);
-  static Input repository(DataRef reference);
+  static Input repository(DataRef reference,
+                          std::vector<std::uint8_t> applicationOptions = {});
 
 private:
   enum class Kind { InlineBytes, Text, Repository };

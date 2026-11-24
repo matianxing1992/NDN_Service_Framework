@@ -24,6 +24,8 @@ parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--four-stage', action='store_true',
                     help='prepare the canonical four-stage source on four CPU Providers')
+parser.add_argument('--repository-input', action='store_true',
+                    help='publish application input through the native Runtime User')
 parser.add_argument('--host-requester', action='store_true',
                     help='use the installed Python facade with the four native Providers')
 parser.add_argument('--host-cancel-after-event', type=int, choices=(0, 3), default=0,
@@ -299,6 +301,8 @@ if args.four_stage:
   role_artifacts.append(artifact_row)
  manifest['services'][0].update(roles=stream_roles,artifacts=role_artifacts)
 (run_root/'requester/options.json').write_text(json.dumps(options)); rc['request']['options_file']='options.json'; rc['stream_oracle']={'token_ids':[4,5,6,7,8,9,10,2]}
+if args.repository_input:
+ rc['request']['input_transport']='REPO_REF'
 if args.conversation or args.stored_model_reuse:
  conversation_key_dir=run_root/'requester/keys'; conversation_key_dir.mkdir(mode=0o700)
  conversation_key=(conversation_key_dir/'conversation.key'); conversation_key.write_bytes(os.urandom(32)); conversation_key.chmod(0o600)
@@ -522,6 +526,12 @@ try:
   requester_command=[os.environ.get('NDNSF_TEST_PYTHON','/usr/bin/python3'),
                      str(ROOT/'tests/installed-api/native-host-stream.py'),
                      '--cancel-after-event',str(args.host_cancel_after_event)]
+  if args.repository_input:
+   requester_command+=['--repository-input']
+ if args.repository_input:
+  # The caller's temporary DataRef is destroyed before ACK closes. Native
+  # request ownership must keep the original protected input available.
+  re['NDNSF_REQUEST_LARGE_DATA_RETENTION_MS']='50'
  requester_command+=['--config',str(requester_dir/'config.json'),'--input',str(requester_dir/'input.bin'),'--output',str(requester_dir/'output.bin')]
  rq=launch(requester_command,re,'requester');children.append(rq)
  stopped_provider_a=False

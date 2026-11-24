@@ -1343,9 +1343,20 @@ run(int argc, char** argv)
       requestSubmittedSteadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     }
-    RequestHandle handle = conversation
-      ? conversation->request(Input::inlineBytes(payload, optionsBytes), options)
-      : user.request(prepared, Input::inlineBytes(payload, optionsBytes), options);
+    const auto transport = request.get<std::string>("input_transport", "INLINE");
+    if (transport != "INLINE" && transport != "REPO_REF")
+      throw std::invalid_argument("request.input_transport must be INLINE or REPO_REF");
+    if (conversation && transport == "REPO_REF")
+      throw std::invalid_argument("conversation input requires INLINE token ownership");
+    RequestHandle handle = [&] {
+      if (transport == "REPO_REF") {
+        const auto reference = user.publishInput(prepared, payload, options.timeout);
+        return user.request(prepared, Input::repository(reference, optionsBytes), options);
+      }
+      return conversation
+        ? conversation->request(Input::inlineBytes(payload, optionsBytes), options)
+        : user.request(prepared, Input::inlineBytes(payload, optionsBytes), options);
+    }();
     if (statisticsOutput) {
       try {
         statisticsRequestId = handle.id();
