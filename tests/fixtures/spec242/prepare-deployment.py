@@ -20,7 +20,8 @@ def capture(command, env=None):
                           stdout=subprocess.PIPE).stdout
 
 
-def prepare_identities(root, prefix, namespace, group, actors):
+def prepare_identities(root, prefix, namespace, group, actors, *,
+                       certificate_validity=timedelta(days=1)):
     ca = root / "ca"
     ca.mkdir(mode=0o700)
     environments = {}
@@ -35,7 +36,7 @@ def prepare_identities(root, prefix, namespace, group, actors):
     capture(["ndnsec", "key-gen", "-t", "e", namespace], ca_env)
     now = datetime.now(timezone.utc)
     not_before = (now - timedelta(minutes=1)).strftime("%Y%m%d%H%M%S")
-    not_after = (now + timedelta(days=1)).strftime("%Y%m%d%H%M%S")
+    not_after = (now + certificate_validity).strftime("%Y%m%d%H%M%S")
     for actor in actors:
         actor_id, identity = actor["id"], actor["identity"]
         home = root / "homes" / actor_id

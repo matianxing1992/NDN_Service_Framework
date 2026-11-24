@@ -3,6 +3,7 @@
 
 import argparse
 import copy
+from datetime import timedelta
 import json
 import os
 from pathlib import Path
@@ -109,8 +110,10 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
         next(actor for actor in actors if actor['kind'] == 'repo')['parameters'].update({
             'request-timeout-ms': 60000,
         })
+    # Cover a queued checkpoint run's wait, preparation, and 24-hour generation budget.
+    identity_options = {'certificate_validity': timedelta(days=4)} if checkpoint_workload else {}
     environments, certificates, trust = credentials['prepare_identities'](
-        root, prefix, namespace, network['group'], actors)
+        root, prefix, namespace, network['group'], actors, **identity_options)
     credentials['prepare_file_keyrings'](root, actors, 'wan-fixture-protection')
     policy = root / 'controller-policy.info'
     policy.write_text(deployment['policy_text'](identities, network, provider_roles, None))
