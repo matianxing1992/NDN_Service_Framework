@@ -277,13 +277,10 @@ A generic `DONE` status without the exact revision, adapter, artifacts, and all
 required roles remains `PREPARING`. Definitions signed by an unknown
 Application key are rejected even when their self-signature is valid.
 
-With a configured native requester, local and coordinator-owned preplanned
-requests enter the same C++ inference path. This bridge currently accepts one
-binary result with the configured model, service and input schema, default
-`DeploymentConstraints()`, and empty request metadata. Other constraints,
-continuous output, output encodings and model bindings are rejected before
-submission. A signed definition alone does not establish backend support.
-The durable journal binds the application request ID to the native request ID.
+Preplanned deployment requests retain their ordinary network/coordinator and
+journal paths. Native inference uses the public `Runtime` SDK. The former APP
+native-requester configuration bridge has retired; signed deployment intent
+alone does not establish native backend support.
 
 Historical APP journals remain readable with the original envelope key. Completed
 requests retain their results, and reopening an active record still checks its
@@ -316,37 +313,16 @@ lifecycle state machines. Existing signed `SELECTION-STATUS` snapshots expose
 coordinator progress to the remote request handle; no DI-specific status wire
 protocol is added.
 
-NDNSF-DistributedInference is an application-layer distributed inference
-runtime built on NDNSF. The current user-facing API and examples are still
-Python-first, but the performance direction is C++-first: hot-path scheduling,
-dependency dataflow, prefetch, worker dispatch, and future ONNX Runtime
-execution should run in native C++ and call NDNSF Core directly. Python should
-remain a thin API, deployment, GUI, and experiment layer.
-
-For model/task-first streamed requests, `APPClient.request_streaming(...)`
-returns one `AutomaticStreamingHandle`. Its `timing_summary` is a
-metadata-only view of the real monotonic event and terminal callbacks: it
-reports TTFT, each inter-token interval, terminal/error time, and bounded
-attempt/replacement counts without exposing prompt, token, logits, or state
-payloads. Per-role lifecycle attribution still belongs to the Spec175 evidence
-recorder and qualification gates; do not infer it from this aggregate view.
-
-The repository therefore contains two layers today:
-
-```text
-Stable APP-facing layer
-  Python InferenceApplication / InferenceClient / InferenceProvider
-  policy generation, MiniNDN experiments, GUI, and example scripts
-
-Native hot-path migration layer
-  C++ async dataflow runtime under NDNSF-DistributedInference/cpp/
-  multi-worker role scheduling, planned dependency edges, fan-in/fan-out
-  execution, and timing hooks for future C++ ONNX/NDNSF integration
-```
-
-The long-term goal is not to wrap a Python executor around NDNSF forever.
-Instead, Python should describe the service and submit inference jobs, while
-the providers execute dependency-driven inference through native C++ workers.
+NDNSF-DistributedInference runs planning, preparation, dependency execution,
+streaming and conversation state in C++. Python provides thin SDK calls,
+deployment orchestration, offline model preparation, GUI and experiment tools.
+Normal inference uses the public `Runtime`, `User`, `PreparedModel` and
+`RequestHandle` API. A reliable `EventReader` exposes native stream events;
+result, cancellation, close and drain remain native-owned. The maintained
+[YOLO requester](../examples/python/NDNSF-DistributedInference/yolo_2x2/user.py)
+shows input publication, request options and bounded cleanup on that path.
+Existing `InferenceApplication`/`InferenceClient` deployment and journal
+operations retain their explicit `request_preplanned` entry point.
 
 For the installed `ndnsf-di cluster` path, size the preparation budget separately
 from inference. `requester.limits.bootstrap_ms` bounds native preparation
@@ -3701,36 +3677,16 @@ newer than the cursor. Polling has bounded adaptive intervals and stops on a
 terminal state. These rules contain no UAV, codec, model-family or workload
 special case.
 
-## Spec 163 deferred collaboration planning
+## Native requests and offline planning
 
-The canonical application path is now model/task/input first. It does not
-require an application-authored deployment, provider list, role list, or
-pre-split model:
+Normal inference uses `ndnsf_distributed_inference.api.Runtime` and its
+`User.prepare` / `User.request` methods. The configured C++ owner admits signed
+Provider evidence, prepares model artifacts, commits the selected plan and
+executes authenticated dependencies. Python automatic-planning and model/task
+request conveniences have retired. Generic Core `DEFERRED` collaboration and
+explicit preplanned deployment operations retain their own supported contracts.
 
-```python
-model = ModelRef(
-    model_name="Qwen/Qwen3-0.6B",
-    content_digest="sha256:<exact frozen file-manifest digest>",
-    semantics_digest="sha256:<adapter and inference-semantics digest>",
-)
-handle = client.request(
-    model=model,
-    task=task,
-    input=validated_input,
-    timeout_ms=30_000,
-)
-```
-
-NDNSF-DI starts the generic NDNSF Collaboration API in `DEFERRED` mode,
-collects one immutable `ACK_CLOSED` snapshot, derives graph-valid split
-candidates through the selected digest-pinned `ModelFamilyAdapter`, and passes
-sanitized signed Provider offers to the configured `ModelPlacementStrategy`.
-After independent decision validation and any required trusted
-materialization/DistributedRepo publication, it commits the plan on the same
-invocation. The existing roles/dependencies-before-Request API remains the
-explicit `PREPLANNED` compatibility path.
-
-`PreSplitFirstStrategy` first considers an exact active pre-split manifest,
+For offline plan comparisons, `PreSplitFirstStrategy` first considers an exact active pre-split manifest,
 then ranks fresh signed residency evidence in this order: pinned GPU,
 reload-safe GPU, host RAM, disk, repository, and finally a newly generated
 graph-valid split. Residency is evidence rather than authority. Selection

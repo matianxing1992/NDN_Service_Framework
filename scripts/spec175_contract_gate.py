@@ -275,28 +275,6 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
             issues.append(_issue(code, f"missing exporter boundary: {marker}",
                                  exporter_relative))
 
-    coordinator_relative = (
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/"
-        "app_sdk/placement.py"
-    )
-    coordinator_path = project_root / coordinator_relative
-    coordinator_source = (
-        _read(coordinator_path) if coordinator_path.is_file() else "")
-    coordinator_markers = (
-        "GenerationExecutionContractV1", "TOKEN_FEEDBACK",
-        "streaming_operation_stride", "max_generated_tokens",
-        "generation_contract=generation_contract",
-    )
-    missing_coordinator = tuple(
-        marker for marker in coordinator_markers
-        if marker not in coordinator_source)
-    if missing_coordinator:
-        issues.append(_issue(
-            "AUTOMATIC_STREAM_EPOCH_PLAN_MISSING",
-            "automatic V3 stream plan lacks " + ", ".join(missing_coordinator),
-            coordinator_relative,
-        ))
-
     handler_relative = (
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp")
     handler_path = project_root / handler_relative
@@ -504,28 +482,6 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
             "NATIVE_DEVICE_STATE_RESIDENCY_MISSING",
             "CUDA streamed-state path lacks " + ", ".join(missing_device_state),
             onnx_relative,
-        ))
-
-    conversation_relative = (
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py")
-    conversation_path = project_root / conversation_relative
-    conversation_source = (
-        _read(conversation_path) if conversation_path.is_file() else "")
-    conversation_markers = (
-        "def pause_to_host(",
-        "def prefetch_to_gpu(",
-        "copy_state",
-        "transfer_bytes",
-        "ResidencyTier.HOST_RESIDENT",
-        "ResidencyTier.GPU_RESIDENT",
-    )
-    missing_conversation = tuple(
-        marker for marker in conversation_markers if marker not in conversation_source)
-    if missing_conversation:
-        issues.append(_issue(
-            "CONVERSATION_TIER_TRANSFER_MISSING",
-            "conversation state movement lacks " + ", ".join(missing_conversation),
-            conversation_relative,
         ))
 
     integration_relative = "tests/integration-tests/ndnsf-di-core-flow.t.cpp"

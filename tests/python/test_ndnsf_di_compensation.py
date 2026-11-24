@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
 import json
 import unittest
@@ -11,13 +10,6 @@ from ndnsf_distributed_inference.core.recovery import (
     DICancelAttemptV2,
     DIReleaseOfferV2,
     DIStatusQueryV2,
-)
-from ndnsf_distributed_inference.app_sdk.placement import (
-    replan_placement_request,
-)
-from ndnsf_distributed_inference.sdk.placement import (
-    CandidateBudget,
-    PlacementRequest,
 )
 
 
@@ -209,23 +201,6 @@ class CompensationV2Test(unittest.TestCase):
             providers={"/provider/a": digest("offer-a")})
         self.assertTrue(expired.expire(at_ms=1000))
         self.assertFalse(expired.accept_response(attempt=1, at_ms=1000))
-
-    def test_replan_placement_request_fences_old_attempt(self):
-        placement = PlacementRequest(
-            request_id="request-1", attempt=1, deadline_ms=1000,
-            model_digest=digest("model"), graph_digest=digest("graph"),
-            candidate_ids=(digest("candidate"),), providers=(),
-            required_roles=("source",), budget=CandidateBudget(4, 100),
-        )
-        replanned = replan_placement_request(
-            placement, at_ms=200,
-            candidate_ids=(digest("candidate-2"),), providers=())
-        self.assertEqual(replanned.attempt, 2)
-        self.assertEqual(replanned.deadline_ms, placement.deadline_ms)
-        with self.assertRaises(TimeoutError):
-            replan_placement_request(
-                placement, at_ms=1000,
-                candidate_ids=(digest("candidate-2"),), providers=())
 
 
 if __name__ == "__main__":

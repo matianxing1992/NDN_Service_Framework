@@ -257,8 +257,7 @@ class APPClient:
     """Simple client facade for AI application code."""
 
     def __init__(self, deployment: DistributedInferenceDeployment,
-                 client: DistributedInferenceClient, *, optimization_suite=None,
-                 automatic_planner=None):
+                 client: DistributedInferenceClient, *, optimization_suite=None):
         from .engine import DistributedInferenceEngine
         from ..planner.defaults import DefaultOptimizationSuite
         self.deployment = deployment
@@ -267,41 +266,7 @@ class APPClient:
             optimization_suite or DefaultOptimizationSuite())
         self._input_encoders: dict[str, Callable[[Any], bytes]] = {}
         self._service_runtimes: dict[str, RuntimeSpec] = {}
-        self._automatic_planner = automatic_planner
 
-    def request(
-        self,
-        *,
-        model,
-        task,
-        input,
-        timeout_ms: int,
-        options=None,
-        objective=None,
-        constraints=None,
-        request_id: str = "",
-    ):
-        """Run one request without a caller-supplied deployment or split."""
-        if self._automatic_planner is None:
-            raise RuntimeError(
-                "APPClient requires an AutomaticPlanningCoordinator")
-        return self._automatic_planner.request(
-            model=model,
-            task=task,
-            input=input,
-            timeout_ms=timeout_ms,
-            options=options,
-            objective=objective,
-            constraints=constraints,
-            request_id=request_id,
-        )
-
-    def generate(self, request):
-        """Submit one complete-generation request without per-token planning."""
-        if self._automatic_planner is None:
-            raise RuntimeError(
-                "APPClient requires an AutomaticPlanningCoordinator")
-        return self._automatic_planner.generate(request)
 
     @classmethod
     def from_config(

@@ -11,13 +11,7 @@
 #include "ndn-service-framework/Stream.hpp"
 #include "ndn-service-framework/common.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-cancellation.hpp"
 #include "di_bindings.hpp"
@@ -180,59 +174,6 @@ getOrCreateIdentity(ndn::KeyChain& keyChain, const ndn::Name& identity)
       .getDefaultKey()
       .getDefaultCertificate();
   }
-}
-
-std::vector<std::uint8_t>
-readNativeFile(const std::filesystem::path& path, std::uint64_t limit)
-{
-  std::ifstream input(path, std::ios::binary | std::ios::ate);
-  if (!input) throw std::runtime_error("native configuration file is unavailable");
-  const auto size = input.tellg();
-  if (size < 0 || static_cast<std::uint64_t>(size) > limit)
-    throw std::runtime_error("native configuration file exceeds limit");
-  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-  input.seekg(0);
-  if (!bytes.empty() && !input.read(reinterpret_cast<char*>(bytes.data()), bytes.size()))
-    throw std::runtime_error("native configuration file read failed");
-  return bytes;
-}
-
-std::shared_ptr<EVP_PKEY>
-loadNativePrivateKey(const std::filesystem::path& path)
-{
-  auto bytes = readNativeFile(path, 65536);
-  std::unique_ptr<BIO, decltype(&BIO_free)> bio(
-    BIO_new_mem_buf(bytes.data(), static_cast<int>(bytes.size())), BIO_free);
-  EVP_PKEY* key = bio ? PEM_read_bio_PrivateKey(bio.get(), nullptr,
-    [] (char*, int, int, void*) { return 0; }, nullptr) : nullptr;
-  if (!bytes.empty()) OPENSSL_cleanse(bytes.data(), bytes.size());
-  if (!key || EVP_PKEY_id(key) != EVP_PKEY_ED25519)
-    throw std::runtime_error("native grant configuration requires Ed25519 private keys");
-  return {key, EVP_PKEY_free};
-}
-
-std::string
-nativeRawPublicKey(EVP_PKEY& key)
-{
-  std::string bytes(32, '\0');
-  std::size_t size = bytes.size();
-  if (EVP_PKEY_get_raw_public_key(
-        &key, reinterpret_cast<unsigned char*>(bytes.data()), &size) != 1 || size != bytes.size())
-    throw std::runtime_error("native grant authority key has no Ed25519 raw public key");
-  return bytes;
-}
-
-std::shared_ptr<EVP_PKEY>
-loadNativePublicKey(const std::filesystem::path& path)
-{
-  auto bytes = readNativeFile(path, 65536);
-  std::unique_ptr<BIO, decltype(&BIO_free)> bio(
-    BIO_new_mem_buf(bytes.data(), static_cast<int>(bytes.size())), BIO_free);
-  EVP_PKEY* key = bio ? PEM_read_bio_PUBKEY(bio.get(), nullptr, nullptr, nullptr) : nullptr;
-  if (!bytes.empty()) OPENSSL_cleanse(bytes.data(), bytes.size());
-  if (!key || EVP_PKEY_id(key) != EVP_PKEY_ED25519)
-    throw std::runtime_error("native grant configuration requires Ed25519 public keys");
-  return {key, EVP_PKEY_free};
 }
 
 ndn::Name
@@ -4952,101 +4893,6 @@ public:
   bool hasRequestScopedDefault() const
   {
     return m_user && m_user->hasRequestScopedDefault();
-  }
-
-  std::shared_ptr<ndnsf::di::NativeInferenceClient>
-  nativeInferenceClient(std::shared_ptr<const ndnsf::di::NativeAdapterRegistry> adapters)
-  {
-    if (!m_user) {
-      throw std::runtime_error("user is not initialized");
-    }
-    // NativeInferenceClient does not own the Face or ServiceUser.  The
-    // binding's keep_alive policy below keeps this NativeServiceUser alive
-    // for the client lifetime; the aliasing shared_ptr only expresses the
-    // non-owning boundary to the native client.
-    auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(),
-                                                  [] (nsf::ServiceUser*) {});
-    return std::make_shared<ndnsf::di::NativeInferenceClient>(
-      std::move(user), std::move(adapters));
-  }
-
-  std::shared_ptr<ndnsf::di::NativeRequestPreparation>
-  nativePreparation(
-    std::shared_ptr<const ndnsf::di::NativeCanonicalPreparationCatalog> catalog,
-    const std::string& serviceName)
-  {
-    if (!m_user) throw std::runtime_error("user is not initialized");
-    if (!catalog || serviceName.empty() || serviceName.front() != '/')
-      throw std::invalid_argument("native preparation requires catalog and service name");
-    auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(), [] (nsf::ServiceUser*) {});
-    return catalog->makePreparation(std::move(user), serviceName);
-  }
-
-  std::shared_ptr<ndnsf::di::NativeInferenceClient>
-  nativeInferenceClientConfigured(
-    const ndnsf::di::NativeRequestRuntime& runtime,
-    std::shared_ptr<ndnsf::di::NativeRequestPreparation> preparation,
-    std::shared_ptr<const ndnsf::di::NativeOfferAdmission> admission,
-    std::shared_ptr<ndnsf::di::NativeConversationCoordinator> conversations = nullptr)
-  {
-    if (!m_user) throw std::runtime_error("user is not initialized");
-    if (!runtime.catalog)
-      throw std::invalid_argument("native runtime requires a preparation catalog");
-    if (!preparation || !admission)
-      throw std::invalid_argument("native runtime requires preparation and offer admission");
-    auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(), [] (nsf::ServiceUser*) {});
-    return std::make_shared<ndnsf::di::NativeInferenceClient>(
-      std::move(user), runtime.catalog->adapters(), runtime,
-      std::move(conversations), std::move(preparation), std::move(admission));
-  }
-
-  std::shared_ptr<ndnsf::di::NativeConversationCoordinator>
-  nativeConversationCoordinatorFromConfig(const std::string& configurationJson,
-                                           const std::string& baseDirectory)
-  {
-    if (!m_user) throw std::runtime_error("user is not initialized");
-    return ndnsf::di::nativeConversationCoordinatorFromConfig(
-      configurationJson, std::filesystem::path(baseDirectory), m_userIdentity.toUri());
-  }
-
-  std::shared_ptr<const ndnsf::di::NativeAuthenticatedGrantClient>
-  nativeGrantClientFromConfig(const std::string& configurationJson,
-                              const std::string& baseDirectory)
-  {
-    if (!m_user) throw std::runtime_error("user is not initialized");
-    const auto root = ndnsf::di::nativeParseJson(configurationJson);
-    if (root.value("schema", std::string{}) != "ndnsf-di-native-grant-client-v1")
-      throw std::invalid_argument("unsupported native grant client schema");
-    const auto base = std::filesystem::absolute(baseDirectory);
-    const auto path = [&base] (const std::string& value) {
-      if (value.empty()) throw std::invalid_argument("native grant path is empty");
-      const auto candidate = std::filesystem::path(value);
-      return candidate.is_absolute() ? candidate : (base / candidate);
-    };
-    const auto requester = root.at("requester_identity").get<std::string>();
-    const auto authority = root.at("authority_identity").get<std::string>();
-    if (requester != m_userIdentity)
-      throw std::invalid_argument(
-        "native grant requester identity must match the ServiceUser identity");
-    const auto epoch = root.at("protection_epoch").get<std::string>();
-    if (root.contains("authority_private_key_file") || root.contains("content_key_file") ||
-        root.contains("content_key_id") || root.contains("requester_public_key_file") ||
-        root.contains("recipient_public_key_files") || root.contains("allowed_model_manifests") ||
-        root.contains("publication_sources") || root.contains("publication_source")) {
-      throw std::invalid_argument(
-        "native grant client configuration must not contain authority policy or content keys");
-    }
-    auto requesterKey = loadNativePrivateKey(
-      path(root.at("requester_private_key_file").get<std::string>()));
-    const auto authorityPublicKey = loadNativePublicKey(
-      path(root.at("authority_public_key_file").get<std::string>()));
-    const auto authorityService = root.at("authority_service").get<std::string>();
-    auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(), [] (nsf::ServiceUser*) {});
-    return std::make_shared<const ndnsf::di::NativeAuthenticatedGrantClient>(
-      requester, requesterKey, authority, nativeRawPublicKey(*authorityPublicKey), epoch,
-      ndnsf::di::NativeAuthenticatedGrantClient::issueThroughCore(
-        user, authority, authorityService),
-      ndnsf::di::NativeAuthenticatedGrantClient::publishThroughCore(user));
   }
 
   bool
@@ -9777,23 +9623,6 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("adaptive_admission") = false,
          py::arg("serve_certificates") = true,
          py::arg("bootstrap_token") = "")
-	    .def("native_inference_client", &NativeServiceUser::nativeInferenceClient,
-         py::arg("adapters"), py::keep_alive<0, 1>())
-	    .def("native_preparation", &NativeServiceUser::nativePreparation,
-         py::arg("catalog"), py::arg("service_name"), py::keep_alive<0, 1>())
-	    .def("native_grant_client_from_config",
-         &NativeServiceUser::nativeGrantClientFromConfig,
-         py::arg("configuration_json"), py::arg("base_directory") = ".",
-         py::keep_alive<0, 1>())
-    .def("native_inference_client_configured",
-         &NativeServiceUser::nativeInferenceClientConfigured,
-         py::arg("runtime"), py::arg("preparation"), py::arg("admission"),
-         py::arg("conversations") = nullptr,
-         py::keep_alive<0, 1>())
-    .def("native_conversation_coordinator_from_config",
-         &NativeServiceUser::nativeConversationCoordinatorFromConfig,
-         py::arg("configuration_json"), py::arg("base_directory") = ".",
-         py::keep_alive<0, 1>())
 	    .def("open_live_stream", &NativeServiceUser::openLiveStream,
          py::arg("descriptor"), py::arg("on_item"),
          py::arg("start") = "latest",

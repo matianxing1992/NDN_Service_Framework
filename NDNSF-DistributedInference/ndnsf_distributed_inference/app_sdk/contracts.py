@@ -904,51 +904,55 @@ class ApplicationRuntimeConfig:
         )
 
 
-@dataclass(frozen=True)
-class GenerationInput:
-    prompt: str
-    metadata: Mapping[str, str] = field(default_factory=dict)
+def encode_runtime_catalog_snapshot(
+        data_name: str,
+        snapshots: tuple[PreSplitCatalogSnapshot, ...] | list[PreSplitCatalogSnapshot],
+        *,
+        required_candidate_digests: tuple[str, ...] | list[str] = (),
+    ) -> bytes:
+    """Encode the signed APP payload for the active pre-split catalog.
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.prompt, str) or not self.prompt.strip():
-            raise ValueError("generation prompt is required")
-        object.__setattr__(self, "metadata", MappingProxyType({
-            str(key): str(item) for key, item in self.metadata.items()
-        }))
-
-    def to_task_value(self) -> dict[str, Any]:
-        return {"prompt": self.prompt, "metadata": dict(self.metadata)}
-
-
-@dataclass(frozen=True)
-class GenerationConfig:
-    max_new_tokens: int = 64
-    do_sample: bool = False
-    temperature: float = 1.0
-    top_p: float = 1.0
-    stop: Tuple[str, ...] = ()
-    timeout_ms: int = 900_000
-    adapter_name: str = ""
-
-    def __post_init__(self) -> None:
-        if not 1 <= self.max_new_tokens <= 1_000_000:
-            raise ValueError("max_new_tokens is outside the bounded range")
-        if self.timeout_ms <= 0 or self.temperature <= 0.0:
-            raise ValueError("generation timeout/temperature is invalid")
-        if not 0.0 < self.top_p <= 1.0:
-            raise ValueError("generation top_p is invalid")
-        if type(self.do_sample) is not bool:
-            raise ValueError("do_sample must be boolean")
-        object.__setattr__(self, "stop", tuple(str(item) for item in self.stop))
-
-    def to_task_options(self) -> dict[str, Any]:
-        return {
-            "max_new_tokens": self.max_new_tokens,
-            "do_sample": self.do_sample,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "stop": list(self.stop),
-        }
+    The package candidate catalogue and this runtime object catalogue are
+    intentionally separate.  This helper only builds the canonical payload;
+    the caller must publish it through the controller-owned signed APP path
+    and retain that publication receipt.  Requiring the expected candidate
+    digests here prevents a runner from publishing a syntactically valid but
+    incomplete snapshot before starting User.
+    """
+    if (not isinstance(data_name, str) or not data_name.startswith("/")
+            or any(char.isspace() for char in data_name)):
+        raise ValueError("runtime catalogue data name must be absolute")
+    values = tuple(snapshots)
+    if not values:
+        raise ValueError("runtime catalogue requires at least one snapshot")
+    if any(not isinstance(item, PreSplitCatalogSnapshot)
+           for item in values):
+        raise TypeError("runtime catalogue snapshots must be typed records")
+    ordered = tuple(sorted(
+        values, key=lambda item: (item.alias, item.manifest_digest)))
+    aliases = [item.alias for item in ordered]
+    manifests = [item.manifest_digest for item in ordered]
+    candidates = [item.candidate_digest for item in ordered]
+    if (len(set(aliases)) != len(aliases)
+            or len(set(zip(manifests, candidates))) != len(manifests)
+            or len(set(candidates)) != len(candidates)):
+        raise ValueError("runtime catalogue contains duplicate snapshots")
+    if any(item.status != "ACTIVE" for item in ordered):
+        raise ValueError("runtime catalogue requires ACTIVE snapshots")
+    required = {str(item) for item in required_candidate_digests}
+    if not required.issubset(set(candidates)):
+        raise ValueError("runtime catalogue candidate coverage is incomplete")
+    snapshot_values = [item.to_dict() for item in ordered]
+    envelope = {
+        "schema": "ndnsf-di-presplit-catalog-snapshot-v1",
+        "recordName": data_name,
+        "snapshotDigest": _canonical_digest(snapshot_values),
+        "snapshots": snapshot_values,
+    }
+    return json.dumps(
+        envelope, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
 
 
 RequestRef = InferenceRequestHandle
@@ -961,13 +965,14 @@ RequestableDeployment = Union[
 # immutable, sanitized placement values.  Re-exporting (not redefining) them
 # prevents a second application-only planning contract.
 from ..sdk.placement import (  # noqa: E402
+    canonical_digest as _canonical_digest,
     DIProviderOfferV2, ModelPlacementStrategy, PlacementDecision,
     PlacementRequest, ProviderAssignment, ProviderPlanningView,
 )
 
 
 __all__ = [
-    "ApplicationRuntimeConfig", "GenerationConfig", "GenerationInput",
+    "ApplicationRuntimeConfig", "encode_runtime_catalog_snapshot",
     "ArtifactReference", "DeploymentActivationRecord", "DeploymentAvailability",
     "DeploymentConstraints", "DeploymentDefinition", "DeploymentDefinitionRef",
     "DeploymentHandleRef", "DeploymentOperation", "DeploymentOperationHandle",

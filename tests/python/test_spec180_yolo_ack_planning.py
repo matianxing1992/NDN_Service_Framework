@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -12,9 +11,6 @@ sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
 from ndnsf_distributed_inference.adapters.yolo.candidates import (  # noqa: E402
     EXPECTED_IDS,
     verify_catalogue,
-)
-from ndnsf_distributed_inference.app_sdk.placement import (  # noqa: E402
-    _v3_candidate_priority_key, _v3_role_kind,
 )
 from ndnsf_distributed_inference.planner.presplit_first import (  # noqa: E402
     PreSplitFirstStrategy,
@@ -247,13 +243,6 @@ def test_catalogue_order_is_not_a_selection_authority():
     }
     verified = verify_catalogue(catalogue)
     assert {item.candidate_id for item in verified} == set(EXPECTED_IDS)
-    keyed = sorted(
-        (SimpleNamespace(candidate_digest=item.candidate_digest,
-                         selection_priority=item.priority)
-         for item in verified),
-        key=_v3_candidate_priority_key,
-    )
-    assert keyed[0].selection_priority == 20
 
 
 def test_atomic_only_capability_selects_full_model():
@@ -329,12 +318,6 @@ def test_expired_ack_cannot_enter_planning_view():
             ),
             now_ms=100,
         )
-
-
-def test_yolo_detect_shards_are_component_sets_not_tensor_ranks():
-    assert _v3_role_kind("DetectShard0") == "COMPONENT_SET"
-    assert _v3_role_kind("DetectShard1") == "COMPONENT_SET"
-    assert _v3_role_kind("/Stage/0/Shard/0") == "TENSOR_RANK"
 
 
 def test_negative_catalogue_priority_fails_before_enumeration():

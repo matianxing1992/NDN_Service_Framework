@@ -1,36 +1,12 @@
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
-import json
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 # Two cases assert on the local-only Spec 182 contract documents, which live in the git-ignored `specs/`
 # tree and are absent from this checkout. The rest check product behaviour and must keep running.
-MISSING_CONTRACT = not (ROOT / "specs/182-native-di-python-bindings").is_dir()
-
-
-def requires_contract(case):
-    return pytest.mark.skipif(
-        MISSING_CONTRACT, reason="requires the local Spec 182 contract documents")(case)
-
-
-@requires_contract
-def test_legacy_default_routes_are_explicitly_inventory_owned() -> None:
-    design = (ROOT / "specs/182-native-di-python-bindings/contracts/code-design.md").read_text(
-        encoding="utf-8")
-    for path in (
-            "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
-            "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1.py",
-            "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/facades.py",
-            "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py"):
-        assert path in design
-    assert "RETIRE default execution" in design
-    assert "defaultReachable=false" in (
-        ROOT / "specs/182-native-di-python-bindings/contracts/runtime-boundaries.md"
-    ).read_text(encoding="utf-8")
 
 
 def test_native_binding_has_no_python_strategy_or_legacy_import() -> None:
@@ -38,7 +14,7 @@ def test_native_binding_has_no_python_strategy_or_legacy_import() -> None:
         encoding="utf-8")
     # A Python callback is allowed only at the terminal observer facade; model
     # selection, planning, and execution strategy remain native-owned.
-    assert 'py::function observer' in source
+    assert 'py::function callback' in source
     assert 'NativeInferenceHandle::observe' not in source
     assert "placement.py" not in source
     assert "runtime_v1" not in source
@@ -76,28 +52,3 @@ def test_maintained_yolo_native_route_uses_repository_reference() -> None:
     assert native_branch.index("user.publish_input") < native_branch.index("user.request")
     assert "request_native_reference" not in native_branch
     assert "fetch/decrypt" in native_branch
-
-
-@requires_contract
-def test_legacy_runtime_removal_stays_blocked_by_manifest_consumers() -> None:
-    manifest = json.loads(
-        (ROOT / "specs/182-native-di-python-bindings/contracts/compatibility-manifest.json")
-        .read_text(encoding="utf-8"))
-    legacy_paths = {
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/runtime_v1.py",
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/facades.py",
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
-    }
-    entries = [
-        entry for entry in manifest["entries"]
-        if entry.get("source", {}).get("path") in legacy_paths
-    ]
-    assert entries
-    assert all(entry.get("removalEligible") is False for entry in entries)
-    assert all(entry.get("status") in {
-        "RETAINED_UNTIL_MIGRATION", "PLANNED_NATIVE"
-    } for entry in entries)
-    assert all(entry.get("externalUseStatus") in {
-        "repository_callers_found", "external_use_unknown"
-    } for entry in entries)

@@ -14,13 +14,6 @@ sys.path.insert(0, str(ROOT / "pythonWrapper"))
 sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
 
 from ndnsf.service import CollaborationContext, parse_large_data_reference_payload  # noqa: E402
-from ndnsf_distributed_inference.adapters import ApplicationInput  # noqa: E402
-from ndnsf_distributed_inference.app_sdk.placement import (  # noqa: E402
-    AutomaticPlanningCoordinator,
-    InferenceTaskRef,
-    ModelRef,
-    TaskOptions,
-)
 from ndnsf_distributed_inference.provider import (  # noqa: E402
     ProviderRuntimeContext,
 )
@@ -43,39 +36,6 @@ def _reference(payload: bytes, **overrides) -> dict:
     }
     value.update(overrides)
     return value
-
-
-def _request_wire(reference: dict) -> bytes:
-    task = InferenceTaskRef(
-        task_name="object-detection",
-        adapter_name="yolo26n",
-        adapter_descriptor_digest=_digest(b"adapter"),
-        adapter_composition_digest=_digest(b"composition"),
-        task_descriptor_digest=_digest(b"task"),
-    )
-    model = ModelRef(
-        model_name="YOLO26n",
-        content_digest=_digest(b"model"),
-        semantics_digest=_digest(b"semantics"),
-        source_revision="checkpoint-r1",
-    )
-    value = ApplicationInput.from_repo_ref(
-        task_name=task.task_name,
-        input_schema_digest=_digest(b"input-schema"),
-        options_schema_digest=_digest(b"options-schema"),
-        reference=reference,
-        options=b"{}",
-    )
-    return AutomaticPlanningCoordinator._encode_request(
-        model,
-        task,
-        value,
-        TaskOptions(_digest(b"options-schema"), b"{}"),
-        9_999_999_999_999,
-        "request-security",
-        "/ObjectDetection/YOLO26n",
-        "invocation-security",
-    )
 
 
 class _FakeNative:

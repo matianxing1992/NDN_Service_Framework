@@ -18,9 +18,6 @@ from ndnsf_distributed_inference.adapters.qwen.parallel import (  # noqa: E402
 from ndnsf_distributed_inference.adapters.qwen.placement import (  # noqa: E402
     QWEN36_STAGE_ROLES, build_qwen_three_stage_adapter,
 )
-from ndnsf_distributed_inference.app_sdk.placement import (  # noqa: E402
-    AutomaticPlanningCoordinator, PublishedSplit,
-)
 
 
 class HybridExecutionContractTest(unittest.TestCase):
@@ -176,35 +173,6 @@ class HybridExecutionContractTest(unittest.TestCase):
             model, adapter.graph.inspect(model))[0]
         self.assertEqual(candidate.hybrid_plan.tensor_degrees, (1, 2, 1))
         self.assertEqual(len(candidate.hybrid_plan.redistributions), 2)
-        specs = AutomaticPlanningCoordinator._v3_role_specs(candidate)
-        self.assertEqual(tuple(item.rank for item in specs), (0, 0, 1, 0))
-        self.assertEqual(
-            tuple(item.artifact_digest for item in specs),
-            tuple(value for role in QWEN36_STAGE_ROLES
-                  for value in rank_artifacts[role]),
-        )
-        flattened = {
-            (role if len(values) == 1 else f"{role}#{rank}"): value
-            for role, values in rank_artifacts.items()
-            for rank, value in enumerate(values)
-        }
-        published = PublishedSplit(
-            candidate.candidate_digest,
-            flattened,
-            {role: f"/repo/hybrid/{index}"
-             for index, role in enumerate(flattened)},
-        )
-        AutomaticPlanningCoordinator._validate_published_split(
-            candidate, published)
-        missing = dict(flattened)
-        missing.pop(f"{QWEN36_STAGE_ROLES[1]}#1")
-        with self.assertRaisesRegex(ValueError, "selected candidate"):
-            AutomaticPlanningCoordinator._validate_published_split(
-                candidate,
-                PublishedSplit(
-                    candidate.candidate_digest, missing,
-                    {role: f"/repo/hybrid/missing/{index}"
-                     for index, role in enumerate(missing)}))
 
     def test_local_tensor_group_rejects_overlap_and_missing_rank(self):
         tensor_slices = tuple(

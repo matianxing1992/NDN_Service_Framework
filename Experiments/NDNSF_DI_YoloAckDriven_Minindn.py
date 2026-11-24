@@ -3085,7 +3085,7 @@ def build_runtime_catalogue_payload(
             raise RunnerError(
                 "CASE_RUNTIME_SNAPSHOT_RUNTIME_IDENTITY:" + candidate_id)
     try:
-        from ndnsf_distributed_inference.app_sdk.placement import (
+        from ndnsf_distributed_inference.app_sdk.contracts import (
             encode_runtime_catalog_snapshot,
         )
         return encode_runtime_catalog_snapshot(
@@ -3219,7 +3219,7 @@ def build_runtime_publication_file(
                 })
     try:
         from ndnsf_distributed_inference.app_sdk.contracts import PreSplitCatalogSnapshot
-        from ndnsf_distributed_inference.app_sdk.placement import encode_runtime_catalog_snapshot
+        from ndnsf_distributed_inference.app_sdk.contracts import encode_runtime_catalog_snapshot
         typed = [PreSplitCatalogSnapshot.from_mapping(item) for item in snapshots]
         catalogue_payload = encode_runtime_catalog_snapshot(
             data_name, typed,
@@ -3737,191 +3737,6 @@ def _focused_provider_view(provider: str, roles: tuple[str, ...]):
     )
 
 
-def _run_y_n_c_negative() -> None:
-    """Drive the real V3 strategy with a closed, infeasible ACK projection."""
-    from ndnsf_distributed_inference.planner.presplit_first import (
-        PreSplitFirstStrategy,
-    )
-
-    # The mutation removes FullModel and Merge from the ACK capability set.
-    # Thus atomic-v1 and shared-backbone-two-shard-v1 are both infeasible;
-    # this is deliberately a strategy-boundary probe, not a fake terminal.
-    providers = (
-        _focused_provider_view("/example/provider/FullModel", ("BackboneNeck",)),
-        _focused_provider_view("/example/provider/DetectShard0", ("DetectShard0",)),
-        _focused_provider_view("/example/provider/DetectShard1", ("DetectShard1",)),
-        _focused_provider_view("/example/provider/Merge", ("DetectShard0",)),
-    )
-    strategy = PreSplitFirstStrategy(at_ms=1)
-    for candidate, roles in (
-            ("atomic-v1", ("FullModel",)),
-            ("shared-backbone-two-shard-v1",
-             ("BackboneNeck", "DetectShard0", "DetectShard1", "Merge"))):
-        try:
-            strategy.propose_v3(
-                request_id="/spec180-focused-request", attempt=1,
-                model_digest=_focused_digest("model"),
-                graph_digest=_focused_digest("graph"),
-                roles=tuple(_focused_role_spec(role, index)
-                            for index, role in enumerate(roles)),
-                providers=providers,
-                ack_closed_digest=_focused_digest("ack-closed"),
-            )
-        except ValueError as exc:
-            if "no distinct feasible Provider" not in str(exc):
-                raise RunnerError("Y_N_C_UNEXPECTED_STRATEGY_REJECTION") from exc
-            continue
-        raise RunnerError("Y_N_C_CANDIDATE_REMAINED_FEASIBLE:" + candidate)
-
-
-def _run_y_n_p_negative() -> None:
-    """Drive the ACK-aware Trust-Schema/offer verifier with bad provenance."""
-    import base64 as _base64
-    from types import SimpleNamespace
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from ndnsf_distributed_inference.app_sdk.placement import (
-        v3_provider_view_factory,
-    )
-    from ndnsf_distributed_inference.app_sdk.provider import (
-        ProviderOfferTrustVerifier,
-    )
-    from ndnsf_distributed_inference.sdk.placement import (
-        DeviceTopologyProfile, ExecutionDisposition, ProviderOfferV3,
-    )
-
-    private = Ed25519PrivateKey.generate()
-    public = private.public_key()
-    public_raw = public.public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    key_id = "sha256:" + hashlib.sha256(public_raw).hexdigest()
-    model_digest = _focused_digest("model")
-    graph_digest = _focused_digest("graph")
-    now_ms = int(time.time() * 1000)
-    provider = "/example/provider/FullModel"
-    service = "/AI/YOLO/YOLO26n"
-    unsigned = ProviderOfferV3(
-        request_id="/spec180-focused-request", attempt=1, service=service,
-        provider=provider, model_digest=model_digest,
-        graph_digest=graph_digest, status=True,
-        execution_disposition=ExecutionDisposition.ACCEPT_WITH_PREPARATION,
-        preparation_accepted=True,
-        topology=DeviceTopologyProfile(provider, (), "cpu"),
-        accepted_roles=("FullModel",), backends=("onnxruntime-cpu",),
-        boot_epoch="spec180-boot-1", captured_at_ms=now_ms - 1000,
-        expires_at_ms=now_ms + 60000, signer_key_id=key_id,
-        signature="pending",
-    )
-    signature = _base64.b64encode(
-        private.sign(unsigned.digest().encode("utf-8"))).decode("ascii")
-    offer = ProviderOfferV3(**{**unsigned.__dict__, "signature": signature})
-    policy = {
-        "schema": "spec180-provider-offer-trust-v1",
-        "candidateId": "atomic-v1",
-        "candidateDigest": _focused_digest("candidate"),
-        "trustSchema": "/example/controller/KEY/offer",
-        "entries": [{
-            "provider": provider, "service": service,
-            "keyLocatorPrefix": provider + "/KEY/",
-            "signerKeyId": key_id,
-            "certificateName": provider + "/KEY/k1/self/v1",
-        }],
-    }
-    public_pem = public.public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo)
-    verifier = ProviderOfferTrustVerifier(
-        policy, {key_id: public_pem},
-        trust_schema_verifier=lambda _ack: True,
-        clock_ms=lambda: now_ms,
-    )
-    ack = SimpleNamespace(
-        status=True, provider_name=provider, service_name=service,
-        request_id="/spec180-focused-request", attempt=1,
-        signer_identity="/example/provider/TAMPERED",
-        signer_key_locator=provider + "/KEY/k1",
-        validated_wire_digest=_focused_digest("wire"),
-        payload=offer.to_bytes(), trust_schema_validated=True,
-    )
-    try:
-        v3_provider_view_factory(verifier)(
-            ack, model_digest, now_ms + 30000, graph_digest)
-    except ValueError as exc:
-        if "signer" not in str(exc).lower():
-            raise RunnerError("Y_N_P_UNEXPECTED_TRUST_REJECTION") from exc
-        return
-    raise RunnerError("Y_N_P_TAMPERED_PROVENANCE_ACCEPTED")
-
-
-def _run_y_n_r_negative() -> None:
-    from ndnsf_distributed_inference.sdk.placement import RoleAssemblySpec
-
-    try:
-        RoleAssemblySpec(
-            role="BackboneNeck", rank=0, layer_begin=0, layer_end=0,
-            recipe_digest=_focused_digest("recipe"),
-            artifact_digest=_focused_digest("artifact"),
-            backend="onnxruntime-cpu", role_kind="PIPELINE_RANGE",
-        )
-    except ValueError as exc:
-        if "non-empty layer interval" not in str(exc):
-            raise RunnerError("Y_N_R_UNEXPECTED_ROLE_REJECTION") from exc
-        return
-    raise RunnerError("Y_N_R_INVALID_ROLE_KIND_ACCEPTED")
-
-
-def _focused_request_wire() -> bytes:
-    from ndnsf_distributed_inference.adapters import ApplicationInput
-    from ndnsf_distributed_inference.app_sdk.placement import (
-        AutomaticPlanningCoordinator, InferenceTaskRef, ModelRef, TaskOptions,
-    )
-
-    task = InferenceTaskRef(
-        task_name="object-detection", adapter_name="yolo26n",
-        adapter_descriptor_digest=_focused_digest("adapter"),
-        adapter_composition_digest=_focused_digest("composition"),
-        task_descriptor_digest=_focused_digest("task"),
-    )
-    model = ModelRef(
-        model_name="YOLO26n", content_digest=_focused_digest("model"),
-        semantics_digest=_focused_digest("semantics"),
-        source_revision="spec180-focused",
-    )
-    application_input = ApplicationInput.from_inline(
-        task_name=task.task_name,
-        input_schema_digest=_focused_digest("input-schema"),
-        options_schema_digest=_focused_digest("options-schema"),
-        payload=b"focused-input", options=b"{}",
-    )
-    options = TaskOptions(application_input.options_schema_digest, b"{}")
-    return AutomaticPlanningCoordinator._encode_request(
-        model, task, application_input, options,
-        int(time.time() * 1000) + 60000,
-        "/spec180-focused-request", "/AI/YOLO/YOLO26n",
-        "invocation:spec180-focused", placement_profile="DI_PLACEMENT_V3",
-    )
-
-
-def _run_y_n_i_negative() -> None:
-    from ndnsf_distributed_inference.provider import ProviderRuntimeContext
-
-    class _Probe:
-        session_id = "/spec180-focused-request"
-
-    context = ProviderRuntimeContext(
-        ndnsf=_Probe(), execution=object(), request=_focused_request_wire(),
-        role="DetectShard0", input_ingress_owner=False,
-        enforce_dataflow_ownership=True,
-    )
-    try:
-        context.fetch_application_input()
-    except PermissionError as exc:
-        if str(exc) != "DI_INPUT_FETCH_ROLE_MISMATCH":
-            raise RunnerError("Y_N_I_UNEXPECTED_INPUT_REJECTION") from exc
-        return
-    raise RunnerError("Y_N_I_NON_INGRESS_FETCH_ACCEPTED")
-
-
 def _run_y_n_e_mutations() -> None:
     """Y-N-E focused probe, spec181 T006 regime: three REAL grant mutations
     must reach the implemented verifier (Python and native, parity-locked)
@@ -4040,42 +3855,6 @@ def _run_y_n_e_mutations() -> None:
                     ) from exc
                 continue
             raise RunnerError(f"Y_N_E_MUTATION_ACCEPTED:{name}:{label}")
-
-
-def _run_y_n_l_negative(output: Path) -> None:
-    journal = LifecycleJournal(output, "Y-N-L", require_protocol_binding=False)
-    try:
-        journal.append("INPUT_REFERENCE_PUBLISHED", payload="redacted-test")
-    except RunnerError as exc:
-        if "FIELD_FORBIDDEN:payload" not in str(exc):
-            raise RunnerError("Y_N_L_UNEXPECTED_REDACTION_REJECTION") from exc
-        return
-    raise RunnerError("Y_N_L_PLAINTEXT_FIELD_ACCEPTED")
-
-
-def _run_focused_y_n_negative(subcase: str, output: Path,
-                              inputs: Mapping[str, Any]) -> Mapping[str, Any]:
-    if subcase == "Y-N-E":
-        raise RunnerError("Y_N_E_PRODUCTION_VERIFIER_REQUIRED")
-    del inputs  # The focused probes use only fixed, non-secret contract fixtures.
-    target = _new_y_n_subcase_dir(output, subcase)
-    probes = {
-        "Y-N-C": _run_y_n_c_negative,
-        "Y-N-P": _run_y_n_p_negative,
-        "Y-N-R": _run_y_n_r_negative,
-        "Y-N-I": _run_y_n_i_negative,
-        "Y-N-L": lambda: _run_y_n_l_negative(target),
-    }
-    try:
-        probes[subcase]()
-    except RunnerError:
-        raise
-    except Exception as exc:
-        raise RunnerError("Y_N_NEGATIVE_PROBE_FAILED:" + subcase) from exc
-    return _write_subcase_result(
-        target, subcase=subcase, status="PASS", outcome="FAIL_CLOSED",
-        reason=YN_NEGATIVE_REASONS[subcase],
-    )
 
 
 def _validate_negative_marker(line, spec, subcase, user_spec, user_log):

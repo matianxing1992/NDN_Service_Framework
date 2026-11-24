@@ -3,10 +3,7 @@
   "owners": {
     "InferenceApplication": "ndnsf_distributed_inference.app_sdk.application",
     "InferenceClient": "ndnsf_distributed_inference.app_sdk.client",
-    "InferenceProvider": "ndnsf_distributed_inference.app_sdk.provider",
-    "GenerationConfig": "ndnsf_distributed_inference.app_sdk.contracts",
-    "GenerationInput": "ndnsf_distributed_inference.app_sdk.contracts",
-    "ModelRef": "ndnsf_distributed_inference.app_sdk.placement"
+    "InferenceProvider": "ndnsf_distributed_inference.app_sdk.provider"
   },
   "apiExports": [
     "ArtifactReference",
@@ -26,10 +23,7 @@
     "InferenceProvider",
     "InferenceRequestHandle",
     "InferenceResult",
-    "GenerationConfig",
-    "GenerationInput",
     "ModelIntent",
-    "ModelRef",
     "OptimizationObjective",
     "ProviderDeploymentOffer",
     "ProviderDeploymentOffers",

@@ -1,12 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-import hashlib
-import json
-import tempfile
 import unittest
-import sys
-from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,28 +12,6 @@ REQUESTER = ROOT / "examples/DI_NativeRequester.cpp"
 
 
 class Spec182NativeBindingsTest(unittest.TestCase):
-    def test_spec196_request_policy_is_bounded_and_explicit(self):
-        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
-        from ndnsf_distributed_inference.app_sdk.client import _native_request_policy
-
-        strategy, providers = _native_request_policy({
-            "placement_strategy": "native-observation-aware-v4",
-            "provider_names": ["/provider/a", "/provider/b"],
-        })
-        self.assertEqual(strategy, "native-observation-aware-v4")
-        self.assertEqual(providers, ("/provider/a", "/provider/b"))
-        for request in (
-                {"placement_strategy": "unknown"},
-                {"placement_strategy": "native-observation-aware-v4"},
-                {"provider_names": "/provider/a"},
-                {"placement_strategy": "native-observation-aware-v4",
-                 "provider_names": ["/provider/a"]},
-                {"provider_names": ["provider/a"]},
-                {"provider_names": ["/provider/a", "/provider/a"]},
-                {"provider_names": [f"/provider/{index}" for index in range(17)]}):
-            with self.subTest(request=request):
-                with self.assertRaises(ValueError):
-                    _native_request_policy(request)
 
     def test_binding_is_a_single_native_translation_unit_entry(self):
         source = BINDINGS.read_text(encoding="utf-8")
@@ -51,7 +24,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertNotIn("NativeGrantVerifier.cpp", setup)
         # A Python callback is exposed only as a terminal observer on an
         # already-created native handle; planning and execution remain native.
-        self.assertIn("py::function observer", source)
+        self.assertIn("py::function callback", source)
         self.assertIn('.def("observe"', source)
         self.assertNotIn("subprocess", source)
 
@@ -60,145 +33,6 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertNotIn("subprocess", source)
         self.assertNotIn("py::eval", source)
 
-    def test_native_dto_names_are_explicitly_mapped(self):
-        source = BINDINGS.read_text(encoding="utf-8")
-        for field in (
-                "model_name", "content_digest", "adapter_id", "payload",
-                "transport_mode", "timeout_ms", "ack_timeout_ms",
-                "application_request_id", "provider_names"):
-            self.assertIn(f'"{field}"', source)
-
-    def test_native_generation_stream_and_conversation_options_are_typed(self):
-        sys.path.insert(0, str(ROOT / "pythonWrapper"))
-        from ndnsf import _ndnsf
-
-        generation = _ndnsf.NativeGenerationExecutionContractV1()
-        generation.enabled = True
-        generation.mode = "TOKEN_DIAGNOSTIC"
-        generation.max_generated_tokens = 32
-        generation.token_input_name = "input_ids"
-        generation.state_input_names = ["past_key_values.0"]
-        generation.state_output_names = ["present.0"]
-        generation.eos_token_ids = [2]
-        generation.sampling_mode = "Greedy"
-        generation.sampling_top_k = 1
-        generation.sampling_seed = 1750001
-        generation.generation_id = "generation-1"
-        generation.committed_prefix_token_ids = [4, 5]
-
-        continuation = _ndnsf.NativeConversationContinuation()
-        continuation.conversation_id = "conversation-1"
-        continuation.parent_context_epoch = 7
-        continuation.service_name = "qwen"
-        continuation.mode = "APPEND_DELTA"
-        continuation.canonical_token_ids = [4, 5, 6]
-        continuation.expected_roles = ["/LLM/Pipeline/Stage/0"]
-
-        stream = _ndnsf.NativeStreamRequestOptions()
-        stream.mode = _ndnsf.NativeInvocationMode.NORMAL
-        stream.generation_id = [1] * 16
-        stream.attempt_epoch = 1
-        stream.stream_epoch = 1
-        stream.event_key_commitment = [2] * 32
-        stream.deadline_epoch_ms = 4102444800000
-        stream.controller_version = _ndnsf.NativeControllerVersion()
-        stream.controller_version.controller_generation_timestamp = 1
-        stream.controller_version.controller_epoch = 1
-        stream.validate()
-        encoded = stream.wire_encode()
-        decoded = _ndnsf.NativeStreamRequestOptions()
-        self.assertTrue(decoded.wire_decode(encoded))
-        self.assertEqual(decoded.generation_id, stream.generation_id)
-        self.assertEqual(decoded.event_key_commitment, stream.event_key_commitment)
-
-        options = _ndnsf.NativeRequestOptions()
-        options.application_request_id = "wire-request"
-        options.provider_names = ["/provider/a", "/provider/b"]
-        options.generation = generation
-        options.stream = stream
-        options.conversation = continuation
-        self.assertEqual(options.generation.generation_id, "generation-1")
-        self.assertEqual(options.stream.stream_epoch, 1)
-        self.assertEqual(options.conversation.mode, "APPEND_DELTA")
-        self.assertEqual(options.application_request_id, "wire-request")
-        self.assertEqual(options.provider_names, ["/provider/a", "/provider/b"])
-
-        placement = _ndnsf.NativeObservationAwarePlacementV4()
-        self.assertIsInstance(placement, _ndnsf.NativePlacementStrategy)
-
-    def test_native_stream_key_grant_uses_wire_bytes_and_none(self):
-        sys.path.insert(0, str(ROOT / "pythonWrapper"))
-        from ndnsf import _ndnsf
-
-        stream = _ndnsf.NativeStreamRequestOptions()
-        self.assertIsNone(stream.event_key_grant_wire)
-        stream.event_key_grant_wire = b"\x80\x00"
-        self.assertEqual(stream.event_key_grant_wire, b"\x80\x00")
-        stream.event_key_grant_wire = None
-        self.assertIsNone(stream.event_key_grant_wire)
-
-    def test_native_runtime_composition_types_are_exported(self):
-        sys.path.insert(0, str(ROOT / "pythonWrapper"))
-        from ndnsf import _ndnsf
-
-        runtime = _ndnsf.NativeRequestRuntime()
-        runtime.contract = _ndnsf.NativeRequestContract()
-        runtime.security = _ndnsf.NativeSecurityPolicySnapshot()
-        runtime.budget = _ndnsf.NativeCandidateBudget()
-        runtime.state_mapping = _ndnsf.NativeStateTensorMapping()
-        runtime.contract.tokenizer_digest = "sha256:" + "a" * 64
-        self.assertIsInstance(runtime, _ndnsf.NativeRequestRuntime)
-        for name in (
-                "NativeRequestCatalog", "NativeRequestPreparation",
-                "NativeCanonicalPreparationCatalog", "NativeOfferAdmission",
-                "NativeAuthenticatedGrantClient", "NativeConversationCoordinator",
-                "native_request_runtime_from_json"):
-            self.assertTrue(hasattr(_ndnsf, name), name)
-
-    def test_runtime_config_facade_is_a_thin_native_pass_through(self):
-        source = (ROOT / "pythonWrapper/ndnsf/service.py").read_text(encoding="utf-8")
-        self.assertIn("def native_runtime_from_config", source)
-        self.assertIn("_ndnsf.native_request_runtime_from_json", source)
-        self.assertIn("NativeRequestRuntime nativeRequestRuntimeFromJson",
-                      (ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.cpp").read_text(encoding="utf-8"))
-
-    def test_catalog_loader_keeps_source_validation_native(self):
-        sys.path.insert(0, str(ROOT / "pythonWrapper"))
-        from ndnsf import _ndnsf
-
-        with self.assertRaisesRegex(ValueError, "unsupported native request catalog schema"):
-            _ndnsf.NativeRequestCatalog.load('{"schema":"invalid"}', b"")
-
-        # The binding accepts bytes at the Python boundary; source parsing and
-        # digest/format validation remain in NativeRequestCatalog::load.
-        self.assertIn("NativeRequestCatalog::load", BINDINGS.read_text(encoding="utf-8"))
-        native_user = MODULE.read_text(encoding="utf-8")
-        self.assertIn("native_inference_client_configured", native_user)
-        self.assertIn("native_grant_client_from_config", native_user)
-
-    def test_native_grant_config_binds_requester_to_service_user(self):
-        source = MODULE.read_text(encoding="utf-8")
-        self.assertIn("requester != m_userIdentity", source)
-        self.assertIn(
-            "native grant requester identity must match the ServiceUser identity",
-            source)
-        self.assertIn("NativeAuthenticatedGrantClient::issueThroughCore", source)
-        self.assertIn("native grant client configuration must not contain authority policy or content keys", source)
-
-    def test_native_conversation_owner_stays_in_cpp_and_is_injected(self):
-        source = MODULE.read_text(encoding="utf-8")
-        coordinator = (ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.cpp").read_text(encoding="utf-8")
-        self.assertIn("nativeConversationCoordinatorFromConfig", source)
-        self.assertIn('ndnsf-di-native-conversation-v1', coordinator)
-        self.assertIn("native conversation key file must be owner-only", coordinator)
-        self.assertIn("path escapes configuration directory", coordinator)
-        self.assertIn("NativeConversationJournalConfig", coordinator)
-        self.assertIn("NativeConversationCoordinator", coordinator)
-        service = (ROOT / "pythonWrapper/ndnsf/service.py").read_text(encoding="utf-8")
-        self.assertIn("native_conversation_coordinator_from_config", service)
-        client = (ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py").read_text(encoding="utf-8")
-        self.assertIn("native_conversation_coordinator_from_config", client)
-        self.assertIn("_native_conversations", client)
 
     def test_native_requester_cli_uses_prepared_runtime_owner(self):
         source = REQUESTER.read_text(encoding="utf-8")
@@ -221,129 +55,25 @@ class Spec182NativeBindingsTest(unittest.TestCase):
             "linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..']", target)
 
 
-    def test_native_requester_config_binds_streaming_tokenizer_digest(self):
-        sys.path.insert(0, str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"))
-        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
-        sys.path.insert(0, str(ROOT / "pythonWrapper"))
-        from ndnsf import _ndnsf
-        from ndnsf_distributed_inference.app_sdk.client import APPClient
-
-        digest = "sha256:" + "b" * 64
-        with self.subTest("missing digest fails closed"):
-            client = object.__new__(APPClient)
-            client._network_client = object()
-            config = {"schema": "ndnsf-di-native-requester-v1", "request": {
-                "generation_mode": "TOKEN_STREAMING"}}
-            path = ROOT / ".codex-tmp" / "spec182-native-config-missing-digest.json"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(config), encoding="utf-8")
-            try:
-                with self.assertRaisesRegex(ValueError, "tokenizer_digest is required"):
-                    client.configure_native_requester_from_config(path)
-            finally:
-                path.unlink(missing_ok=True)
-
-        with self.subTest("unsupported generation mode fails closed"):
-            client = object.__new__(APPClient)
-            client._network_client = object()
-            config = {"schema": "ndnsf-di-native-requester-v1", "request": {
-                "generation_mode": "UNSUPPORTED"}}
-            path = ROOT / ".codex-tmp" / "spec182-native-config-unsupported-mode.json"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(config), encoding="utf-8")
-            try:
-                with self.assertRaisesRegex(ValueError, "generation_mode"):
-                    client.configure_native_requester_from_config(path)
-            finally:
-                path.unlink(missing_ok=True)
-
-        with self.subTest("configured digest is retained"):
-            from unittest import mock
-            from types import SimpleNamespace
-            import tempfile
-
-            class Adapter:
-                adapter_id = "qwen"
-                descriptor_digest = digest
-
-            class Model:
-                model_name = "Qwen/Fixture"
-                content_digest = digest
-                adapter_id = "qwen"
-                adapter = Adapter()
-
-            class Catalog:
-                model_ref = Model()
-                model_manifest_digest = digest
-                canonical_source_digest = digest
-                canonical_initializer_object_digest = digest
-                state_mapping = SimpleNamespace(inputs={}, outputs={})
-
-            class ServiceUser:
-                def load_native_request_catalog(self, *_args, **_kwargs):
-                    return Catalog()
-
-                def native_grant_client_from_config(self, *_args, **_kwargs):
-                    return object()
-
-                def native_runtime_from_config(self, *_args, **_kwargs):
-                    return SimpleNamespace(
-                        catalog=Catalog(),
-                        contract=SimpleNamespace(service_name="/Qwen"))
-
-            class Network:
-                service_user = ServiceUser()
-
-            with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                for name in ("model.bin", "trust", "requester.pem", "authority.pem", "offer.pem"):
-                    (root / name).write_bytes(b"fixture")
-                config = {
-                    "schema": "ndnsf-di-native-requester-v1",
-                    "core": {"requester_identity": "/user", "authority_identity": "/aa",
-                             "group": "/group", "trust_schema_file": "trust"},
-                    "limits": {"max_source_bytes": 1024, "max_assembled_bytes": 2048},
-                    "catalog": {"source": {"file": "model.bin"},
-                                "recipe": {"artifact_profile_digest": digest}},
-                    "grant": {"authority_identity": "/aa", "authority_service": "/grant",
-                              "authority_public_key_file": "authority.pem",
-                              "protection_epoch": "epoch", "requester_private_key_file": "requester.pem"},
-                    "offer_admission": {"policy": {}, "public_key_files": {"offer": "offer.pem"},
-                                        "candidate_digest": digest},
-                    "request": {"service": "/Qwen", "task": "generate",
-                                "adapter_composition_digest": digest, "task_descriptor_digest": digest,
-                                "input_layout_digest": digest, "security_policy_digest": digest,
-                                "max_candidates": 1, "max_policy_ms": 100, "timeout_ms": 1000,
-                                "ack_timeout_ms": 100, "generation_mode": "TOKEN_STREAMING",
-                                "tokenizer_digest": digest},
-                }
-                config_path = root / "requester.json"
-                config_path.write_text(json.dumps(config), encoding="utf-8")
-                client = object.__new__(APPClient)
-                client._network_client = Network()
-                client.configure_native_requester = mock.Mock(return_value="native")
-                original_admission = _ndnsf.NativeOfferAdmission
-                _ndnsf.NativeOfferAdmission = lambda *_args: "admission"
-                try:
-                    self.assertEqual(
-                        client.configure_native_requester_from_config(config_path),
-                        "native")
-                    self.assertEqual(client.native_tokenizer_digest, digest)
-                    client.configure_native_requester.assert_called_once()
-
-                    config["grant"]["authority_private_key_file"] = "authority.pem"
-                    config_path.write_text(json.dumps(config), encoding="utf-8")
-                    with self.assertRaisesRegex(ValueError, "authority-owned fields"):
-                        client.configure_native_requester_from_config(config_path)
-                    del config["grant"]["authority_private_key_file"]
-
-                    config["request"]["generation_mode"] = "TOKEN_DIAGNOSTIC"
-                    config_path.write_text(json.dumps(config), encoding="utf-8")
-                    with self.assertRaisesRegex(ValueError, "Qwen.*TOKEN_STREAMING"):
-                        client.configure_native_requester_from_config(config_path)
-                finally:
-                    _ndnsf.NativeOfferAdmission = original_admission
-
-
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_public_runtime_surface_has_no_retired_composition_types():
+    from ndnsf import _ndnsf
+    from ndnsf.service import ServiceUser
+    from ndnsf_distributed_inference import api
+
+    assert api.Runtime is _ndnsf.Runtime
+    assert api.RequestHandle is _ndnsf.RequestHandle
+    assert api.ProviderConfig is _ndnsf.NativeProviderConfig
+    for name in ("NativeInferenceClient", "NativeRequestOptions", "NativeRequestRuntime",
+                 "NativeCanonicalPreparationCatalog", "NativeConversationCoordinator"):
+        assert not hasattr(_ndnsf, name), name
+    for name in ("load_native_request_catalog", "native_preparation", "native_runtime_from_config",
+                 "native_grant_client_from_config", "native_inference_client_configured",
+                 "native_conversation_coordinator_from_config"):
+        assert not hasattr(ServiceUser, name), name
+    for name in ("native_inference_client", "native_preparation", "native_grant_client_from_config",
+                 "native_inference_client_configured", "native_conversation_coordinator_from_config"):
+        assert not hasattr(_ndnsf.NativeServiceUser, name), name

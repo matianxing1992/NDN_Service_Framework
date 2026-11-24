@@ -4,7 +4,6 @@ from dataclasses import replace
 import pytest
 
 from ndnsf_distributed_inference.adapters import build_object_detection_adapter
-from ndnsf_distributed_inference.app_sdk.placement import _v3_candidate_priority_key
 
 
 @pytest.fixture
@@ -35,12 +34,6 @@ def test_signed_candidate_digest_binds_application_decisions(candidate, field):
     }
     changed = replace(candidate, **{field: changes[field]})
     assert changed.candidate_digest != candidate.candidate_digest
-
-
-def test_adapter_priority_survives_shared_contract_and_planner(candidate):
-    preferred = replace(candidate, selection_priority=10)
-    assert sorted([candidate, preferred], key=_v3_candidate_priority_key)[0] is preferred
-    assert sorted([preferred, candidate], key=_v3_candidate_priority_key)[0] is preferred
 
 
 @pytest.mark.parametrize("changes", [

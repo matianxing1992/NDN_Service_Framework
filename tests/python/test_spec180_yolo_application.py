@@ -15,19 +15,8 @@ from ndnsf_distributed_inference.app_sdk.application import ApplicationDefinitio
 
 
 ROOT = Path(__file__).resolve().parents[2]
-USER = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/user.py"
 PROVIDER = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py"
 CONTROLLER = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py"
-
-
-def _source() -> str:
-    return USER.read_text(encoding="utf-8")
-
-
-
-
-
-
 
 
 def test_yolo_provider_uses_request_input_and_terminal_owner_apis():
@@ -58,11 +47,7 @@ def test_yolo_provider_uses_request_input_and_terminal_owner_apis():
 def test_native_provider_binds_application_input_only_to_selected_ingress():
     source = (ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di/"
               "NativeProviderHandler.cpp").read_text(encoding="utf-8")
-    placement_source = (ROOT / "NDNSF-DistributedInference/"
-                        "ndnsf_distributed_inference/app_sdk/placement.py")\
-        .read_text(encoding="utf-8")
     assert 'edge.operationKind == "APPLICATION_INPUT"' in source
-    assert 'if redistributions else "PIPELINE"' in placement_source
     assert "initialInputs[edge.scope]" in source
     assert "V3 input-ingress role is missing its application input" in source
     assert "DI_INPUT_FETCH_ROLE_MISMATCH" in source
@@ -306,28 +291,6 @@ def test_spec180_v3_offer_issuer_disables_simple_service_mirror():
     assert captured["local_artifacts"]["FullModel"][
         "canonical_initializer_path"] == "/candidate/model.weights"
     assert captured["register_simple_service"] is False
-
-
-def test_spec180_provider_prepared_roles_omit_external_artifact_fetch():
-    """A preparation-accepted role must not carry an external fetch reference.
-
-    Regression: the sealed plan pointed the C++ collaboration layer at the
-    signed ARTIFACT APP Data metadata record as if it were an encrypted
-    large-data object.  The Provider holds the validated canonical artifact
-    locally, so the plan binds the canonical identity but leaves the fetch
-    reference empty; the C++ side then skips the external artifact fetch.
-    """
-    from ndnsf_distributed_inference.app_sdk import placement as placement_mod
-    source = Path(placement_mod.__file__).read_text(encoding="utf-8")
-    request_v3 = source.split("def _request_v3", 1)[1].split("\n    def ", 1)[0]
-    # The local-vs-fetch decision moved into `_v3_artifact_references`, which
-    # `_request_v3` calls per role; asserting the names inside `_request_v3`
-    # alone pinned their old placement rather than the behaviour.
-    references = source.split("def _v3_artifact_references", 1)[1].split("\n    def ", 1)[0]
-    assert "ExecutionDisposition.ACCEPT_IF_EXACT_REUSE" in references
-    assert "offer.preparation_accepted" in references
-    assert 'return artifact, ""' in references
-    assert "artifact_fetch_names[role] = fetch_name" in request_v3
 
 
 def test_spec180_controller_enters_publication_mode_without_repo_manifest():

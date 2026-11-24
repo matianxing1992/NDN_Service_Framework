@@ -255,8 +255,6 @@ def test_sif_never_uses_host_build_receipt(monkeypatch):
     module._validate_local_native_build({})
 
 
-
-
 def test_live_case_build_rejection_has_no_network_side_effect(monkeypatch, tmp_path):
     module = load_runner()
     monkeypatch.setenv("SPEC187_NATIVE_MODE", "1")
@@ -557,25 +555,6 @@ def test_case_plan_y_n_records_fixed_subcase_outcomes():
     ]
 
 
-def test_y_n_focused_probes_cannot_qualify_provider_grants(tmp_path: Path):
-    module = load_runner()
-    cases = [item for item in module.YN_SUBCASES[1:] if item != "Y-N-E"]
-    results = [
-        module._run_focused_y_n_negative(subcase, tmp_path, {})
-        for subcase in cases
-    ]
-    assert [item["subcaseId"] for item in results] == cases
-    assert all(item["status"] == "PASS" for item in results)
-    assert all(item["outcome"] == "FAIL_CLOSED" for item in results)
-    assert [item["boundary"] for item in results] == [
-        module.YN_SUBCASE_BOUNDARIES[item] for item in cases
-    ]
-    assert all((tmp_path / "subcases" / item / "subcase-result.json").is_file()
-               for item in cases)
-    with pytest.raises(module.RunnerError, match="PRODUCTION_VERIFIER_REQUIRED"):
-        module._run_focused_y_n_negative("Y-N-E", tmp_path, {})
-
-
 def test_y_n_qualification_matrix_dispatches_every_negative_to_live_runner(
         tmp_path: Path, monkeypatch):
     module = load_runner()
@@ -599,12 +578,7 @@ def test_y_n_qualification_matrix_dispatches_every_negative_to_live_runner(
                 "variant": output.name, "status": "PASS", "reason": reason}))
         return 0
 
-    def focused_probe_must_not_be_used(*_args, **_kwargs):
-        raise AssertionError("qualification matrix used an offline focused probe")
-
     monkeypatch.setattr(module, "_run_live_case_once", fake_live)
-    monkeypatch.setattr(module, "_run_focused_y_n_negative",
-                        focused_probe_must_not_be_used)
 
     # Every negative dispatches to the live runner; with the T006 real
     # mutations every row is a registered PASS, so the matrix completes.

@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -78,13 +77,6 @@ def test_source_census_accepts_canonical_streaming_fixture(tmp_path: Path) -> No
           MTP_ENABLED = False
           THINKING_MODE = "disabled"
         """,
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py": """
-          GenerationExecutionContractV1()
-          TOKEN_FEEDBACK = "TOKEN_FEEDBACK"
-          streaming_operation_stride = 3
-          max_generated_tokens = 64
-          generation_contract=generation_contract
-        """,
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp": """
               generationConfigFromAuthenticatedRequest(request);
               projection->generationContract.enabled;
@@ -119,10 +111,6 @@ def test_source_census_accepts_canonical_streaming_fixture(tmp_path: Path) -> No
           "__ndnsf_provider_decode_state" supportsOpaqueStateHandles
               stateHandleSnapshot PROVIDER_OPAQUE_STATE_HANDLE_MISSING
               PROVIDER_OPAQUE_STATE_HANDLE_IDENTITY_MISMATCH
-            """,
-            "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py": """
-              def pause_to_host( def prefetch_to_gpu( copy_state transfer_bytes
-              ResidencyTier.HOST_RESIDENT ResidencyTier.GPU_RESIDENT
             """,
             "tests/integration-tests/ndnsf-di-core-flow.t.cpp": """
               ProductionIngressRunsNativePostSelectionAssignmentFetch
@@ -192,7 +180,6 @@ def test_source_census_rejects_each_known_initial_drift(tmp_path: Path) -> None:
         "MISSING_STREAMED_SYMBOL",
         "QWEN_MAX_TOKEN_BOUND_DRIFT",
         "LEGACY_QWEN_ROLE_NAME",
-        "AUTOMATIC_STREAM_EPOCH_PLAN_MISSING",
         "NATIVE_STREAM_EPOCH_RUNTIME_DISABLED",
     } <= codes
 
@@ -233,7 +220,6 @@ def test_spec175_production_path_mutations_fail_closed(tmp_path: Path) -> None:
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/placement.py",
         "tools/ndnsf-di/export_spec175_qwen36_stateful_onnx.py",
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
         "examples/DI_NativeProviderExecutable.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.cpp",
@@ -242,7 +228,6 @@ def test_spec175_production_path_mutations_fail_closed(tmp_path: Path) -> None:
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp",
         "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp",
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
         "pythonWrapper/ndnsf/service.py",
         "tests/integration-tests/ndnsf-di-core-flow.t.cpp",
@@ -329,13 +314,6 @@ def test_spec175_production_path_mutations_fail_closed(tmp_path: Path) -> None:
             "if (residentState && effectiveContext.streamingStateExecution)",
             "if (residentState && !effectiveContext.streamingStateExecution)",
             "NATIVE_DEVICE_STATE_RESIDENCY_MISSING",
-        ),
-        (
-            "conversation-tier",
-            "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py",
-            "def pause_to_host(",
-            "def paused_to_host(",
-            "CONVERSATION_TIER_TRANSFER_MISSING",
         ),
         (
             "case-coverage",

@@ -12,8 +12,24 @@ from unittest.mock import patch
 import base64
 from dataclasses import replace
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py"
+
+
+def reference_envelope(payload, request_id, expires_at_ms, key_id, key, nonce):
+    # Frozen v3 producer from KVCache 8027f6c6, runtime_journal.py SHA-256
+    # 9c63fa6fa7225a40396a3edc7309b587d094df36720e60c292978685c28a4c60.
+    # This offline AESGCM reference retains fixed public test nonces; production
+    # sealing and native reads keep their maintained randomness/authentication.
+    metadata = {"schema": "ndnsf-di-protected-request-v3", "requestId": request_id,
+                "expiresAtMs": int(expires_at_ms), "keyId": key_id}
+    aad = json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()
+    ciphertext = AESGCM(key).encrypt(nonce, bytes(payload), aad)
+    body = {**metadata, "nonce": base64.b64encode(nonce).decode(),
+            "ciphertext": base64.b64encode(ciphertext).decode()}
+    return json.dumps(body, sort_keys=True).encode("utf-8")
 
 
 def journal_vector(cases, key, reference):
@@ -43,7 +59,11 @@ def journal_vector(cases, key, reference):
             payload = json.dumps({"checkpoint": base64.b64encode(case["checkpointWire"].encode()).decode(),
                                   "transcript": case["transcript"]},
                                  sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-            with patch.object(module.secrets, "token_bytes", return_value=bytes([index + 1]) * 12), \
+            from ndnsf import _ndnsf
+            nonce = bytes([index + 1]) * 12
+            with patch.object(_ndnsf, "_seal_di_journal_envelope", side_effect=(
+                    lambda payload, identity, expiry, key_id, key: reference_envelope(
+                        payload, identity, expiry, key_id, key, nonce))), \
                  patch.object(module.time, "time", return_value=2_000_000_000 + index):
                 prepared = journal.prepare_envelope(envelope_id, payload, expires_at_ms=checkpoint["expiresAtMs"])
                 index_record = {
@@ -63,10 +83,18 @@ def journal_vector(cases, key, reference):
                                          test_only_allow_ephemeral_state_root=True)
         for item in payloads:
             assert reopened.read_envelope(item["envelopeId"], at_ms=2_000_000_000_003).decode() == item["plaintext"]
-        with patch.object(reference.time, "time", return_value=2_000_000_000.003):
-            owner = reference.ConversationCoordinator(journal=reopened, signer_key=key)
-            assert owner.checkpoint(json.loads(cases[-1]["checkpointWire"])["conversationId"]).decode() == cases[-1]["checkpointWire"]
-        return {"sourceSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        restored = json.loads(reopened.read_envelope(
+            payloads[-1]["envelopeId"], at_ms=2_000_000_000_003))
+        wire = base64.b64decode(restored["checkpoint"], validate=True)
+        checkpoint = reference.ConversationCheckpointV1.from_bytes(wire)
+        transcript = reference.ConversationTranscriptRecordV1.from_dict(restored["transcript"])
+        assert checkpoint.verify(key)
+        assert wire.decode() == cases[-1]["checkpointWire"]
+        assert transcript.checkpoint_digest == checkpoint.checkpoint_digest
+        assert transcript.conversation_id == checkpoint.conversation_id
+        assert transcript.context_epoch == checkpoint.context_epoch
+        assert transcript.to_dict() == cases[-1]["transcript"]
+        return {"sourceSha256": "9c63fa6fa7225a40396a3edc7309b587d094df36720e60c292978685c28a4c60",
                 "identity": "fixture-owner", "keyId": "fixture-key",
                 "authenticationSubkeyHex": journal.authentication_key_ring("conversation-checkpoint-v1")[0].hex(),
                 "journalWire": journal.path.read_text(), "envelopes": payloads}
@@ -207,7 +235,7 @@ def main():
             raise SystemExit("conversation oracle differs from reference")
     else:
         args.output.write_text(encoded)
-    print("PASS: 6 checkpoints, 4 transcripts, 4 encrypted transactions; legacy owner restore and authentication checks")
+    print("PASS: 6 checkpoints, 4 transcripts, 4 encrypted transactions; journal reopen, wire binding and authentication checks")
 
 
 if __name__ == "__main__":

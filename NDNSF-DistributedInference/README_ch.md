@@ -56,11 +56,8 @@ Collaboration 状态投影同一聚合结果，而其内部请求仍逐一验证
 `PREPARING`。即使自签名在密码学上有效，未知 Application 密钥签出的 definition
 也会被拒绝。
 
-配置原生 requester 后，本地和 coordinator 的预规划请求进入同一 C++ 推理路径。
-当前桥接支持配置中的模型、服务、输入 schema、单个二进制结果、默认
-`DeploymentConstraints()` 及空请求 metadata。其他约束、连续输出、输出编码或模型
-绑定会在提交前被拒绝。签名定义本身不能证明后端支持。耐久日志保存应用请求 ID
-与原生请求 ID 的绑定。
+预规划部署请求保留原有网络／coordinator 和日志路径。原生推理使用公开 `Runtime`
+SDK；旧 APP 原生 requester 配置桥已退役。签名部署意图本身不能证明原生后端支持。
 
 历史 APP 日志仍可用原信封密钥读取，已完成请求保留原结果，活动记录重开仍核对
 requester 和 attempt。绑定已退役 APP R0 激活路径的活动记录不能恢复远端执行或
@@ -3024,33 +3021,16 @@ exponential backoff。attempt 数量和总 deadline 都有限。该机制只提�
 cursor 的 sequence。轮询使用有界自适应间隔，并在 terminal state 停止。上述逻辑
 不包含 UAV、codec、model-family 或 workload 特判。
 
-## Spec 163 延迟协作规划
+## 原生请求与离线规划
 
-规范应用入口现在只需要模型、任务和输入，不要求应用提前编写 deployment、
-Provider 列表、角色列表或预分割模型：
+正常推理使用 `ndnsf_distributed_inference.api.Runtime` 及其 `User.prepare` /
+`User.request`。配置中的 C++ owner 负责准入 Provider 签名证据、准备模型工件、
+提交所选计划并执行经过认证的依赖。旧 Python 自动规划及 model/task 请求便利入口
+已退役。Core 通用 `DEFERRED` 协作和显式预规划部署保留各自的受支持契约。
+[YOLO requester](../examples/python/NDNSF-DistributedInference/yolo_2x2/user.py)
+展示了公开原生 SDK 的输入发布、请求参数以及有限的 close/drain 收尾。
 
-```python
-model = ModelRef(
-    model_name="Qwen/Qwen3-0.6B",
-    content_digest="sha256:<精确冻结文件清单摘要>",
-    semantics_digest="sha256:<适配器与推理语义摘要>",
-)
-handle = client.request(
-    model=model,
-    task=task,
-    input=validated_input,
-    timeout_ms=30_000,
-)
-```
-
-NDNSF-DI 以 `DEFERRED` 模式启动基础 NDNSF 的通用 Collaboration API，收集一个
-不可变 `ACK_CLOSED` 快照，通过选定的摘要固定 `ModelFamilyAdapter` 产生图有效的
-分割候选，并把清洗后的 Provider 签名 offer 交给配置的
-`ModelPlacementStrategy`。决策经过独立验证，所需的可信物化和
-DistributedRepo 发布完成后，再在同一 invocation 上提交计划。现有
-Request 前传入 roles/dependencies 的接口作为显式 `PREPLANNED` 兼容路径保留。
-
-`PreSplitFirstStrategy` 先检查精确且处于 active 状态的预分割 manifest，然后按
+在离线计划比较中，`PreSplitFirstStrategy` 先检查精确且处于 active 状态的预分割 manifest，然后按
 固定 GPU、可安全 reload 的 GPU、主机 RAM、磁盘、仓库、最后新生成的图有效分割
 排序新鲜签名驻留证据。驻留信息只是证据，不是执行权威。Selection 会重新验证模型、
 语义、工件、Provider boot/cache epoch、容量、pin 或 reload 可行性，以及完整的

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -17,13 +16,6 @@ from ndnsf_distributed_inference.adapters import (  # noqa: E402
     ApplicationInput,
     InputTransportMode,
 )
-from ndnsf_distributed_inference.app_sdk.client import InferenceClient  # noqa: E402
-from ndnsf_distributed_inference.app_sdk.placement import (  # noqa: E402
-    AutomaticPlanningCoordinator,
-    InferenceTaskRef,
-    ModelRef,
-    TaskOptions,
-)
 from ndnsf_distributed_inference.core.contracts import (  # noqa: E402
     DIRequestEnvelopeV2,
 )
@@ -33,7 +25,6 @@ from ndnsf_distributed_inference.provider import (  # noqa: E402
     validate_request_input_boundary,
 )
 import ndnsf_distributed_inference.provider as provider_module  # noqa: E402
-from ndnsf_distributed_inference.app_sdk.client import APPClient as CanonicalAPPClient  # noqa: E402
 from ndnsf_distributed_inference.repo_reference import (  # noqa: E402
     _publication_manifest_digest,
     bind_published_large_data_reference,
@@ -50,111 +41,6 @@ def input_schema() -> str:
 
 def options_schema() -> str:
     return digest("options-schema")
-
-
-def task_ref() -> InferenceTaskRef:
-    return InferenceTaskRef(
-        task_name="object-detection",
-        adapter_name="yolo26n",
-        adapter_descriptor_digest=digest("adapter"),
-        adapter_composition_digest=digest("composition"),
-        task_descriptor_digest=digest("task"),
-    )
-
-
-def model_ref() -> ModelRef:
-    return ModelRef(
-        model_name="YOLO26n",
-        content_digest=digest("model"),
-        semantics_digest=digest("semantics"),
-        source_revision="checkpoint-r1",
-    )
-
-
-@pytest.mark.parametrize("explicit_generation_id", [False, True])
-@pytest.mark.parametrize("transport", ["inline", "repo"])
-@pytest.mark.parametrize("terminal", ["PENDING", "SUCCEEDED", "FAILED", "REGISTER_FAILED"])
-def test_native_token_stream_forwards_options_and_preserves_admission(
-        explicit_generation_id, transport, terminal):
-    core = CanonicalAPPClient.__new__(CanonicalAPPClient)
-    core._network_client = None
-    core._native_client = object()
-    core._native_splitter = object()
-    core._native_model = SimpleNamespace(
-        model_name="YOLO26n", content_digest=digest("model"),
-        semantics_digest=digest("semantics"), source_revision="checkpoint-r1",
-        adapter=SimpleNamespace(input_schema_digest=input_schema(),
-                                options_schema_digest=options_schema()))
-    core._native_runtime = SimpleNamespace(contract=SimpleNamespace(
-        generation_mode="TOKEN_STREAMING", task_name="object-detection"))
-    generation_id = "0123456789abcdef0123456789abcdef"
-    wire = json.dumps({"generationId": generation_id,
-                       "stateSuccessorMap": "stage0/a=stage0/b"}).encode()
-    value = ApplicationInput.from_inline(
-        task_name="object-detection", input_schema_digest=input_schema(),
-        options_schema_digest=options_schema(), payload=b"input", options=wire)
-    if transport == "repo":
-        value = ApplicationInput.from_repo_ref(
-            task_name=value.task_name, input_schema_digest=input_schema(),
-            options_schema_digest=options_schema(), options=wire, reference=repo_reference())
-    observed = []
-    completed = []
-    failed = []
-    cancelled = []
-
-    class Handle:
-        status_name = terminal
-
-        def observe(self, callback):
-            if terminal == "REGISTER_FAILED":
-                raise RuntimeError("observer registration failed")
-            if terminal != "PENDING":
-                callback({"terminal": True, "payload": b""})
-
-        def result(self, timeout):
-            assert terminal == "SUCCEEDED"
-            assert timeout == 0
-            return SimpleNamespace(payload=b"native-result")
-
-        def cancel(self):
-            cancelled.append(True)
-
-    def submit(payload, **kwargs):
-        observed.append((payload, kwargs))
-        assert "on_event" not in kwargs
-        return Handle()
-
-    core.request_native_payload = submit
-    core.request_native_reference = submit
-    request = dict(
-        model=model_ref(), task=task_ref(), input=value, timeout_ms=1000,
-        stream_options=({"generation_id": generation_id} if explicit_generation_id else None),
-        on_complete=completed.append, on_error=failed.append,
-        options=TaskOptions(schema_digest=options_schema(), payload=wire))
-    if terminal == "REGISTER_FAILED":
-        with pytest.raises(RuntimeError, match="observer registration failed"):
-            core.request_streaming(**request)
-        assert cancelled == [True]
-    else:
-        facade = core.request_streaming(**request)
-        assert facade.native_handle.status_name == terminal
-        assert completed == ([b"native-result"] if terminal == "SUCCEEDED" else [])
-        assert len(failed) == (1 if terminal == "FAILED" else 0)
-        if failed:
-            assert failed[0]["status"] == "FAILED"
-        assert cancelled == []
-    assert len(observed) == 1
-    assert observed[0][0] == (b"input" if transport == "inline" else value.repo_reference)
-    assert observed[0][1]["application_options"] == wire
-    assert observed[0][1]["options"].output_mode == "TOKEN_STREAMING"
-    assert observed[0][1]["options"].generation is None
-    assert list(observed[0][1]["options"].stream.generation_id) == (
-        list(bytes.fromhex(generation_id)) if explicit_generation_id else [0] * 16)
-    with pytest.raises(RuntimeError, match="NATIVE_OPTIONS_IDENTITY_MISMATCH"):
-        core.request_streaming(
-            model=model_ref(), task=task_ref(), input=value, timeout_ms=1000,
-            options=TaskOptions(schema_digest=options_schema(), payload=b"{}"))
-    assert len(observed) == 1
 
 
 def repo_reference() -> dict:
@@ -254,10 +140,7 @@ def test_repo_reference_round_trips_without_plaintext_on_request_wire():
         reference=repo_reference(),
         options=b"{}",
     )
-    wire = AutomaticPlanningCoordinator._encode_request(
-        model_ref(), task_ref(), value, TaskOptions(options_schema(), b"{}"),
-        9999999999999, "request-1", "/ObjectDetection/YOLO26n", "invocation-1",
-    )
+    wire = _request_wire(value)
     envelope = DIRequestEnvelopeV2.from_bytes(wire)
     assert envelope.input_transport == "REPO_REF"
     assert envelope.input_payload_b64 == ""
@@ -267,36 +150,18 @@ def test_repo_reference_round_trips_without_plaintext_on_request_wire():
     assert validate_request_input_boundary(envelope) == "REPO_REF"
 
 
-
-
-
-
-def test_generic_client_requests_close_ack_window_at_deadline_not_role_coverage():
-    captured = {}
-
-    class FakePlanner:
-        def request(self, **kwargs):
-            captured.update(kwargs)
-            return "handle"
-
-    client = InferenceClient.__new__(InferenceClient)
-    client._core = SimpleNamespace(_automatic_planner=FakePlanner())
-    value = ApplicationInput.from_inline(
-        task_name="object-detection",
-        input_schema_digest=input_schema(),
-        options_schema_digest=options_schema(),
-        payload=b"x", options=b"{}",
-    )
-    assert client.request_task(
-        model=model_ref(), task=task_ref(), input=value, timeout_ms=5000) == "handle"
-    assert captured["constraints"] == {"ack_close_policy": "DEADLINE"}
-
-
 def _request_wire(value: ApplicationInput) -> bytes:
-    return AutomaticPlanningCoordinator._encode_request(
-        model_ref(), task_ref(), value, TaskOptions(options_schema(), b"{}"),
-        9999999999999, "request-ownership", "/ObjectDetection/YOLO26n",
-        "invocation-ownership")
+    return DIRequestEnvelopeV2(
+        invocation_id="invocation-ownership", request_id="request-ownership", attempt=1,
+        service="/ObjectDetection/YOLO26n", model_name="YOLO26n",
+        model_identity_hash=digest("model"), task_kind=value.task_name,
+        input_manifest_digest=digest("input-manifest"),
+        input_payload_b64=base64.b64encode(value.payload).decode("ascii"),
+        options_payload_b64=base64.b64encode(value.options).decode("ascii"),
+        plan_deadline_ms=9999999999999, security_domain="requester-default",
+        input_transport=value.transport_mode.value,
+        input_reference=dict(value.repo_reference or {}),
+    ).to_bytes()
 
 
 class _FakeCollaboration:
@@ -547,105 +412,3 @@ def test_native_publication_result_rejects_missing_trusted_metadata():
             service_name="/ObjectDetection/YOLO26n",
             payload=payload,
         )
-
-
-def test_canonical_app_client_publishes_and_records_only_reference_metadata():
-    payload = b"encoded-yolo-input"
-    events = []
-
-    class FakeJournal:
-        def append(self, kind, payload):
-            events.append({"kind": kind, "payload": dict(payload)})
-
-        def records(self):
-            return tuple(events)
-
-    class FakeUser:
-        def publish_encrypted_large_data(self, service, payload, **kwargs):
-            assert service == "/ObjectDetection/YOLO26n"
-            assert bytes(payload) == b"encoded-yolo-input"
-            assert kwargs["object_label"] == "image"
-            assert kwargs["content_name"] == {
-                "kind": "input", "label": "image", "input_kind": "application"}
-            return _published_result(bytes(payload))
-
-    class FakeNetwork:
-        service_user = FakeUser()
-
-    client = CanonicalAPPClient.__new__(CanonicalAPPClient)
-    client.journal = FakeJournal()
-    client._network_client = FakeNetwork()
-    reference = client.publish_application_input_reference(
-        "/ObjectDetection/YOLO26n",
-        payload,
-        object_label="image",
-        object_type="application/x-ndnsf-di-input+npz",
-    )
-    assert reference["dataName"] == _published_result(payload).manifest_name
-    assert events[0]["payload"]["eventType"] == "INPUT_REFERENCE_PUBLISHED"
-    assert "encoded-yolo-input" not in json.dumps(events[0])
-    assert events[0]["payload"]["referenceDigest"] == (
-        bind_published_large_data_reference(
-            _published_result(payload),
-            service_name="/ObjectDetection/YOLO26n",
-            payload=payload,
-            object_type="application/x-ndnsf-di-input+npz",
-        ).digest())
-
-
-def test_canonical_app_client_rejects_unpublished_repo_reference_before_request():
-    client = CanonicalAPPClient.__new__(CanonicalAPPClient)
-    client.journal = SimpleNamespace(records=lambda: ())
-    client._automatic_planner = SimpleNamespace(
-        request=lambda **_: pytest.fail("request must not be published"))
-    reference = repo_reference()
-    value = ApplicationInput.from_repo_ref(
-        task_name="object-detection",
-        input_schema_digest=input_schema(),
-        options_schema_digest=options_schema(),
-        reference=reference,
-        options=b"{}",
-        metadata={"publicationDigest": "sha256:" + "0" * 64},
-    )
-    with pytest.raises(RuntimeError, match="DI_INPUT_PUBLICATION_BINDING_MISMATCH"):
-        client.request_task(
-            model=model_ref(), task=task_ref(), input=value, timeout_ms=5000)
-
-
-def test_canonical_app_client_forces_deadline_ack_closure_after_publication():
-    payload = b"encoded-yolo-input"
-    published = _published_result(payload)
-    reference = bind_published_large_data_reference(
-        published,
-        service_name="/ObjectDetection/YOLO26n",
-        payload=payload,
-    )
-    reference_digest = reference.digest()
-    captured = {}
-
-    class FakeJournal:
-        def records(self):
-            return ({
-                "kind": "application-input-publication",
-                "payload": {"referenceDigest": reference_digest},
-            },)
-
-    class FakePlanner:
-        def request(self, **kwargs):
-            captured.update(kwargs)
-            return "handle"
-
-    client = CanonicalAPPClient.__new__(CanonicalAPPClient)
-    client.journal = FakeJournal()
-    client._automatic_planner = FakePlanner()
-    value = ApplicationInput.from_repo_ref(
-        task_name="object-detection",
-        input_schema_digest=input_schema(),
-        options_schema_digest=options_schema(),
-        reference=reference.to_dict(),
-        options=b"{}",
-        metadata={"publicationDigest": reference_digest},
-    )
-    assert client.request_task(
-        model=model_ref(), task=task_ref(), input=value, timeout_ms=5000) == "handle"
-    assert captured["constraints"] == {"ack_close_policy": "DEADLINE"}

@@ -148,8 +148,8 @@ class StreamedInvocationOptions:
     allow_replacement: bool = False
     max_replacements: int = 0
     # Coordinator-owned attempt identity. Applications normally leave these
-    # values unchanged; AutomaticPlanningCoordinator freezes them before the
-    # first Request and reuses generation_id for the one optional attempt 2.
+    # values unchanged; the invoking owner freezes them before the first
+    # Request and retains generation_id across a permitted replacement.
     attempt_epoch: int = 1
     generation_id: str = ""
     stream_epoch: int = 0
@@ -2592,51 +2592,6 @@ class ServiceUser:
         """Whether the Controller enables protected input by default."""
         return bool(getattr(self._native, "has_request_scoped_default", False))
 
-    @staticmethod
-    def load_native_request_catalog(
-        configuration_json: str,
-        model_bytes: bytes,
-        initializer_bytes: bytes | None = None,
-        *,
-        max_source_bytes: int = 256 * 1024 * 1024,
-        max_assembled_bytes: int = 512 * 1024 * 1024,
-    ):
-        """Load a source checked catalog through the native DI owner."""
-        return _ndnsf.NativeRequestCatalog.load(
-            configuration_json, bytes(model_bytes), initializer_bytes,
-            int(max_source_bytes), int(max_assembled_bytes))
-
-    def native_preparation(self, catalog, service_name: str):
-        """Bind catalog publication and inspection ports to this Core user."""
-        return self._native.native_preparation(catalog, str(service_name))
-
-    @staticmethod
-    def native_runtime_from_config(configuration_json: str, catalog, grants):
-        """Parse native runtime policy while retaining catalog and key ownership in C++."""
-        return _ndnsf.native_request_runtime_from_json(
-            str(configuration_json), catalog, grants)
-
-    def native_grant_client_from_config(
-        self, configuration_json: str, base_directory: str = "."):
-        """Construct the requester-side native grant client from public-key config."""
-        return self._native.native_grant_client_from_config(
-            configuration_json, str(base_directory))
-
-    def native_inference_client_configured(
-        self, runtime, preparation, admission, conversations=None):
-        """Create a fully configured native requester without Python planning."""
-        return self._native.native_inference_client_configured(
-            runtime, preparation, admission, conversations)
-
-    def native_conversation_coordinator_from_config(
-        self, configuration_json: str, base_directory: str = "."):
-        """Load the operator-pinned conversation owner in C++.
-
-        Key files, journal permissions, and checkpoint ownership never cross
-        the Python boundary; this returns only an opaque native coordinator.
-        """
-        return self._native.native_conversation_coordinator_from_config(
-            str(configuration_json), str(base_directory))
 
     def open_live_stream(
         self,
