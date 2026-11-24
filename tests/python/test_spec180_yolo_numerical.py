@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import ast
+import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 import math
@@ -127,8 +129,7 @@ def _production_functions():
                  "math": math, "sys": sys, "Event": Event}
     for filename, names in (
         ("yolo_2x2_lib.py", {"encode_native_tensor_bundle", "_decode_native_tensor_bundle", "decode_yolo_output"}),
-        ("user.py", {"_record_yolo_numerical_result", "_prepare_yolo_input",
-                     "_load_yolo_native_payload"}),
+        ("user.py", {"_prepare_yolo_input", "_load_yolo_native_payload", "main"}),
     ):
         tree = ast.parse((EXAMPLE / filename).read_text())
         nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
@@ -153,66 +154,10 @@ def test_actual_user_input_is_registered_native_fixture(reference, tmp_path):
     with pytest.raises(ValueError, match="REGISTERED_FIXTURE_PAYLOAD_MISMATCH"):
         functions["_prepare_yolo_input"](args, package)
     args.input_payload_file = ""
-    args.native_tensor_input = False
-    with pytest.raises(ValueError, match="REQUIRES_NATIVE_TENSOR"):
-        functions["_prepare_yolo_input"](args, package)
 
 
-@pytest.mark.parametrize("matched,remote_status,exit_code", [(True, True, 0), (False, True, 4), (True, False, 3)])
-def test_actual_user_terminal_branch_cannot_print_false_success(matched, remote_status, exit_code, capsys):
-    # Execute the unmodified production tail, with transport/journal doubles.
-    tree = ast.parse((EXAMPLE / "user.py").read_text())
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_load_yolo_ack_driven")
-    start = next(i for i, n in enumerate(node.body)
-                 if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "response" for t in n.targets))
-    node.body = node.body[start:]
-    node.returns = None
-    for argument in node.args.args:
-        argument.annotation = None
-    calls = []
-    journal = SimpleNamespace(attempt_id="attempt-1", append=lambda *a, **k: None, validate_complete=lambda: None)
-    namespace = {"hashlib": hashlib, "journal": journal, "numerical_reference": object(),
-                 "handle": SimpleNamespace(response=lambda timeout: SimpleNamespace(status=remote_status, payload=b"real response", error="secret"),
-                                           sealed_plan=SimpleNamespace(plan_digest="bound-plan")),
-                 "_record_yolo_numerical_result": lambda *args: calls.append(args) or matched}
-    exec(compile(ast.Module(body=[node], type_ignores=[]), "user-terminal", "exec"), namespace)
-    assert namespace["_load_yolo_ack_driven"](None, SimpleNamespace(timeout_ms=10)) == exit_code
-    stdout = capsys.readouterr().out
-    assert ("status=true" in stdout) is (exit_code == 0)
-    assert "secret" not in stdout
-    assert len(calls) == int(remote_status)
-    if calls:
-        assert calls[0][2:] == (b"real response", "bound-plan", "attempt-1")
 
 
-@pytest.mark.parametrize("mode", ["pass", "mismatch", "wrong_name", "extra_tensor", "duplicate", "npz"])
-def test_actual_user_evidence_function_checks_received_response(reference, tmp_path, mode):
-    package, expected = reference
-    functions = _production_functions()
-    if mode == "mismatch":
-        expected[0, 0, 0] += .1
-    name = "output" if mode == "wrong_name" else "predictions"
-    values = {name: expected}
-    if mode == "extra_tensor":
-        values["unexpected"] = expected
-    payload = functions["encode_native_tensor_bundle"](values)
-    if mode == "duplicate":
-        payload = payload[:8] + struct.pack("<I", 2) + payload[12:] * 2
-    if mode == "npz":
-        payload = b"PK-not-a-native-response"
-    args = SimpleNamespace(lifecycle_output_dir=str(tmp_path), lifecycle_case="Y-B", request_id="/test/request")
-    matched = functions["_record_yolo_numerical_result"](
-        args, load_reference(package, ROOT, 640), payload, "sha256:" + "a" * 64, "attempt-1")
-    assert matched is (mode == "pass")
-    record = json.loads((tmp_path / "yolo-numerical.json").read_text())
-    assert record["matched"] is matched and record["requestId"] == args.request_id
-    assert record["attemptId"] == "attempt-1"
-    assert record["responseDigest"] == "sha256:" + hashlib.sha256(payload).hexdigest()
-    assert "payload" not in record and "predictions" not in record
-    # Freshness: never overwrite a previous case record.
-    with pytest.raises(FileExistsError):
-        functions["_record_yolo_numerical_result"](
-            args, load_reference(package, ROOT, 640), payload, "sha256:" + "a" * 64, "attempt-1")
 
 
 @pytest.fixture
@@ -252,7 +197,7 @@ def native_host(reference, monkeypatch):
     state = SimpleNamespace(error_index=None, error_type=RuntimeError,
                             expected_submitted_before_result=None,
                             subscription_error_index=None, deferred=False,
-                            missing_completion_index=None, published=0)
+                            missing_completion_index=None, published=0, response_payload=None)
     payload = functions["encode_native_tensor_bundle"]({"predictions": expected})
     callbacks = []
 
@@ -293,7 +238,7 @@ def native_host(reference, monkeypatch):
             if self.index == state.error_index:
                 raise state.error_type("native failure")
             self.status_name = "SUCCEEDED"
-            return SimpleNamespace(payload=payload)
+            return SimpleNamespace(payload=payload if state.response_payload is None else state.response_payload)
         def cancel(self):
             self.cancels += 1
             self.status_name = "CANCELLED"
@@ -327,7 +272,7 @@ def native_host(reference, monkeypatch):
     runtime = SimpleNamespace(user=lambda: user)
     return SimpleNamespace(run=lambda: functions["_load_yolo_native_payload"](runtime, args),
                            args=args, state=state, handles=handles, rows=rows,
-                           clock=clock, configured=configured, model=model)
+                           clock=clock, configured=configured, model=model, expected=expected)
 
 
 def test_native_host_submits_the_whole_async_batch_before_waiting(native_host):
@@ -424,3 +369,100 @@ def test_native_host_rejects_invalid_budgets_before_configuration_or_submission(
     with pytest.raises(ValueError, match="counts, duration and interval"):
         host.run()
     assert host.configured == [] and host.handles == []
+
+
+@pytest.mark.parametrize("mode", ["pass", "mismatch", "wrong_name", "extra_tensor", "duplicate", "npz"])
+def test_native_host_checks_the_received_prediction_tensor(native_host, mode):
+    host = native_host
+    values = host.expected.copy()
+    if mode == "mismatch":
+        values[0, 0, 0] += .1
+    tensors = {"output" if mode == "wrong_name" else "predictions": values}
+    if mode == "extra_tensor":
+        tensors["unexpected"] = values
+    payload = _production_functions()["encode_native_tensor_bundle"](tensors)
+    if mode == "duplicate":
+        payload = payload[:8] + struct.pack("<I", 2) + payload[12:] * 2
+    if mode == "npz":
+        payload = b"PK-not-a-native-response"
+    host.state.response_payload = payload
+    assert host.run() == (0 if mode == "pass" else 4)
+    results = [row for row in host.rows if row.startswith("YOLO_NATIVE_REQUEST_RESULT")]
+    assert len(results) == 1
+    assert ("status=true" in results[0]) is (mode == "pass")
+    assert "predictions" not in results[0] and "payload=" not in results[0]
+
+
+@pytest.fixture
+def native_main(tmp_path, monkeypatch):
+    functions = _production_functions()
+    calls, messages = [], []
+    state = SimpleNamespace(run_error=None, close_error=None, drained=True)
+    def close():
+        calls.append("close")
+        if state.close_error:
+            raise state.close_error
+    def drain(*, timeout_s):
+        assert timeout_s == 6
+        calls.append("drain")
+        return state.drained
+    runtime = SimpleNamespace(close=close, drain=drain)
+    def open_runtime(config):
+        assert config.native_config_path == str(tmp_path / "native.json")
+        calls.append("open")
+        return runtime
+    def run(value, args):
+        assert value is runtime
+        calls.append("run")
+        if state.run_error:
+            raise state.run_error
+        return 0
+    monkeypatch.setitem(sys.modules, "ndnsf_distributed_inference", SimpleNamespace(
+        api=SimpleNamespace(RuntimeConfig=SimpleNamespace,
+                            Runtime=SimpleNamespace(open=open_runtime))))
+    functions.update(argparse=argparse, DEFAULT_INPUT_SIZE=640,
+                     optional_local_nfd=lambda _enabled: nullcontext(),
+                     _emit_native_request_result=messages.append,
+                     _load_yolo_native_payload=run)
+    argv = ["yolo-user", "--native-requester-config", str(tmp_path / "native.json"),
+            "--canonical-package", str(tmp_path / "package"),
+            "--catalogue-registry", str(tmp_path / "registry.json")]
+    monkeypatch.setattr(sys, "argv", argv)
+    return SimpleNamespace(run=functions["main"], calls=calls, messages=messages,
+                           state=state, argv=argv)
+
+
+def test_native_main_needs_no_legacy_app_key_and_drains_one_runtime(native_main):
+    host = native_main
+    assert host.run() == 0
+    assert host.calls == ["open", "run", "close", "drain"]
+    assert host.messages == ["YOLO_NATIVE_REQUESTER_DRAINED"]
+
+
+def test_native_main_preserves_the_primary_error_if_drain_also_fails(native_main):
+    host = native_main
+    host.state.run_error = ValueError("inference failed")
+    host.state.drained = False
+    with pytest.raises(ValueError, match="inference failed"):
+        host.run()
+    assert host.calls == ["open", "run", "close", "drain"]
+    assert len(host.messages) == 1 and "CLEANUP_FAILED" in host.messages[0]
+
+
+def test_native_main_attempts_drain_after_close_error(native_main):
+    host = native_main
+    host.state.close_error = OSError("close failed")
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        host.run()
+    assert host.calls == ["open", "run", "close", "drain"]
+    assert len(host.messages) == 1 and "CLEANUP_FAILED" in host.messages[0]
+
+
+@pytest.mark.parametrize("flag", ["--offline-oracle", "--native-tensor-input"])
+def test_retired_user_switches_fail_before_runtime_open(native_main, flag):
+    host = native_main
+    host.argv.append(flag)
+    with pytest.raises(SystemExit) as stopped:
+        host.run()
+    assert stopped.value.code == 2
+    assert host.calls == []

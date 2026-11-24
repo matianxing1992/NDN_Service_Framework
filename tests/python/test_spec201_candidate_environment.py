@@ -56,7 +56,7 @@ def test_candidate_cli_sets_installed_loader_before_validation(tmp_path, monkeyp
         ('check', expected)]
 
 
-@pytest.mark.parametrize('case_name, default_ack', [('yolo-2x2', 1000), ('yolo-layout', 1500)])
+@pytest.mark.parametrize('case_name, default_ack', [('yolo-2x2', 1000)])
 @pytest.mark.parametrize('explicit', [False, True])
 def test_regression_forwards_frozen_request_timeouts(monkeypatch, case_name, default_ack, explicit):
     command = [

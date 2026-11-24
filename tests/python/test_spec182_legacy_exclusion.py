@@ -95,35 +95,25 @@ def test_maintained_qwen_native_route_uses_repository_reference() -> None:
 def test_maintained_yolo_native_route_is_explicit_and_fail_closed() -> None:
     user = (ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/user.py").read_text(
         encoding="utf-8")
-    assert "--native-requester-config" in user
-    assert "_load_yolo_native_payload" in user
-    assert "configure_native_requester_from_config" in user
-    assert "request_native_reference" in user
+    assert '--native-requester-config", required=True' in user
+    assert "api.Runtime.open(config)" in user
+    assert "runtime.user()" in user and "user.prepare()" in user
     assert "native YOLO requester model identity does not match package" in user
-    assert "does not yet support Spec180 lifecycle journaling" in user
-    assert "requires --native-tensor-input" in user
-    assert "configure_automatic_planning" in user
-    assert "request_task" in user
-    # The native branch is selected immediately after APPClient construction;
-    # its body cannot fall through into the ACK-driven Python planner.
-    assert user.index("if args.native_requester_config:") < user.index(
-        "if not args.offline_oracle:")
-    native_branch = user[user.index("def _load_yolo_native_payload"):user.index(
-        "def main()")]
-    assert "configure_automatic_planning" not in native_branch
-    assert "request_task" not in native_branch
+    for retired in ("APPClient", "configure_automatic_planning", "request_task",
+                    "--offline-oracle", "--native-tensor-input"):
+        assert retired not in user
+    assert "runtime.close()" in user and "runtime.drain(timeout_s=6)" in user
 
 
 def test_maintained_yolo_native_route_uses_repository_reference() -> None:
     user = (ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/user.py").read_text(
         encoding="utf-8")
-    native_branch = user[user.index("def _load_yolo_native_payload"):user.index(
-        "def main()")]
-    assert "publish_application_input_reference" in native_branch
-    assert "request_native_reference" in native_branch
-    assert "request_native_payload" not in native_branch
-    assert native_branch.index("publish_application_input_reference") < native_branch.index(
-        "request_native_reference")
+    native_branch = user[user.index("def _load_yolo_native_payload"):user.index("def main()")]
+    assert "user.publish_input" in native_branch
+    assert "api.Input.repository" in native_branch
+    assert "user.request" in native_branch
+    assert native_branch.index("user.publish_input") < native_branch.index("user.request")
+    assert "request_native_reference" not in native_branch
     assert "fetch/decrypt" in native_branch
 
 

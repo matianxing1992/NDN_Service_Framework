@@ -684,19 +684,17 @@ smoke：
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case runtime-compat
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
   --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3 \
-  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
-当前已经验证的 YOLO layout 覆盖范围：
+历史 YOLO layout 覆盖记录（非当前候选资格）：
 
 ```text
 2x2  历史默认网络级回归
 2x3  MiniNDN 网络级回归，每个生成 role 一个 provider
 3x2  MiniNDN 网络级回归，每个生成 role 一个 provider
 1x3  本地 export/policy/ONNX correctness smoke
-3x3  本地 export/policy/ONNX correctness smoke；作为 release baseline 前应先跑 yolo-layout
+3x3  本地 export/policy/ONNX correctness smoke；仅作历史离线结果，不能作为当前 release baseline
 2x2 parallel-detect-scale  本地 ONNX correctness smoke，角色为 /Backbone、/Head/*、/Merge
 2x3 parallel-detect-scale  本地 policy/ONNX smoke；MiniNDN smoke 是网络级 baseline
 ```
@@ -2784,24 +2782,8 @@ Request/ACK/Selection/Response 语义消息。因此应把它和
 window；只有在调试 keychain、artifact deployment、repo 或 startup synchronization
 时，才建议显式改用 `all`。
 
-较旧的 2x3 Python-provider parallel-detect-scale baseline 建议用 60 秒 warm window
-和显式 Python worker 参数运行：
-
-```bash
-PYTHONPATH=NDNSF-DistributedInference:$PYTHONPATH \
-python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
-  --case yolo-layout \
-  --layout 2x3 \
-  --parallel-detect-scale-shards \
-  --cold-requests 1 \
-  --warm-requests 1 \
-  --warm-duration-s 60 \
-  --warm-interval-ms 1000 \
-  --ack-timeout-ms 1500 \
-  --timeout-ms 60000 \
-  --provider-handler-workers 4 \
-  --user-async-workers 4
-```
+旧 Python-provider `yolo-layout` 网络入口已退役。当前网络执行使用上文的
+`yolo-2x2` native candidate 流程；以下保留的历史测量不代表当前候选资格。
 
 当前代表性 native-provider MiniNDN 诊断保存在
 `results/yolo_2x2_ailab_dependency_control_60s_latest`。它使用 generated native
@@ -2933,18 +2915,11 @@ MiniNDN split smokes：
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
   --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3 \
-  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
-`yolo-layout` 验证自定义 YOLO layout 导出、repo-backed artifact 部署、
-dependency prefetch、activation exchange 和 MiniNDN 中的最终结果返回。
-`yolo-layout-local` 仍可用于快速检查生成的 chunk graph 和本地 ONNX
-正确性。
-当前已经通过网络级回归验证的 custom layouts 是 `2x3` 和 `3x2`。`1x3`
-和 `3x3` 适合作为快速本地 export smoke；`3x3` 在作为部署 baseline 前应先
-通过 `yolo-layout` 跑一轮。
+`yolo-layout-local` 保留本地导出与数值检查。原 `yolo-layout` 网络模式已退役，
+其历史 custom-layout 结果不作为当前 native candidate 的验收。
 
 policy/repo inspection helper 仍然保留：
 

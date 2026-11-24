@@ -1261,34 +1261,8 @@ class MiniNdnCaseRuntime:
                 selector_command,
                 "SPEC187_NATIVE_REQUEST_PASS", "user", "native",
             ))
-        else:
-            user_args = common + [
-                "--canonical-package", str(package),
-                "--catalogue-registry", str(registry),
-                "--offer-trust-root", str(trust_root),
-                "--offer-public-key-map", str(public_key_map),
-                "--catalog-data-name", catalogue_data_name,
-                "--catalog-signer", catalogue_signer,
-                "--ack-timeout-ms", "1500",
-                "--timeout-ms", "60000",
-                # The canonical YOLO26n graph is pinned at 640-by-640 static input
-                # (T004); the legacy 32-by-32 default cannot feed it.
-                "--input-size", "640",
-                "--sequential-requests", "1",
-                "--request-id",
-                "/spec180-" + str(self.inputs.get("lifecycle_case",
-                                                    self.binding.case)).lower() + "-" + hashlib.sha256(
-                    str(self.binding.output).encode("utf-8")).hexdigest()[:16],
-                "--lifecycle-output-dir", str(self.binding.output),
-                "--lifecycle-case", str(self.inputs.get("lifecycle_case",
-                                                         self.binding.case)),
-                "--envelope-key-file", str(envelope_key_file),
-                "--native-tensor-input",
-            ]
-            commands.append(CaseProcessSpec(
-                "user", str(nodes["user"]), python_command("user.py", user_args),
-                "YOLO_ACK_DRIVEN_RESULT", "user",
-            ))
+        elif phase is None or phase == "user":
+            raise RunnerError("SPEC187_NATIVE_SELECTOR_REQUIRED")
         if phase is None:
             return tuple(commands)
         return tuple(item for item in commands if item.startup_phase == phase)
@@ -4421,6 +4395,8 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     """
     runtime_inputs = dict(inputs)
     spec187_native_mode = os.environ.get("SPEC187_NATIVE_MODE", "").strip() == "1"
+    if not spec187_native_mode:
+        raise RunnerError("SPEC187_NATIVE_SELECTOR_REQUIRED")
     if spec187_native_mode:
         selector = str(inputs.get("spec187_native_selector", ""))
         # These paths were validated and bound by validate_inputs().  Do not
@@ -4683,22 +4659,14 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
                   flush=True)
             return 0
         runtime.wait_for_ready(started, 120.0)
-        user_log = started[0][2]
-        text = user_log.read_text(errors="replace") if user_log.exists() else ""
-        if spec187_native_mode:
-            user_log = next((path for spec, _proc, path in started
-                             if spec.name == "user"), None)
-            native_text = user_log.read_text(errors="replace") \
-                if user_log is not None and user_log.exists() else ""
-            result_lines = [line for line in native_text.splitlines()
-                            if line.startswith("SPEC187_NATIVE_REQUEST_PASS ")]
-            if not result_lines:
-                raise RunnerError("CASE_RUNTIME_NATIVE_SELECTOR_RESULT_INVALID")
-        else:
-            result_lines = [line for line in text.splitlines()
-                            if line.startswith("YOLO_ACK_DRIVEN_RESULT ")]
-            if not result_lines or "status=true" not in result_lines[-1]:
-                raise RunnerError("CASE_RUNTIME_TERMINAL_RESPONSE_INVALID")
+        user_log = next((path for spec, _proc, path in started
+                         if spec.name == "user"), None)
+        native_text = user_log.read_text(errors="replace") \
+            if user_log is not None and user_log.exists() else ""
+        result_lines = [line for line in native_text.splitlines()
+                        if line.startswith("SPEC187_NATIVE_REQUEST_PASS ")]
+        if not result_lines:
+            raise RunnerError("CASE_RUNTIME_NATIVE_SELECTOR_RESULT_INVALID")
         children = _close_case_children(runtime, phase_started, expected_user_exit=0)
         cleanup_done = True
         (binding.output / "child-exits.json").write_text(

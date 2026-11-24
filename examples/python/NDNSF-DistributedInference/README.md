@@ -252,13 +252,12 @@ PYTORCH_2X2_RESULT ... ok=true
 PYTORCH_2X2_MININDN_OK ...
 ```
 
-The unified runner can launch the default supported DI cases. Custom YOLO
-layouts use `yolo-layout` for MiniNDN network validation and
-`yolo-layout-local` for a fast non-MiniNDN layout/policy smoke:
+The unified runner retains the native `yolo-2x2` candidate workflow and
+`yolo-layout-local` offline export/policy checks. The Python-planned
+`yolo-layout` network mode is retired:
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 

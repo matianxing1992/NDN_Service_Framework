@@ -1530,7 +1530,6 @@ class RegressionRunnerTab(ttk.Frame):
     REGRESSION_CASES = {
         "auto-split": ("YOLO_SPLIT_RESULT", "ok=true"),
         "yolo-2x2": ("YOLO_2X2_NATIVE_REQUESTER_MININDN_OK", "evidence="),
-        "yolo-layout": ("YOLO_LAYOUT_DYNAMIC_PROVISIONING_MININDN_OK", ""),
         "yolo-layout-local": ("YOLO_LAYOUT_SMOKE_OK", ""),
         "onnx-executor": ("ONNX_EXECUTOR_FANIN_FANOUT_OK", ""),
         "app-api": ("APP_API_SERVICE_PLAN_OK", ""),

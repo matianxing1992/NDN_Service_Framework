@@ -141,17 +141,6 @@ CASES = {
             "--quiet-perf-logs",
         ),
     ),
-    "yolo-layout": RegressionCase(
-        name="yolo-layout",
-        script=REPO / "Experiments/NDNSF_DI_Yolo2x2_Minindn.py",
-        success_marker="YOLO_LAYOUT_NATIVE_PROVIDERS_MININDN_OK",
-        description="YOLO custom-layout native-provider dataflow, repo-backed artifacts, and cache reuse",
-        extra_args=(
-            "--native-providers",
-            "--parallel-detect-scale-shards",
-            "--quiet-perf-logs",
-        ),
-    ),
     "yolo-layout-local": RegressionCase(
         name="yolo-layout-local",
         script=REPO / "Experiments/NDNSF_DI_YoloLayout_Smoke.py",
@@ -227,36 +216,24 @@ def main() -> int:
     parser.add_argument(
         "--layout",
         default="1x3",
-        help="Layout used by --case yolo-layout. Examples: 1x3, 2x3, 3x2, 3x3.",
+        help="Layout used by --case yolo-layout-local. Examples: 1x3, 2x3, 3x2, 3x3.",
     )
     parser.add_argument("--parallel-output-shards", action="store_true",
                         help="For --case yolo-layout-local, validate the experimental "
                              "true-NxM YOLO output-shard prototype")
     parser.add_argument("--parallel-detect-scale-shards", action="store_true",
-                        help="For --case yolo-layout-local/yolo-layout, validate "
+                        help="For --case yolo-layout-local, validate "
                              "the YOLO Detect-scale DAG splitter")
     parser.add_argument("--parallel-detect-replicated-backbone-shards", action="store_true",
-                        help="For --case yolo-layout-local/yolo-layout, validate "
+                        help="For --case yolo-layout-local, validate "
                              "the YOLO Detect-scale splitter with replicated backbone shards")
     parser.add_argument("--auto-parallel-detect-plan", action="store_true",
-                        help="For --case yolo-layout-local/yolo-layout, generate "
+                        help="For --case yolo-layout-local, generate "
                              "shared/replicated Detect candidates and run the planner-selected one")
-    parser.add_argument("--cold-requests", type=int, default=1,
-                        help="Sequential cold requests for --case yolo-layout")
-    parser.add_argument("--warm-requests", type=int, default=1,
-                        help="Sequential warm requests for --case yolo-layout")
-    parser.add_argument("--warm-duration-s", type=float, default=0.0,
-                        help="Warm run duration for --case yolo-layout; 0 uses --warm-requests")
-    parser.add_argument("--warm-interval-ms", type=int, default=0,
-                        help="Minimum interval between warm request starts for --case yolo-layout")
     parser.add_argument("--ack-timeout-ms", type=int,
-                        help="YOLO ACK timeout (default: 1000 for yolo-2x2, 1500 for yolo-layout)")
+                        help="YOLO ACK timeout for yolo-2x2")
     parser.add_argument("--timeout-ms", type=int, default=60000,
-                        help="Service timeout forwarded to yolo-2x2 and yolo-layout")
-    parser.add_argument("--provider-handler-workers", type=int, default=2,
-                        help="Provider Python worker count forwarded to --case yolo-layout")
-    parser.add_argument("--user-async-workers", type=int, default=1,
-                        help="User async worker count forwarded to --case yolo-layout")
+                        help="Service timeout forwarded to yolo-2x2")
     parser.add_argument("--list", action="store_true",
                         help="List available regression cases and exit")
     parser.add_argument('--deployment', type=Path,
@@ -301,7 +278,7 @@ def main() -> int:
             "--auto-parallel-detect-plan are mutually exclusive")
 
     cases = selected_cases(args.case)
-    network_yolo = any(case.name in {"yolo-2x2", "yolo-layout"} for case in cases)
+    network_yolo = any(case.name in {"yolo-2x2"} for case in cases)
     if network_yolo:
         if not (args.spec201_candidate and args.spec201_candidate_sha256 and args.model):
             parser.error("network YOLO cases require --spec201-candidate, "
@@ -310,7 +287,7 @@ def main() -> int:
               args.artifact_cache_root)):
         parser.error("candidate installation and storage options require a network YOLO case")
     for case in cases:
-        extra_args = ["--layout", args.layout] if case.name.startswith("yolo-layout") else []
+        extra_args = ["--layout", args.layout] if case.name == "yolo-layout-local" else []
         if case.name == 'qwen06b-native':
             extra_args.extend(['--deployment', str(args.deployment.resolve())])
             if args.oracle:
@@ -323,7 +300,7 @@ def main() -> int:
             extra_args.append("--parallel-detect-replicated-backbone-shards")
         if case.name == "yolo-layout-local" and args.auto_parallel_detect_plan:
             extra_args.append("--auto-parallel-detect-plan")
-        if case.name in {"yolo-2x2", "yolo-layout"}:
+        if case.name in {"yolo-2x2"}:
             ack_timeout_ms = args.ack_timeout_ms
             if ack_timeout_ms is None:
                 ack_timeout_ms = 1000 if case.name == "yolo-2x2" else 1500
@@ -353,23 +330,6 @@ def main() -> int:
             ):
                 if value is not None:
                     extra_args.extend((option, str(value.resolve())))
-        if case.name == "yolo-layout":
-            if args.parallel_output_shards:
-                extra_args.append("--parallel-output-shards")
-            if args.parallel_detect_scale_shards:
-                extra_args.append("--parallel-detect-scale-shards")
-            if args.parallel_detect_replicated_backbone_shards:
-                extra_args.append("--parallel-detect-replicated-backbone-shards")
-            if args.auto_parallel_detect_plan:
-                extra_args.append("--auto-parallel-detect-plan")
-            extra_args.extend([
-                "--cold-requests", str(args.cold_requests),
-                "--warm-requests", str(args.warm_requests),
-                "--warm-duration-s", str(args.warm_duration_s),
-                "--warm-interval-ms", str(args.warm_interval_ms),
-                "--provider-handler-workers", str(args.provider_handler_workers),
-                "--user-async-workers", str(args.user_async_workers),
-            ])
         run_case(case, extra_args)
     print(f"NDNSF_DI_REGRESSION_SUITE_OK case={args.case}")
     return 0

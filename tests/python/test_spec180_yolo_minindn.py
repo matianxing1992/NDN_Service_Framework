@@ -168,8 +168,14 @@ def test_state_root_must_be_persistent_and_absolute(tmp_path: Path):
 def test_state_root_rejects_existing_directory_owned_by_another_identity(
         tmp_path: Path, monkeypatch):
     module = load_runner()
-    persistent = Path.home() / (".ndnsf-spec180-owner-" + tmp_path.name)
+    persistent = tmp_path / "owner-state"
     persistent.mkdir(mode=0o700)
+    real_resolve = Path.resolve
+    # Only the storage classification is virtual; ownership/stat use the
+    # fixture directory. The test must never create files in the user's HOME.
+    monkeypatch.setattr(module.Path, "resolve", lambda path, *args, **kwargs:
+                        Path("/persistent-fixture/state") if path == persistent
+                        else real_resolve(path, *args, **kwargs))
     try:
         owner = persistent.stat().st_uid
         monkeypatch.setattr(module.os, "geteuid", lambda: owner + 1)
@@ -249,60 +255,26 @@ def test_sif_never_uses_host_build_receipt(monkeypatch):
     module._validate_local_native_build({})
 
 
-@pytest.mark.parametrize("case,subcase,mutation", [
-    ("Y-A", "", ""),
-    *[("Y-N", name, "") for name in
-      ("Y-N-O", "Y-N-C", "Y-N-P", "Y-N-R", "Y-N-I", "Y-N-L")],
-    ("Y-B", "", ""),
-    *[("Y-N", "Y-N-E", value) for value in
-      ("EXPIRED", "WRONG_RECIPIENT", "FORGED_AUTHORITY")],
-])
-def test_live_case_child_epoch_matches_publication(monkeypatch, tmp_path,
-                                                  case, subcase, mutation):
-    module = load_runner()
-    requested = "spec180-yolo-protected-v1"
-    monkeypatch.setenv(module.PROTECTION_EPOCH_ENV, requested)
-    monkeypatch.setenv("SPEC181_GRANT_MUTATION", mutation)
-    monkeypatch.setenv("NDNSF_DI_ENVELOPE_KEY_FILE", str(tmp_path / "requester.key"))
-    monkeypatch.setenv("SPEC180_YOLO_OFFER_PRIVATE_KEY_MAP", str(tmp_path / "keys.json"))
-    monkeypatch.setenv("NDNSF_SPEC180_CONFIG_ROOT", str(tmp_path))
-    (tmp_path / "artifact-policy-authority.key").write_text("preflight fixture")
-    public_key = tmp_path / "artifact-policy-authority.pub"
-    if mutation == "FORGED_AUTHORITY":
-        public_key = tmp_path / "explicit-authority.pub"
-        monkeypatch.setenv("SPEC181_GRANT_AUTHORITY_PUBLIC_KEY", str(public_key))
-    else:
-        monkeypatch.delenv("SPEC181_GRANT_AUTHORITY_PUBLIC_KEY", raising=False)
-    public_key.write_text("preflight public-key fixture; no crypto assertion")
-    publication_inputs, child_environment = {}, {}
-    def binding(_case, _output, inputs):
-        publication_inputs.update(inputs)
-        return SimpleNamespace(output=tmp_path)
-    monkeypatch.setattr(module, "CaseRuntimeBinding", SimpleNamespace(from_inputs=binding))
-    monkeypatch.setattr(module, "build_runtime_publication_file", lambda *args: tmp_path)
-    monkeypatch.setattr(module, "MiniNdnCaseRuntime", lambda *args: SimpleNamespace(
-        process_specs=lambda: None,
-        start_network=lambda: pytest.fail("network must not start in focused test"),
-        stop=lambda: None))
-    monkeypatch.setattr(module, "_validate_native_library_closure", lambda: None)
-    def stop_before_network(env):
-        child_environment.update(env)
-        raise module.RunnerError("EPOCH_CAPTURED")
-    monkeypatch.setattr(module, "_validate_local_native_build", stop_before_network)
-    with pytest.raises(module.RunnerError, match="EPOCH_CAPTURED"):
-        module._run_live_case_once(case, tmp_path, {}, subcase=subcase)
-    expected = requested if case == "Y-B" or subcase == "Y-N-E" else module.PLAINTEXT_EPOCH
-    assert publication_inputs.get("protection_epoch", module.PLAINTEXT_EPOCH) == expected
-    assert child_environment[module.PROTECTION_EPOCH_ENV] == expected
-    assert module.os.environ[module.PROTECTION_EPOCH_ENV] == requested
-    if expected == requested:
-        assert child_environment["SPEC181_REQUESTER_PRIVATE_KEY"]
-        assert child_environment["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"]
-        assert child_environment["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"] == str(public_key)
 
 
 def test_live_case_build_rejection_has_no_network_side_effect(monkeypatch, tmp_path):
     module = load_runner()
+    monkeypatch.setenv("SPEC187_NATIVE_MODE", "1")
+    monkeypatch.setenv(module.PROTECTION_EPOCH_ENV, "fixture-native-epoch")
+    key_file = tmp_path / "authority.pub"
+    recipient_map = tmp_path / "recipients.json"
+    key_file.write_text("not consumed: build-seal rejection precedes network")
+    recipient_map.write_text("{}")
+    native_inputs = {
+        "spec187_native_selector": str(tmp_path / "selector"),
+        "spec187_native_request_config": str(tmp_path / "config.json"),
+        "spec187_native_request_input": str(tmp_path / "input.bin"),
+        "spec187_native_request_output": str(tmp_path / "output.bin"),
+        "spec187_native_grant_authority_public_key": str(key_file),
+        "spec187_native_provider_recipient_key_map": str(recipient_map),
+        "native_authority": {"config": str(tmp_path / "authority.json"),
+                             "protection_epoch": "fixture-native-epoch"},
+    }
     calls = []
     monkeypatch.setattr(module, "CaseRuntimeBinding", SimpleNamespace(
         from_inputs=lambda *args: SimpleNamespace(output=tmp_path)))
@@ -316,7 +288,7 @@ def test_live_case_build_rejection_has_no_network_side_effect(monkeypatch, tmp_p
         raise module.RunnerError("LOCAL_NATIVE_BUILD_REJECTED:STALE_SOURCES")
     monkeypatch.setattr(module, "_validate_local_native_build", reject)
     with pytest.raises(module.RunnerError, match="STALE_SOURCES"):
-        module._run_live_case_once("Y-A", tmp_path, {})
+        module._run_live_case_once("Y-A", tmp_path, native_inputs)
     assert calls == ["preflight", "cleanup"]
 
 
@@ -1061,12 +1033,13 @@ def test_case_runtime_binding_rejects_loader_incompatible_isolated_policy(tmp_pa
         module.CaseRuntimeBinding.from_inputs("Y-B", output, inputs)
 
 
-def test_case_driver_rejects_missing_publication_inputs_before_network(tmp_path: Path):
+def test_publication_builder_rejects_missing_inputs_before_network(tmp_path: Path):
     module = load_runner()
     output, inputs = _binding_inputs(tmp_path, module)
     with pytest.raises(module.RunnerError,
                        match="CASE_RUNTIME_PUBLICATION_INPUT_INCOMPLETE"):
-        module.run_minindn_case("Y-B", output, inputs)
+        binding = module.CaseRuntimeBinding.from_inputs("Y-B", output, inputs)
+        module.build_runtime_publication_file(binding, inputs)
 
 
 def test_launcher_import_path_includes_repo_client_before_network(tmp_path: Path):
@@ -1114,53 +1087,39 @@ def test_yolo_runtime_helper_imports_current_planner_symbols():
         sys.path.remove(str(module_path))
 
 
-def test_case_process_specs_are_explicit_and_ack_driven(tmp_path: Path):
+def test_case_process_specs_preserve_control_and_providers_without_old_user(tmp_path: Path):
     module = load_runner()
     output, inputs = _binding_inputs(tmp_path, module)
     binding = module.CaseRuntimeBinding.from_inputs("Y-B", output, inputs)
-    specs = module.MiniNdnCaseRuntime(binding, inputs).process_specs()
-    assert [item.name for item in specs] == [
-        "controller", "repo", "provider-BackboneNeck",
-        "provider-DetectShard0", "provider-DetectShard1", "provider-Merge",
-        "user",
-    ]
-    assert [item.node for item in specs[:2]] == ["memphis", "neu"]
-    assert specs[0].ready_marker == "SPEC180_CONTROLLER_READY"
-    assert all("provider_role_assignments" not in item.command
-               for item in specs)
+    runtime = module.MiniNdnCaseRuntime(binding, inputs)
+    controls = runtime.process_specs("control")
+    assert [item.name for item in controls] == ["controller", "repo"]
+    assert [item.node for item in controls] == ["memphis", "neu"]
+    assert controls[0].ready_marker == "SPEC180_CONTROLLER_READY"
     assert all("--config" in item.command and "case-policy.json" in item.command
-               for item in specs if not item.name.startswith("provider-"))
-    user = specs[-1]
-    assert "--ack-timeout-ms 1500" in user.command
-    assert "--canonical-package" in user.command
-    assert "--lifecycle-output-dir" in user.command
-    assert "--lifecycle-case Y-B" in user.command
-    assert "--request-id /spec180-y-b-" in user.command
-    assert "--envelope-key-file" in user.command
-    assert str(inputs["envelope_key_file"]) in user.command
-    assert user.ready_marker == "YOLO_ACK_DRIVEN_RESULT"
-    provider_commands = [item.command for item in specs if item.name.startswith("provider-")]
+               for item in controls)
+    providers = runtime.process_specs("providers")
+    assert len(providers) == 4
+    assert all("di-native-provider" in item.command and "provider.py" not in item.command
+               for item in providers)
+    assert all("--serve" in item.command and "--plan" in item.command and
+               "--manifest" in item.command for item in providers)
+    assert all(item.ready_marker == "NDNSF_DI_NATIVE_PROVIDER_READY" for item in providers)
+    assert all("provider_role_assignments" not in item.command for item in (*controls, *providers))
+    provider_commands = [item.command for item in providers]
     assert all(str(module.DEFAULT_ARTIFACT_CACHE_ROOT / "providers") in command
                and str(output / "native-artifact-cache") not in command
                for command in provider_commands)
-    assert all("--selection-offer-key-file" in command
-               for command in provider_commands)
-    assert all("di-native-provider" in command
-               for command in provider_commands)
-    assert all("provider.py" not in command
-               for command in provider_commands)
-    assert all("--serve" in command
-               and "--plan" in command
-               and "native-execution-plan.json" in command
-               and "--manifest" in command
+    assert all("--selection-offer-key-file" in command for command in provider_commands)
+    assert all("native-execution-plan.json" in command
                and "service-manifest.json" in command
                and "--trust-schema" in command
                and "--offer-backend onnxruntime-cpu" in command
                and "--offer-can-provision" in command
                for command in provider_commands)
-    assert all(item.ready_marker == "NDNSF_DI_NATIVE_PROVIDER_READY"
-               for item in specs if item.name.startswith("provider-"))
-    assert "--native-tensor-input" in user.command
+    for phase in (None, "user"):
+        with pytest.raises(module.RunnerError, match="SPEC187_NATIVE_SELECTOR_REQUIRED"):
+            runtime.process_specs(phase)
 
 
 def test_y_n_c_mutates_native_provider_capabilities_at_process_boundary(
@@ -1219,16 +1178,8 @@ def test_case_process_specs_use_barriered_startup_phases(tmp_path: Path):
     output, inputs = _binding_inputs(tmp_path, module)
     binding = module.CaseRuntimeBinding.from_inputs("Y-B", output, inputs)
     runtime = module.MiniNdnCaseRuntime(binding, inputs)
-    specs = runtime.process_specs()
-    assert [item.startup_phase for item in specs] == [
-        "control", "control", "providers", "providers", "providers",
-        "providers", "user",
-    ]
-    assert [item.name for item in runtime.process_specs("control")] == [
-        "controller", "repo",
-    ]
-    assert len(runtime.process_specs("providers")) == 4
-    assert [item.name for item in runtime.process_specs("user")] == ["user"]
+    assert [item.startup_phase for item in runtime.process_specs("control")] == ["control", "control"]
+    assert [item.startup_phase for item in runtime.process_specs("providers")] == ["providers"] * 4
     with pytest.raises(module.RunnerError, match="START_PHASE_INVALID"):
         runtime.process_specs("all")
 
@@ -1597,13 +1548,13 @@ def test_process_specs_rechecks_declared_private_key_digests(tmp_path: Path):
     }
     binding = module.CaseRuntimeBinding.from_inputs("Y-B", output, inputs)
     runtime = module.MiniNdnCaseRuntime(binding, inputs)
-    runtime.process_specs()
+    runtime.process_specs("providers")
 
     first_key = Path(next(iter(private_keys.values())))
     first_key.write_bytes(b"mutated-private-key")
     with pytest.raises(module.RunnerError,
                        match="CASE_PROCESS_OFFER_PRIVATE_KEY_DIGEST_MISMATCH"):
-        runtime.process_specs()
+        runtime.process_specs("providers")
 
 
 def test_wait_for_ready_requires_markers_and_rejects_early_exit(tmp_path: Path):
@@ -1989,3 +1940,14 @@ def test_exact_sif_prefix_preserves_node_keychain_locators(
         home_dir=str(node_home))
     assert f"--env NDN_CLIENT_PIB=pib-sqlite3:{node_home}/.ndn" in prefix
     assert f"--env NDN_CLIENT_TPM=tpm-file:{node_home}/.ndn" in prefix
+
+
+def test_retired_python_requester_fails_before_runtime_or_network(monkeypatch, tmp_path):
+    module = load_runner()
+    monkeypatch.delenv("SPEC187_NATIVE_MODE", raising=False)
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("retired requester created runtime or network state")
+    monkeypatch.setattr(module, "build_runtime_publication_file", forbidden)
+    monkeypatch.setattr(module, "MiniNdnCaseRuntime", forbidden)
+    with pytest.raises(module.RunnerError, match="SPEC187_NATIVE_SELECTOR_REQUIRED"):
+        module._run_live_case_once("Y-B", tmp_path, {})

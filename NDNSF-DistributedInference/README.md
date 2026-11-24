@@ -1015,19 +1015,17 @@ fast non-MiniNDN layout/policy smoke:
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case runtime-compat
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
   --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3 \
-  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
-Current validated YOLO layout coverage:
+Historical YOLO layout results (not current candidate qualification):
 
 ```text
 2x2  default historical network regression
 2x3  MiniNDN network regression with one provider per generated role
 3x2  MiniNDN network regression with one provider per generated role
 1x3  local export/policy/ONNX correctness smoke
-3x3  local export/policy/ONNX correctness smoke; run yolo-layout before using it as a release baseline
+3x3  local export/policy/ONNX correctness smoke; historical offline result only, not a current release baseline
 2x2 parallel-detect-scale  local ONNX correctness smoke with /Backbone, /Head/*, /Merge
 2x3 parallel-detect-scale  local policy/ONNX smoke; MiniNDN smoke is the network baseline
 ```
@@ -3393,24 +3391,9 @@ lifecycle logs. The script now defaults `--ndn-packet-trace-window` to `warm` so
 the pcap stays focused on the measured inference window; use `all` only when
 debugging keychain, artifact deployment, repo, or startup synchronization.
 
-For the older 2x3 Python-provider parallel-detect-scale baseline, use a
-60-second warm window and explicit Python worker knobs:
-
-```bash
-PYTHONPATH=NDNSF-DistributedInference:$PYTHONPATH \
-python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
-  --case yolo-layout \
-  --layout 2x3 \
-  --parallel-detect-scale-shards \
-  --cold-requests 1 \
-  --warm-requests 1 \
-  --warm-duration-s 60 \
-  --warm-interval-ms 1000 \
-  --ack-timeout-ms 1500 \
-  --timeout-ms 60000 \
-  --provider-handler-workers 4 \
-  --user-async-workers 4
-```
+The Python-provider `yolo-layout` network entry point is retired. Use the
+`yolo-2x2` native candidate workflow above. The historical measurements below
+do not qualify the current candidate.
 
 A representative native-provider MiniNDN diagnostic on the current AI_Lab
 topology is preserved at
@@ -3559,18 +3542,12 @@ MiniNDN split smokes through one entry point:
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
   --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3 \
-  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
-`yolo-layout` validates custom YOLO layout export, repo-backed artifact
-deployment, dependency prefetch, activation exchange, and final result delivery
-through MiniNDN. `yolo-layout-local` remains available when only the generated
-chunk graph and local ONNX correctness need to be checked quickly.
-The currently validated network-level custom layouts are `2x3` and `3x2`.
-`1x3` and `3x3` are useful as fast local export smokes, while `3x3` should be
-run through `yolo-layout` before it is treated as a deployment baseline.
+`yolo-layout-local` retains offline export and numerical checks. The old
+`yolo-layout` network mode is retired; its historical custom-layout results
+do not qualify the current native candidate.
 
 The policy/repo inspection helper is still available:
 

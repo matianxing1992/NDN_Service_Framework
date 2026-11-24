@@ -24,68 +24,10 @@ def _source() -> str:
     return USER.read_text(encoding="utf-8")
 
 
-def test_yolo_example_has_model_first_ack_driven_entrypoint():
-    source = _source()
-    tree = ast.parse(source)
-    names = {
-        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert "_load_yolo_ack_driven" in names
-    assert "--offline-oracle" in source
-    assert "client.request_task(" in source
-    assert "client.publish_application_input_reference(" in source
-    ack_helper = source.split("def _load_yolo_ack_driven", 1)[1].split(
-        "\ndef main", 1)[0]
-    assert "_prepare_yolo_input(args, package)" in ack_helper
-    assert "make_input(" not in ack_helper
-    assert "_record_yolo_numerical_result(" in ack_helper
-    assert "client.encode_input(" not in ack_helper
-    assert "--input-payload-file" in source
-    assert "ack_coverage_roles=()," in source
-    assert 'parser.add_argument("--ack-timeout-ms", type=int, default=1500)' in source
-    # The dependency fetch budget follows the request's deadline budget.
-    assert "data_v1_no_progress_ms=int(args.timeout_ms)," in ack_helper
-    assert "NetworkCatalogSnapshotResolver(" in source
-    assert "service_user.fetch_signed_app_data" in source
-    assert "LifecycleJournal" in source
-    assert "lifecycle_observer=_make_lifecycle_observer" in source
-    assert "journal.validate_complete()" in source
-    assert 'parser.add_argument("--envelope-key-file", required=True' in source
-    assert "envelope_key_file=args.envelope_key_file" in source
 
 
-def test_legacy_service_policy_calls_are_gated_by_explicit_offline_flag():
-    source = _source()
-    tree = ast.parse(source)
-    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
-    # The maintained main entrypoint may retain the compatibility implementation,
-    # but it must reach it only after the explicit offline-oracle branch.
-    branch_lines = [
-        node.lineno for node in ast.walk(main)
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.UnaryOp)
-        and isinstance(node.test.op, ast.Not)
-        and isinstance(node.test.operand, ast.Attribute)
-        and node.test.operand.attr == "offline_oracle"
-    ]
-    assert branch_lines, "main must gate the legacy path with --offline-oracle"
-    assert "if not args.offline_oracle:" in source
 
 
-def test_ack_driven_helper_does_not_accept_provider_or_role_authority():
-    source = _source()
-    helper = source.split("def _load_yolo_ack_driven", 1)[1].split("\ndef main", 1)[0]
-    assert "Provider list" in helper
-    assert "role map" in helper
-    assert "ack_coverage_roles=()," in helper
-    assert "client.request_task(" in helper
-    assert "client.publish_application_input_reference(" in helper
-    assert "input_reference_file" in helper
-    assert "_prepare_yolo_input(args, package)" in helper
-    assert "client.distributed_inference(" not in helper
-    assert "client.async_distributed_inference(" not in helper
-    assert "PreSplitCatalogSnapshot(" not in helper
-    assert "catalog_snapshot_file" not in helper
 
 
 def test_yolo_provider_uses_request_input_and_terminal_owner_apis():

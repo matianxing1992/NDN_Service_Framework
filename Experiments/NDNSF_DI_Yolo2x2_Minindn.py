@@ -5889,6 +5889,8 @@ def main() -> None:
                         default="warm",
                         help="capture only the warm inference window by default; use all only for startup/repo/keychain diagnostics")
     args_cli = parser.parse_args()
+    if not args_cli.native_providers or not args_cli.native_requester:
+        parser.error("YOLO execution requires --native-providers and --native-requester")
     selected_parallel_modes = sum([
         bool(args_cli.parallel_output_shards),
         bool(args_cli.parallel_detect_scale_shards),
@@ -6654,9 +6656,7 @@ def main() -> None:
             return phase_env
 
         def build_warm_user_args() -> list[str]:
-            warm_user_args = common + [
-                "--envelope-key-file", str(envelope_key_file),
-                "--model", args_cli.model,
+            warm_user_args = [
                 "--input-size", str(args_cli.input_size),
                 "--ack-timeout-ms", str(ack_timeout_ms),
                 "--timeout-ms", str(timeout_ms),
@@ -6664,16 +6664,12 @@ def main() -> None:
             ]
             if preflight_requests > 0:
                 warm_user_args.extend(["--preflight-requests", str(preflight_requests)])
-            if args_cli.native_providers:
-                warm_user_args.append("--native-tensor-input")
             if native_assets is not None:
                 warm_user_args.extend([
                     "--native-requester-config", str(native_assets["requester_config"]),
                     "--canonical-package", str(native_assets["package_dir"]),
                     "--catalogue-registry", str(native_assets["catalogue_registry"]),
                 ])
-            else:
-                warm_user_args.extend(["--artifact-references-file", str(ARTIFACT_REFERENCES)])
             if warm_duration_s > 0:
                 warm_user_args.extend([
                     "--sequential-duration-s", str(warm_duration_s),
@@ -6746,27 +6742,20 @@ def main() -> None:
             return log_path, latencies, measured_count
 
         time.sleep(2)
-        envelope_key_file = ensure_request_envelope_key(OUT)
         native_request_count = cold_requests + warm_requests if native_assets is not None else cold_requests
-        user_common = common + [
-            "--envelope-key-file", str(envelope_key_file),
-            "--model", args_cli.model,
+        user_common = [
             "--input-size", str(args_cli.input_size),
             "--ack-timeout-ms", str(ack_timeout_ms),
             "--timeout-ms", str(timeout_ms),
             "--async-requests", str(user_async_workers),
             "--sequential-requests", str(native_request_count),
         ]
-        if args_cli.native_providers:
-            user_common.append("--native-tensor-input")
         if native_assets is not None:
             user_common.extend([
                 "--native-requester-config", str(native_assets["requester_config"]),
                 "--canonical-package", str(native_assets["package_dir"]),
                 "--catalogue-registry", str(native_assets["catalogue_registry"]),
             ])
-        else:
-            user_common.extend(["--artifact-references-file", str(ARTIFACT_REFERENCES)])
         restart_gate = None
         if restart_after:
             restart_gate = OUT / "native-restart-gate" / native_candidate["runId"]
