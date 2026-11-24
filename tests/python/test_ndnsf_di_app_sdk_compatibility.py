@@ -4,7 +4,6 @@ import ast
 import importlib
 from pathlib import Path
 import unittest
-import warnings
 from unittest import mock
 import tempfile
 from types import SimpleNamespace
@@ -142,7 +141,6 @@ class AppSdkCompatibilityTest(unittest.TestCase):
             "ndnsf_distributed_inference.app_sdk.facades")
         app_sdk_module = importlib.import_module(
             "ndnsf_distributed_inference.app_sdk")
-        root_module = importlib.import_module("ndnsf_distributed_inference")
 
         app_controller = controller_module.APPController
         self.assertEqual(
@@ -151,24 +149,7 @@ class AppSdkCompatibilityTest(unittest.TestCase):
         )
         self.assertIs(facades_module.APPController, app_controller)
         self.assertIs(app_sdk_module.APPController, app_controller)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            self.assertIs(root_module.APPController, app_controller)
 
-    def test_public_app_classes_have_one_canonical_owner(self):
-        compatibility_module = importlib.import_module(
-            "ndnsf_distributed_inference.app")
-        root_module = importlib.import_module("ndnsf_distributed_inference")
-        canonical = {
-            "APPClient": APPClient,
-            "APPDeployment": APPDeployment,
-            "APPProvider": APPProvider,
-        }
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            for name, expected in canonical.items():
-                self.assertIs(getattr(compatibility_module, name), expected)
-                self.assertIs(getattr(root_module, name), expected)
 
     def test_maintained_runtime_callers_use_canonical_controller_owner(self):
         checked = []

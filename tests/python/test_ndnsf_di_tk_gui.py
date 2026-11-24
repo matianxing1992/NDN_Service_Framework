@@ -314,7 +314,7 @@ class TkGuiHelperTests(unittest.TestCase):
                 str(out_dir),
             ])
             with mock.patch(
-                "ndnsf_distributed_inference.gui.subprocess.run",
+                "ndnsf_distributed_inference.app_sdk.gui.subprocess.run",
                 return_value=mock.Mock(returncode=0, stdout="ok"),
             ):
                 summary = run_headless_qwen_minindn(args)

@@ -314,32 +314,7 @@ as a normal repo object. The application user starts with the repo service
 bootstrap parameters and fetches that config through the repo before doing
 ordinary `put/get` operations:
 
-```python
-from ndnsf_distributed_inference import DistributedRepo
-
-repo = DistributedRepo.from_repo_config(
-    controller="/example/repo/controller",
-    user="/example/repo/user",
-    group="/example/repo/group",
-    trust_schema="examples/trust-schema.conf",
-    config_object_name="/example/repo/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/CONFIG/repo_policy.yaml",
-)
-manifest = repo.put(
-    "APP/Generic/BinaryBlob/demo",
-    payload,
-    object_type="binary-blob",
-    replication_factor=2,
-    policy_epoch="/Policy/example/v1",
-    metadata={"tags": ["demo", "binary"], "workflow": "example"},
-)
-payload = repo.get(manifest.object_name, manifest)
-objects = repo.list()
-matches = repo.catalog_query(
-    manifest.replica_nodes[0],
-    {"objectClass": "binary-blob", "tags": ["demo"]},
-)
-repo.remove(manifest.object_name)
-```
+Use the thin native [`py_repoclient` API](pythonWrapper/README.md) for current configuration, publication and retrieval calls. The former DI `DistributedRepo` facade has retired.
 
 The high-level `repo.put(...)` API accepts an application-relative suffix and
 expands it under the publisher namespace, for example

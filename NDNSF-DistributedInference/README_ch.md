@@ -1038,33 +1038,7 @@ order。
 
 Model shard、runtime bundle 和 intermediate data 不应随意 push 到任意节点。NDNSF-DI 可以携带从 NDNSF-DistributedRepo object manifests 生成的 artifact references：
 
-```python
-from ndnsf_distributed_inference import (
-    LocalDistributedRepo,
-    PlacementPolicy,
-    StorageCapability,
-)
-
-repo = LocalDistributedRepo([
-    StorageCapability("/repo/A", free_bytes=4_000_000_000,
-                      recent_load=0.1, failure_domain="rack-a"),
-    StorageCapability("/repo/B", free_bytes=4_000_000_000,
-                      recent_load=0.2, failure_domain="rack-b"),
-])
-
-manifest = repo.put(
-    object_name=(
-        "/NDNSF-DistributeInference/example/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/"
-        "NDNSF-DI/ARTIFACT/AI/YOLO/2x2/Stage/0/Shard/0/model"
-    ),
-    payload=model_bytes,
-    object_type="onnx-model",
-    policy=PlacementPolicy(replication_factor=2),
-    policy_epoch="/Policy/yolo-2x2/v1",
-)
-
-payload = repo.fetch_object(manifest.object_name, manifest)
-```
+制品发布与读取请使用[原生 Repo Python API](../NDNSF-DistributedRepo/pythonWrapper/README.md)。
 
 Manifest 记录 object hash、size、replication factor、selected repo nodes，以及保存 object segments 的 signed Data names。Object name 仍然按发布者命名空间组织：controller 发布的 artifacts 使用 controller object namespace，user 发布的 inputs/intermediates 使用 user namespace，provider 输出使用 provider namespace。实际服务 stored segments 的 Data name 可以是 repo-owned prefix，例如 `/repo-node/NDNSF-DISTRIBUTED-REPO/DATA/<object-hash>`，这样 fetcher 可以直接路由到被选中的 repo node。当前 networked path 中，controller-side deployer 会在推理前把 model/runtime artifacts 存入 repo node。User request 只携带 execution specs 和 artifact references。每个 reference 同时包含 `largeDataReference` 和用于 manifest-aware fetch 的 `repoManifest`；被选中的 providers 自己从 repo 获取被分配 artifacts，并在本地缓存。
 
@@ -1075,10 +1049,8 @@ DI 代码读取 model artifacts、runtime bundles、images 或 activation object
 User 侧：
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceClient,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.client import DistributedInferenceClient
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 from ndnsf import CollaborationRole
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
@@ -1125,10 +1097,8 @@ payload/reference，以及正常 NDNSF collaboration request。
 Provider 侧：
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceProvider,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.provider import DistributedInferenceProvider
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
 inference = DistributedInferenceProvider.create(
@@ -1145,10 +1115,8 @@ inference.run()
 Controller 侧：
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceController,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.app_sdk.controller import DistributedInferenceController
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
 controller = DistributedInferenceController.create(
@@ -1336,7 +1304,7 @@ NDNSF-DistributedRepo manifest。压缩或降低精度可以作为应用层模�
 真实 dependency graph 应来自 model splitter。Splitter 通常是 model-family 或 backend specific：YOLO ONNX splitter、transformer pipeline splitter、tensor-parallel LLM splitter 或 container-bundle splitter 可能都有不同逻辑。NDNSF-DistributedInference 只要求 splitter 输出标准 `SplitterOutput`：
 
 ```python
-from ndnsf_distributed_inference import InferenceDependency
+from ndnsf_distributed_inference.plan import InferenceDependency
 from ndnsf_distributed_inference.splitter import (
     SplitArtifact,
     SplitServiceSpec,
@@ -1656,7 +1624,7 @@ model format/backend 组合，policy generation 也会校验 service metadata �
 LLM 示例会刻意复用 YOLO 示例已经在用的 DI 部署机制。Artifact deployment、
 异步 readiness、repo-backed materialization、native-plan generation 和 dependency
 reference 都仍然是框架机制。LLM 特有代码只保留在 planner/runtime adapter 里：当前
-Qwen 示例通过 `ndnsf_distributed_inference.llm_runtime` 提供 OpenAI-compatible
+Qwen 示例通过 `ndnsf_distributed_inference.adapters.llama.runtime` 提供 OpenAI-compatible
 inference-payload adapter、repo materialized llama-server 进程管理，以及 GGUF/runtime
 artifact materialization helper。这样 `llama-server` 不会变成第二套平行部署系统。
 
@@ -2186,7 +2154,7 @@ YOLO-specific split，方便重复实验。两条路径最终都输出同一种
 安装后，应用代码可以从任意工作目录导入 distributed inference 层：
 
 ```python
-from ndnsf_distributed_inference import DistributedInferenceClient
+from ndnsf_distributed_inference.client import DistributedInferenceClient
 ```
 
 每个 shell 或 MiniNDN node 运行一个 role：
@@ -3064,3 +3032,5 @@ sudo -n env \
 完整生成，包括完整答案和逐 token 时延。本机没有 CUDA，因此 GPU 加载和精确
 warm-GPU 复用条件明确标记为 `DEFERRED`。该运行不构成分布式 Qwen、
 TigerCluster、大模型、恶意计算正确性、分布式原子性、无死锁或通用最优器证据。
+
+根命名空间的旧符号转发、Legacy Adapter 与旧 import 模块已退役。使用 `ndnsf_distributed_inference.api` 或上文的 canonical owner。aggregate 发行包继续提供共享 namespace。

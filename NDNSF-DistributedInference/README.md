@@ -1404,33 +1404,7 @@ Model shards, runtime bundles, and intermediate data should not be pushed to
 arbitrary nodes. NDNSF-DI can carry artifact references generated from
 NDNSF-DistributedRepo object manifests:
 
-```python
-from ndnsf_distributed_inference import (
-    LocalDistributedRepo,
-    PlacementPolicy,
-    StorageCapability,
-)
-
-repo = LocalDistributedRepo([
-    StorageCapability("/repo/A", free_bytes=4_000_000_000,
-                      recent_load=0.1, failure_domain="rack-a"),
-    StorageCapability("/repo/B", free_bytes=4_000_000_000,
-                      recent_load=0.2, failure_domain="rack-b"),
-])
-
-manifest = repo.put(
-    object_name=(
-        "/NDNSF-DistributeInference/example/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/"
-        "NDNSF-DI/ARTIFACT/AI/YOLO/2x2/Stage/0/Shard/0/model"
-    ),
-    payload=model_bytes,
-    object_type="onnx-model",
-    policy=PlacementPolicy(replication_factor=2),
-    policy_epoch="/Policy/yolo-2x2/v1",
-)
-
-payload = repo.fetch_object(manifest.object_name, manifest)
-```
+See the [native Repo Python API](../NDNSF-DistributedRepo/pythonWrapper/README.md) for artifact publication and retrieval.
 
 The manifest records the object hash, size, replication factor, selected repo
 nodes, and the signed Data names that hold the object segments. Object names
@@ -1457,10 +1431,8 @@ terms of object references and manifests, not repo segment names.
 User side:
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceClient,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.client import DistributedInferenceClient
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 from ndnsf import CollaborationRole
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
@@ -1507,10 +1479,8 @@ payload/reference plus the normal NDNSF collaboration request.
 Provider side:
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceProvider,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.provider import DistributedInferenceProvider
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
 inference = DistributedInferenceProvider.create(
@@ -1527,10 +1497,8 @@ inference.run()
 Controller side:
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceController,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.app_sdk.controller import DistributedInferenceController
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
 controller = DistributedInferenceController.create(
@@ -1747,7 +1715,7 @@ splitter may all use different logic. NDNSF-DistributedInference only requires
 that the splitter emits a standard `SplitterOutput`:
 
 ```python
-from ndnsf_distributed_inference import InferenceDependency
+from ndnsf_distributed_inference.plan import InferenceDependency
 from ndnsf_distributed_inference.splitter import (
     SplitArtifact,
     SplitServiceSpec,
@@ -2110,7 +2078,7 @@ The LLM example deliberately reuses the same DI deployment machinery as the
 YOLO examples. Artifact deployment, asynchronous readiness, repo-backed
 materialization, native-plan generation, and dependency references remain
 framework mechanisms. LLM-specific code is limited to planner/runtime adapters:
-for the current Qwen example, `ndnsf_distributed_inference.llm_runtime` provides
+for the current Qwen example, `ndnsf_distributed_inference.adapters.llama.runtime` provides
 an OpenAI-compatible inference-payload adapter, repo-materialized llama-server
 process management, and GGUF/runtime artifact materialization helpers. This
 keeps `llama-server` from becoming a second, parallel deployment system.
@@ -2703,7 +2671,7 @@ After installation, application code can import the distributed inference layer
 from any working directory:
 
 ```python
-from ndnsf_distributed_inference import DistributedInferenceClient
+from ndnsf_distributed_inference.client import DistributedInferenceClient
 ```
 
 Run one role per shell or MiniNDN node:
@@ -3584,7 +3552,7 @@ Install only required distributions under `packaging/python/`. External
 optimizers implement the ten public SDK protocols; omitted hooks resolve to
 named defaults. `RunnerAdapterRegistry` remains independent. `APPDeployment`
 uses external `ArtifactReference` values and `APPClient` provides durable
-submit/reopen/wait/cancel/stream/result handles. The aggregate is compatibility-only.
+submit/reopen/wait/cancel/stream/result handles. The aggregate provides the shared namespace and owner-package dependencies.
 Writing and reopening encrypted APP request records requires the matching
 installed `ndnsf` binding. The native codec seals each request envelope and
 authenticates its request ID and expiry on read.
@@ -3725,3 +3693,5 @@ This host has no CUDA, so GPU load and exact warm-GPU-reuse criteria remain
 explicitly `DEFERRED`. The run is not distributed-Qwen, TigerCluster,
 large-model, malicious-computation, distributed-atomicity, deadlock-freedom,
 or universal-optimizer evidence.
+
+Root symbol compatibility exports, Legacy adapters and legacy import modules have retired. Import `ndnsf_distributed_inference.api` or the canonical owner modules shown above. The aggregate distribution remains the shared namespace owner.

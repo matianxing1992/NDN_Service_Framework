@@ -6,6 +6,7 @@ from __future__ import annotations
 import unittest
 
 import ndnsf_distributed_inference as di
+from ndnsf_distributed_inference import runtime_v1
 from ndnsf_distributed_inference.planner.backend_registry import default_planner_registry
 from ndnsf_distributed_inference.retry import RetryPolicy, RetryReason
 
@@ -24,7 +25,7 @@ class DefaultImportBoundaryTest(unittest.TestCase):
         self.assertTrue(forbidden.isdisjoint(vars(di)))
 
     def test_exact_forward_cache_remains_default_provider_optimization(self) -> None:
-        self.assertTrue(hasattr(di, "ExactForwardCacheManager"))
+        self.assertTrue(hasattr(runtime_v1, "ExactForwardCacheManager"))
 
     def test_semantic_cache_implementation_is_physically_experimental(self) -> None:
         from ndnsf_distributed_inference.experimental.semantic_cache import (

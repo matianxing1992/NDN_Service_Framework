@@ -2,7 +2,6 @@
 
 from .admission_policy import *
 from .cache_policy import *
-from .compatibility import *
 from .cost_policy import *
 from .defaults import *
 from .deployment_policy import *

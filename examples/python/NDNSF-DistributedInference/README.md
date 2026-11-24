@@ -148,7 +148,7 @@ requesting nodes.
 Application users should normally write only this:
 
 ```python
-from ndnsf_distributed_inference import APPClient
+from ndnsf_distributed_inference.app_sdk.client import APPClient
 
 client = APPClient.from_config("yolo_policy.yaml")
 service = "/AI/YOLO/SplitInference"
@@ -175,7 +175,7 @@ that a generic tensor encoder cannot know.
 Providers register the service and advertise roles:
 
 ```python
-from ndnsf_distributed_inference import APPProvider
+from ndnsf_distributed_inference.app_sdk.provider import APPProvider
 
 provider = APPProvider.from_config("yolo_policy.yaml", provider_id="A")
 provider.serve_service(

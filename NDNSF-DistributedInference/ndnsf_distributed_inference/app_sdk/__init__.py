@@ -11,15 +11,13 @@ from ..conversation import *
 from ..conversation import __all__ as _conversation_exports
 from .status import *
 from .status import __all__ as _status_exports
-from ..planner.compatibility import *
-from ..planner.compatibility import __all__ as _compatibility_exports
 from ..sdk.loader import (
     PlacementStrategyAllowlistEntry, discover_placement_strategies,
     select_placement_strategy,
 )
 
 _exports = [
-    *_contracts_exports, *_conversation_exports, *_status_exports, *_compatibility_exports,
+    *_contracts_exports, *_conversation_exports, *_status_exports,
     "PlacementStrategyAllowlistEntry", "discover_placement_strategies",
     "select_placement_strategy",
 ]

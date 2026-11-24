@@ -106,9 +106,6 @@ class InstalledCandidateTest(unittest.TestCase):
         (self.source_app_package / "__init__.py").write_text("", encoding="utf-8")
         (self.source_app_package / "app_sdk/client.py").write_text(
             "class APPClient: pass\n", encoding="utf-8")
-        (self.source_app_package / "compatibility").mkdir()
-        (self.source_app_package / "compatibility/manifest.json").write_text(
-            '{"exports": []}\n', encoding="utf-8")
         self.topology = self.root / "topology.conf"
         self.topology.write_text("user\nprovider\n", encoding="utf-8")
         self.policy = self.root / "policy.yaml"
@@ -190,9 +187,9 @@ class InstalledCandidateTest(unittest.TestCase):
             candidate.sha256_file(self.source_app_package / "app_sdk/client.py"))
         self.assertEqual(
             record["pythonApplication"]["packageFiles"]
-            ["compatibility/manifest.json"],
+            ["__init__.py"],
             candidate.sha256_file(
-                self.source_app_package / "compatibility/manifest.json"))
+                self.source_app_package / "__init__.py"))
         output = self.root / "candidate.json"
         candidate.write_candidate(output, record)
         self.assertEqual(json.loads(output.read_text())["candidateDigest"],
@@ -207,8 +204,8 @@ class InstalledCandidateTest(unittest.TestCase):
 
     def test_python_application_package_data_changes_the_candidate_digest(self) -> None:
         first = self.build()
-        app_manifest = self.source_app_package / "compatibility/manifest.json"
-        app_manifest.write_text('{"exports": ["changed"]}\n', encoding="utf-8")
+        app_manifest = self.source_app_package / "__init__.py"
+        app_manifest.write_text('# changed namespace\n', encoding="utf-8")
         second = self.build()
         self.assertNotEqual(first["candidateDigest"], second["candidateDigest"])
         self.assertNotEqual(first["pythonApplication"], second["pythonApplication"])

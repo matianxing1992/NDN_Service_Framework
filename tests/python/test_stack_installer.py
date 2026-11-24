@@ -362,7 +362,7 @@ printf 'SELECTED=%s,%s,%s\\n' "$NDNSF_INSTALL_DI" "$NDNSF_INSTALL_REPO" "$NDNSF_
 refresh_global_pkg_config_path() { :; }
 run_bounded() { printf '%s\\n' "$@"; }
 run_waf_clean configure
-''', "--components", profile)
+''', "--components", profile, "--configure")
     assert result.returncode == 0, result.stderr
     assert f"SELECTED={di},{repo},{uav}" in result.stdout
     assert "--components=" + profile in result.stdout.splitlines()
@@ -666,7 +666,7 @@ def test_python_wheel_staging_excludes_runtime_and_build_artifacts(tmp_path):
         "NDNSF-DistributedRepo/src/repo.cpp",
         "NDNSF-DistributedInference/cpp/probe.cpp",
         "NDNSF-DistributedInference/ndnsf_di_launcher.py",
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/manifest.json",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "packaging/ndnsf-di-container/lib/allocation_topology.py",
         "packaging/ndnsf-di-container/lib/adapters/__init__.py",
         "packaging/ndnsf-di-container/lib/adapters/base.py",

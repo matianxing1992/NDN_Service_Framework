@@ -97,6 +97,12 @@ class InstallationProfilesTest(unittest.TestCase):
                         self.assertNotIn('ndnsf_di_launcher.py', archive.namelist())
                     files={item for item in archive.namelist()
                            if item.startswith("ndnsf_distributed_inference/")}
+                    self.assertFalse(any("/compatibility/" in item for item in files))
+                    for retired in ("app", "controller", "gui", "onnx_graph", "onnx_executor",
+                                    "qwen_pilot", "llm_runtime", "planner_registry", "split_planner"):
+                        self.assertNotIn("ndnsf_distributed_inference/" + retired + ".py", files)
+                    if wheel.name.startswith("ndnsf_distributed_inference-"):
+                        self.assertEqual(files, {"ndnsf_distributed_inference/__init__.py"})
                     for item in archive.namelist():
                         if item.endswith(".dist-info/METADATA"):
                             metadata = BytesParser().parsebytes(archive.read(item))

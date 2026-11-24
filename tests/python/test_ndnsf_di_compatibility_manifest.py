@@ -8,7 +8,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = (
     REPO
-    / "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/manifest.json"
+    / "tests/fixtures/ndnsf-di-core-app-separation/compatibility-surface-ca1d6b2a.json"
 )
 
 

@@ -18,24 +18,7 @@ python3 -m pip install -e NDNSF-DistributedRepo/pythonWrapper
 
 最小用法：
 
-```python
-from ndnsf_distributed_inference import DistributedRepo
-
-repo = DistributedRepo.from_repo_config(
-    controller="/example/repo/controller",
-    user="/example/repo/user",
-    group="/example/repo/group",
-    trust_schema="examples/trust-schema.conf",
-)
-manifest = repo.put(
-    "APP/Generic/BinaryBlob/demo",
-    b"...",
-    object_type="binary-blob",
-    replication_factor=2,
-    policy_epoch="/Policy/app/v1",
-)
-payload = repo.get(manifest.object_name, manifest)
-```
+当前接口和调用示例见[原生 Repo Python API](README.md)。旧 DI DistributedRepo 门面已退役。
 
 高层 API 会把相对 object suffix 展开到 publisher namespace 下，例如 `/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/APP/Generic/BinaryBlob/demo`。Repo 存储 app 创建并签名后的 Data segments，把它们当作 opaque bytes；它不会对已加密或明文 application data 再加第二层加密。这些 Data packet names 必须保持在 publisher identity 下，这样 hierarchical trust schema 才能用 trust-root certificate anchor 验证它们。
 

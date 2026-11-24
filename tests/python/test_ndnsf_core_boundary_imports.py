@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 import ndnsf
-from ndnsf_distributed_inference import (
+from ndnsf_distributed_inference.artifact_deployment import (
     ExecutionArtifact,
     ExecutionArtifactSpec,
     prepare_execution,
