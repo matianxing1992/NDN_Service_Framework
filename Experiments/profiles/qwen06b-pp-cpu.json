@@ -13,6 +13,10 @@
     },
     "qwen06b-pp-cpu-distributed": {
       "layerRanges": [[0, 14], [14, 28]],
+      "slurmTurns": [
+        "Explain how Named Data Networking retrieves content by name and verifies signatures before sharing cached responses across consumers.",
+        "Explain how distributed inference workers exchange tensors over Named Data Networking and coordinate the next token."
+      ],
       "planningGraphDigest": "sha256:08896574dcd8a945be8a477a78d0a9a9e70e2a3ff0ddc7824d001a35424a0c0b",
       "stageProviders": [0, 1],
       "providerNodes": ["worker-0", "worker-1"],

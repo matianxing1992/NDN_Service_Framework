@@ -1,10 +1,49 @@
-# Native Qwen3-0.6B experiments
+# Native Qwen experiments
 
 Use the same installed C++ applications on MiniNDN, a host and Tiger: Controller,
 ArtifactAuthority, DistributedRepoServer, Provider and Requester. The deployment
 JSON uses `schema: ndnsf-di-deployment-v1`. Model, grants, role placement, backend,
 resources and conversation turns are configuration inputs. Python manages network
 facilities and processes; it does not implement inference or the request protocol.
+
+## Qwen3-4B INT4/FP16 on two Slurm nodes
+
+The [PP 1:1 preset](qwen3-4b-pp11/profile.json) binds the frozen model to two
+18-layer stages and two turns of 32 input and 32 generated tokens. It uses the
+same preparation command for CPU and CUDA. The Slurm placement supplies the
+devices, node identities, and SIF, and the asset manifest supplies the model
+files. The preset files are installed under `share/ndnsf/Experiments`.
+
+```bash
+set -e
+resources="$host_prefix/share/ndnsf/Experiments"
+bundle=$(mktemp -d "$input_root/qwen3-4b-pp11.XXXXXXXX")
+cp "$resources/profiles/qwen3-4b-pp11/"*.json \
+   "$resources/recipes/qwen3-4b-q4f16.json" "$bundle/"
+python3 "$resources/prepare-native-deployment.py" \
+  --profile-file "$bundle/profile.json" --slurm-placement "$placement" \
+  --prefix "$host_prefix" --asset-manifest "$asset_manifest" \
+  --work-root "$work_root" --namespace "$namespace" --offline
+```
+
+Use an existing `input_root` for the small profile bundle and an unused
+`work_root` under a persistent directory for the deployment. The bundle copy
+keeps the recipe alongside the profile and preserves its recorded SHA-256.
+The preparer binds local model paths and producer names from the verified asset
+manifest and deployment namespace. Add `--plan` to check the inputs without
+creating credentials or starting actors.
+
+## Qwen3.6-27B FP16 on two Slurm nodes
+
+The [PP 1:1 preset](qwen36-27b-pp11/profile.json) binds the text-only FP16
+export to layer ranges `[0,32)` and `[32,64)`. It fixes both 32-token inputs,
+the 32-token greedy output budget per turn, and all 128 state successors.
+Bundle the preset files with `recipes/qwen36-27b-fp16-text.json` and pass the
+sealed manifest for that export to the same preparation command.
+This preset identifies the CPU reference graph. CUDA measurements use a
+separately sealed graph with host shape operations qualified for CUDA.
+
+## Qwen3-0.6B on MiniNDN
 
 For MiniNDN, run in the installed control environment with MiniNDN available:
 

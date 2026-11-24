@@ -3,9 +3,13 @@
 This module validates files; it does not grant inference permission or construct
 native model identities. Recipes are maintained inputs, never manifest-selected code.
 """
+import errno
 import hashlib
 import json
+import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 
 SCHEMA = "ndnsf-model-assets-v1"
@@ -107,3 +111,52 @@ def sealed_manifest(recipe):
                 license=recipe["license"], toolVersions=recipe["toolVersions"],
                 transforms=recipe["transforms"], modelContract=recipe["modelContract"],
                 files=recipe["files"])
+
+
+def prepare_source_cache(root, asset_manifest, recipe, assets):
+    """Publish the already admitted model bytes for the native filesystem source loader."""
+    root = Path(root)
+    if not root.is_absolute() or root.resolve(strict=True) != root or not root.is_dir():
+        raise ValueError("ASSET_SOURCE_CACHE_ROOT_INVALID")
+    identity = dict(schema="ndnsf-di-model-source-cache-v1",
+                    assetManifestDigest="sha256:" + file_digest(asset_manifest),
+                    sourceDigest="sha256:" + recipe["files"]["canonicalGraph"]["sha256"],
+                    initializerDigest="sha256:" + recipe["files"]["canonicalWeights"]["sha256"])
+    marker = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(marker).hexdigest()
+    target = root / digest
+    objects = {
+        role: Path("payloads/sha256") / row["sha256"][:2] / row["sha256"]
+        for role, row in recipe["files"].items() if role in ("canonicalGraph", "canonicalWeights")}
+    if not target.exists():
+        with tempfile.TemporaryDirectory(prefix=".publish-", dir=str(root)) as pending:
+            stage = Path(pending) / "cache"
+            stage.mkdir(mode=0o700)
+            for role, relative in objects.items():
+                path = stage / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if path.exists():
+                    continue
+                try:
+                    os.link(assets[role], path)
+                except OSError as error:
+                    if error.errno != errno.EXDEV:
+                        raise
+                    shutil.copyfile(assets[role], path)
+                    if file_digest(path) != recipe["files"][role]["sha256"]:
+                        raise ValueError("ASSET_SOURCE_CACHE_COPY_MISMATCH: " + role)
+            (stage / "cache-identity.json").write_bytes(marker)
+            try:
+                stage.rename(target)
+            except OSError as error:
+                if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                    raise
+    if target.is_symlink() or read_json(contained_file(target, "cache-identity.json")) != identity:
+        raise ValueError("ASSET_SOURCE_CACHE_IDENTITY_MISMATCH")
+    for role, relative in objects.items():
+        path = contained_file(target, str(relative))
+        row = recipe["files"][role]
+        if path.stat().st_size != row["bytes"] or (
+                not path.samefile(assets[role]) and file_digest(path) != row["sha256"]):
+            raise ValueError("ASSET_SOURCE_CACHE_OBJECT_MISMATCH: " + role)
+    return dict(mode="source-cache", source_directory=str(target), source_namespace="sha256:" + digest)

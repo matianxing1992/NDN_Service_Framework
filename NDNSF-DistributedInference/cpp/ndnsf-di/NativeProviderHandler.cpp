@@ -4273,11 +4273,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           requestStatistics->admittedModelDigest = admitted.modelManifestDigest.empty()
             ? selectionProjection->planDigest : admitted.modelManifestDigest;
           requestStatistics->admittedArtifactDigest = admitted.artifactDigest;
+          if (roleSpec.steps) {
+            std::set<std::string> entries;
+            for (const auto& step : *roleSpec.steps) {
+              if (step.unitId == roleSpec.role && step.operation == "CALL_SUBGRAPH")
+                entries.insert(step.artifactEntry);
+            }
+            requestStatistics->sealedComputeEntries.assign(entries.begin(), entries.end());
+          }
         }
         catch (...) {
           // Missing measurements must not replace native execution/admission.
           requestStatistics->admittedModelDigest.clear();
           requestStatistics->admittedArtifactDigest.clear();
+          requestStatistics->sealedComputeEntries.clear();
         }
       }
       std::optional<bool> sealedTerminalOwner;

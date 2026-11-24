@@ -4870,6 +4870,37 @@ BOOST_AUTO_TEST_CASE(FrozenGraphClassifiesIntoTheEntryTaxonomy)
 }
 
 
+BOOST_AUTO_TEST_CASE(UnnamedOutputCastsFollowTheirHeadProducer)
+{
+  onnx::ModelProto model;
+  auto* graph = model.mutable_graph();
+  const auto add = [graph] (const std::string& name, const std::string& op,
+                           const std::string& input, const std::string& output) {
+    auto* node = graph->add_node();
+    node->set_name(name);
+    node->set_op_type(op);
+    node->add_input(input);
+    node->add_output(output);
+  };
+  add("/embedding", "Identity", "tokens", "hidden");
+  add("/model/layers.0/attn", "Identity", "hidden", "attended");
+  add("/model/layers.0/post_attention_layernorm", "Identity", "attended", "residual");
+  add("/lm_head/MatMul", "Identity", "residual", "logits_fp16");
+  add("", "Cast", "logits_fp16", "scores");
+  add("", "Identity", "scores", "logits");
+
+  const auto entries = qwen::classifyQwenTpEntryNodes(model, 1);
+  BOOST_REQUIRE_EQUAL(entries.size(), 4U);
+  const std::vector<std::uint64_t> expectedInit{0};
+  const std::vector<std::uint64_t> expectedHead{3, 4, 5};
+  BOOST_CHECK_EQUAL(entries.front().kind, "INIT");
+  BOOST_CHECK_EQUAL(entries.back().kind, "HEAD");
+  BOOST_CHECK_EQUAL_COLLECTIONS(entries.front().nodeIndices.begin(), entries.front().nodeIndices.end(),
+                                expectedInit.begin(), expectedInit.end());
+  BOOST_CHECK_EQUAL_COLLECTIONS(entries.back().nodeIndices.begin(), entries.back().nodeIndices.end(),
+                                expectedHead.begin(), expectedHead.end());
+}
+
 BOOST_AUTO_TEST_CASE(ExtractedEntryGraphIsSelfContainedAndLoadable)
 {
   // An entry must be a real standalone graph: its own nodes, every initializer
@@ -20451,6 +20482,37 @@ BOOST_AUTO_TEST_CASE(ASumOfLocalViewsIsOneOwnedAccumulator)
                     std::invalid_argument);
   BOOST_CHECK_THROW(sumTensorBundleViews("merged", {}), std::invalid_argument);
 }
+
+BOOST_AUTO_TEST_CASE(SumOfHalfPartialsRoundsOnlyAfterAllRanks)
+{
+  const std::array<std::array<std::uint16_t, 2>, 3> data{{
+    {{0x3c00, 0x8001}}, // 1, -2^-24
+    {{0x1000, 0x0001}}, // 2^-11, 2^-24
+    {{0x1000, 0x0001}}, // 2^-11, 2^-24
+  }};
+  std::vector<std::vector<NamedTensorView>> contributions;
+  for (const auto& values : data) {
+    NamedTensorView view;
+    view.name = "partial";
+    view.elementType = TensorElementType::Float16;
+    view.shape = {1, 2};
+    view.payload = {reinterpret_cast<const std::uint8_t*>(values.data()), sizeof(values)};
+    contributions.push_back({view});
+  }
+  const auto sum = sumTensorBundleViews("merged", contributions);
+  const auto views = decodeTensorBundleViews(sum);
+  BOOST_REQUIRE_EQUAL(views.size(), 1U);
+  BOOST_CHECK(views.front().elementType == TensorElementType::Float16);
+  std::array<std::uint16_t, 2> actual{};
+  BOOST_REQUIRE_EQUAL(views.front().payload.size(), sizeof(actual));
+  std::memcpy(actual.data(), views.front().payload.data(), sizeof(actual));
+  BOOST_CHECK_EQUAL(actual[0], 0x3c01); // Rounding each intermediate sum gives 1 instead.
+  BOOST_CHECK_EQUAL(actual[1], 0x0001);
+
+  contributions.back().front().elementType = TensorElementType::Float32;
+  BOOST_CHECK_THROW(sumTensorBundleViews("merged", contributions), std::invalid_argument);
+}
+
 
 BOOST_AUTO_TEST_CASE(ASecondEpochConsumesTheKvTheFirstEpochCommitted)
 {

@@ -1,0 +1,68 @@
+{
+  "assetId": "qwen36-27b-fp16-spec235-text",
+  "files": {
+    "canonicalGraph": {
+      "bytes": 843469,
+      "path": "model.text.onnx",
+      "sha256": "e9a0cedab08ab46ba955d394cade0fb0b583394c9b78650885c79d08d1e09970"
+    },
+    "canonicalWeights": {
+      "bytes": 53860098048,
+      "path": "model.onnx.data",
+      "sha256": "630fdcfa2c6ef935fbe7fde39809e874ac6453a2144137d125d7dd501c0bdb40"
+    },
+    "config": {
+      "bytes": 4308,
+      "path": "config.json",
+      "sha256": "69db4eb7196bc8190813231b3018ca05d8c2e3abc7b1af19d55c157af44a9d9c"
+    },
+    "license": {
+      "bytes": 11343,
+      "path": "LICENSE",
+      "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32"
+    },
+    "tokenizer": {
+      "bytes": 12807982,
+      "path": "tokenizer.json",
+      "sha256": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42"
+    }
+  },
+  "license": {
+    "fileRole": "license",
+    "identifier": "Apache-2.0",
+    "repository": "Qwen/Qwen3.6-27B",
+    "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+  },
+  "modelContract": {
+    "attentionMask": "attention_mask",
+    "dtype": "FLOAT16",
+    "headDimension": 256,
+    "inputIds": "input_ids",
+    "kvHeads": 4,
+    "layers": 64,
+    "logits": "logits",
+    "nodes": 1815,
+    "positionIds": "position_ids",
+    "positionInputPolicy": "qwen-causal-position-v1",
+    "statePairs": {
+      "attentionKV": 32,
+      "convolution": 48,
+      "recurrent": 48
+    }
+  },
+  "recipeVersion": 1,
+  "repository": "Qwen/Qwen3.6-27B",
+  "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+  "toolVersions": {
+    "onnx": "1.23.2",
+    "onnxruntime": "1.31.1"
+  },
+  "transforms": [
+    {
+      "initializersUnchanged": true,
+      "kind": "text-only-equal-mrope-axes",
+      "scriptSha256": "fda08bca57cde03f98688e8965c66e2c3ea064eef54110140272e0ebfdae7eb6",
+      "sourceGraphSha256": "f5acef00d81df78c21a1bc876e178f07fcad9e5cd0d8ee27ac68a55f8d2919a7"
+    }
+  ]
+}

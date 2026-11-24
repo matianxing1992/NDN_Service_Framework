@@ -449,13 +449,6 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
         for (const auto* key : {"sourceEntryFiles", "sourceEntryProgram", "assembledCachePath",
                                 "protectedResidentIdentity"})
           child.metadata.erase(key);
-        // ORT derives a profile filename from the prefix and timestamp.
-        // Several children can start in the same millisecond.
-        for (const auto* key : {"providerProfilePrefix", "provider_profile_prefix"}) {
-          const auto profile = child.metadata.find(key);
-          if (profile != child.metadata.end() && !profile->second.empty())
-            profile->second += "-entry-" + nativePlanningDigest(entry.entryId).substr(7);
-        }
         child.metadata["assembledModelDigest"] = entry.graphDigest;
         child.protectedResidentUse.reset();
         child.residencyIdentity.reset();

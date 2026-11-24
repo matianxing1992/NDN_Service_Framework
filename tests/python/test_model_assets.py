@@ -1,5 +1,6 @@
 """Asset admission must never turn a missing or changed package into a test PASS."""
 import contextlib
+import errno
 import hashlib
 import importlib.util
 import io
@@ -20,6 +21,36 @@ SPEC.loader.exec_module(prepare)
 
 
 class AssetAdmissionTest(unittest.TestCase):
+    def test_source_cache_is_reusable_and_rejects_bad_cross_filesystem_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recipe, manifest = self.fixture(root)
+            recipe["files"]["canonicalGraph"] = recipe["files"].pop("graph")
+            payload = b"external data fixture"
+            (root / "sidecar").write_bytes(payload)
+            recipe["files"]["canonicalWeights"] = dict(
+                path="sidecar", bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+            manifest.write_text(json.dumps(assets.sealed_manifest(recipe)))
+            admitted = assets.validate_manifest(manifest, recipe)
+            cache = root / "cache"
+            cache.mkdir()
+            with patch.object(assets.os, "link", side_effect=OSError(errno.EXDEV, "cross device")), \
+                    patch.object(assets.shutil, "copyfile", side_effect=lambda source, path: path.touch()):
+                with self.assertRaisesRegex(ValueError, "SOURCE_CACHE_COPY_MISMATCH"):
+                    assets.prepare_source_cache(cache, manifest, recipe, admitted)
+            self.assertEqual(list(cache.iterdir()), [])
+
+            result = assets.prepare_source_cache(cache, manifest, recipe, admitted)
+            self.assertEqual(result, assets.prepare_source_cache(cache, manifest, recipe, admitted))
+            location = Path(result["source_directory"])
+            digest = recipe["files"]["canonicalWeights"]["sha256"]
+            obj = location / "payloads" / "sha256" / digest[:2] / digest
+            self.assertTrue(obj.samefile(root / "sidecar"))
+            self.assertEqual(obj.read_bytes(), payload)
+            (location / "cache-identity.json").write_text("{}")
+            with self.assertRaisesRegex(ValueError, "SOURCE_CACHE_IDENTITY_MISMATCH"):
+                assets.prepare_source_cache(cache, manifest, recipe, admitted)
+
     def fixture(self, root):
         # Deliberately synthetic file contract; never identifies a real model.
         payload = b"synthetic asset\n"

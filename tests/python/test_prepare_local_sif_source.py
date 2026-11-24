@@ -41,6 +41,10 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     assert seal["compiledPayloadCount"] == 0
     with tarfile.open(output / "workspace.tar", "r") as archive:
         names = archive.getnames()
+    assets, = [ast.literal_eval(node.value) for node in ast.walk(ast.parse((ROOT / "wscript").read_text()))
+               if isinstance(node, ast.Assign) and any(
+                   isinstance(target, ast.Name) and target.id == "asset_tools" for target in node.targets)]
+    assert assets and set(assets) <= set(names)
     assert "pythonWrapper/src/ndnsf/_ndnsf.cpp" in names
     assert "examples/App_ServiceController.cpp" in names
     assert "examples/DI_NativeArtifactAuthority.cpp" in names
@@ -84,7 +88,7 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     assert not any("/__pycache__/" in f"/{name}/" for name in names)
     production_roles = {"App_ServiceController", "DI_NativeRequester", "DI_NativeArtifactAuthority",
                         "di-native-provider", "di-native-assembly-worker", "ndnsf-di-device-query", "NDNSF_RepoPacketServer",
-                        "DistributedRepoServer", "UavDroneApp", "UavGroundStationApp",
+                        "DistributedRepoServer", "multiturn-oracle", "UavDroneApp", "UavGroundStationApp",
                         "UavTrackingNode", "UavSensorStreamNode", "UavTrackingGroundStation"}
     observed_roles = set()
     for build_file in (ROOT / "examples/wscript", ROOT / "NDNSF-DistributedRepo/wscript"):
@@ -109,6 +113,10 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
                 source = next(p.resolve() for p in candidates if p.is_file())
                 assert source.relative_to(ROOT).as_posix() in names
     assert observed_roles == production_roles
+    definition = SCRIPT.resolve().parent.parent / "templates/development-runtime.def.in"
+    template = definition.read_text()
+    assert "base / 'bin/multiturn-oracle', runtime / 'bin/multiturn-oracle'" in template
+    assert "spec190-multiturn-oracle" not in template
 
 
 def test_relocated_export_runs_actual_installer_and_locked_patch_reader(tmp_path):
@@ -150,6 +158,7 @@ def test_relocated_export_runs_actual_installer_and_locked_patch_reader(tmp_path
                      "ndnsf-di/api.hpp", "ndnsf-di/provider.hpp",
                      "packaging/ndnsf-di-container/lib/allocation_topology.py",
                      "packaging/ndnsf-di-container/lib/adapters/slurm_apptainer.py",
+                     "Experiments/prepare-native-deployment.py",
                      "NDNSF-DistributedInference/ndnsf_distributed_inference/ops/deployment_config.py"):
         required = moved / relative
         content = required.read_bytes()

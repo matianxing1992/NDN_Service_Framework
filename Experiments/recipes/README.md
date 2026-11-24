@@ -29,6 +29,23 @@ paths in `sourceFiles` and the base-model `LICENSE` at its root. No other files 
 `--offline --allow-download` is rejected. Missing files, LFS pointers, wrong revision, changed
 weights, insufficient space or failed conversion cannot produce an admissible SEALED manifest.
 
+`qwen3-4b-q4f16.json` pins a Qwen3-4B ONNX export with separate INT4 weight files
+and FP16 attention state. The same preparer verifies the raw files, rebases their
+external tensor ranges into one sidecar, and verifies the final graph and sidecar
+before sealing the manifest.
+
+```sh
+/path/to/model-tools/bin/python Experiments/prepare-model-assets.py \
+  --recipe-file Experiments/recipes/qwen3-4b-q4f16.json \
+  --source-dir /persistent/models/qwen3-4b-source \
+  --asset-root /persistent/models/qwen3-4b-q4f16-v1 --offline
+```
+
+Keep the prepared package and its source files immutable. For a mirror on
+the same filesystem, the preparer links verified source files into the package
+and allocates space for the canonical graph and sidecar. With a mirror on a
+separate filesystem, it also budgets space for the source copies.
+
 The asset contains two distinct representations of the same upstream model. `sourceModel`
 is the original inline `onnx/model_q4.onnx` for automatic ONNX inspection. `canonicalGraph` and
 `canonicalWeights` are the normalized external-data representation used by TP diagnostics.
@@ -50,6 +67,13 @@ Preparation verifies identities, token/KV IO, external-data ranges and INT4 bloc
 This upstream ORT export contains fused operators outside the generic ONNX checker registry,
 including `SimplifiedLayerNormalization`. Native ORT CPU execution and independent numerical
 oracles qualify inference separately; the preparation receipt does not claim those results.
+
+## Qwen3.6-27B prepared export
+
+`qwen36-27b-fp16-text.json` binds the existing text-only FP16 export,
+its external weights, tokenizer, upstream configuration, and license.
+Use the matching pre-exported files when sealing this manifest on Tiger.
+The recipe describes their exact identities and the text position transform.
 
 ## UAV multi-camera tracking assets
 

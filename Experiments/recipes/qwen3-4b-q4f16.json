@@ -1,0 +1,134 @@
+{
+  "assetId": "qwen3-4b-int4-fp16-frozen-export",
+  "externalOnnx": {
+    "normalizeShapes": true,
+    "sidecarRoles": [
+      "sourceWeights0",
+      "sourceWeights1"
+    ]
+  },
+  "files": {
+    "addedTokens": {
+      "bytes": 707,
+      "path": "source/added_tokens.json",
+      "sha256": "c0284b582e14987fbd3d5a2cb2bd139084371ed9acbae488829a1c900833c680"
+    },
+    "canonicalGraph": {
+      "bytes": 59759727,
+      "path": "canonical/model.onnx",
+      "sha256": "a8d986cc6daaae4aa77d7bd5a957a3a198cb1308f3e051dd0f3ab28124b3dd9d"
+    },
+    "canonicalWeights": {
+      "bytes": 2773155840,
+      "path": "canonical/model.onnx_data",
+      "sha256": "24e16e8e966196a411b292f7f8251e10faffd8497a3b63b93981febcb2da513f"
+    },
+    "chatTemplate": {
+      "bytes": 4168,
+      "path": "source/chat_template.jinja",
+      "sha256": "a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8"
+    },
+    "config": {
+      "bytes": 1780,
+      "path": "source/config.json",
+      "sha256": "540fd26e4cc5db26ca6dd1419a08c3cdb3c76fcd59c92487b1f030cbf0c1d78f"
+    },
+    "generationConfig": {
+      "bytes": 219,
+      "path": "source/generation_config.json",
+      "sha256": "c69f68d9df40786be33f133f1acc377b7ed3cb15a3ab0e137b105e10fd2cd2ed"
+    },
+    "license": {
+      "bytes": 11343,
+      "path": "license/LICENSE",
+      "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+    },
+    "modelCard": {
+      "bytes": 519,
+      "path": "source/README.md",
+      "sha256": "22e42c1d314131050e6f5faa57766cf40691afedffff867bb77fa13a366c74f4"
+    },
+    "sourceModel": {
+      "bytes": 59762833,
+      "path": "source/onnx/model_q4f16.onnx",
+      "sha256": "d3e946f9e38577411b0251051c91a1f20c3c0c831e1cf76a13c58ce279d950de"
+    },
+    "sourceWeights0": {
+      "bytes": 2096005120,
+      "path": "source/onnx/model_q4f16.onnx_data",
+      "sha256": "050398248de4fce7b31b2d2caa909596e4c7aa0f35696270df46b8aaf2209fc8"
+    },
+    "sourceWeights1": {
+      "bytes": 677150720,
+      "path": "source/onnx/model_q4f16.onnx_data_1",
+      "sha256": "363ff5e70ebeb5866afea8eb80b7bdfe22d94d735a8c4d2ebf90c75424c2a410"
+    },
+    "specialTokens": {
+      "bytes": 613,
+      "path": "source/special_tokens_map.json",
+      "sha256": "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd"
+    },
+    "tokenizer": {
+      "bytes": 9117040,
+      "path": "source/tokenizer.json",
+      "sha256": "e7a95fce95bf5b0946d0ddb3f9d7caa030b7e850bbe92b0edb26bcf563e9f3d5"
+    },
+    "tokenizerConfig": {
+      "bytes": 10425,
+      "path": "source/tokenizer_config.json",
+      "sha256": "1143a0f0c4c262adb96129ba7f7c175c5d6393ad8024a10c0e66c30479cf381f"
+    }
+  },
+  "license": {
+    "fileRole": "license",
+    "identifier": "Apache-2.0",
+    "repository": "Qwen/Qwen3-4B",
+    "revision": "1cfa9a7208912126459214e8b04321603b3df60c"
+  },
+  "modelContract": {
+    "attentionMask": "attention_mask",
+    "headDimension": 128,
+    "inputIds": "input_ids",
+    "inputs": 75,
+    "kvDtype": "FLOAT16",
+    "kvHeads": 8,
+    "layers": 36,
+    "logits": "logits",
+    "matMulNBits": {
+      "bits": 4,
+      "block_size": 32,
+      "count": 252
+    },
+    "nodes": 772,
+    "outputs": 73,
+    "positionIds": "position_ids"
+  },
+  "recipeVersion": 1,
+  "repository": "onnx-community/Qwen3-4B-ONNX",
+  "revision": "ca652ef636e8b121ff4a1607c37ab578cb866987",
+  "sourceFiles": {
+    "addedTokens": "added_tokens.json",
+    "chatTemplate": "chat_template.jinja",
+    "config": "config.json",
+    "generationConfig": "generation_config.json",
+    "modelCard": "README.md",
+    "sourceModel": "onnx/model_q4f16.onnx",
+    "sourceWeights0": "onnx/model_q4f16.onnx_data",
+    "sourceWeights1": "onnx/model_q4f16.onnx_data_1",
+    "specialTokens": "special_tokens_map.json",
+    "tokenizer": "tokenizer.json",
+    "tokenizerConfig": "tokenizer_config.json"
+  },
+  "toolVersions": {
+    "numpy": "1.24.4",
+    "onnx": "1.17.0",
+    "protobuf": "5.29.6"
+  },
+  "transforms": [
+    {
+      "normalizerSha256": "18b5d51fbc93490dd5fe414e786ac6d2954beef7973a8a65720ed9ebedc90d57",
+      "sha256": "e17033bed4f44b240bda2da8100e20b4f1309bff6bc14542f34b099cb4358dff",
+      "tool": "tools/ndnsf-di/merge-onnx-external-data.py"
+    }
+  ]
+}

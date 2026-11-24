@@ -36,12 +36,13 @@ version. `--build-only` explicitly creates **BUILT_UNQUALIFIED**, not release PA
 
 ## Candidate checks and their limits
 
-The builder validates source identity and image labels, then executes the final
-native verifier inside the actual candidate with a clean, contained environment.
-The release path additionally invokes its image preflight before emitting the
-build record. Preserve the record and final SIF digest. Inspect the actual native
-output inventory, resolved libraries and runtime paths; a matching SONAME or a
-successful `--help` alone does not establish ABI or inference compatibility.
+The final packaging stage seals the installed files and ELF dependency inventory.
+For the installed layout, the host compares the packed files with the sealed
+receipts and starts the native Requester and Artifact Authority in the exact SIF
+with a clean, contained environment. The release path additionally invokes its
+image preflight before emitting the build record. Preserve the record and final
+SIF digest. Inspect the native output inventory, resolved libraries and runtime
+paths. ABI and inference compatibility require the checks below.
 
 These checks are necessary but do not establish CUDA model execution. Verify
 the following in order, retaining their separate results:

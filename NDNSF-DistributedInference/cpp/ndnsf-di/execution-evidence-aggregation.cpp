@@ -120,6 +120,7 @@ aggregateEvidence(const EvidenceReferences& items)
     aggregate.attemptEpoch = 0;
     aggregate.profileRequestId.clear();
     aggregate.profileAttemptEpoch = 0;
+    aggregate.entryProfiles.clear();
   }
   aggregate.validate();
   return aggregate;

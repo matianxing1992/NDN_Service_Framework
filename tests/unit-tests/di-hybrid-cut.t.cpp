@@ -2754,6 +2754,17 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& base
           BOOST_CHECK_EQUAL(state->prefixTokenCount,
                             prefixLengthAtStart + initialTokens.size() + generationTokens);
           BOOST_CHECK_EQUAL(item.second.finalizedRole->inferenceEpoch, generationTokens);
+          const auto& metrics = item.second.runtimeMetrics;
+          BOOST_REQUIRE_EQUAL(metrics.size(), generationEpochs);
+          const auto& finalPublications = metrics.back().outputTimings;
+          for (const auto& edge : item.second.finalizedRole->outputs) {
+            const auto publication = std::find_if(finalPublications.begin(), finalPublications.end(),
+              [&] (const auto& record) { return record.scope == edge.scope; });
+            BOOST_REQUIRE(publication != finalPublications.end());
+            BOOST_CHECK(!publication->publishDeferred);
+            BOOST_CHECK(publication->publishStartedAt != std::chrono::steady_clock::time_point{});
+            BOOST_CHECK(publication->publishDoneAt >= publication->publishStartedAt);
+          }
           auto& runtime = *coordinatedRuntimes.at(item.first);
           if (resumed) {
             const auto& observations = item.second.cacheObservations;
@@ -5913,6 +5924,79 @@ BOOST_AUTO_TEST_CASE(GenericMixedSourceEntriesMatchTheCompleteOriginalGraph)
       }
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(EntryRunnerKeepsCudaProofForAllSealedCalls)
+{
+  const auto entry = [] (const std::string& id) {
+    NativeSubgraphEntryContract result;
+    result.entryId = id;
+    result.unitId = "rank-a";
+    result.inputNames = {"x"};
+    result.outputNames = {"y"};
+    result.inputSlotByGraphName = {{"x", "x"}};
+    result.outputSlotByGraphName = {{"y", "y"}};
+    return result;
+  };
+  const std::vector<NativeSubgraphEntryContract> entries{entry("first"), entry("second")};
+  const auto snapshot = [&] (bool missing, bool wrongGpu, bool sharedPath) {
+    NativeEntryRunner runner(entries,
+      [&] (const NativeModelRunnerSpec& spec) {
+        const bool first = spec.role == "first";
+        ExecutionEvidence evidence;
+        evidence.providerName = "/producer";
+        evidence.providerBootId = "boot";
+        evidence.runnerKind = RunnerKind::OnnxRuntimeCuda;
+        evidence.realCompute = true;
+        evidence.deviceKind = "cuda";
+        evidence.deviceId = "0";
+        evidence.gpuUuid = !first && wrongGpu ? "GPU-wrong" : "GPU-admitted";
+        evidence.gpuUuids = {evidence.gpuUuid};
+        evidence.runtimeVersion = "ort-fixture";
+        evidence.modelDigest = "sha256:model";
+        evidence.planDigest = "sha256:plan";
+        evidence.artifactDigests.emplace(spec.role, "sha256:rank");
+        evidence.roles = {spec.role};
+        evidence.loadCompleted = true;
+        evidence.warmupCompleted = true;
+        evidence.createdAtMs = 1;
+        if (first || !missing) {
+          evidence.providerProfilePath = sharedPath ? "duplicate" :
+            spec.metadata.at("providerProfilePrefix") + ".json";
+          evidence.profileRequestId = "request";
+          evidence.profileAttemptEpoch = 1;
+          evidence.setNodeProviderAssignments({
+            {spec.role, "compute-kernel", "CUDAExecutionProvider", true}});
+        }
+        return makeNativeModelRunner([] (const RoleExecutionContext&) {
+          return std::map<std::string, TensorBundle>{};
+        }, std::move(evidence));
+      },
+      [] (const NativeSubgraphEntryContract& entry) {
+        NativeModelRunnerSpec spec;
+        spec.role = entry.entryId;
+        spec.metadata["providerProfilePrefix"] = "fixture-profile";
+        return spec;
+      });
+    return runner.executionEvidenceSnapshot();
+  };
+
+  const auto proof = snapshot(false, false, false);
+  BOOST_REQUIRE(proof.has_value());
+  BOOST_REQUIRE_EQUAL(proof->entryProfiles.size(), 2U);
+  BOOST_CHECK(proof->entryProfiles[0].path != proof->entryProfiles[1].path);
+  BOOST_CHECK_EQUAL(proof->getNodeProviderAssignments().size(), 2U);
+  const auto decoded = executionEvidenceFromJson(executionEvidenceToJson(*proof));
+  BOOST_CHECK(decoded.entryProfiles == proof->entryProfiles);
+  for (const bool duplicate : {false, true}) {
+    const auto incomplete = snapshot(!duplicate, false, duplicate);
+    BOOST_REQUIRE(incomplete.has_value());
+    BOOST_CHECK(incomplete->warmupReady());
+    BOOST_CHECK(incomplete->entryProfiles.empty());
+    BOOST_CHECK(incomplete->providerProfilePath.empty());
+    BOOST_CHECK(incomplete->getNodeProviderAssignments().empty());
+  }
+  BOOST_CHECK(!snapshot(false, true, false));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

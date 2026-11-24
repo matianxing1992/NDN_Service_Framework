@@ -194,7 +194,7 @@ PY
     if [ "$NDNSF_RUNTIME_PROFILE" = di-runtime ]; then
       ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest
     else
-      ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-repo,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,ndnsf-identity-check,DI_NativeRequester,DI_NativeArtifactAuthority,DistributedRepoServer,NDNSF_RepoPacketServer,spec190-multiturn-oracle,di-native-provider,di-native-assembly-worker,ndnsf-di-device-query,di-native-fault-provider,spec187-yolo-minindn
+      ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-repo,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,ndnsf-identity-check,DI_NativeRequester,DI_NativeArtifactAuthority,DistributedRepoServer,NDNSF_RepoPacketServer,multiturn-oracle,di-native-provider,di-native-assembly-worker,ndnsf-di-device-query,di-native-fault-provider,spec187-yolo-minindn
     fi
     test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker
     test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/libexec/ndnsf-di/ndnsf-di-device-query
@@ -382,8 +382,9 @@ for package, stem in [('ndnsf', '_ndnsf'), ('py_repoclient', '_py_repoclient')]:
     paths = list((site / package).glob(stem + '*.so'))
     assert len(paths) == 1, 'EXTENSION_COUNT:' + package
     assert paths[0].name.endswith(sysconfig.get_config_var('EXT_SUFFIX')), 'EXTENSION_SOABI:' + package
-    loaded = Path(importlib.import_module(package + '.' + stem).__file__).resolve()
-    assert loaded == paths[0].resolve(), 'EXTENSION_SHADOWED:' + package
+    if mode == 'builder':
+        loaded = Path(importlib.import_module(package + '.' + stem).__file__).resolve()
+        assert loaded == paths[0].resolve(), 'EXTENSION_SHADOWED:' + package
     extensions[package] = paths[0]
 
 runtime = Path('/opt/ndnsf-di/current')
@@ -396,7 +397,7 @@ artifacts = [('provider', base / 'bin/di-native-provider', runtime / 'bin/di-nat
              ('repo', base / 'bin/DistributedRepoServer', runtime / 'bin/DistributedRepoServer'),
              ('packetRepo', base / 'bin/NDNSF_RepoPacketServer', runtime / 'bin/NDNSF_RepoPacketServer'),
              ('identity', base / 'bin/ndnsf-identity-check', runtime / 'bin/ndnsf-identity-check'),
-             ('oracle', base / 'bin/spec190-multiturn-oracle', runtime / 'bin/spec190-multiturn-oracle')]
+             ('oracle', base / 'bin/multiturn-oracle', runtime / 'bin/multiturn-oracle')]
 if profile != 'di-runtime':
     artifacts += [('faultProvider', base / 'bin/di-native-fault-provider', runtime / 'bin/di-native-fault-provider'),
                   ('spec187Selector', base / 'bin/spec187-yolo-minindn', runtime / 'bin/spec187-yolo-minindn')]
@@ -407,18 +408,20 @@ for name, package in [('extension', 'ndnsf'), ('repoExtension', 'py_repoclient')
     artifacts.append((name, extensions[package], Path(sysconfig.get_paths()['purelib']) / package / extensions[package].name))
 selected = {path.name: (path, destination) for _, path, destination in artifacts if path.parent == base / 'lib'}
 
-# Verify actual mappings after importing both extensions, not just their ldd text.
-mapped = set()
-for line in Path('/proc/self/maps').read_text().splitlines():
-    value = line.split()[-1]
-    if not value.startswith('/'):
-        continue
-    path = Path(value)
-    for name, (expected, _) in selected.items():
-        if path.name == name:
-            assert digest(path) == digest(expected), 'LOADED_LIBRARY_MISMATCH:' + name
-            mapped.add(name)
-assert mapped == set(selected), 'REQUIRED_NATIVE_MAPPING_MISSING'
+# Exercise bindings only in the build stage; the final stage seals files and ELF
+# dependencies without importing any runtime package.
+if mode == 'builder':
+    mapped = set()
+    for line in Path('/proc/self/maps').read_text().splitlines():
+        value = line.split()[-1]
+        if not value.startswith('/'):
+            continue
+        path = Path(value)
+        for name, (expected, _) in selected.items():
+            if path.name == name:
+                assert digest(path) == digest(expected), 'LOADED_LIBRARY_MISMATCH:' + name
+                mapped.add(name)
+    assert mapped == set(selected), 'REQUIRED_NATIVE_MAPPING_MISSING'
 
 def closure(path):
     output = subprocess.check_output(['/usr/bin/ldd', str(path)], text=True, stderr=subprocess.STDOUT)
@@ -610,7 +613,14 @@ NDNSF_ELF_PATHS
     PYTHONPATH=/opt/ndnsf-stage/python:/opt/ndnsf-stage/replay/repo/examples/python/NDNSF-DistributedInference/yolo_2x2 \
       /opt/venv/bin/python -c 'import yolo_2x2_lib'
     fi
-    PYTHONPATH=/opt/ndnsf-stage/python /opt/venv/bin/python /opt/ndnsf-stage/bin/ndnsf-di --help
+    # The Ops launcher re-executes with -I, which discards PYTHONPATH. Smoke the
+    # installed launcher with its staged packages visible to an isolated venv.
+    ops_smoke=/opt/ndnsf-build-work/ops-smoke
+    /opt/venv/bin/python -m venv --without-pip "$ops_smoke"
+    ops_smoke_site=$("$ops_smoke/bin/python" -I -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+    printf '%s\n' /opt/ndnsf-stage/python /opt/venv/lib/python3.10/site-packages \
+        > "$ops_smoke_site/ndnsf-staged.pth"
+    "$ops_smoke/bin/python" /opt/ndnsf-stage/bin/ndnsf-di cluster --help
 
     unset TMPDIR
     rm -rf /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /build-input /opt/ndnsf-build-work
@@ -675,11 +685,7 @@ NDNSF_ENV
 
     /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-native.py final
 
-    PYTHONNOUSERSITE=1 /opt/venv/bin/python -c 'import ndnsf._ndnsf, ndnsf_distributed_inference.ops.cli, py_repoclient, ndn, tokenizers, onnx, numpy, onnxruntime'
-    /opt/venv/bin/python /opt/ndnsf-di/current/bin/ndnsf-di --help
     if [ "$NDNSF_RUNTIME_PROFILE" != di-runtime ]; then
-      PYTHONPATH=/opt/ndnsf-di/replay/repo/NDNSF-DistributedInference \
-        /opt/venv/bin/python -c 'import ndnsf_distributed_inference.native_assembly_helper, ndnsf_distributed_inference.native_token_decode_helper'
       test -x /opt/ndnsf-di/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py
       test -f /opt/ndnsf-di/replay/source-seal.json
     fi

@@ -5,6 +5,7 @@ No inference is performed. A successful receipt proves the pinned files and
 structural model contract, not native execution or numerical qualification.
 """
 import argparse
+import errno
 import fcntl
 import importlib.metadata
 import importlib.util
@@ -13,6 +14,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import subprocess
 import sys
 
 from model_assets import (contained_file, file_digest, read_json, sealed_manifest,
@@ -20,6 +22,7 @@ from model_assets import (contained_file, file_digest, read_json, sealed_manifes
 
 HERE = Path(__file__).resolve().parent
 RECIPE_PATH = HERE / "recipes/qwen3-0.6b-int4.json"
+MERGE_TOOL = "tools/ndnsf-di/merge-onnx-external-data.py"
 
 
 def load_module(path, name):
@@ -35,24 +38,63 @@ def tool_paths():
             HERE / "TigerCluster/adapters/slurm-apptainer/scripts/stage-qwen-model.py")
 
 
+def external_layout(recipe):
+    """Return the frozen ONNX source and sidecar roles after checking path boundaries."""
+    layout = recipe.get("externalOnnx")
+    if layout is None:
+        return None
+    roles = layout["sidecarRoles"]
+    if (set(layout) != {"sidecarRoles", "normalizeShapes"} or
+            type(layout["normalizeShapes"]) is not bool or
+            not isinstance(roles, list) or not roles or len(set(roles)) != len(roles) or
+            "sourceModel" in roles):
+        raise ValueError("ASSET_EXTERNAL_ONNX_LAYOUT_INVALID")
+    paths = [Path(row["path"]) for row in recipe["files"].values()]
+    if (len(set(paths)) != len(paths) or
+            any(not path.parts or path.is_absolute() or ".." in path.parts for path in paths)):
+        raise ValueError("ASSET_RECIPE_DESTINATION_INVALID")
+    files = recipe["files"]
+    source = Path(files["sourceModel"]["path"]).parent
+    if (any(Path(files[role]["path"]).parent != source for role in roles) or
+            not set(["sourceModel", *roles]) <= set(recipe["sourceFiles"]) or
+            files["canonicalGraph"]["path"] != "canonical/model.onnx" or
+            files["canonicalWeights"]["path"] != "canonical/model.onnx_data"):
+        raise ValueError("ASSET_EXTERNAL_ONNX_LAYOUT_INVALID")
+    return layout
+
+
 def verify_tools(recipe):
     for name, version in recipe["toolVersions"].items():
         if importlib.metadata.version(name) != version:
             raise ValueError("ASSET_TOOL_VERSION_MISMATCH: {} requires {}".format(name, version))
     normalizer, downloader = tool_paths()
-    if file_digest(normalizer) != recipe["transforms"][0]["sha256"]:
+    transform = recipe["transforms"][0]
+    normalizer_pin = transform["sha256"]
+    if external_layout(recipe) is not None:
+        if (len(recipe["transforms"]) != 1 or transform["tool"] != MERGE_TOOL or
+                file_digest(HERE.parent / MERGE_TOOL) != transform["sha256"]):
+            raise ValueError("ASSET_MERGE_TOOL_IDENTITY_MISMATCH")
+        normalizer_pin = transform["normalizerSha256"]
+    if file_digest(normalizer) != normalizer_pin:
         raise ValueError("ASSET_NORMALIZER_IDENTITY_MISMATCH")
     if not downloader.is_file():
         raise ValueError("ASSET_DOWNLOADER_MISSING")
     return normalizer, downloader
 
 
-def copy_committed(source_root, source_name, destination_root, row):
+def copy_committed(source_root, source_name, destination_root, row, *, reuse=False):
     source = contained_file(source_root, source_name)
     if source.stat().st_size != row["bytes"] or file_digest(source) != row["sha256"]:
         raise ValueError("ASSET_SOURCE_COMMITMENT_MISMATCH: " + source_name)
     target = destination_root / row["path"]
     target.parent.mkdir(parents=True, exist_ok=True)
+    if reuse:
+        try:
+            os.link(source, target)
+            return
+        except OSError as error:
+            if error.errno != errno.EXDEV:
+                raise
     with source.open("rb") as src, target.open("xb") as dst:
         shutil.copyfileobj(src, dst, 1024 * 1024)
     verify_file(destination_root, row)
@@ -84,13 +126,16 @@ def check_model(graph, recipe):
             raise ValueError("ASSET_TOKEN_INPUT_CONTRACT_MISMATCH: " + name)
     if "logits" not in outputs:
         raise ValueError("ASSET_LOGITS_MISSING")
+    kv_dtype = onnx.TensorProto.DataType.Value(contract.get("kvDtype", "FLOAT"))
+    if kv_dtype not in (onnx.TensorProto.FLOAT, onnx.TensorProto.FLOAT16):
+        raise ValueError("ASSET_KV_DTYPE_UNSUPPORTED")
     for layer in range(contract["layers"]):
         for kind in ("key", "value"):
             for prefix, values in (("past_key_values", inputs), ("present", outputs)):
                 name = "{}.{}.{}".format(prefix, layer, kind)
                 tensor = values[name].type.tensor_type
                 dims = tensor.shape.dim
-                if (tensor.elem_type != onnx.TensorProto.FLOAT or len(dims) != 4 or
+                if (tensor.elem_type != kv_dtype or len(dims) != 4 or
                         dims[1].dim_value != contract["kvHeads"] or
                         dims[3].dim_value != contract["headDimension"]):
                     raise ValueError("ASSET_KV_IO_CONTRACT_MISMATCH: " + name)
@@ -114,10 +159,11 @@ def check_model(graph, recipe):
 def prepare(recipe, root, source_dir, download, normalizer_path, downloader_path):
     import onnx
     files = recipe["files"]
+    layout = external_layout(recipe)
     if source_dir is not None:
         for role, name in recipe["sourceFiles"].items():
-            copy_committed(source_dir, name, root, files[role])
-        copy_committed(source_dir, "LICENSE", root, files["license"])
+            copy_committed(source_dir, name, root, files[role], reuse=layout is not None)
+        copy_committed(source_dir, "LICENSE", root, files["license"], reuse=layout is not None)
     elif download:
         downloader = load_module(downloader_path, "ndnsf_model_download")
         required = {name: {key: files[role][key] for key in ("bytes", "sha256")}
@@ -131,22 +177,36 @@ def prepare(recipe, root, source_dir, download, normalizer_path, downloader_path
     else:
         raise ValueError("ASSET_OFFLINE_MISS: provide --source-dir or explicitly --allow-download")
     (root / "preparation-state.json").write_text('{"state":"STAGED"}\n')
-    model = onnx.load(str(root / files["sourceModel"]["path"]), load_external_data=False)
-    normalizer = load_module(normalizer_path, "ndnsf_normalize_constants")
-    normalizer.normalize(model)
-    intermediate = root / "normalized.onnx"
-    with intermediate.open("xb") as output:
-        output.write(model.SerializeToString())
-    transform = recipe["transforms"][0]
-    if (intermediate.stat().st_size != transform["outputBytes"] or
-            file_digest(intermediate) != transform["outputSha256"]):
-        raise ValueError("ASSET_NORMALIZED_MODEL_IDENTITY_MISMATCH")
-    intermediate.unlink()
     canonical = root / files["canonicalGraph"]["path"]
-    canonical.parent.mkdir()
-    options = {key: value for key, value in recipe["transforms"][1].items() if key != "tool"}
-    onnx.save_model(model, str(canonical), **options)
-    del model
+    if layout is not None:
+        source = root / files["sourceModel"]["path"]
+        pins = {Path(files[role]["path"]).name: {key: files[role][key] for key in ("bytes", "sha256")}
+                for role in ("sourceModel", *layout["sidecarRoles"])}
+        committed_path = root / ".external-source-pins.json"
+        committed_path.write_text(json.dumps(pins))
+        args = [sys.executable, str(HERE.parent / MERGE_TOOL),
+                "--source-root", str(source.parent), "--graph", source.name,
+                "--commitments", str(committed_path), "--output", str(canonical.parent)]
+        if layout["normalizeShapes"]:
+            args.append("--normalize-shapes")
+        subprocess.run(args, check=True)
+        committed_path.unlink()
+    else:
+        model = onnx.load(str(root / files["sourceModel"]["path"]), load_external_data=False)
+        normalizer = load_module(normalizer_path, "ndnsf_normalize_constants")
+        normalizer.normalize(model)
+        intermediate = root / "normalized.onnx"
+        with intermediate.open("xb") as output:
+            output.write(model.SerializeToString())
+        transform = recipe["transforms"][0]
+        if (intermediate.stat().st_size != transform["outputBytes"] or
+                file_digest(intermediate) != transform["outputSha256"]):
+            raise ValueError("ASSET_NORMALIZED_MODEL_IDENTITY_MISMATCH")
+        intermediate.unlink()
+        canonical.parent.mkdir()
+        options = {key: value for key, value in recipe["transforms"][1].items() if key != "tool"}
+        onnx.save_model(model, str(canonical), **options)
+        del model
     for row in files.values():
         verify_file(root, row)
     check_model(canonical, recipe)
@@ -164,7 +224,10 @@ def interrupted(signum, frame):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--recipe", required=True, choices=["qwen3-0.6b-int4"])
+    recipes = parser.add_mutually_exclusive_group(required=True)
+    recipes.add_argument("--recipe", choices=["qwen3-0.6b-int4"])
+    recipes.add_argument("--recipe-file", type=Path,
+                         help="explicit immutable external-ONNX recipe")
     parser.add_argument("--asset-root", required=True, type=Path)
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--source-dir", type=Path)
@@ -176,7 +239,10 @@ def main(argv=None):
     root = args.asset_root.expanduser().absolute()
     owned = False
     try:
-        recipe = read_json(RECIPE_PATH)
+        recipe = read_json(args.recipe_file or RECIPE_PATH)
+        layout = external_layout(recipe)
+        if args.recipe_file is not None and layout is None:
+            raise ValueError("ASSET_RECIPE_FILE_REQUIRES_EXTERNAL_ONNX_LAYOUT")
         if root.is_symlink():
             raise ValueError("ASSET_ROOT_SYMLINK_REJECTED")
         if root.exists():
@@ -188,8 +254,17 @@ def main(argv=None):
         normalizer, downloader = verify_tools(recipe)
         if not root.parent.is_dir():
             raise ValueError("ASSET_PARENT_MISSING: " + str(root.parent))
-        if shutil.disk_usage(root.parent).free < 4 * 1024 ** 3:
-            raise ValueError("ASSET_CAPACITY_INSUFFICIENT: require 4 GiB free for source and conversion")
+        needed = 4 * 1024 ** 3
+        if layout is not None:
+            files = recipe["files"]
+            output_bytes = files["canonicalGraph"]["bytes"] + files["canonicalWeights"]["bytes"]
+            same_device = args.source_dir is not None and (
+                args.source_dir.stat().st_dev == root.parent.stat().st_dev)
+            copied_bytes = 0 if same_device else sum(files[role]["bytes"]
+                            for role in (*recipe["sourceFiles"], "license"))
+            needed = max(needed, output_bytes + copied_bytes + 2 * 1024 ** 3)
+        if shutil.disk_usage(root.parent).free < needed:
+            raise ValueError("ASSET_CAPACITY_INSUFFICIENT: require {} bytes free".format(needed))
         lock_path = root.parent / ("." + root.name + ".prepare.lock")
         flags = os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
         with os.fdopen(os.open(str(lock_path), flags, 0o600), "r+") as lock:

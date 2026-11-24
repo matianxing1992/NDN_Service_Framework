@@ -1,0 +1,75 @@
+{
+  "assetRecipe": {
+    "bytes": 4232,
+    "path": "qwen3-4b-q4f16.json",
+    "sha256": "d579f977ce36268ceabb010a4ef1d37c2bd6dc23fe6eef37e2c88917f0f6f088"
+  },
+  "backend": "onnxruntime-cpu",
+  "budgets": {
+    "artifactCacheMaxMiB": 11264,
+    "bootstrapMs": 1800000,
+    "conversationRetentionMs": 3600000,
+    "journalBytes": 67108864,
+    "largeDataImsLimit": 141893,
+    "maxPreparedBytes": 13958643712,
+    "noProgressMs": 600000,
+    "permissionWaitMs": 120000,
+    "publicationMarginBytes": 16777216,
+    "requestTimeoutMs": 900000,
+    "storageBytes": 19327352832
+  },
+  "canonicalGraphIdentity": "sha256:fef6881fe336f0f77facbbb5ef01e46ad4e3bdc8022fff62b54b956b7baf1ee9",
+  "catalog": {
+    "bytes": 23358,
+    "path": "catalog.json",
+    "sha256": "720dee4fbbadc33c0910faab238f1fe150c844577ecdd4196bdcba4222c587e5"
+  },
+  "generationOptions": {
+    "bytes": 7333,
+    "path": "generation-options.json",
+    "sha256": "dc9142de11c7506e011e154b7a0aa11c2b70211431cc39cbc9ae8e3c61f28747"
+  },
+  "id": "spec235-qwen4b-pp11",
+  "model": {
+    "family": "qwen",
+    "name": "/Model/Qwen3/4B",
+    "precision": "float16",
+    "quantization": "weight_only_int4",
+    "repository": "Qwen/Qwen3-4B",
+    "revision": "ca652ef636e8b121ff4a1607c37ab578cb866987"
+  },
+  "providerRoles": [
+    "/LLM/Pipeline/Stage/0",
+    "/LLM/Pipeline/Stage/1"
+  ],
+  "rendering": {
+    "addSpecialTokens": false,
+    "assistantSuffix": "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "bos": "none",
+    "expectedCommittedPrefix": [
+      64,
+      128
+    ],
+    "inputTokens": [
+      32,
+      32
+    ],
+    "maxNewTokens": [
+      32,
+      32
+    ],
+    "priorTurnSuffix": "<|im_end|>\n",
+    "sampling": "Greedy",
+    "userPrefix": "<|im_start|>user\n"
+  },
+  "requestIdentities": {
+    "adapterComposition": "sha256:48c0771d0af27bc38470507ac7bf95934f024d256c39f1c35151ffb7aac38684",
+    "inputLayout": "sha256:6f0bbde1e819b7efb279b9260a5748a32215df92315e31d1ac6d5176c92f9293",
+    "taskDescriptor": "sha256:106f6f837af9ec755f99c8384ed1e7ffb42522e9ab3a750583efcb414eab8204"
+  },
+  "schema": "ndnsf-experiment-profile-v1",
+  "turns": [
+    "Explain how Named Data Networking retrieves content by name and verifies signatures before sharing cached responses across consumers.",
+    "Explain how distributed inference workers exchange tensors over Named Data Networking and coordinate the next token."
+  ]
+}

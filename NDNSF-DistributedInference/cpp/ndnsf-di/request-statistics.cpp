@@ -76,6 +76,7 @@ nativeRequestStatisticsToJson(const NativeRequestStatistics& statistics)
     {"role", statistics.role}, {"attemptEpoch", statistics.attemptEpoch},
     {"admittedModelDigest", statistics.admittedModelDigest},
     {"admittedArtifactDigest", statistics.admittedArtifactDigest},
+    {"sealedComputeEntries", statistics.sealedComputeEntries},
     {"startedSteadyNs", statistics.startedSteadyNs},
     {"finishedSteadyNs", statistics.finishedSteadyNs},
     {"startedProcessCpuNs", clockValue(statistics.startedProcessCpuNs)},
