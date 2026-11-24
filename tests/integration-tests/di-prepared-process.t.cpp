@@ -2,6 +2,7 @@
 
 #include "ndnsf-di/api.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.hpp"
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
 
@@ -329,6 +330,86 @@ requireStoredProcessOracle(const std::filesystem::path& runRoot, const std::stri
   }
 }
 
+void
+requireHostStreamProcessOracle(const std::filesystem::path& runRoot, bool cancelled)
+{
+  const auto receipt = nativeParseJson(readFile(runRoot / "requester/host-result.json"));
+  BOOST_REQUIRE(receipt.at("first_failure").is_null());
+  BOOST_REQUIRE(receipt.at("cleanup_errors").empty());
+  BOOST_REQUIRE(receipt.at("drained").get<bool>());
+  BOOST_CHECK_EQUAL(receipt.at("status").get<std::string>(),
+                    cancelled ? "CANCELLED" : "SUCCEEDED");
+  const std::vector<std::int64_t> expected{4, 5, 6, 7, 8, 9, 10, 2};
+  const auto& events = receipt.at("events");
+  BOOST_REQUIRE_EQUAL(events.size(), cancelled ? 3U : expected.size());
+  for (std::size_t i = 0; i < events.size(); ++i) {
+    BOOST_CHECK_EQUAL(events[i].at("schema").get<std::string>(), "GenerationTokenEventV1");
+    BOOST_CHECK_EQUAL(events[i].at("tokenEpoch").get<std::uint64_t>(), i + 1);
+    BOOST_CHECK_EQUAL(events[i].at("tokenId").get<std::int64_t>(), expected[i]);
+  }
+  if (cancelled) {
+    BOOST_REQUIRE(receipt.at("completed").empty());
+    BOOST_REQUIRE_EQUAL(receipt.at("errors").size(), 1U);
+    BOOST_CHECK_EQUAL(receipt.at("errors")[0].at("code").get<std::string>(), "CANCELLED");
+    requireLogMarker(runRoot, "requester.log",
+      "NDNSF_DI_NATIVE_CANCELLATION_RECEIPT");
+    requireLogMarker(runRoot, "requester.log", "expected=4 fenced=4 drained=4");
+  }
+  else {
+    BOOST_REQUIRE(receipt.at("errors").empty());
+    BOOST_CHECK_EQUAL(receipt.at("terminal_events").get<unsigned>(), 1U);
+    BOOST_REQUIRE_EQUAL(receipt.at("completed").size(), 1U);
+    const auto& final = receipt.at("completed")[0];
+    BOOST_CHECK_EQUAL(final.at("schema").get<std::string>(), "NDNSF-DI-FINAL-V1");
+    BOOST_CHECK(final.at("tokenIds").get<std::vector<std::int64_t>>() == expected);
+  }
+  for (std::size_t i = 0; i < 4; ++i) {
+    const auto name = i == 0 ? std::string("provider") : "provider-" + std::to_string(i);
+    requireLogMarker(runRoot, name + ".log", "NDNSF_DI_GRANT_VERIFICATION");
+    requireLogMarker(runRoot, name + ".log", "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED");
+    if (!cancelled) {
+      const auto log = readFile(runRoot / (name + ".log"));
+      const auto role = "phase=role_done role=/LLM/Pipeline/Stage/" + std::to_string(i) + " epoch=";
+      std::size_t count = 0;
+      for (auto offset = log.find(role); offset != std::string::npos;
+           offset = log.find(role, offset + role.size()))
+        ++count;
+      BOOST_REQUIRE_EQUAL(count, expected.size());
+      for (std::size_t epoch = 0; epoch < expected.size(); ++epoch)
+        requireMarker(log, role + std::to_string(epoch), runRoot / (name + ".log"));
+    }
+  }
+  const auto cleanup = nativeParseJson(readFile(runRoot / "four-stage-process-measurements.json"));
+  BOOST_REQUIRE(cleanup.at("first_failure").is_null());
+  BOOST_REQUIRE(cleanup.at("forced_cleanup").empty());
+  BOOST_REQUIRE(cleanup.at("cleanup_errors").empty());
+  BOOST_REQUIRE(cleanup.at("live_processes").empty());
+  BOOST_REQUIRE_EQUAL(cleanup.at("actor_exit_codes").size(), 8U);
+  for (const auto& actor : cleanup.at("actor_exit_codes").items())
+    BOOST_CHECK_EQUAL(actor.value().get<int>(), 0);
+
+  const auto* runtime = std::getenv("NDNSF_TEST_RUNTIME_PREFIX");
+  const auto* site = std::getenv("NDNSF_TEST_PYTHON_SITE");
+  BOOST_REQUIRE(runtime != nullptr);
+  BOOST_REQUIRE(site != nullptr);
+  const auto prefix = std::filesystem::canonical(runtime);
+  const auto pythonSite = std::filesystem::canonical(site).string() + "/";
+  for (const auto& module : receipt.at("modules").items())
+    BOOST_CHECK_EQUAL(module.value().get<std::string>().find(pythonSite), 0U);
+  bool coreFound = false;
+  bool diFound = false;
+  for (const auto& item : receipt.at("libraries")) {
+    const auto library = std::filesystem::canonical(item.get<std::string>());
+    BOOST_REQUIRE(library.parent_path() == prefix / "lib");
+    coreFound = coreFound || library.filename().string().find("libndn-service-framework.so") == 0;
+    diFound = diFound || library.filename().string() == "libndnsf-distributed-inference.so";
+    BOOST_CHECK_EQUAL(nativePlanningDigest(readFile(library)),
+      "sha256:" + receipt.at("library_sha256").at(item.get<std::string>()).get<std::string>());
+  }
+  BOOST_CHECK(coreFound);
+  BOOST_CHECK(diFound);
+}
+
 void requireReplacementProcessOracle(const std::filesystem::path& runRoot,
                                      const std::vector<std::string>& arguments)
 {
@@ -360,6 +441,25 @@ int runProcessCase(const std::string& name, const std::vector<std::string>& argu
   const auto root = repositoryRoot();
   const auto build = buildDirectory(root);
   const auto externalBuild = externalBuildDirectory(root);
+  if (std::find(arguments.begin(), arguments.end(), "--host-requester") != arguments.end()) {
+    const auto* runtime = std::getenv("NDNSF_TEST_RUNTIME_PREFIX");
+    const auto* site = std::getenv("NDNSF_TEST_PYTHON_SITE");
+    BOOST_REQUIRE(runtime != nullptr);
+    BOOST_REQUIRE(site != nullptr);
+    BOOST_REQUIRE(std::filesystem::path(runtime).is_absolute());
+    BOOST_REQUIRE(std::filesystem::is_directory(runtime));
+    BOOST_REQUIRE(std::filesystem::path(site).is_absolute());
+    BOOST_REQUIRE(std::filesystem::is_directory(site));
+    BOOST_REQUIRE(std::filesystem::is_regular_file(root / "tests/installed-api/native-host-stream.py"));
+    for (const auto* relative : {"bin/App_ServiceController", "bin/DI_NativeArtifactAuthority",
+                                "bin/di-native-provider", "bin/DI_NativeRequester",
+                                "libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker",
+                                "libexec/ndnsf-tests/native-source-inspect"}) {
+      const auto program = std::filesystem::path(runtime) / relative;
+      BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(program),
+                            "missing installed process prerequisite: " + program.string());
+    }
+  }
   const auto script = root / (name == "unary"
     ? "tests/standalone/run-spec261-source-full-process.py"
     : "tests/standalone/run-spec182-native-stream-process.py");
@@ -377,6 +477,8 @@ int runProcessCase(const std::string& name, const std::vector<std::string>& argu
   std::filesystem::create_directories(runRoot);
   const auto log = runRoot / "cpp-driver.log";
   std::string libraryPath = externalBuild.string();
+  if (std::find(arguments.begin(), arguments.end(), "--host-requester") != arguments.end())
+    libraryPath = (std::filesystem::path(std::getenv("NDNSF_TEST_RUNTIME_PREFIX")) / "lib").string();
   if (const char* inherited = std::getenv("LD_LIBRARY_PATH");
       inherited != nullptr && *inherited != '\0') {
     libraryPath += ":";
@@ -430,6 +532,11 @@ int runProcessCase(const std::string& name, const std::vector<std::string>& argu
       requireLogMarker(runRoot, "provider.log", "NDNSF_DI_GRANT_VERIFICATION");
       requireLogMarker(runRoot, "provider.log", "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED");
     }
+  }
+  else if (std::find(arguments.begin(), arguments.end(), "--host-requester") != arguments.end()) {
+    requireProcessExit(output, "requester", true, log);
+    requireHostStreamProcessOracle(runRoot,
+      std::find(arguments.begin(), arguments.end(), "--host-cancel-after-event") != arguments.end());
   }
   else if (std::find(arguments.begin(), arguments.end(), "--stored-model-reuse") != arguments.end()) {
     requireStoredProcessOracle(runRoot, output, log,
@@ -600,6 +707,19 @@ BOOST_AUTO_TEST_CASE(UnaryAndStreamProcessesUseNativeOracles)
     "NATIVE_REQUEST_SUCCEEDED",
     "NDNSF_DI_GRANT_VERIFICATION",
     "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED"});
+}
+
+// Explicitly selected with a matching installed host SDK/site, outside the
+// native-only default suite. Missing prerequisites fail the selected case.
+BOOST_AUTO_TEST_CASE(InstalledHostFourStageStream, *boost::unit_test::disabled())
+{
+  runProcessCase("stream", {"--four-stage", "--host-requester"}, {});
+}
+
+BOOST_AUTO_TEST_CASE(InstalledHostFourStageCancel, *boost::unit_test::disabled())
+{
+  runProcessCase("stream", {"--four-stage", "--host-requester",
+                            "--host-cancel-after-event", "3"}, {});
 }
 
 BOOST_AUTO_TEST_CASE(StoredModelSurvivesPreparerExitForIndependentUsers)

@@ -24,6 +24,10 @@ parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--four-stage', action='store_true',
                     help='prepare the canonical four-stage source on four CPU Providers')
+parser.add_argument('--host-requester', action='store_true',
+                    help='use the installed Python facade with the four native Providers')
+parser.add_argument('--host-cancel-after-event', type=int, choices=(0, 3), default=0,
+                    help='cancel the installed host request after its third event')
 parser.add_argument('--conversation', action='store_true',
                     help='run two persisted native conversation turns and a wrong-parent negative')
 parser.add_argument('--recovery', action='store_true',
@@ -37,6 +41,10 @@ parser.add_argument('--stored-model-reuse', action='store_true',
 parser.add_argument('--request-time-model-preparation', action='store_true',
                     help='use native source preparation/open before the stored reuse case')
 args=parser.parse_args()
+if args.host_requester and not args.four_stage:
+ parser.error('--host-requester requires --four-stage')
+if args.host_cancel_after_event and not args.host_requester:
+ parser.error('--host-cancel-after-event requires --host-requester')
 if args.four_stage and (args.conversation or args.recovery or args.replacement or
                        args.stored_model_reuse or args.request_time_model_preparation):
  parser.error('--four-stage runs the four-Provider stream qualification only')
@@ -500,7 +508,22 @@ try:
  if args.stored_model_reuse:
   refresh_consumer_retention(requester_dir)
  re=penv(requester_store); re.update({'NDNSF_DI_WORKER_BINARY':str(WORKER)})
- rq=launch([str(REQUESTER),'--config',str(requester_dir/'config.json'),'--input',str(requester_dir/'input.bin'),'--output',str(requester_dir/'output.bin')],re,'requester');children.append(rq)
+ requester_command=[str(REQUESTER)]
+ if args.host_requester:
+  prefix=Path(os.environ['NDNSF_TEST_RUNTIME_PREFIX'])
+  site=Path(os.environ['NDNSF_TEST_PYTHON_SITE'])
+  if not prefix.is_absolute() or not (prefix/'lib').is_dir():
+   raise RuntimeError('installed host requester requires an absolute SDK prefix')
+  if not site.is_absolute() or not site.is_dir():
+   raise RuntimeError('installed host requester requires an absolute Python site')
+  re['LD_LIBRARY_PATH']=str(prefix/'lib')+':'+re.get('LD_LIBRARY_PATH','')
+  re['PYTHONPATH']=str(site)
+  re['PYTHONNOUSERSITE']='1'
+  requester_command=[os.environ.get('NDNSF_TEST_PYTHON','/usr/bin/python3'),
+                     str(ROOT/'tests/installed-api/native-host-stream.py'),
+                     '--cancel-after-event',str(args.host_cancel_after_event)]
+ requester_command+=['--config',str(requester_dir/'config.json'),'--input',str(requester_dir/'input.bin'),'--output',str(requester_dir/'output.bin')]
+ rq=launch(requester_command,re,'requester');children.append(rq)
  stopped_provider_a=False
  if args.replacement:
   # Wait until the requester has received A's authenticated ACK.  Pausing A

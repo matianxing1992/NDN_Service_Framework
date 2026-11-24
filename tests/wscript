@@ -2384,6 +2384,8 @@ def build(bld):
     if driver_names:
         bld.install_files(tests_share + '/standalone',
                           [bld.path.find_node('standalone/' + name) for name in driver_names])
+        bld.install_files(tests_share + '/installed-api',
+                          'installed-api/native-host-stream.py')
     # The contract names `PREFIX/bin/ndnsf-checks` as the canonical entry point; the runner above is
     # its implementation, so an operator path and a source path cannot diverge.
     bld.install_files('${PREFIX}/bin', 'ndnsf-checks', chmod=0o755)
