@@ -1073,6 +1073,9 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
         std::size_t batchOffset = 0;
         std::size_t maximumBatchSize = 0;
         std::size_t batchCalls = 0;
+        if (speculativeFirst) {
+          speculativeFirst->confirmPublication();
+        }
         if (speculativeWholeStarted) {
           // Hints schedule exact names, not content acceptance. Generation
           // lineage can change the encoded byte count without changing those
@@ -1080,6 +1083,7 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           // manifest below instead of discarding a useful same-count batch.
           const bool matches = manifest.segmentCount == prefetchCount;
           if (matches) {
+            speculativeWhole->confirmPublication();
             {
               NativeWorkScope wait(m_workStatistics,
                                    "dependency-speculative-batch-wait",

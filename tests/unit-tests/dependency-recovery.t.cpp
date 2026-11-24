@@ -1377,6 +1377,92 @@ BOOST_AUTO_TEST_CASE(RecoveredOriginalWireReusesSignatureAndCurrentPermissionChe
 
 
 
+BOOST_AUTO_TEST_CASE(AdmittedManifestSwitchesSpeculativeBatchToPublishedRetry)
+{
+  using namespace std::chrono_literals;
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+  environment.disconnectProviderPeerTransportForTest();
+  auto& producer = environment.provider(0);
+  auto& producerFace = environment.providerFace(0);
+  auto& consumerFace = environment.providerFace(1);
+  const auto name = ndn::Name(producer.getName()).append("NDNSF").append("BATCH");
+  const std::vector<ndn::Name> names{
+    ndn::Name(name).appendSegment(0), ndn::Name(name).appendSegment(1)};
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "/consumer";
+  assignment.service = profile.serviceName;
+  assignment.inputAdmissionProfile = "data-admission-v1";
+  assignment.selectionDigest = "spec271-published-exact-batch-retry";
+  assignment.scopeKeys["input"] = ndn::Buffer(32, 0x51);
+  assignment.workDeadline = std::chrono::steady_clock::now() + 8s;
+  assignment.workCurrent = [] { return true; };
+  const ndn::Name request("/spec271/exact-batch/publication");
+  ServiceProvider::CollaborationContext publisher(
+    producer, profile.userIdentity, request, RequestMessage{}, assignment);
+  ServiceProvider::CollaborationContext receiver(
+    environment.provider(1), profile.userIdentity, request, RequestMessage{}, assignment);
+  std::vector<ndn::time::milliseconds> firstLifetimes;
+  std::vector<ndn::time::milliseconds> secondLifetimes;
+  ndn::signal::ScopedConnection interests = consumerFace.onSendInterest.connect(
+    [&](const ndn::Interest& interest) {
+      if (interest.getName() == names[0]) {
+        firstLifetimes.push_back(interest.getInterestLifetime());
+        if (firstLifetimes.size() <= 2) return;
+      }
+      else if (interest.getName() == names[1]) {
+        secondLifetimes.push_back(interest.getInterestLifetime());
+      }
+      else {
+        return;
+      }
+      producerFace.receive(interest);
+    });
+  ndn::signal::ScopedConnection packets = producerFace.onSendData.connect(
+    [&](const ndn::Data& data) {
+      if (data.getName() == names[0] || data.getName() == names[1]) {
+        consumerFace.receive(data);
+      }
+    });
+  auto read = receiver.startSignedExactDataBatch("input", names, producer.getName(), 4000,
+    {}, {}, ServiceProvider::ExactDataFetchPhase::AwaitPublication, {}, 1);
+  const auto deadline = std::chrono::steady_clock::now() + 3s;
+  const auto pump = [&] {
+    producerFace.processEvents(ndn::time::milliseconds(5));
+    consumerFace.processEvents(ndn::time::milliseconds(5));
+    producerFace.getIoContext().restart();
+    consumerFace.getIoContext().restart();
+  };
+  while (firstLifetimes.empty() && std::chrono::steady_clock::now() < deadline) {
+    pump();
+  }
+  BOOST_REQUIRE_EQUAL(firstLifetimes.size(), 1);
+  BOOST_CHECK_GT(firstLifetimes.front().count(), 3000);
+  BOOST_REQUIRE(publisher.publishSignedExactData(
+    "input", {{names[0], ndn::Buffer{7}}, {names[1], ndn::Buffer{9}}}));
+  read.confirmPublication();
+  while (read.wait_for(0ms) != std::future_status::ready &&
+         std::chrono::steady_clock::now() < deadline) {
+    pump();
+  }
+  BOOST_REQUIRE(read.wait_for(0ms) == std::future_status::ready);
+  const auto result = read.get();
+  BOOST_REQUIRE(result);
+  BOOST_REQUIRE_EQUAL(result->contents.size(), 2);
+  BOOST_CHECK(result->contents[0] == ndn::Buffer{7});
+  BOOST_CHECK(result->contents[1] == ndn::Buffer{9});
+  BOOST_REQUIRE_EQUAL(firstLifetimes.size(), 3);
+  BOOST_REQUIRE_EQUAL(secondLifetimes.size(), 1);
+  BOOST_CHECK_LT(firstLifetimes[1].count(), firstLifetimes[0].count());
+  BOOST_CHECK_GT(firstLifetimes[2].count(), firstLifetimes[1].count());
+  BOOST_CHECK_LT(firstLifetimes[2].count(), firstLifetimes[0].count());
+  BOOST_CHECK_LT(secondLifetimes.front().count(), firstLifetimes[0].count());
+}
+
 BOOST_AUTO_TEST_CASE(SixthFutureInterestRemainsAliveUntilTheOriginalDeadline)
 {
   using namespace std::chrono_literals;

@@ -26,10 +26,18 @@ public:
   explicit
   ExactDataCongestionWindow(std::size_t limit, ndn::time::milliseconds initialRto,
     double initialSlowStartThreshold = ndn::SegmentFetcherOptions{}.initSsthresh)
+    : ExactDataCongestionWindow(limit, initialRto, initialRto, initialSlowStartThreshold)
+  {
+  }
+
+  explicit
+  ExactDataCongestionWindow(std::size_t limit, ndn::time::milliseconds initialRto,
+    ndn::time::milliseconds maximumRto,
+    double initialSlowStartThreshold = ndn::SegmentFetcherOptions{}.initSsthresh)
     : m_limit(limit)
     , m_cwnd(std::min(INITIAL_WINDOW, limit))
     , m_ssthresh(initialSlowStartThreshold)
-    , m_rtt(makeRttOptions(initialRto))
+    , m_rtt(makeRttOptions(initialRto, maximumRto))
     , m_peakWindow(size())
   {
     if (limit == 0) throw std::invalid_argument("exact Data window requires a resource bound");
@@ -118,13 +126,15 @@ public:
 
 private:
   static std::shared_ptr<const ndn::util::RttEstimator::Options>
-  makeRttOptions(ndn::time::milliseconds initial)
+  makeRttOptions(ndn::time::milliseconds initial, ndn::time::milliseconds maximum)
   {
-    if (initial.count() <= 0) throw std::invalid_argument("exact Data RTO must be positive");
+    if (initial.count() <= 0 || maximum < initial) {
+      throw std::invalid_argument("exact Data RTO bounds are invalid");
+    }
     auto options = std::make_shared<ndn::util::RttEstimator::Options>();
     options->initialRto = initial;
     options->minRto = std::min(initial, ndn::time::milliseconds(50));
-    options->maxRto = initial;
+    options->maxRto = maximum;
     return options;
   }
 

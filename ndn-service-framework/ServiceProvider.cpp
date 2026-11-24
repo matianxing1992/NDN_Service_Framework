@@ -13607,6 +13607,7 @@ namespace ndn_service_framework
         std::future<std::optional<ndn::Buffer>> verifiedManifest;
         std::function<bool()> manifestCurrent;
         std::function<bool()> continueManifest;
+        std::function<void()> confirmBatchPublication;
         bool manifestTaken = false;
         CollaborationTransferMetrics metrics;
         std::vector<std::shared_ptr<std::function<void()>>> expressions;
@@ -13684,6 +13685,14 @@ namespace ndn_service_framework
     {
         return m_impl && m_impl->manifestTaken && m_impl->continueManifest &&
                m_impl->continueManifest();
+    }
+
+    void
+    ServiceProvider::ExactDataFetchOperation::confirmPublication()
+    {
+        if (m_impl && m_impl->confirmBatchPublication) {
+            m_impl->confirmBatchPublication();
+        }
     }
 
     CollaborationTransferMetrics
@@ -13955,6 +13964,7 @@ namespace ndn_service_framework
                 std::vector<std::size_t> snapshotSlots;
             };
             std::atomic<bool> completed{false};
+            std::atomic<bool> publicationConfirmed{false};
             std::atomic<std::size_t> wireBytes{0};
             std::atomic<std::size_t> issuedBarriers{0};
             std::atomic<std::size_t> retainedWireBytes{0};
@@ -14029,9 +14039,10 @@ namespace ndn_service_framework
                            peak, bytes, std::memory_order_relaxed)) {}
             }
             ExactFetchState(std::size_t count, std::size_t capacity,
-                            ndn::time::milliseconds initialRto)
+                            ndn::time::milliseconds initialRto,
+                            ndn::time::milliseconds maximumRto)
                 : slots(count), content(count), remaining(count), networkRemaining(count),
-                  congestion(capacity, initialRto) {}
+                  congestion(capacity, initialRto, maximumRto) {}
         };
         const int interestLifetimeMs = std::max(
             50, std::min(timeoutMs,
@@ -14039,8 +14050,15 @@ namespace ndn_service_framework
                            "NDNSF_DI_EXACT_INTEREST_LIFETIME_MS", 500)));
         const auto capacity = std::min({dataNames.size(), std::size_t{256},
             maxOutstanding == 0 ? std::size_t{128} : maxOutstanding});
+        const auto initialRtoMs = std::min(timeoutMs, interestLifetimeMs);
+        const bool canConfirmPublication = phase == ExactDataFetchPhase::AwaitPublication &&
+            !retainOriginalWire && !manifestRead;
+        // Allow two backoff steps after a matching manifest proves publication.
+        // The exact operation still owns its original cancellation and deadlines.
+        const auto maximumRtoMs = canConfirmPublication
+            ? std::min<std::int64_t>(timeoutMs, 4LL * initialRtoMs) : initialRtoMs;
         auto state = std::make_shared<ExactFetchState>(dataNames.size(), capacity,
-            ndn::time::milliseconds(std::min(timeoutMs, interestLifetimeMs)));
+            ndn::time::milliseconds(initialRtoMs), ndn::time::milliseconds(maximumRtoMs));
         for (const auto index : optionalSlots) state->slots[index].optional = true;
         state->remaining -= optionalSlots.size();
         state->maxRetainedWireBytes = maxRetainedWireBytes;
@@ -14070,6 +14088,11 @@ namespace ndn_service_framework
         state->metrics.recoveryGroupDataPackets = recoverMissing ? 8 : 0;
         operation->result = state->result.get_future();
         if (phase == ExactDataFetchPhase::Published) state->readySince = ExactClock::now();
+        if (canConfirmPublication) {
+            operation->confirmBatchPublication = [state] {
+                state->publicationConfirmed.store(true, std::memory_order_release);
+            };
+        }
 
         auto firstReadReported = std::make_shared<std::atomic<bool>>(false);
         auto reportFirstRead = [firstReadReported, onFirstReadStarted]
@@ -15114,10 +15137,20 @@ namespace ndn_service_framework
                     estimatedRtoMs = std::chrono::duration_cast<
                         std::chrono::milliseconds>(state->congestion.rto()).count();
                 }
-                const auto retryIntervalMs = state->strict ?
-                    static_cast<int>(std::max<std::int64_t>(1,
-                        std::min<std::int64_t>(1000, estimatedRtoMs))) : interestLifetimeMs;
-                int issuedLifetimeMs = slotPhase == ExactDataFetchPhase::AwaitPublication
+                const bool publicationConfirmed =
+                    state->publicationConfirmed.load(std::memory_order_acquire);
+                auto retryIntervalMs = interestLifetimeMs;
+                if (state->strict) {
+                    retryIntervalMs = static_cast<int>(
+                        std::clamp<std::int64_t>(estimatedRtoMs, 1, 1000));
+                }
+                else if (publicationConfirmed) {
+                    retryIntervalMs = static_cast<int>(
+                        std::max<std::int64_t>(interestLifetimeMs, estimatedRtoMs));
+                }
+                const bool awaitsPublication = slotPhase == ExactDataFetchPhase::AwaitPublication &&
+                    !publicationConfirmed;
+                int issuedLifetimeMs = awaitsPublication
                     ? static_cast<int>(std::max<std::int64_t>(1,
                         std::chrono::duration_cast<std::chrono::milliseconds>(
                             state->deadline - std::chrono::steady_clock::now()).count()))
@@ -15535,7 +15568,7 @@ namespace ndn_service_framework
                 cancelPending(std::move(previous));
 
                 try {
-                    if (slotPhase == ExactDataFetchPhase::AwaitPublication &&
+                    if (awaitsPublication &&
                         issuedLifetimeMs > retryIntervalMs && (!state->strict || attempt < 6)) {
                         // Keep the producer's pending Interest alive while retaining
                         // normal same-name recovery if an Interest or Data is lost.
@@ -15547,7 +15580,10 @@ namespace ndn_service_framework
                                     slot->attempts.load(std::memory_order_relaxed) == attempt) {
                                     if (const auto renew = weakRetry.lock()) {
                                         try {
-                                            (*renew)("publication-refresh", attempt);
+                                            const auto confirmed = state->publicationConfirmed.load(
+                                                std::memory_order_acquire);
+                                            (*renew)(confirmed ? "timeout" : "publication-refresh",
+                                                     attempt);
                                         }
                                         catch (...) {
                                             finish({}, "exact readiness renewal failed for " +

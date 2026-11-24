@@ -255,6 +255,8 @@ namespace ndn_service_framework{
                 std::future_status wait_for(std::chrono::milliseconds duration) const;
                 std::optional<ExactDataBatchResult> get();
                 CollaborationTransferMetrics metricsSnapshot() const;
+                /** Switch a content batch to published-Data retries after manifest admission. */
+                void confirmPublication();
                 /** Await the authenticated application's root Content on the handler worker. */
                 std::optional<ndn::Buffer> getVerifiedManifest();
                 /** Release proven member reads after the handler admits the root. */
