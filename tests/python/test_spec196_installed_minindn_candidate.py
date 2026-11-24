@@ -24,6 +24,24 @@ from native_probe_validation_links import render_anchored_probe_validation_schem
 
 
 class InstalledCandidateTest(unittest.TestCase):
+    def test_public_requester_uses_initialized_node_identity_store(self):
+        tree = ast.parse((ROOT / "Experiments/NDNSF_DI_Yolo2x2_Minindn.py").read_text())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "requester_environment")
+        scope = {"Path": Path}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "requester-env", "exec"),
+             scope)
+        original = {"NDN_CLIENT_TRANSPORT": "unix:///run/nfd/requester.sock"}
+        result = scope["requester_environment"](
+            original, Path("/run/state"), node_home=Path("/run/node home"),
+            controller_certificate=Path("/run/controller.cert"))
+        self.assertEqual(result["HOME"], "/run/node home")
+        self.assertEqual(result["NDN_CLIENT_PIB"], "pib-sqlite3:")
+        self.assertEqual(result["NDN_CLIENT_TPM"], "tpm-file:")
+        self.assertEqual(result["NDNSF_CONTROLLER_CERT_FILE"], "/run/controller.cert")
+        self.assertEqual(result["NDN_CLIENT_TRANSPORT"], original["NDN_CLIENT_TRANSPORT"])
+        self.assertNotIn("NDN_CLIENT_PIB", original)
+
     def test_external_wheel_uses_its_frozen_build_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

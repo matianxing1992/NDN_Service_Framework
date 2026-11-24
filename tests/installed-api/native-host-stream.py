@@ -2,9 +2,13 @@
 """Consume the installed C++ user API; the C++ parent owns behavior assertions."""
 
 import argparse
+import gc
 import hashlib
 import json
 from pathlib import Path
+from threading import Event
+import time
+import weakref
 
 from ndnsf import _ndnsf
 from ndnsf_distributed_inference import api
@@ -20,7 +24,10 @@ def main():
     args = parser.parse_args()
     receipt = {"events": [], "completed": [], "errors": [], "terminal_events": 0,
                "status": "NOT_STARTED", "first_failure": None,
-               "cleanup_errors": [], "drained": False}
+               "cleanup_errors": [], "drained": False,
+               "completion_probes": [], "completion_callbacks_alive": None}
+    callback_references = []
+    callback_releases = []
     runtime = None
     reader = None
     handle = None
@@ -75,6 +82,26 @@ def main():
         if not args.cancel_after_event:
             result = handle.result()
             args.output.write_bytes(bytes(result.payload))
+        # Terminal subscriptions still dispatch through the native worker. Drop
+        # the Python owner before delivery to exercise native callback ownership.
+        for _ in range(16):
+            delivered = Event()
+            released = Event()
+
+            def callback(error, result, delivered=delivered):
+                receipt["completion_probes"].append(
+                    {"error": error, "has_result": result is not None})
+                delivered.set()
+
+            callback_references.append(weakref.ref(callback))
+            callback_releases.append(released)
+            weakref.finalize(callback, released.set)
+            subscription = handle.on_completion(callback)
+            del callback
+            if not delivered.wait(2):
+                raise RuntimeError("native terminal callback did not arrive")
+            subscription.unsubscribe()
+            del subscription
     except BaseException as error:
         active_failure = True
         receipt["first_failure"] = type(error).__name__ + ": " + str(error)
@@ -93,6 +120,12 @@ def main():
         # Retain the reliable completion subscription through native drain.
         if completion is not None:
             completion.cancel()
+        gc.collect()
+        release_deadline = time.monotonic() + 2
+        for released in callback_releases:
+            released.wait(max(0, release_deadline - time.monotonic()))
+        receipt["completion_callbacks_alive"] = sum(
+            reference() is not None for reference in callback_references)
         receipt["modules"] = {"binding": _ndnsf.__file__, "api": api.__file__}
         receipt["libraries"] = sorted({line.split()[-1] for line in
             Path("/proc/self/maps").read_text().splitlines() if any(name in line for name in (

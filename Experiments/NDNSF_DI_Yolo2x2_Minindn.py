@@ -102,8 +102,15 @@ def with_runtime_evidence_filter(environment: dict[str, str]) -> dict[str, str]:
     return result
 
 
-def requester_environment(environment, state_root, publication_directory=None):
-    result = {**environment, "NDNSF_DI_STATE_ROOT": str(state_root)}
+def requester_environment(environment, state_root, publication_directory=None, *,
+                          node_home: Path, controller_certificate: Path):
+    # Bind the public Runtime to the node's initialized identity material.
+    # Keep ndnsec's literal TPM locator: changing it resets the default PIB.
+    result = {**environment, "HOME": str(node_home),
+              "NDNSF_DI_STATE_ROOT": str(state_root),
+              "NDN_CLIENT_PIB": "pib-sqlite3:",
+              "NDN_CLIENT_TPM": "tpm-file:",
+              "NDNSF_CONTROLLER_CERT_FILE": str(controller_certificate)}
     if publication_directory is not None:
         result["NDNSF_REQUEST_LARGE_DATA_DIR"] = str(
             publication_directory.expanduser().resolve())
@@ -6333,6 +6340,10 @@ def main() -> None:
                                 repo_identity=native_authority_identity,
                                 credential_bundle=(naming_candidate["credentialBundles"]["yolo"]
                                                    if naming_candidate is not None else None))
+        controller_certificate = (
+            Path(naming_candidate["credentialBundles"]["yolo"]["keys"]
+                 [CONTROLLER_IDENTITY]["rsa"]).with_suffix(".cert")
+            if naming_candidate is not None else OUT / "security/di-identity-0-rsa.cert")
         subprocess.run(["rm", "-rf", str(OUT / "artifact-cache")], check=False)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)
@@ -6687,7 +6698,9 @@ def main() -> None:
                 workload_env,
                 runtime_state_dir / "user" if native_assets is not None else
                 OUT / "user-state",
-                args_cli.requester_publication_dir)
+                args_cli.requester_publication_dir,
+                node_home=Path(ndn.net[AI_LAB_USER_NODE].params["params"]["homeDir"]),
+                controller_certificate=controller_certificate)
             if native_assets is not None:
                 user_env = with_runtime_evidence_filter(user_env)
             proc, log_path = start(
@@ -6832,7 +6845,9 @@ def main() -> None:
                 env,
                 runtime_state_dir / "user" if native_assets is not None else
                 OUT / "user-state",
-                args_cli.requester_publication_dir)
+                args_cli.requester_publication_dir,
+                node_home=Path(ndn.net[AI_LAB_USER_NODE].params["params"]["homeDir"]),
+                controller_certificate=controller_certificate)
             if native_assets is not None:
                 user_env = with_runtime_evidence_filter(user_env)
             user_proc, user_log = start(

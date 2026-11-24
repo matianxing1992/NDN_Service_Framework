@@ -176,6 +176,18 @@ optionalResultValue(const std::optional<di::Result>& result)
   return py::cast(*result);
 }
 
+template<typename Subscribe>
+py::object
+subscribeNative(Subscribe&& subscribe)
+{
+  ndn_service_framework::OperationSubscription subscription;
+  {
+    py::gil_scoped_release release;
+    subscription = subscribe();
+  }
+  return py::cast(std::move(subscription));
+}
+
 di::PrepareOptions
 prepareOptionsWithTimeout(di::PrepareOptions options, const py::object& timeout)
 {
@@ -571,14 +583,17 @@ bindDistributedInference(py::module_& module)
   py::class_<ndn_service_framework::OperationSubscription>(
       module, "Subscription")
     .def(py::init<>())
-    .def("cancel", &ndn_service_framework::OperationSubscription::cancel)
-    .def("unsubscribe", &ndn_service_framework::OperationSubscription::unsubscribe)
+    .def("cancel", &ndn_service_framework::OperationSubscription::cancel,
+         py::call_guard<py::gil_scoped_release>())
+    .def("unsubscribe", &ndn_service_framework::OperationSubscription::unsubscribe,
+         py::call_guard<py::gil_scoped_release>())
     .def("__enter__", [] (ndn_service_framework::OperationSubscription& subscription)
          -> ndn_service_framework::OperationSubscription& {
       return subscription;
     }, py::return_value_policy::reference_internal)
     .def("__exit__", [] (ndn_service_framework::OperationSubscription& subscription,
                            py::object, py::object, py::object) {
+      py::gil_scoped_release release;
       subscription.unsubscribe();
       return false;
     });
@@ -605,29 +620,32 @@ bindDistributedInference(py::module_& module)
           "ndnsf_distributed_inference.api._async").attr("next_event")(
             py::reinterpret_borrow<py::object>(selfHandle), timeout);
       }
-      auto function = callback.cast<py::function>();
+      auto function = keepPyFunction(callback.cast<py::function>());
       // A missing local timeout follows the request deadline captured by the
       // native reader; an explicit zero remains a non-blocking poll.
       const auto timeoutMs = timeout.is_none() ? reader.remainingTimeout() :
         timeoutMilliseconds(timeout, 0);
-      return py::cast(const_cast<di::EventReader&>(reader).nextAsync(timeoutMs,
+      return subscribeNative([&] {
+        return const_cast<di::EventReader&>(reader).nextAsync(timeoutMs,
         [function = std::move(function)] (std::exception_ptr error,
                                           std::optional<di::Event> event) {
           py::gil_scoped_acquire acquire;
           try {
-            function(callbackError(error), event ? py::cast(*event) : py::none());
+            (*function)(callbackError(error), event ? py::cast(*event) : py::none());
           }
           catch (...) {
             // Native callback delivery is isolated from the worker thread.
           }
-        }));
+        });
+      });
     }, py::kw_only(), py::arg("timeout_s") = py::none(),
        py::arg("callback") = py::none())
-    .def("close", &di::EventReader::close)
+    .def("close", &di::EventReader::close, py::call_guard<py::gil_scoped_release>())
     .def("__enter__", [] (di::EventReader& reader) -> di::EventReader& {
       return reader;
     }, py::return_value_policy::reference_internal)
     .def("__exit__", [] (di::EventReader& reader, py::object, py::object, py::object) {
+      py::gil_scoped_release release;
       reader.close();
       return false;
     });
@@ -673,12 +691,14 @@ bindDistributedInference(py::module_& module)
     .def("on_completion", [] (const di::RequestHandle& handle, py::function callback) {
       if (!callback)
         throw py::value_error("completion callback is empty");
+      auto function = keepPyFunction(std::move(callback));
+      py::gil_scoped_release release;
       return handle.onCompletion(
-        [callback = std::move(callback)] (std::exception_ptr error,
+        [function = std::move(function)] (std::exception_ptr error,
                                            std::optional<di::Result> result) {
           py::gil_scoped_acquire acquire;
           try {
-            callback(callbackError(error), optionalResultValue(result));
+            (*function)(callbackError(error), optionalResultValue(result));
           }
           catch (...) {
           }
@@ -691,46 +711,52 @@ bindDistributedInference(py::module_& module)
           "ndnsf_distributed_inference.api._async").attr("request_result")(
             py::cast(handle), timeout);
       }
-      auto function = callback.cast<py::function>();
+      auto function = keepPyFunction(callback.cast<py::function>());
       if (timeout.is_none()) {
-        return py::cast(handle.onCompletion(
+        return subscribeNative([&] {
+          return handle.onCompletion(
           [function = std::move(function)] (std::exception_ptr error,
                                              std::optional<di::Result> result) {
             py::gil_scoped_acquire acquire;
             try {
-              function(callbackError(error), optionalResultValue(result));
+              (*function)(callbackError(error), optionalResultValue(result));
             }
             catch (...) {
             }
-          }));
+          });
+        });
       }
       const auto timeoutMs = timeoutMilliseconds(timeout, 0);
-      return py::cast(handle.resultAsync(timeoutMs,
+      return subscribeNative([&] {
+        return handle.resultAsync(timeoutMs,
         [function = std::move(function)] (std::exception_ptr error,
                                            std::optional<di::Result> result) {
           py::gil_scoped_acquire acquire;
           try {
-            function(callbackError(error), optionalResultValue(result));
+            (*function)(callbackError(error), optionalResultValue(result));
           }
           catch (...) {
           }
-        }));
+        });
+      });
     }, py::kw_only(), py::arg("timeout_s") = py::none(),
        py::arg("callback") = py::none())
     .def("observe", [] (const di::RequestHandle& handle, py::function callback) {
       if (!callback)
         throw py::value_error("observer is empty");
+      auto function = keepPyFunction(std::move(callback));
+      py::gil_scoped_release release;
       return handle.observe(
-        [callback = std::move(callback)] (const di::Event& event) {
+        [function = std::move(function)] (const di::Event& event) {
           py::gil_scoped_acquire acquire;
           try {
-            callback(eventValue(event));
+            (*function)(eventValue(event));
           }
           catch (...) {
           }
         });
     }, py::arg("callback"))
-    .def("cancel", &di::RequestHandle::cancel);
+    .def("cancel", &di::RequestHandle::cancel, py::call_guard<py::gil_scoped_release>());
 
   py::class_<di::PreparedModel>(module, "PreparedModel")
     .def_property_readonly("manifest", &di::PreparedModel::manifest,
@@ -766,47 +792,53 @@ bindDistributedInference(py::module_& module)
           "ndnsf_distributed_inference.api._async").attr("preparation_result")(
             py::cast(handle), timeout);
       }
-      auto function = callback.cast<py::function>();
+      auto function = keepPyFunction(callback.cast<py::function>());
       if (timeout.is_none()) {
-        return py::cast(handle.onCompletion(
+        return subscribeNative([&] {
+          return handle.onCompletion(
           [function = std::move(function)] (std::exception_ptr error,
                                              std::optional<di::PreparedModel> model) {
             py::gil_scoped_acquire acquire;
             try {
-              function(callbackError(error), model ? py::cast(*model) : py::none());
+              (*function)(callbackError(error), model ? py::cast(*model) : py::none());
             }
             catch (...) {
             }
-          }));
+          });
+        });
       }
       const auto timeoutMs = timeoutMilliseconds(timeout, 0);
-      return py::cast(handle.resultAsync(timeoutMs,
+      return subscribeNative([&] {
+        return handle.resultAsync(timeoutMs,
         [function = std::move(function)] (std::exception_ptr error,
                                            std::optional<di::PreparedModel> model) {
           py::gil_scoped_acquire acquire;
           try {
-            function(callbackError(error), model ? py::cast(*model) : py::none());
+            (*function)(callbackError(error), model ? py::cast(*model) : py::none());
           }
           catch (...) {
           }
-        }));
+        });
+      });
     }, py::kw_only(), py::arg("timeout_s") = py::none(),
        py::arg("callback") = py::none())
     .def("on_completion", [] (const di::PreparationHandle& handle, py::function callback) {
       if (!callback)
         throw py::value_error("preparation callback is empty");
+      auto function = keepPyFunction(std::move(callback));
+      py::gil_scoped_release release;
       return handle.onCompletion(
-        [callback = std::move(callback)] (std::exception_ptr error,
+        [function = std::move(function)] (std::exception_ptr error,
                                            std::optional<di::PreparedModel> model) {
           py::gil_scoped_acquire acquire;
           try {
-            callback(callbackError(error), model ? py::cast(*model) : py::none());
+            (*function)(callbackError(error), model ? py::cast(*model) : py::none());
           }
           catch (...) {
           }
         });
     }, py::arg("callback"))
-    .def("cancel", &di::PreparationHandle::cancel);
+    .def("cancel", &di::PreparationHandle::cancel, py::call_guard<py::gil_scoped_release>());
 
   py::class_<di::Conversation>(module, "Conversation")
     .def("request", &di::Conversation::request,
@@ -818,11 +850,12 @@ bindDistributedInference(py::module_& module)
       py::gil_scoped_release release;
       conversation.exportCheckpoint(std::filesystem::path(destination));
     }, py::arg("destination"))
-    .def("close", &di::Conversation::close)
+    .def("close", &di::Conversation::close, py::call_guard<py::gil_scoped_release>())
     .def("__enter__", [] (di::Conversation& conversation) -> di::Conversation& {
       return conversation;
     }, py::return_value_policy::reference_internal)
     .def("__exit__", [] (di::Conversation& conversation, py::object, py::object, py::object) {
+      py::gil_scoped_release release;
       conversation.close();
       return false;
     });
@@ -846,7 +879,7 @@ bindDistributedInference(py::module_& module)
     .def_readonly("active_leases", &di::ProviderCounters::activeLeases);
 
   py::class_<di::ProviderRegistration>(module, "ProviderRegistration")
-    .def("close", &di::ProviderRegistration::close)
+    .def("close", &di::ProviderRegistration::close, py::call_guard<py::gil_scoped_release>())
     .def("closed", &di::ProviderRegistration::closed)
     .def("valid", &di::ProviderRegistration::valid)
     .def_property_readonly("service_name", &di::ProviderRegistration::serviceName)
@@ -854,6 +887,7 @@ bindDistributedInference(py::module_& module)
       return registration;
     }, py::return_value_policy::reference_internal)
     .def("__exit__", [] (di::ProviderRegistration& registration, py::object, py::object, py::object) {
+      py::gil_scoped_release release;
       registration.close();
       return false;
     });
@@ -864,7 +898,7 @@ bindDistributedInference(py::module_& module)
       py::gil_scoped_release release;
       return provider.serve(definition);
     }, py::arg("definition"))
-    .def("stop", &di::Provider::stop)
+    .def("stop", &di::Provider::stop, py::call_guard<py::gil_scoped_release>())
     .def("drain", [] (const di::Provider& provider, const py::object& timeout) {
       const auto timeoutMs = timeoutMilliseconds(timeout, 5000);
       py::gil_scoped_release release;
@@ -877,16 +911,19 @@ bindDistributedInference(py::module_& module)
           "ndnsf_distributed_inference.api._async").attr("drain_result")(
             py::cast(provider), timeout);
       }
-      auto function = callback.cast<py::function>();
-      return py::cast(provider.drainAsync(timeoutMilliseconds(timeout, 5000),
+      auto function = keepPyFunction(callback.cast<py::function>());
+      const auto timeoutMs = timeoutMilliseconds(timeout, 5000);
+      return subscribeNative([&] {
+        return provider.drainAsync(timeoutMs,
         [function = std::move(function)] (std::exception_ptr error, bool drained) {
           py::gil_scoped_acquire acquire;
           try {
-            function(callbackError(error), drained);
+            (*function)(callbackError(error), drained);
           }
           catch (...) {
           }
-        }));
+        });
+      });
     }, py::kw_only(), py::arg("timeout_s") = py::none(),
        py::arg("callback") = py::none())
     .def("valid", &di::Provider::valid)
@@ -967,7 +1004,7 @@ bindDistributedInference(py::module_& module)
     .def("provider", [] (di::Runtime& runtime) {
       return runtime.provider();
     })
-    .def("close", &di::Runtime::close)
+    .def("close", &di::Runtime::close, py::call_guard<py::gil_scoped_release>())
     .def("drain", [] (const di::Runtime& runtime, const py::object& timeout) {
       const auto timeoutMs = timeoutMilliseconds(timeout, 5000);
       py::gil_scoped_release release;
@@ -981,16 +1018,19 @@ bindDistributedInference(py::module_& module)
           "ndnsf_distributed_inference.api._async").attr("drain_result")(
             runtime, timeout);
       }
-      auto function = callback.cast<py::function>();
-      return py::cast(runtime->drainAsync(timeoutMilliseconds(timeout, 5000),
+      auto function = keepPyFunction(callback.cast<py::function>());
+      const auto timeoutMs = timeoutMilliseconds(timeout, 5000);
+      return subscribeNative([&] {
+        return runtime->drainAsync(timeoutMs,
         [function = std::move(function)] (std::exception_ptr error, bool drained) {
           py::gil_scoped_acquire acquire;
           try {
-            function(callbackError(error), drained);
+            (*function)(callbackError(error), drained);
           }
           catch (...) {
           }
-        }));
+        });
+      });
     }, py::kw_only(), py::arg("timeout_s") = py::none(),
        py::arg("callback") = py::none())
     .def("__enter__", [] (di::Runtime& runtime) -> di::Runtime& {
@@ -998,10 +1038,10 @@ bindDistributedInference(py::module_& module)
     }, py::return_value_policy::reference_internal)
     .def("__exit__", [] (di::Runtime& runtime, py::object excType,
                            py::object, py::object) {
-      runtime.close();
       bool drained = false;
       {
         py::gil_scoped_release release;
+        runtime.close();
         drained = runtime.drain(std::chrono::milliseconds(5000));
       }
       if (!drained && !excType.is_none()) {

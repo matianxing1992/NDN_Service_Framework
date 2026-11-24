@@ -200,10 +200,10 @@ def _export_onnx(model_path: Path, graph_path: Path, *, input_size: int,
     )
     loaded = onnx.load(str(temporary))
     onnx.checker.check_model(loaded)
-    # The fixed-input export needs intermediate tensor sizes for placement.
-    # Standard ONNX inference leaves YOLO Reshape dimensions symbolic.
-    from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
-    inferred = SymbolicShapeInference.infer_shapes(loaded, auto_merge=True)
+    # Propagate declared shape data without guessing unresolved dimensions.
+    # Standard ONNX handles Split sizes supplied as the opset-13+ second input.
+    inferred = onnx.shape_inference.infer_shapes(
+        loaded, strict_mode=True, data_prop=True)
     if (inferred is None or
             [node.SerializeToString() for node in loaded.graph.node] !=
             [node.SerializeToString() for node in inferred.graph.node] or

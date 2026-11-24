@@ -337,6 +337,18 @@ requireHostStreamProcessOracle(const std::filesystem::path& runRoot, bool cancel
   BOOST_REQUIRE(receipt.at("first_failure").is_null());
   BOOST_REQUIRE(receipt.at("cleanup_errors").empty());
   BOOST_REQUIRE(receipt.at("drained").get<bool>());
+  BOOST_CHECK_EQUAL(receipt.at("completion_callbacks_alive").get<unsigned>(), 0U);
+  const auto& probes = receipt.at("completion_probes");
+  BOOST_REQUIRE_EQUAL(probes.size(), 16U);
+  for (const auto& probe : probes) {
+    BOOST_CHECK_EQUAL(probe.at("has_result").get<bool>(), !cancelled);
+    if (cancelled) {
+      BOOST_CHECK_EQUAL(probe.at("error").at("code").get<std::string>(), "CANCELLED");
+    }
+    else {
+      BOOST_CHECK(probe.at("error").is_null());
+    }
+  }
   BOOST_CHECK_EQUAL(receipt.at("status").get<std::string>(),
                     cancelled ? "CANCELLED" : "SUCCEEDED");
   const std::vector<std::int64_t> expected{4, 5, 6, 7, 8, 9, 10, 2};
