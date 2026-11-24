@@ -200,6 +200,9 @@ def native_host(reference, monkeypatch):
                             missing_completion_index=None, published=0, response_payload=None)
     payload = functions["encode_native_tensor_bundle"]({"predictions": expected})
     callbacks = []
+    selected_strategies = []
+    submitted_options = []
+    strategies = {"native-observation-aware-v4": object()}
 
     class ControlledEvent(Event):
         def wait(self, timeout):
@@ -257,6 +260,7 @@ def native_host(reference, monkeypatch):
         return object()
 
     def submit(prepared, value, *, options):
+        submitted_options.append(options)
         assert prepared is model
         assert value.application_options == b"{}"
         assert options.timeout_s == args.timeout_ms / 1000
@@ -269,10 +273,40 @@ def native_host(reference, monkeypatch):
         configured.append(args.native_requester_config)
         return model
     user = SimpleNamespace(prepare=prepare, publish_input=publish_input, request=submit)
-    runtime = SimpleNamespace(user=lambda: user)
+    def placement_strategy(identity):
+        selected_strategies.append(identity)
+        return strategies[identity]
+    runtime = SimpleNamespace(user=lambda: user, placement_strategy=placement_strategy)
     return SimpleNamespace(run=lambda: functions["_load_yolo_native_payload"](runtime, args),
                            args=args, state=state, handles=handles, rows=rows,
-                           clock=clock, configured=configured, model=model, expected=expected)
+                           clock=clock, configured=configured, model=model, expected=expected,
+                           configuration=configuration, strategies=strategies,
+                           selected_strategies=selected_strategies,
+                           submitted_options=submitted_options)
+
+
+def test_native_host_forwards_operator_strategy_to_every_request(native_host):
+    host = native_host
+    configuration = json.loads(host.configuration.read_text())
+    configuration["request"]["placement_strategy"] = "native-observation-aware-v4"
+    host.configuration.write_text(json.dumps(configuration))
+    host.args.sequential_requests = 4
+    assert host.run() == 0
+    assert host.selected_strategies == ["native-observation-aware-v4"]
+    assert len(host.submitted_options) == 4
+    assert all(options.placement is host.strategies["native-observation-aware-v4"]
+               for options in host.submitted_options)
+
+
+def test_native_host_rejects_unknown_operator_strategy_before_publication(native_host):
+    host = native_host
+    configuration = json.loads(host.configuration.read_text())
+    configuration["request"]["placement_strategy"] = "unknown-strategy"
+    host.configuration.write_text(json.dumps(configuration))
+    with pytest.raises(KeyError, match="unknown-strategy"):
+        host.run()
+    assert host.state.published == 0
+    assert host.handles == []
 
 
 def test_native_host_submits_the_whole_async_batch_before_waiting(native_host):

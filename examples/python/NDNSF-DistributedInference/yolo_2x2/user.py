@@ -87,6 +87,8 @@ def _load_yolo_native_payload(runtime, args) -> int:
     options.output_mode = "FULL"
     operator_request = json.loads(
         Path(args.native_requester_config).read_text(encoding="utf-8"))["request"]
+    if operator_request.get("placement_strategy"):
+        options.placement = runtime.placement_strategy(operator_request["placement_strategy"])
     options.provider_names = operator_request.get("provider_names", [])
     gate_dir = Path(args.native_restart_gate) if args.native_restart_gate else None
     if gate_dir is not None and (
