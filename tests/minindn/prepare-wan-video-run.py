@@ -27,11 +27,13 @@ def requester_task(catalog):
     return tasks[0]
 
 
-def installed_ledger(prefix, file_digest, capture_fixture_trace):
+def installed_ledger(prefix, file_digest, capture_fixture_trace, local_model_cache):
     files = {}
     paths = [prefix / 'bin' / program for program in (
         'App_ServiceController', 'DI_NativeArtifactAuthority', 'DI_NativeRequester',
-        'di-native-provider', 'DistributedRepoServer', 'ndnsf-identity-check')]
+        'di-native-provider', 'ndnsf-identity-check')]
+    if not local_model_cache:
+        paths.append(prefix / 'bin/DistributedRepoServer')
     if capture_fixture_trace:
         paths.append(prefix / 'bin/di-wan-video-oracle')
     paths += [prefix / 'libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker']
@@ -54,7 +56,8 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
     deployment = runpy.run_path(str(CHECKOUT / 'Experiments/prepare-native-deployment.py'))
     credentials = runpy.run_path(str(CHECKOUT / 'tests/fixtures/spec242/prepare-deployment.py'))
     digest, write_json = deployment['digest'], deployment['write_json']
-    ledger = installed_ledger(prefix, deployment['file_digest'], capture_fixture_trace)
+    ledger = installed_ledger(prefix, deployment['file_digest'], capture_fixture_trace,
+                              local_model_cache)
     root.mkdir(mode=0o700)
     network = dict(group=namespace + '/group', service=namespace + '/infer',
                    artifact_service=namespace + '/grants', repo_service=namespace + '/repo-objects')
