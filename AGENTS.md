@@ -640,6 +640,12 @@ approval again or hide an exception in a special-case branch.
   `--profile`/stage arguments retain compatibility experiments; their results
   are not evidence for this shared deployment path.
 
+- Use a one-way MiniNDN wired-link delay of `0.05ms` for new baseline runs.
+  This models approximately 0.1 ms propagation RTT for two directly connected
+  DGX Spark hosts. Record the configured delay, bandwidth and topology digest
+  for each run. Reuse the same links across matched comparisons. Explicit
+  historical, impairment and sensitivity profiles keep their declared delays.
+
 - Keep diagnostic logging disabled in normal execution; enable it explicitly
   for debugging or a qualification check that requires diagnostic evidence.
   Do not enable verbose or per-token logs implicitly for performance runs.
