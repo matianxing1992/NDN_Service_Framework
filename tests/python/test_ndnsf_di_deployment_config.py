@@ -2214,6 +2214,58 @@ def test_controller_readiness_precedes_dependent_launches(
     assert controller_polls == 2
 
 
+@pytest.mark.parametrize('stop_after_timeout', [False, True])
+def test_forwarder_status_timeout_obeys_readiness_guard(ops, tmp_path, monkeypatch,
+                                                       stop_after_timeout):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    node = {'id': 'forwarder', 'nfd': {'mode': 'external', 'socket': '/isolated/nfd.sock'}}
+    state = {'boot_id': 'test', 'configuration_sha256': 'test'}
+    probes = []
+    configured = []
+    guards = []
+
+    def run(argv, **kwargs):
+        assert argv[1:] == ['status', 'show']
+        assert 0 < kwargs['timeout'] <= 5
+        probes.append(argv)
+        if len(probes) == 1:
+            raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+        return subprocess.CompletedProcess(argv, 0, stdout=b'ready\n')
+
+    def guard():
+        guards.append(True)
+        if stop_after_timeout and probes:
+            raise cluster.ClusterError('owned forwarder exited or deadline exhausted')
+
+    monkeypatch.setattr(cluster.subprocess, 'run', run)
+    monkeypatch.setattr(cluster.shutil, 'which', lambda _: '/usr/bin/nfdc')
+    monkeypatch.setattr(cluster.time, 'sleep', lambda _: None)
+    monkeypatch.setattr(cluster, '_configure_group_strategy', lambda *args, **kwargs:
+                        configured.append(kwargs['node']))
+    root = tmp_path / 'work'
+    cluster._private_directory(root)
+    directory = tmp_path / 'output'
+    directory.mkdir(mode=0o700)
+
+    def start():
+        cluster._start_forwarder({}, node, state, root, directory, [],
+                                 time.monotonic() + 10, guard,
+                                 lambda *_: pytest.fail('spawned an external forwarder'))
+
+    if stop_after_timeout:
+        with pytest.raises(cluster.ClusterError, match='owned forwarder exited'):
+            start()
+        assert len(probes) == 1
+        assert not (directory / 'nfd-status.txt').exists()
+        assert configured == []
+    else:
+        start()
+        assert len(probes) == 2
+        assert (directory / 'nfd-status.txt').read_bytes() == b'ready\n'
+        assert configured == [node]
+    assert len(guards) == 2
+
+
 @pytest.mark.parametrize('mode', ('managed', 'external'))
 @pytest.mark.parametrize('case', ('valid', 'command-failure', 'best-route', 'specific-override',
                                   'malformed'))

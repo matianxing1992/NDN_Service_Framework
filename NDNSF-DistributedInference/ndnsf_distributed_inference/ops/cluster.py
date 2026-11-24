@@ -864,10 +864,15 @@ def _start_forwarder(config, node, state, root, directory, children, deadline, g
     nfdc = shutil.which('nfdc')
     while True:
         guard()
-        result = subprocess.run([nfdc, 'status', 'show'], env=nfdc_env,
-                                stdin=subprocess.DEVNULL, capture_output=True,
-                                timeout=min(5, max(0.01, deadline - time.monotonic())))
-        if result.returncode == 0:
+        try:
+            result = subprocess.run([nfdc, 'status', 'show'], env=nfdc_env,
+                                    stdin=subprocess.DEVNULL, capture_output=True,
+                                    timeout=min(5, max(0.01, deadline - time.monotonic())))
+        except subprocess.TimeoutExpired:
+            # A timed-out status query is another failed readiness sample.
+            # The next guard checks the child and the overall deadline.
+            result = None
+        if result is not None and result.returncode == 0:
             (directory / 'nfd-status.txt').write_bytes(result.stdout)
             if row is not None:
                 info = Path(nfd['socket']).lstat()
