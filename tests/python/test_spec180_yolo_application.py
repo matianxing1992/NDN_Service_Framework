@@ -7,41 +7,11 @@ import json
 from pathlib import Path
 import re
 
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
 from ndnsf_distributed_inference.app_sdk.application import ApplicationDefinitionSigner
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PROVIDER = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py"
 CONTROLLER = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py"
-
-
-def test_yolo_provider_uses_request_input_and_terminal_owner_apis():
-    """The maintained handler must cross the V3 ownership boundary."""
-    source = PROVIDER.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    handler = next(
-        node for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "handle_role")
-    calls = {
-        node.attr for node in ast.walk(handler)
-        if isinstance(node, ast.Attribute)
-    }
-    assert "_fetch_application_input" in {
-        node.func.id for node in ast.walk(handler)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-    }
-    assert "ctx.fetch_application_input(" in source
-    assert "ctx.publish_terminal_result(" in source
-    assert "fetch_encrypted_large_data" not in {
-        node.attr for node in ast.walk(handler)
-        if isinstance(node, ast.Attribute)
-    }
-    assert "_fetch_application_input" in source
 
 
 def test_native_provider_binds_application_input_only_to_selected_ingress():
@@ -60,49 +30,6 @@ def test_native_protected_binding_excludes_application_input_producer():
     assert 'endpoint.sourceKind == "APPLICATION_INPUT"' in source
     assert 'endpoint.operation == "APPLICATION_INPUT"' in source
     assert "empty producer binding" in source
-
-
-def test_yolo_provider_binds_candidate_offer_signing_and_local_onnx_inputs():
-    source = PROVIDER.read_text(encoding="utf-8")
-    assert "DIProviderOfferIssuerV3" in source
-    assert "--selection-offer-key-file" in source
-    assert "--local-model-path" in source
-    assert "selection_offer_issuer_v3=offer_issuer_v3" in source
-    assert "backends=[args.backend]" in source
-    assert 'choices=("onnxruntime-cpu", "onnxruntime-cuda")' in source
-    assert "dynamic_provisioning = False" in source
-    assert "devices=()," in source
-    assert 'devices=("cpu:0",)' not in source
-
-
-def test_yolo_provider_offer_key_loads_with_supported_cryptography_backend(tmp_path: Path):
-    source = PROVIDER.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    function = next(node for node in tree.body
-                    if isinstance(node, ast.FunctionDef)
-                    and node.name == "_load_v3_offer_signer")
-    namespace = {
-        "Path": Path,
-        "serialization": serialization,
-        "default_backend": default_backend,
-        "Ed25519PrivateKey": Ed25519PrivateKey,
-        "base64": base64,
-        "hashlib": hashlib,
-        "RuntimeError": RuntimeError,
-    }
-    exec(compile(ast.Module([function], type_ignores=[]), str(PROVIDER), "exec"),
-         namespace)
-    private = Ed25519PrivateKey.generate()
-    key_path = tmp_path / "offer.pem"
-    key_path.write_bytes(private.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ))
-    key_id, sign = namespace["_load_v3_offer_signer"](str(key_path))
-    assert key_id.startswith("sha256:")
-    private.public_key().verify(base64.b64decode(sign("sha256:test")),
-                                b"sha256:test")
 
 
 def test_application_definition_signing_key_can_be_reloaded(tmp_path: Path):

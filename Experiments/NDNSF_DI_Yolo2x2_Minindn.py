@@ -6564,54 +6564,40 @@ def main() -> None:
                                     provider_env: dict[str, str]
                                     ) -> list[tuple[object, object, Path]]:
             provider_procs: list[tuple[object, object, Path]] = []
-            serving_manifest_path = (
-                make_native_provider_serving_manifest(service_name)
-                if args_cli.native_providers else None)
+            serving_manifest_path = make_native_provider_serving_manifest(service_name)
             for node_name, name, argv in providers:
-                if args_cli.native_providers:
-                    assert serving_manifest_path is not None
-                    native_provider_env = with_runtime_evidence_filter(provider_env)
-                    provider_name = provider_identity(
-                        argv[argv.index("--provider-id") + 1])
-                    provider_material = (
-                        native_assets["provider_material"].get(provider_name)
-                        if native_assets is not None else None)
-                    if provider_material is not None:
-                        native_provider_env.update({
-                            "SPEC181_GRANT_AUTHORITY_PUBLIC_KEY":
-                                provider_material["authority_public_key"],
-                            "SPEC181_PROVIDER_RECIPIENT_KEY_MAP":
-                                provider_material["recipient_key_map"],
-                        })
-                    cmd = native_provider_cmd(
-                        argv,
-                        service_name=service_name,
-                        workers=provider_handler_workers,
-                        handler_threads=int(env["NDNSF_HANDLER_THREADS"]),
-                        ack_threads=int(env["NDNSF_ACK_THREADS"]),
-                        provider_binary=Path(
-                            native_candidate["components"]["provider"]["installed"]["path"]),
-                        manifest_path=serving_manifest_path,
-                        artifact_cache_root=ARTIFACT_CACHE_ROOT,
-                        offer_private_key=(Path(provider_material["offer_private_key"])
-                                           if provider_material is not None else None),
-                        trust_schema=(Path(native_assets["requester_config"]).parent / "trust-schema.conf"
-                                      if native_assets is not None else None))
-                    ready = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
-                    ready_timeout = 120
-                else:
-                    cmd = python_cmd("provider.py", common + argv + [
-                        "--dynamic-provisioning",
-                        "--temp-dir",
-                        f"/tmp/{name}",
-                        "--handler-workers",
-                        str(provider_handler_workers),
-                    ])
-                    ready = "Installed provider permission"
-                    ready_timeout = 30
+                native_provider_env = with_runtime_evidence_filter(provider_env)
+                provider_name = provider_identity(
+                    argv[argv.index("--provider-id") + 1])
+                provider_material = (
+                    native_assets["provider_material"].get(provider_name)
+                    if native_assets is not None else None)
+                if provider_material is not None:
+                    native_provider_env.update({
+                        "SPEC181_GRANT_AUTHORITY_PUBLIC_KEY":
+                            provider_material["authority_public_key"],
+                        "SPEC181_PROVIDER_RECIPIENT_KEY_MAP":
+                            provider_material["recipient_key_map"],
+                    })
+                cmd = native_provider_cmd(
+                    argv,
+                    service_name=service_name,
+                    workers=provider_handler_workers,
+                    handler_threads=int(env["NDNSF_HANDLER_THREADS"]),
+                    ack_threads=int(env["NDNSF_ACK_THREADS"]),
+                    provider_binary=Path(
+                        native_candidate["components"]["provider"]["installed"]["path"]),
+                    manifest_path=serving_manifest_path,
+                    artifact_cache_root=ARTIFACT_CACHE_ROOT,
+                    offer_private_key=(Path(provider_material["offer_private_key"])
+                                       if provider_material is not None else None),
+                    trust_schema=(Path(native_assets["requester_config"]).parent / "trust-schema.conf"
+                                  if native_assets is not None else None))
+                ready = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
+                ready_timeout = 120
                 log_name = f"{name}{phase_suffix}"
                 process, lp = start(ndn.net[node_name], log_name, cmd,
-                              native_provider_env if args_cli.native_providers else provider_env,
+                              native_provider_env,
                               procs,
                               signing_identity=provider_identity(
                                   argv[argv.index("--provider-id") + 1]))
