@@ -271,7 +271,7 @@ try {
   result.preparedMetadataBytes = metadataReference.plaintextSize;
   result.preparedMetadataDigest = metadataReference.contentDigest;
   result.preparedMetadataJson = readProtected(request, metadataReference,
-    NativeCanonicalMaterialPublicationMaxBytes);
+    NATIVE_PREPARED_METADATA_MAX_BYTES);
   const auto metadata = nativeParseJson(result.preparedMetadataJson);
   if (nativeCanonicalJson(metadata) != result.preparedMetadataJson ||
       !metadata.at("protectedObjects").is_array() ||
@@ -279,7 +279,7 @@ try {
     reject("METADATA_INVALID");
   const NativeAssemblyControl metadataControl{
     request.deadline, [&request] { requireActive(request); }, 0,
-    NativeCanonicalMaterialPublicationMaxBytes};
+    NATIVE_PREPARED_METADATA_MAX_BYTES};
   validateNativePreparedMetadataVersion(metadata, metadataControl);
   using Reference = ndn_service_framework::LargeDataPublishResult;
   std::map<std::string, Reference> objects;

@@ -49,8 +49,8 @@ struct NativeModelRunnerSpec
   // assembly/preparation; stripped from artifact-cache templates and rebound to each plan.
   // Immutable values only, without a request or authorization owner.
   std::shared_ptr<const NativeSubgraphEntryContract> entryContract;
-  // Rebound from the authenticated CALLs when the source program is opened.
-  std::vector<std::string> sourceProgramDependencyEntries{};
+  // Rebound from the authenticated CALLs when the multi-entry runner is prepared.
+  std::vector<std::string> dependencyInputWarmupEntries{};
   bool deferDependencyInputWarmup = false;
 };
 

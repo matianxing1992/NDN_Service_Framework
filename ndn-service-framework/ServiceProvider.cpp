@@ -6,8 +6,10 @@
 #include "detail/collaboration-envelope.hpp"
 #include "detail/collaboration-input-budget.hpp"
 #include "detail/exact-data-window.hpp"
+#include "detail/exact-packet-index.hpp"
 #include "detail/finite-packet-layout.hpp"
 #include "detail/nac-consumer-transport.hpp"
+#include "detail/OriginalPacketFile.hpp"
 #include "NetworkProbeRate.hpp"
 #include "PeerProbeNaming.hpp"
 #include "exact-data-congestion-window.hpp"
@@ -63,7 +65,27 @@
 
 namespace ndn_service_framework
 {
+    struct RetainedPackets
+    {
+        std::shared_ptr<detail::OriginalPacketFile> file;
+        std::chrono::steady_clock::time_point deadline;
+        std::uint64_t diskLimit = 0;
+        detail::ExactPacketIndex exactIndex;
+        ndn::Name responsePrefix;
+        std::uint64_t responseSegmentCount = 0;
+        std::shared_ptr<const detail::OriginalPacketFile> responseFile;
+        std::atomic<bool> retired{false};
+
+        bool isCurrent() const noexcept
+        {
+            return !retired.load() && std::chrono::steady_clock::now() < deadline;
+        }
+    };
   namespace {
+  constexpr std::uint64_t MAX_RETAINED_PACKET_DISK_BYTES = 128ULL << 30;
+  constexpr std::size_t MAX_RETAINED_PACKET_REQUESTS = 32;
+  constexpr std::uint64_t MAX_IN_MEMORY_RESPONSE_SEGMENTS = 256;
+
   std::string sha256DigestString(ndn::span<const std::uint8_t> payload);
   }
 
@@ -4777,6 +4799,7 @@ namespace ndn_service_framework
         }
         m_fetchStopping->store(true);
         m_fetchPool.shutdown();
+        m_retainedPacketReadPool.shutdown();
         if (m_svsps != nullptr) {
             const auto stats = m_svsps->getSVSync().getCore().getSyncProcessingStats();
             NDN_LOG_INFO("NDNSF_SVS_SYNC_STATS role=provider"
@@ -6585,6 +6608,21 @@ namespace ndn_service_framework
     }
 
     std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchEncryptedLargeDataCurrent(
+        const ndn::Name& dataName, const ndn::Name& expectedProducer,
+        std::chrono::steady_clock::time_point deadline)
+    {
+        // Explicit-owner immutable-object lookup accepts typed-version names.
+        // A protected blob instead has a canonical Producer in its manifest
+        // name, which the strict blob reader also verifies against its signer.
+        if (expectedProducer.empty() ||
+            ProtectedBlobManifest::inferProducer(dataName) !=
+                std::optional<ndn::Name>(expectedProducer))
+            return std::nullopt;
+        return fetchProtectedDataCurrent(dataName, {}, deadline);
+    }
+
+    std::optional<ndn::Buffer>
     ServiceProvider::CollaborationContext::fetchImmutableProtectedDataCurrent(
         const ndn::Name& exactName, const ndn::Name& expectedProducer,
         std::chrono::steady_clock::time_point deadline)
@@ -6775,21 +6813,48 @@ namespace ndn_service_framework
     {
         if (!m_workAuthorityCommitMutex) return false;
         bool revoked = false;
+        std::shared_ptr<RetainedPackets> retained;
         {
             std::lock_guard<std::mutex> lock(*m_workAuthorityCommitMutex);
             revoked = m_workAuthorityRevoked &&
                 !m_workAuthorityRevoked->exchange(true, std::memory_order_acq_rel);
+            retained = m_retainedExactPacketSet.lock();
         }
         // Keep stream admission in Core and preserve lock order: never acquire
         // the publisher/pending-request locks under the exact-publication lock.
         // A failure here never restores exact-object work authority. Callers
         // requiring a stream fence must also inspect streamCancelled().
         try {
+            if (retained) m_provider.retirePacketRetention(retained);
             if (const auto publisher = streamPublisher())
                 publisher->fail("current work authority revoked");
         }
         catch (...) {}
         return revoked;
+    }
+
+    bool
+    ServiceProvider::CollaborationContext::tryReleaseExactPacketRetention()
+    {
+        const auto current = currentWorkPredicate(m_assignment.workDeadline);
+        // Match exact publication's lock order and wait for any pending replies
+        // committed by a prior publication before closing this Context's output.
+        std::lock_guard<std::mutex> publicationLock(m_provider._cache_mutex);
+        std::lock_guard<std::mutex> authorityLock(*m_workAuthorityCommitMutex);
+        if (!current())
+            throw std::runtime_error("INPUT_AUTHORITY_EXPIRED");
+        m_exactPublicationClosed->store(true, std::memory_order_release);
+        const auto retained = m_retainedExactPacketSet.lock();
+        return !retained || m_provider.retirePacketRetention(retained);
+    }
+
+    std::function<bool()>
+    ServiceProvider::CollaborationContext::currentExactPublicationPredicate() const
+    {
+        return [current = currentWorkPredicate(m_assignment.workDeadline),
+                closed = m_exactPublicationClosed] {
+            return !closed->load(std::memory_order_acquire) && current();
+        };
     }
 
     bool
@@ -7357,7 +7422,7 @@ namespace ndn_service_framework
         return m_provider.publishCollaborationOwnedExactData(
             m_requestId, keyScope, objects, freshnessMs, metrics, nullptr,
             std::numeric_limits<std::size_t>::max(),
-            currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
+            currentExactPublicationPredicate(), m_workAuthorityCommitMutex);
     }
 
     namespace {
@@ -7387,10 +7452,18 @@ namespace ndn_service_framework
         const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
         int freshnessMs, CollaborationTransferMetrics* metrics,
         std::vector<std::shared_ptr<const ndn::Data>>& originals,
-        std::size_t maxWireBytes)
+        std::size_t maxWireBytes, std::uint64_t maxRetainedDiskBytes)
     {
+        const auto current = currentExactPublicationPredicate();
+        std::function<void(const std::vector<std::shared_ptr<const ndn::Data>>&)> retain;
+        if (maxRetainedDiskBytes != 0) {
+            retain = [&](const auto& packets) {
+                m_provider.retainExactPackets(m_retainedExactPacketSet, m_assignment.workDeadline,
+                    maxRetainedDiskBytes, packets, current);
+            };
+        }
         if (m_assignment.dependencyTransport.redundancy == DependencyRedundancy::Xor) {
-            if (!hasCurrentWorkAuthority() || !currentWorkPredicate(m_assignment.workDeadline)())
+            if (!current())
                 throw std::runtime_error("INPUT_AUTHORITY_EXPIRED");
             if (objects.empty()) return false;
             detail::FinitePacketLayout layout;
@@ -7411,22 +7484,30 @@ namespace ndn_service_framework
                 m_provider.identity, [&](ndn::Data& packet) {
                     keyChain.sign(packet, m_provider.m_signingInfo);
                 }, maxWireBytes, ndn::MAX_NDN_PACKET_SIZE);
-            if (!hasCurrentWorkAuthority() || !currentWorkPredicate(m_assignment.workDeadline)())
+            if (!current())
                 throw std::runtime_error("INPUT_AUTHORITY_EXPIRED");
             // The maintained owner checks every immutable-name conflict before
             // inserting anything. Retain originals for exact replay.
-            originals = std::move(prepared);
-            const auto current = currentWorkPredicate(m_assignment.workDeadline);
             const bool published = m_provider.replayCollaborationOwnedExactData(
-                originals, metrics, current, m_workAuthorityCommitMutex);
-            if (published && metrics) {
-                recordFinitePublication(originals, objects.size(), *metrics);
+                prepared, metrics, current, m_workAuthorityCommitMutex, retain);
+            if (published) {
+                originals = std::move(prepared);
+                if (metrics) recordFinitePublication(originals, objects.size(), *metrics);
             }
             return published;
         }
         return m_provider.publishCollaborationOwnedExactData(
             m_requestId, keyScope, objects, freshnessMs, metrics, &originals, maxWireBytes,
-            currentWorkPredicate(m_assignment.workDeadline), m_workAuthorityCommitMutex);
+            current, m_workAuthorityCommitMutex, retain);
+    }
+
+    bool
+    ServiceProvider::CollaborationContext::hasRetainedExactData(const ndn::Name& name)
+    {
+        std::lock_guard<std::mutex> lock(*m_workAuthorityCommitMutex);
+        if (!currentExactPublicationPredicate()()) return false;
+        const auto owner = m_retainedExactPacketSet.lock();
+        return owner && m_provider.findRetainedExactPacket(name).first == owner;
     }
 
     std::shared_ptr<const ServiceProvider::CollaborationContext::ExactManifestPublication>
@@ -7441,7 +7522,7 @@ namespace ndn_service_framework
             !hasCurrentWorkAuthority()) {
             return {};
         }
-        const auto current = currentWorkPredicate(m_assignment.workDeadline);
+        const auto current = currentExactPublicationPredicate();
         if (!current()) {
             return {};
         }
@@ -7520,7 +7601,7 @@ namespace ndn_service_framework
             !hasCurrentWorkAuthority()) {
             return false;
         }
-        const auto current = currentWorkPredicate(m_assignment.workDeadline);
+        const auto current = currentExactPublicationPredicate();
         if (m_provider.m_fetchStopping->load() || !current()) {
             return false;
         }
@@ -7617,7 +7698,7 @@ namespace ndn_service_framework
             }
         }
         const bool published = m_provider.replayCollaborationOwnedExactData(
-            originals, metrics, currentWorkPredicate(m_assignment.workDeadline),
+            originals, metrics, currentExactPublicationPredicate(),
             m_workAuthorityCommitMutex);
         if (published && layout && metrics)
             recordFinitePublication(originals, layout->sourceCount, *metrics);
@@ -10646,7 +10727,7 @@ namespace ndn_service_framework
         LargeDataReferenceResponseResult result;
         const auto threshold = thresholdBytes == 0 ?
             responseLargeDataThresholdBytes() : thresholdBytes;
-        const auto payload = response.getPayload();
+        const auto payload = response.getPayloadBlock().value_bytes();
         if (!response.getStatus() ||
             threshold == 0 ||
             payload.size() <= threshold ||
@@ -10657,7 +10738,7 @@ namespace ndn_service_framework
         }
 
         if (requesterName.empty() || providerName.empty() || serviceName.empty() ||
-            requestId.empty() || !keys.isValid(nowMilliseconds()) ||
+            requestId.empty() || providerName != identity || !keys.isValid(nowMilliseconds()) ||
             !binding.isValid()) {
             result.errorMessage =
                 "request-scoped large response requires valid names, binding, and keys";
@@ -10692,15 +10773,21 @@ namespace ndn_service_framework
 
         const auto chunkBytes = requestScopedResponseChunkBytes(threshold);
         const auto finalSegment = (payload.size() - 1) / chunkBytes;
+        const auto segmentCount = finalSegment + 1;
+        if (payload.size() > MAX_REQUEST_RESPONSE_BYTES ||
+            segmentCount > MAX_REQUEST_RESPONSE_SEGMENTS) {
+            result.errorMessage = "request-scoped response packet file capacity";
+            return result;
+        }
         result.largeData.digest = sha256DigestString(payload);
-        size_t segmentCount = 0;
         std::string publicationStage = "initialization";
         try {
-            for (size_t offset = 0; offset < payload.size(); offset += chunkBytes) {
+            const auto makeSegment = [&](std::uint64_t segment) {
+                const auto offset = static_cast<size_t>(segment) * chunkBytes;
                 const auto length = std::min(chunkBytes, payload.size() - offset);
                 auto segmentBinding = binding;
                 segmentBinding.segmentOrEventId =
-                    "response/" + std::to_string(segmentCount);
+                    "response/" + std::to_string(segment);
                 publicationStage = "encrypt";
                 const auto envelope = encryptRequestContent(
                     keys.responseKey,
@@ -10708,12 +10795,8 @@ namespace ndn_service_framework
                     segmentBinding,
                     ndn::span<const uint8_t>(payload.data() + offset, length));
                 const auto envelopeWire = envelope.wireEncode();
-                // InMemoryStorageFifo retains the Data through
-                // enable_shared_from_this; a stack Data would throw
-                // std::bad_weak_ptr on insert.  Keep the signed segment in a
-                // shared owner for both IMS retention and subsequent fetches.
                 auto data = std::make_shared<ndn::Data>(
-                    ndn::Name(encryptedDataName).appendSegment(segmentCount));
+                    ndn::Name(encryptedDataName).appendSegment(segment));
                 data->setContent(envelopeWire);
                 data->setFreshnessPeriod(freshness);
                 data->setFinalBlock(
@@ -10722,9 +10805,30 @@ namespace ndn_service_framework
                 auto& activeKeyChain = m_testSigningKeyChain ?
                     *m_testSigningKeyChain : m_keyChain;
                 activeKeyChain.sign(*data, m_signingInfo);
-                publicationStage = "insert-ims";
-                insertDataIntoIMS(*data, freshness);
-                ++segmentCount;
+                return data;
+            };
+            if (segmentCount > MAX_IN_MEMORY_RESPONSE_SEGMENTS) {
+                const auto now = nowMilliseconds();
+                if (!keys.isValid(now))
+                    throw std::runtime_error("request-scoped response key expired");
+                const auto lifetime = std::min<std::uint64_t>(
+                    keys.expiresAtMs - now, std::numeric_limits<int>::max());
+                const auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(lifetime);
+                retainSegmentedResponse(encryptedDataName, segmentCount, deadline,
+                    [&](std::uint64_t segment) {
+                        const auto packet = makeSegment(segment);
+                        const auto& wire = packet->wireEncode();
+                        publicationStage = "retain-original";
+                        return std::vector<std::uint8_t>(wire.begin(), wire.end());
+                    });
+            }
+            else {
+                for (size_t segment = 0; segment < segmentCount; ++segment) {
+                    auto data = makeSegment(segment);
+                    publicationStage = "insert-ims";
+                    insertDataIntoIMS(*data, freshness);
+                }
             }
         }
         catch (const std::exception& e) {
@@ -10733,11 +10837,6 @@ namespace ndn_service_framework
                 publicationStage + ": " + e.what();
             return result;
         }
-        if (segmentCount == 0) {
-            result.errorMessage = "request-scoped large response produced no segments";
-            return result;
-        }
-
         result.largeData.encryptedDataName = encryptedDataName;
         LargeDataReference reference;
         reference.dataName = encryptedDataName;
@@ -10761,7 +10860,9 @@ namespace ndn_service_framework
                      << " serviceName=" << serviceName.toUri()
                      << " plaintextBytes=" << payload.size()
                      << " chunkBytes=" << chunkBytes
-                     << " segments=" << segmentCount);
+                     << " segments=" << segmentCount
+                     << " retention=" << (segmentCount > MAX_IN_MEMORY_RESPONSE_SEGMENTS ?
+                                           "file" : "ims"));
         return result;
     }
 
@@ -10850,7 +10951,7 @@ namespace ndn_service_framework
         LargeDataReferenceResponseResult optimizedResponse;
         if (requestScopedResponse) {
             auto binding = requestScopedState->binding;
-            const auto payload = response.getPayload();
+            const auto payload = response.getPayloadBlock().value_bytes();
             const auto threshold = responseLargeDataThresholdBytes();
             if (response.getStatus() && threshold > 0 &&
                 payload.size() > threshold &&
@@ -10893,7 +10994,7 @@ namespace ndn_service_framework
             // invocation state can no longer be delivered confidentially;
             // fail closed with a typed error instead of silently falling
             // back to plaintext or resurrecting a service-wide ABE carrier.
-            const auto legacyPayload = response.getPayload();
+            const auto legacyPayload = response.getPayloadBlock().value_bytes();
             const auto legacyThreshold = responseLargeDataThresholdBytes();
             if (response.getStatus() && legacyThreshold > 0 &&
                 legacyPayload.size() > legacyThreshold &&
@@ -13132,7 +13233,8 @@ namespace ndn_service_framework
         int freshnessMs, CollaborationTransferMetrics* metrics,
         std::vector<std::shared_ptr<const ndn::Data>>* originals,
         std::size_t maxWireBytes, const std::function<bool()>& current,
-        const std::shared_ptr<std::mutex>& authorityMutex)
+        const std::shared_ptr<std::mutex>& authorityMutex,
+        const std::function<void(const std::vector<std::shared_ptr<const ndn::Data>>&)>& retain)
     {
         if (m_fetchStopping->load() || (current && !current())) return false;
         if (objects.empty()) {
@@ -13191,7 +13293,17 @@ namespace ndn_service_framework
                 throw std::invalid_argument("immutable exact Data original wire conflict");
         }
         for (const auto& object : objects) {
-            if (const auto existing = m_IMS.find(object.first)) {
+            auto existing = m_IMS.find(object.first);
+            const auto [retained, index] = findRetainedExactPacket(object.first);
+            if (retained) {
+                const auto wire = retained->file->readExactPacket(index, object.first);
+                auto original = std::make_shared<ndn::Data>(
+                    ndn::Block(ndn::span<const std::uint8_t>(wire)));
+                if (existing && existing->wireEncode() != original->wireEncode())
+                    throw std::invalid_argument("immutable exact Data original wire conflict");
+                existing = std::move(original);
+            }
+            if (existing) {
                 const auto& content = existing->getContent();
                 if (existing->getName() != object.first ||
                     !validator->isProducerSignerAuthorized(*existing, identity) ||
@@ -13249,17 +13361,19 @@ namespace ndn_service_framework
         // Admit the whole batch before exposing any original, IMS entry or
         // pending-Interest reply. Explicit Context revocation shares this lock.
         if (m_fetchStopping->load() || (current && !current())) return false;
-        if (originals != nullptr) {
-            originals->clear();
-            originals->reserve(prepared.size());
-            for (const auto& item : prepared) originals->push_back(item.data);
+        if (originals != nullptr || retain) {
+            std::vector<std::shared_ptr<const ndn::Data>> admitted;
+            admitted.reserve(prepared.size());
+            for (const auto& item : prepared) admitted.push_back(item.data);
+            if (retain) retain(admitted);
+            if (originals) originals->swap(admitted);
         }
         for (const auto& item : prepared) {
             runWithLocalWorkObserver(workObserver, "core-tensor-ims-insert", [&] {
                 // This bounded FIFO holds the Producer's immutable originals,
                 // not a downstream cache. Keep them servable while retained;
                 // their wire FreshnessPeriod does not expire work authority.
-                m_IMS.insert(*item.data);
+                if (!retain) m_IMS.insert(*item.data);
             });
         }
         if (authorityLock.owns_lock()) authorityLock.unlock();
@@ -13308,7 +13422,8 @@ namespace ndn_service_framework
     ServiceProvider::replayCollaborationOwnedExactData(
         const std::vector<std::shared_ptr<const ndn::Data>>& originals,
         CollaborationTransferMetrics* metrics, const std::function<bool()>& current,
-        const std::shared_ptr<std::mutex>& authorityMutex)
+        const std::shared_ptr<std::mutex>& authorityMutex,
+        const std::function<void(const std::vector<std::shared_ptr<const ndn::Data>>&)>& retain)
     {
         if (m_fetchStopping->load() || (current && !current())) return false;
         if (originals.empty()) return false;
@@ -13321,6 +13436,13 @@ namespace ndn_service_framework
                 throw std::invalid_argument("exact original Producer mismatch");
             if (!expected.emplace(packet->getName(), packet.get()).second)
                 throw std::invalid_argument("duplicate exact original replay Name");
+            const auto [retained, index] = findRetainedExactPacket(packet->getName());
+            if (retained) {
+                const auto wire = retained->file->readExactPacket(index, packet->getName());
+                const auto& candidate = packet->wireEncode();
+                if (!std::equal(wire.begin(), wire.end(), candidate.begin(), candidate.end()))
+                    throw std::invalid_argument("immutable exact original replay conflict");
+            }
             payloadBytes += packet->getContent().value_size();
             wireBytes += packet->wireEncode().size();
         }
@@ -13333,9 +13455,11 @@ namespace ndn_service_framework
         std::unique_lock<std::mutex> authorityLock;
         if (authorityMutex) authorityLock = std::unique_lock<std::mutex>(*authorityMutex);
         if (m_fetchStopping->load() || (current && !current())) return false;
+        if (retain) retain(originals);
         for (const auto& packet : originals)
             // Match first publication without changing any original wire byte.
-            m_IMS.insert(*packet);
+            if (!retain && !findRetainedExactPacket(packet->getName()).first)
+                m_IMS.insert(*packet);
         if (authorityLock.owns_lock()) authorityLock.unlock();
         for (const auto& packet : originals) satisfyPendingImsInterestsLocked(*packet);
         if (metrics) {
@@ -16561,8 +16685,7 @@ namespace ndn_service_framework
         if (!errorInfo.empty()) {
             response.setErrorInfo(errorInfo);
         }
-        ndn::Buffer responsePayload(payload);
-        response.setPayload(responsePayload, responsePayload.size());
+        response.setPayload(ndn::Buffer(payload));
         if (m_useTokens) {
             response.setUserToken(requestMessage.getUserToken());
         }
@@ -20134,6 +20257,239 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
     }
 
+    void
+    ServiceProvider::retainExactPackets(std::weak_ptr<RetainedPackets>& request,
+        std::chrono::steady_clock::time_point deadline, std::uint64_t diskLimit,
+        const std::vector<std::shared_ptr<const ndn::Data>>& originals,
+        const std::function<bool()>& current)
+    {
+        constexpr std::uint64_t MAX_INDEX_BYTES = 256ULL << 20;
+        if (diskLimit > MAX_RETAINED_PACKET_DISK_BYTES ||
+            deadline == std::chrono::steady_clock::time_point::max())
+            throw std::invalid_argument("exact packet retention bounds are invalid");
+        std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
+        auto& retained = m_retainedPackets;
+        retained.erase(std::remove_if(retained.begin(), retained.end(), [](const auto& item) {
+            return !item->isCurrent() && item.use_count() == 1;
+        }), retained.end());
+        auto owner = request.lock();
+        const bool first = !owner;
+        if (!first && (!owner->isCurrent() || owner->diskLimit != diskLimit))
+            throw std::invalid_argument("exact packet retention changed within the request");
+        std::uint64_t availableDisk = MAX_RETAINED_PACKET_DISK_BYTES;
+        std::uint64_t availableIndex = MAX_INDEX_BYTES;
+        for (const auto& entry : retained) {
+            availableDisk -= entry->diskLimit;
+            availableIndex -= entry->exactIndex.bytes();
+        }
+        if (first && (retained.size() >= MAX_RETAINED_PACKET_REQUESTS || diskLimit > availableDisk))
+            throw std::length_error("exact packet retention Provider capacity");
+        detail::ExactPacketIndex batchIndex;
+        std::uint64_t index = 0;
+        for (const auto& packet : originals) {
+            const auto& name = packet->getName();
+            if (std::any_of(retained.begin(), retained.end(), [&](const auto& entry) {
+                  return entry->isCurrent() && entry->exactIndex.find(name).has_value();
+                }))
+                throw std::invalid_argument("exact packet retention repeats a committed name");
+            batchIndex.add(name, index++, availableIndex);
+        }
+        const auto requireCurrent = [&] {
+            if (!current || !current())
+                throw std::runtime_error("INPUT_AUTHORITY_EXPIRED");
+        };
+        requireCurrent();
+        if (first) {
+            owner = std::make_shared<RetainedPackets>();
+            owner->file = detail::OriginalPacketFile::createExact(
+                std::filesystem::temp_directory_path(), identity, diskLimit);
+            owner->diskLimit = diskLimit;
+            owner->deadline = deadline;
+            retained.reserve(retained.size() + 1);
+            if (m_retainedPacketReadPool.getThreadCount() == 0)
+                m_retainedPacketReadPool.setThreadCount(1);
+        }
+        const auto begin = owner->file->appendExact(originals, requireCurrent);
+        if (first) {
+            scheduleRetainedPacketExpiry(owner);
+        }
+        owner->exactIndex.commit(std::move(batchIndex), begin);
+        if (first) {
+            retained.push_back(owner);
+            request = owner;
+        }
+    }
+
+    void
+    ServiceProvider::scheduleRetainedPacketExpiry(
+        const std::shared_ptr<RetainedPackets>& owner)
+    {
+        const auto deadline = owner->deadline;
+        const std::weak_ptr<RegistrationControl> registration = m_registrationControl;
+        const std::weak_ptr<RetainedPackets> expiring = owner;
+        boost::asio::post(m_face.getIoContext(), [registration, expiring, deadline] {
+            const auto control = registration.lock();
+            auto* provider = control ? control->acquireOwner() : nullptr;
+            if (!provider) return;
+            const auto release = ndn::make_scope_exit([&] { control->releaseOwner(); });
+            const auto remaining = std::max(std::chrono::milliseconds::zero(),
+                std::chrono::ceil<std::chrono::milliseconds>(
+                    deadline - std::chrono::steady_clock::now()));
+            provider->m_scheduler.schedule(ndn::time::milliseconds(remaining.count()),
+                [registration, expiring] {
+                    const auto control = registration.lock();
+                    auto* provider = control ? control->acquireOwner() : nullptr;
+                    if (!provider) return;
+                    const auto release = ndn::make_scope_exit([&] { control->releaseOwner(); });
+                    if (const auto request = expiring.lock()) provider->retirePacketRetention(request);
+                });
+        });
+    }
+
+    void
+    ServiceProvider::retainSegmentedResponse(
+        const ndn::Name& prefix, std::uint64_t segmentCount,
+        std::chrono::steady_clock::time_point deadline,
+        const std::function<std::vector<std::uint8_t>(std::uint64_t)>& nextPacket)
+    {
+        // Charge a ceiling before signing. The immutable segment ordinal is
+        // already the file index, so no per-packet name table is needed.
+        const auto owner = std::make_shared<RetainedPackets>();
+        owner->responsePrefix = prefix;
+        owner->responseSegmentCount = segmentCount;
+        owner->diskLimit = segmentCount * REQUEST_RESPONSE_PACKET_FILE_CHARGE;
+        owner->deadline = deadline;
+        {
+            std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
+            auto& retained = m_retainedPackets;
+            retained.erase(std::remove_if(retained.begin(), retained.end(), [](const auto& item) {
+                return !item->isCurrent() && item.use_count() == 1;
+            }), retained.end());
+            std::uint64_t available = MAX_RETAINED_PACKET_DISK_BYTES;
+            for (const auto& entry : retained) {
+                available -= entry->diskLimit;
+                if (entry->responsePrefix == prefix)
+                    throw std::invalid_argument("request-scoped response repeats retained name");
+            }
+            if (retained.size() >= MAX_RETAINED_PACKET_REQUESTS || owner->diskLimit > available)
+                throw std::length_error("request-scoped response Provider capacity");
+            if (m_retainedPacketReadPool.getThreadCount() == 0)
+                m_retainedPacketReadPool.setThreadCount(1);
+            retained.push_back(owner);
+        }
+        try {
+            const auto requireCurrent = [&] {
+                if (!owner->isCurrent() || m_fetchStopping->load())
+                    throw std::runtime_error("request-scoped response retention expired");
+            };
+            auto file = detail::OriginalPacketFile::create(
+                std::filesystem::temp_directory_path(), prefix, segmentCount, owner->diskLimit,
+                nextPacket, requireCurrent);
+            std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
+            requireCurrent();
+            scheduleRetainedPacketExpiry(owner);
+            owner->responseFile = std::move(file);
+        }
+        catch (...) {
+            retirePacketRetention(owner);
+            throw;
+        }
+    }
+
+    bool
+    ServiceProvider::retirePacketRetention(const std::shared_ptr<RetainedPackets>& request)
+    {
+        std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
+        request->retired.store(true);
+        // Keep the reservation charged while a queued reader owns the file.
+        if (request.use_count() <= 2) {
+            auto& retained = m_retainedPackets;
+            retained.erase(std::remove(retained.begin(), retained.end(), request), retained.end());
+            return true;
+        }
+        return false;
+    }
+
+    std::pair<std::shared_ptr<RetainedPackets>, std::uint64_t>
+    ServiceProvider::findRetainedExactPacket(const ndn::Name& name)
+    {
+        std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
+        for (const auto& owner : m_retainedPackets) {
+            if (!owner->isCurrent()) continue;
+            if (const auto index = owner->exactIndex.find(name)) return {owner, *index};
+        }
+        return {};
+    }
+
+    bool
+    ServiceProvider::replyFromRetainedPackets(const ndn::Interest& interest)
+    {
+        auto name = interest.getName();
+        const bool hasDigest = !name.empty() && name.at(-1).isImplicitSha256Digest();
+        if (hasDigest) name = name.getPrefix(-1);
+        std::shared_ptr<RetainedPackets> request;
+        std::uint64_t index = 0;
+        if (!interest.getCanBePrefix()) {
+            std::tie(request, index) = findRetainedExactPacket(name);
+        }
+        if (!request && !name.empty()) {
+            const bool hasSegment = name.at(-1).isSegment();
+            if (!hasSegment && (!interest.getCanBePrefix() || hasDigest)) return false;
+            const auto prefix = hasSegment ? name.getPrefix(-1) : name;
+            if (prefix.empty() || !prefix.at(-1).isVersion()) return false;
+            index = hasSegment ? name.at(-1).toSegment() : 0;
+            std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
+            for (const auto& owner : m_retainedPackets) {
+                if (owner->responseFile && owner->isCurrent() &&
+                    owner->responsePrefix == prefix && index < owner->responseSegmentCount) {
+                    request = owner;
+                    break;
+                }
+            }
+        }
+        if (!request) return false;
+        auto reads = m_retainedPacketReads;
+        auto count = reads->load();
+        do {
+            if (count >= 256) return false;
+        } while (!reads->compare_exchange_weak(count, count + 1));
+        const auto slot = std::shared_ptr<void>(nullptr, [reads](void*) { --*reads; });
+        const std::weak_ptr<RegistrationControl> registration = m_registrationControl;
+        auto* const io = &m_face.getIoContext();
+        return m_retainedPacketReadPool.post([this, io, registration, slot, request = std::move(request),
+                                          index, name = std::move(name), interest] {
+            const auto release = ndn::make_scope_exit([&] {
+                if (!request->isCurrent()) retirePacketRetention(request);
+            });
+            if (m_fetchStopping->load() || !request->isCurrent()) return;
+            try {
+                const auto wire = request->responseFile ? request->responseFile->read(index) :
+                    request->file->readExactPacket(index, name);
+                auto packet = ndn::Data(ndn::Block(ndn::span<const std::uint8_t>(wire)));
+                if (!interest.matchesData(packet)) return;
+                boost::asio::post(*io, [registration, slot, request = std::weak_ptr(request),
+                                       packet = std::move(packet)] {
+                    const auto control = registration.lock();
+                    auto* provider = control ? control->acquireOwner() : nullptr;
+                    if (!provider) return;
+                    const auto release = ndn::make_scope_exit([&] { control->releaseOwner(); });
+                    const auto retained = request.lock();
+                    // Serialize final reply admission with retirement.
+                    std::lock_guard<std::mutex> lock(provider->m_retainedPacketMutex);
+                    if (retained && retained->isCurrent() && !provider->m_fetchStopping->load()) {
+                        const auto timing = controlTimingEnvEnabled();
+                        putMeasuredDataOnFace(provider->m_face, packet,
+                            retained->responseFile ? "response-file" : "exact-file",
+                            timing, std::chrono::steady_clock::now());
+                    }
+                });
+            }
+            catch (const std::exception& error) {
+                NDN_LOG_WARN("Exact retained packet read failed: " << error.what());
+            }
+        });
+    }
+
     bool ServiceProvider::replyFromIMS(const ndn::Interest &interest)
     {
         ImmutableProtectedPublicationStore* publications = nullptr;
@@ -20199,6 +20555,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             putMeasuredDataOnFace(m_face, *dataToSend, "ims-hit", timingEnabled, queuedAt);
             return true;
         }else{
+            if (replyFromRetainedPackets(interest)) return true;
             if (streamEvent && std::getenv("SPEC175_TRACE") != nullptr) {
                 NDN_LOG_INFO("SPEC175_TRACE stream-exact-ims-miss name="
                              << interest.getName()

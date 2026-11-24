@@ -299,6 +299,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
 {
   const bool manifestAuthenticated = mode == "manifest-authenticated";
   constexpr uint32_t manifestSourceSegments = 129;
+  const bool largerDiskSegments = mode == "large-disk-publication-7600";
+  const bool largeDiskPublication = mode == "large-disk-publication" || largerDiskSegments;
   const bool sharedCancellation = mode == "shared-tp-cancel";
   const bool sharedFanout = mode == "shared-tp-partial" || sharedCancellation;
   const bool manifestLate = mode == "manifest-late";
@@ -354,6 +356,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   std::optional<ndn::Data> heldManifest;
   bool holdObservedManifest = false;
   std::mutex manifestNameMutex;
+  std::condition_variable manifestSent;
   std::string expectedManifestUri;
   std::map<ndn::Name, ndn::Interest> issuedSourceInterests;
   std::size_t sourceInterestTransmissions = 0;
@@ -371,9 +374,10 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
             issuedSourceInterests.insert_or_assign(interest.getName(), interest);
             ++sourceInterestTransmissions;
           }
+          if (isExpectedManifest) ++manifestInterests;
         }
         if (isExpectedManifest) {
-          ++manifestInterests;
+          manifestSent.notify_all();
           if (holdManifestInterests) {
             heldManifestInterests.push_back(interest);
             return;
@@ -581,12 +585,13 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   operation.consumerRanks = {"1"};
   if (sharedFanout) operation.consumerRanks.push_back("2");
   operation.tensorLayoutDigest = sourceLayout;
-  operation.maxBytes = 2U << 20;
-  operation.maxSegments = 300;
+  operation.maxBytes = largeDiskPublication ? 64U << 20 : 2U << 20;
+  operation.maxSegments = largeDiskPublication ? 16384 : 300;
 
   auto producerCoordinator =
       std::make_shared<ProviderGroupCoordinator>(options);
   const auto inflightBudget =
+    largeDiskPublication ? operation.maxBytes :
     (mode == "packed-operation-bounds" || mode == "inline-packed-publish-bounds") ?
       4U << 20 : mode == "prefetch-budget" ? 100000 :
       enableSpeculation ? 2U << 20 : ndn::MAX_NDN_PACKET_SIZE;
@@ -737,7 +742,10 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   // Both URI profiles measured 7750 as 8577 standalone/8766 inline wire bytes.
   // Adding 100 leaves 123 bytes standalone headroom and crosses the signed
   // inline limit by 66; the actual wire assertions below verify the boundary.
-  const std::size_t chunkSize = legacy ? 7 : mode == "inline-oversize" ? 7850 : 7000;
+  std::size_t chunkSize = 7000;
+  if (legacy) chunkSize = 7;
+  if (mode == "inline-oversize") chunkSize = 7850;
+  if (largerDiskSegments) chunkSize = 7600;
   TensorBundle original;
   original.name = endpoint.tensorId;
   original.payload.resize(mode == "inline-oversize" ? chunkSize + 17 :
@@ -749,6 +757,16 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     mode.empty() ? 200 * 7000 + 17 : legacy ? 19 : 7017);
   for (std::size_t index = 0; index < original.payload.size(); ++index) {
     original.payload[index] = static_cast<std::uint8_t>(index * 31 + 7);
+  }
+  if (largeDiskPublication) {
+    std::vector<std::uint8_t> data((56U << 20) - 256);
+    std::mt19937 bytes(271);
+    std::generate(data.begin(), data.end(), [&] { return static_cast<std::uint8_t>(bytes()); });
+    const auto count = static_cast<std::int64_t>(data.size());
+    original = makeEncodedTensorBundle(endpoint.tensorId, {
+      NamedTensor{endpoint.tensorId, TensorElementType::UInt8, {count}, std::move(data)}});
+    BOOST_REQUIRE_LE(original.payload.size(), 56U << 20);
+    BOOST_REQUIRE_GT(original.payload.size(), (56U << 20) - 256);
   }
   if (feedback) {
     NamedTensor token;
@@ -773,12 +791,13 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     original.payload = {'N', 'D', 'I', 'T', 'B', 'Z', '0', '1',
                         1, 0, 0, 4, 0, 0, 0, 0, 0x78};
   }
-  const auto producerWork = (mode == "prefetch" || sharedFanout)
+  const auto producerWork = (mode == "prefetch" || sharedFanout || largeDiskPublication)
     ? makeNativeWorkStatistics() : nullptr;
   const auto consumerWork = (mode == "prefetch" || mode == "prefetch-renewals" || adaptiveWindow)
     ? makeNativeWorkStatistics() : nullptr;
   NdnsfCollaborationDependencyIo producerIo(
-      producerContext, 5000, chunkSize, 60000, producerCoordinator, nullptr, 0, producerWork);
+      producerContext, 5000, chunkSize, 60000, producerCoordinator, nullptr, 0, producerWork,
+      largeDiskPublication ? 64U << 20 : mode == "disk" ? 1U << 20 : 0U);
   NdnsfCollaborationDependencyIo consumerIo(
       consumerContext, shortDeadline && !segmentTimeout ? 250 : 5000,
       chunkSize, 60000, consumerCoordinator,
@@ -943,7 +962,48 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
                         std::invalid_argument);
       BOOST_CHECK(uniquePackets.empty());
     }
-    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
+    if (largeDiskPublication) {
+      try {
+        producerIo.publishOutput("session-v3", edge, original);
+      }
+      catch (...) {
+        for (const auto& [phase, measurement] : producerWork->snapshot().phases) {
+          BOOST_TEST_MESSAGE(phase << " wall_ns=" << measurement.exclusiveWallNs);
+        }
+        if (original.transferObservation && original.transferObservation->wireBytes) {
+          BOOST_TEST_MESSAGE("Exact publication signed wire before deadline rejection="
+                             << *original.transferObservation->wireBytes);
+        }
+        throw;
+      }
+    }
+    else {
+      producerIo.publishOutput("session-v3", edge, original);
+    }
+  }
+  if (largeDiskPublication) {
+    const auto& observation = original.transferObservation;
+    BOOST_REQUIRE(observation && observation->wireBytes);
+    BOOST_CHECK_GT(*observation->wireBytes, original.payload.size());
+    BOOST_CHECK_LT(*observation->wireBytes, 64U << 20);
+    BOOST_CHECK_EQUAL(producer.evictImsPrefixForTest(ndn::Name(edge.manifestDataName)), 0U);
+    auto fetch = std::async(std::launch::async, [&] {
+      return consumerContext.fetchSignedExactData(
+        groupId, ndn::Name(edge.manifestDataName), producer.getName(), 5000);
+    });
+    environment.pumpUntil([&] { return fetch.wait_for(0ms) == std::future_status::ready; });
+    BOOST_REQUIRE(fetch.wait_for(0ms) == std::future_status::ready);
+    const auto content = fetch.get();
+    BOOST_REQUIRE(content);
+    const auto manifest = decodeTensorObjectManifest({content->begin(), content->end()});
+    BOOST_CHECK_EQUAL(manifest.segmentCount, expectedSegments);
+    BOOST_CHECK_EQUAL(manifest.segmentSize, chunkSize);
+    BOOST_CHECK_EQUAL(manifest.totalBytes, original.payload.size());
+    BOOST_CHECK_EQUAL(manifest.unpackedBytes, 0U);
+    BOOST_TEST_MESSAGE("Exact publication plaintext=" << original.payload.size()
+                       << " signed wire=" << *observation->wireBytes
+                       << " data segments=" << manifest.segmentCount);
+    return;
   }
   if (mode == "context") edge.tensorDigest = sha('9');
 
@@ -1037,6 +1097,12 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
       "input_ids", makeEncodedTensorBundle("prompt", {std::move(tokenIds)}));
     std::atomic<std::size_t> interestCountAtEvent{0};
     config.eventSink = [&] (const std::vector<std::uint8_t>&) {
+      // The coordinator can queue the read before the Face sends its Interest.
+      // Reject the event only once this fixture has an actual in-flight fetch.
+      std::unique_lock lock(manifestNameMutex);
+      if (!manifestSent.wait_for(lock, 2s, [&] { return manifestInterests.load() != 0; })) {
+        throw std::runtime_error("cancellation fixture did not observe a manifest Interest");
+      }
       interestCountAtEvent.store(
         manifestInterests.load(std::memory_order_acquire),
         std::memory_order_release);
@@ -1452,7 +1518,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     return;
   }
   if (!mode.empty() && !manifestAuthenticated && !feedback &&
-      mode != "admission" && mode != "reuse" &&
+      mode != "admission" && mode != "reuse" && mode != "disk" &&
       mode != "quota" && mode != "legacy" && mode != "packed-bounds" &&
       !prefetch && (!inlineDelivery || mode == "inline-corrupt")) {
     const auto expected = (mode == "ciphertext" || mode == "inline-corrupt") ? "ciphertext commitment mismatch" :
@@ -1631,6 +1697,22 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
       original.payload.begin(), original.payload.end());
   BOOST_CHECK_EQUAL(reconstructed->expectedSegments, expectedSegments);
   BOOST_CHECK_EQUAL(reconstructed->expectedBytes, original.payload.size());
+  if (mode == "disk") {
+    const auto firstWires = uniquePackets;
+    BOOST_REQUIRE_GT(firstWires.size(), 1U);
+    for (const auto& item : firstWires)
+      BOOST_CHECK_EQUAL(producer.evictImsPrefixForTest(item.first), 0U);
+    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
+    auto reread = consumerIo.prefetchInput("session-v3", edge);
+    environment.pumpUntil([&] { return reread.wait_for(0ms) == std::future_status::ready; });
+    BOOST_REQUIRE(reread.wait_for(0ms) == std::future_status::ready);
+    BOOST_CHECK(reread.get().payload == original.payload);
+    BOOST_CHECK(uniquePackets == firstWires);
+    auto changed = original;
+    changed.payload.back() ^= 1;
+    BOOST_CHECK_THROW(producerIo.publishOutput("session-v3", edge, changed),
+                      std::invalid_argument);
+  }
   if (boundedWindow) {
     const bool largerWindow = windowCancellation || windowRefill || mode == "inline-window";
     BOOST_CHECK_EQUAL(expectedSegments, adaptiveWindow ? 65U : largerWindow ? 21U : 13U);
@@ -1840,6 +1922,20 @@ BOOST_AUTO_TEST_CASE(LargeTensorUsesBoundedSignedPackets) { runTransfer(""); }
 BOOST_AUTO_TEST_CASE(ManifestTensorUsesProvenDigestNamesAndReplaysOriginals)
 {
   runTransfer("manifest-authenticated");
+}
+
+BOOST_AUTO_TEST_CASE(FileBackedTensorRereadsTheSameAuthenticatedPackets) { runTransfer("disk"); }
+
+BOOST_AUTO_TEST_CASE(FileBackedExactPublicationFitsWanTileBudget)
+{
+  if (std::getenv("NDNSF_DI_WAN_EXACT_STRESS") == nullptr) return;
+  runTransfer("large-disk-publication");
+}
+
+BOOST_AUTO_TEST_CASE(FileBackedExactPublicationFitsWanTileBudgetWith7600ByteSegments)
+{
+  if (std::getenv("NDNSF_DI_WAN_EXACT_STRESS") == nullptr) return;
+  runTransfer("large-disk-publication-7600");
 }
 BOOST_AUTO_TEST_CASE(RepeatedExactPrefetchThreadAndCpuProbe)
 {

@@ -391,6 +391,9 @@ sessionIdentity(const NativeModelRunnerSpec& spec,
     frame(key);
     frame(metadata({key}));
   }
+  if (selection.selectedProvider == "cpu" && runnerMetadataBool(spec, {"disableCpuMemArena"})) {
+    frame("disableCpuMemArena");
+  }
   if (automaticIo != spec.metadata.end()) {
     frame("automaticIoContract");
     frame(automaticIo->second);
@@ -545,6 +548,8 @@ makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
     // its executable nodes so the request's device profile can attest it.
     options.SetGraphOptimizationLevel(spec.deferDependencyInputWarmup
       ? GraphOptimizationLevel::ORT_DISABLE_ALL : GraphOptimizationLevel::ORT_ENABLE_BASIC);
+    if (runnerMetadataBool(spec, {"disableCpuMemArena"}))
+      options.DisableCpuMemArena();
   }
   else {
     options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_DISABLE_ALL);

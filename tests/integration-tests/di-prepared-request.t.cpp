@@ -708,7 +708,8 @@ class RuntimeFixture
 {
 public:
   explicit RuntimeFixture(bool streaming = false, bool qwenStreaming = false,
-                          std::size_t maxPayloadBytes = 32, bool onnxHybrid = false)
+                          std::size_t maxPayloadBytes = 32, bool onnxHybrid = false,
+                          bool legacyYoloComparison = false)
     : root(std::filesystem::temp_directory_path() /
            ("di-prepared-request-" + std::to_string(::getpid()) + "-" +
             std::to_string(++sequence)))
@@ -904,6 +905,7 @@ public:
         {"merge_kind", ""}, {"candidate_digest", oracle.at("registered_digest")},
         {"semantic_partition", oracle.at("partition")} };
       catalog["splitter"] = { {"kind", "YOLO"}, {"components", {component}} };
+      if (legacyYoloComparison) catalog["legacy_yolo_retired"] = false;
     }
 
     std::ofstream model(root / "model.onnx", std::ios::binary);
@@ -2134,7 +2136,8 @@ BOOST_AUTO_TEST_CASE(OnnxSourceHybridPreparesThroughRuntime)
 
 BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
 {
-  RuntimeFixture fixture;
+  // This fixture's three synthetic roles belong to the historical component catalog.
+  RuntimeFixture fixture(false, false, 32, false, true);
   ndn_service_framework::test::BootstrapProfile profile;
   // Match the operator-pinned Runtime identity/group so the production
   // factory's frozen request contract and the fixture ServiceUser are the
@@ -2268,6 +2271,9 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   auto ackCount = std::make_shared<std::atomic<unsigned>>(0);
   auto responseCount = std::make_shared<std::atomic<unsigned>>(0);
   auto wrongDigestRejected = std::make_shared<std::atomic<bool>>(false);
+  auto protectedInputFetched = std::make_shared<std::atomic<bool>>(false);
+  const std::string protectedInput = "request-level-protected-input";
+  const auto protectedInputDigest = nativePlanningDigest(protectedInput);
   auto observationMutex = std::make_shared<std::mutex>();
   auto ackRequestIds = std::make_shared<std::set<std::string>>();
   auto selectionByRequest = std::make_shared<std::map<std::string, std::string>>();
@@ -2275,7 +2281,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   const auto acceptedRepositoryDigest = nativePlanningDigest("di-t005-repository-ciphertext");
   environment->provider().addCollaborationHandler(
     ndn::Name(serviceName),
-    [offerConfig, acceptedRepositoryDigest, wrongDigestRejected, ackCount,
+    [offerConfig, acceptedRepositoryDigest, wrongDigestRejected, protectedInputDigest, ackCount,
      observationMutex, ackRequestIds] (
       const ndn_service_framework::RequestMessage& request) {
       ackCount->fetch_add(1, std::memory_order_relaxed);
@@ -2285,7 +2291,8 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
         const auto requestId = root.value("request_id", std::string{});
         if (root.value("input_transport", std::string{}) == "REPO_REF") {
           const auto reference = root.value("input_reference", NativeJson::object());
-          if (reference.value("ciphertextDigest", std::string{}) != acceptedRepositoryDigest) {
+          if (reference.value("plaintextDigest", std::string{}) != protectedInputDigest &&
+              reference.value("ciphertextDigest", std::string{}) != acceptedRepositoryDigest) {
             wrongDigestRejected->store(true, std::memory_order_release);
             ndn_service_framework::ServiceProvider::AckDecision decision;
             decision.message = "DI_INPUT_DIGEST_REJECTED";
@@ -2315,9 +2322,28 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
       decision.pendingStateTtlMs = issued->pendingStateTtlMs;
       return decision;
     },
-    [responseCount, observationMutex, selectionByRequest, grantRequestIds]
+    [responseCount, observationMutex, selectionByRequest, grantRequestIds,
+     protectedInputFetched, protectedInput]
       (ndn_service_framework::ServiceProvider::CollaborationContext& context,
-       const ndn_service_framework::RequestMessage&) {
+       const ndn_service_framework::RequestMessage& request) {
+      const auto wire = request.getPayload();
+      const auto requestJson = nativeParseJson(std::string(wire.begin(), wire.end()));
+      if (requestJson.value("input_transport", "") == "REPO_REF") {
+        // The fixture co-hosts all three legacy roles. Only its ingress owns
+        // the initial input, and must complete the probe before it responds.
+        if (context.assignment().role != "Front") return;
+        const auto& reference = requestJson.at("input_reference");
+        const ndn::Name name(reference.at("dataName").get<std::string>());
+        const auto deadline = context.assignment().workDeadline;
+        if (context.fetchEncryptedLargeDataCurrent(name, ndn::Name("/wrong-owner"), deadline))
+          throw std::runtime_error("protected input admitted a different Producer");
+        const auto plaintext = context.fetchEncryptedLargeDataCurrent(
+          name, context.requesterName(), deadline);
+        if (!plaintext || std::string(plaintext->begin(), plaintext->end()) != protectedInput ||
+            reference.at("plaintextSize") != plaintext->size())
+          throw std::runtime_error("protected request input bytes differ from the original");
+        protectedInputFetched->store(true, std::memory_order_release);
+      }
       const auto assignment = context.assignment().assignmentPayload;
       const auto root = nativeParseJson(std::string(assignment.begin(), assignment.end()));
       const auto requestId = root.value("request_id", std::string{});
@@ -2513,6 +2539,17 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
     BOOST_CHECK(grantRequestIds->count(runResult.requestId) == 1U);
     BOOST_CHECK(selectionByRequest->count(runResult.requestId) == 1U);
   }
+
+  auto protectedOptions = options;
+  protectedOptions.maxInlineInputBytes = 1;
+  auto protectedHandle = runtime->user().request(providerPrepared,
+    Input::inlineBytes({protectedInput.begin(), protectedInput.end()}), protectedOptions);
+  auto protectedObservation = startConversationResultObservation(
+    protectedHandle, std::chrono::seconds(10));
+  pumpUntilConversationResultReady(*environment, protectedObservation, std::chrono::seconds(10));
+  const auto protectedResult = protectedObservation->get();
+  BOOST_CHECK_EQUAL(protectedResult.modelDigest, providerPrepared.modelIntentDigest());
+  BOOST_CHECK(protectedInputFetched->load(std::memory_order_acquire));
 
   // A repository reference keeps its complete canonical metadata on the
   // request wire.  The Provider fixture applies the same authenticated

@@ -14,7 +14,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "ndnsf-integration-fixture.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
@@ -33,6 +32,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -1005,6 +1005,394 @@ BOOST_AUTO_TEST_CASE(SourceEntryProgramReopensAllFilesAndRejectsCorruptSecondSid
   checkPairedFfnMaterialAssembly(true);
 }
 
+BOOST_AUTO_TEST_CASE(CanonicalCallGraphsUseCertifiedRoleOnColdAndWarmAssembly)
+{
+  onnx::ModelProto model;
+  model.set_ir_version(9);
+  model.add_opset_import()->set_version(17);
+  auto& graph = *model.mutable_graph();
+  graph.set_name("canonical-call-fixture");
+  const auto port = [] (onnx::ValueInfoProto& value, const char* id) {
+    value.set_name(id);
+    auto* tensor = value.mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    tensor->mutable_shape()->add_dim()->set_dim_value(2);
+  };
+  port(*graph.add_input(), "X");
+  port(*graph.add_output(), "Y");
+  const auto declareWeight = [&](const char* name, std::size_t offset) {
+    auto& weight = *graph.add_initializer();
+    weight.set_name(name);
+    weight.set_data_type(onnx::TensorProto::FLOAT);
+    weight.add_dims(2);
+    weight.set_data_location(onnx::TensorProto::EXTERNAL);
+    for (const auto& [key, value] : std::map<std::string, std::string>{
+           {"location", "source.data"}, {"offset", std::to_string(offset)},
+           {"length", std::to_string(2 * sizeof(float))}}) {
+      auto& field = *weight.add_external_data();
+      field.set_key(key);
+      field.set_value(value);
+    }
+  };
+  declareWeight("W", 0);
+  declareWeight("foreign", 2 * sizeof(float));
+  const auto add = [&](const char* op, const char* input, const char* weight, const char* output) {
+    auto& node = *graph.add_node();
+    node.set_op_type(op);
+    node.add_input(input);
+    node.add_input(weight);
+    node.add_output(output);
+  };
+  add("Add", "X", "W", "H");
+  add("Add", "X", "foreign", "unselected");
+  add("Mul", "H", "W", "Y");
+  const auto wire = model.SerializeAsString();
+  NativeCanonicalSource source;
+  source.modelBytes.assign(wire.begin(), wire.end());
+  const std::array<float, 4> weights{2.0f, 3.0f, 7.0f, 11.0f};
+  source.initializerBytes.emplace(sizeof(weights));
+  std::memcpy(&(*source.initializerBytes)[0], weights.data(), sizeof(weights));
+  const NativeAssemblyControl control{
+    std::chrono::steady_clock::now() + std::chrono::seconds(15), [] {}, 1U << 20, 1U << 20};
+  const auto assembly = canonicalOnnxSourceIdentity(source, control);
+  const auto material = deriveNativeCanonicalMaterialManifest(source, control);
+  const auto manifest = material->canonicalJson();
+  const auto profile = zeroDigest('b');
+  const ndn::Name rootName("/spec175/native/root");
+  const ndn::Name manifestName("/spec175/native/manifest");
+  const ndn::Name receiptName("/spec175/native/receipt");
+  const ndn::Name materialPrefix("/spec175/native/material");
+  auto rows = NativeJson::array();
+  for (const auto& payload : material->payloads) {
+    rows.push_back({{"payloadId", payload.payloadId},
+                    {"dataName", ndn::Name(materialPrefix).append(payload.payloadId).toUri()},
+                    {"digest", payload.digest}, {"bytes", payload.byteSize()}});
+  }
+  const auto receipt = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-canonical-material-receipt-v1"},
+    {"graphDigest", assembly.graphDigest}, {"sourceDigest", material->sourceDigest},
+    {"materialIdentityDigest", material->manifestDigest},
+    {"materialManifestDigest", digest(manifest)}, {"materialObjects", std::move(rows)}});
+  const auto root = nativeCanonicalJson(NativeJson{
+    {"artifactProfileDigest", profile}, {"modelIdentityDigest", zeroDigest('a')},
+    {"modelName", "canonical-call-fixture"}, {"schema", "ndnsf-di-canonical-model-manifest-v1"},
+    {"state", "ACTIVE"}, {"metadata", {
+      {"canonicalSourceBytes", source.modelBytes.size()},
+      {"canonicalSourceDigest", material->sourceDigest},
+      {"materialIdentityDigest", material->manifestDigest},
+      {"materialManifestDataName", manifestName.toUri()},
+      {"materialManifestBytes", manifest.size()}, {"materialManifestDigest", digest(manifest)},
+      {"materialReceiptDataName", receiptName.toUri()},
+      {"materialReceiptBytes", receipt.size()}, {"materialReceiptDigest", digest(receipt)}}}});
+  auto projection = makeProjection(digest(root), profile, assembly.graphDigest,
+                                   assembly.initializerDigest);
+  auto& role = projection.assembly;
+  const std::vector<std::variant<std::int64_t, std::string>> dims{std::int64_t{2}};
+  role.roleKind = "COMPONENT_SET";
+  role.layerEnd = 0;
+  role.nodeIndices = {0, 2};
+  role.expectedInputs = {{"X", "float32", dims}};
+  role.expectedOutputs = {{"Y", "float32", dims}};
+  role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
+  auto& plan = projection.plan;
+  plan.modelName = "canonical-call-fixture";
+  plan.roles = {role.selectedRole};
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.stageLayout = {{role.role, zeroDigest('d'), plan.roles}};
+  NativeExecutionStepSpec first;
+  first.stepId = first.artifactEntry = "add";
+  first.operation = "CALL_SUBGRAPH";
+  first.unitId = role.selectedRole;
+  first.onnxNodeIndices = {0};
+  first.inputSlots = {{"X", "float32", dims, profile, "EPOCH_INPUT", {}, {}}};
+  first.outputSlots = {{"H", "float32", dims, profile, "LOCAL_STEP", {}, {}}};
+  auto second = first;
+  second.stepId = second.artifactEntry = "mul";
+  second.onnxNodeIndices = {2};
+  second.inputSlots = {{"H", "float32", dims, profile, "LOCAL_STEP", "add", "H"}};
+  second.outputSlots = {{"Y", "float32", dims, profile, "LOCAL_STEP", {}, {}}};
+  plan.steps = {first, second};
+
+  std::vector<ndn::Name> reads;
+  const auto buffer = [](const std::string& bytes) {
+    return ndn::Buffer(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
+  };
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [&](const ndn::Name& name) -> std::optional<ndn::Buffer> {
+    return name == rootName ? std::optional(buffer(root)) : std::nullopt;
+  };
+  fetchers.fetchEncryptedLargeData = [&](const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (service.toUri() != plan.serviceName) return std::nullopt;
+    reads.push_back(name);
+    if (name == manifestName) return buffer(manifest);
+    if (name == receiptName) return buffer(receipt);
+    for (const auto& payload : material->payloads) {
+      if (name != ndn::Name(materialPrefix).append(payload.payloadId)) continue;
+      const auto bytes = payload.copyBytes();
+      return ndn::Buffer(bytes.data(), bytes.size());
+    }
+    return std::nullopt;
+  };
+  auto scratch = ndnsf::test::makeTestScratchTemplate("ndnsf-canonical-call-assembly");
+  BOOST_REQUIRE(::mkdtemp(scratch.data()) != nullptr);
+  const std::filesystem::path dir(scratch.data());
+  BOOST_SCOPE_EXIT_ALL(&dir) {
+    std::error_code error;
+    std::filesystem::remove_all(dir, error);
+  };
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = dir.string();
+  options.providerIdentity = projection.provider;
+  options.workerLocation = testWorkerLocation();
+  options.verifyCachedArtifactDigest = true;
+  options.signManifest = [] (const auto& manifest) { return digest(manifest); };
+
+  const auto prepared = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  const auto coldReads = reads;
+  BOOST_CHECK_EQUAL(coldReads.size(), 7U);
+  for (const auto& ref : material->references) {
+    if (ref.logicalName != "foreign" && ref.logicalName != "node/1") continue;
+    BOOST_CHECK(std::find(reads.begin(), reads.end(),
+                         ndn::Name(materialPrefix).append(ref.payloadId)) == reads.end());
+    for (const auto& chunk : ref.chunkPayloadIds)
+      BOOST_CHECK(std::find(reads.begin(), reads.end(),
+                           ndn::Name(materialPrefix).append(chunk)) == reads.end());
+  }
+  validateNativeOnnxEntryTable(projection, prepared);
+  const auto table = readNativeOnnxEntryTable(prepared);
+  BOOST_REQUIRE_EQUAL(table.size(), 2U);
+  const auto parent = std::filesystem::path(prepared.path).parent_path();
+  const auto localWeights = readBytes(parent / "model.onnx.data");
+  BOOST_REQUIRE_EQUAL(localWeights.size(), 2 * sizeof(float));
+  BOOST_CHECK(std::memcmp(localWeights.data(), weights.data(), localWeights.size()) == 0);
+  auto charged = std::filesystem::file_size(prepared.path) + localWeights.size();
+  for (const auto& entry : table) {
+    const auto bytes = readBytes(parent / entry.relativeGraphPath);
+    BOOST_CHECK_EQUAL(digest(bytes), entry.graphDigest);
+    charged += bytes.size();
+    onnx::ModelProto child;
+    BOOST_REQUIRE(child.ParseFromArray(bytes.data(), static_cast<int>(bytes.size())));
+    BOOST_REQUIRE_EQUAL(child.graph().node_size(), 1);
+    BOOST_CHECK_EQUAL(child.graph().node(0).output(0), entry.outputNames.front());
+  }
+  BOOST_CHECK_EQUAL(validateNativeAssembledArtifactFiles(prepared, dir, role.maxAssembledBytes,
+                                                        true), charged);
+  const auto warm = tryLoadNativeCanonicalOnnxRoleFromCache(fetchers, projection, options, {}, {});
+  BOOST_REQUIRE(warm);
+  BOOST_CHECK(reads == coldReads);
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  const auto execute = [&](const NativeModelRunnerSpec& spec) {
+    const auto runner = factory.create(spec);
+    const std::array<float, 2> input{2.0f, 3.0f};
+    NamedTensor value;
+    value.name = "X";
+    value.elementType = TensorElementType::Float32;
+    value.shape = {2};
+    value.payload.resize(sizeof(input));
+    std::memcpy(value.payload.data(), input.data(), sizeof(input));
+    RoleExecutionContext ctx;
+    ctx.sessionId = "canonical-call-fixture";
+    ctx.requestId = projection.requestId;
+    ctx.attemptEpoch = projection.attempt;
+    ctx.role = role.selectedRole;
+    ctx.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(plan.steps);
+    ctx.activeStep = std::shared_ptr<const NativeExecutionStepSpec>(ctx.roleSteps,
+                                                                   &ctx.roleSteps->at(0));
+    ctx.stepInputsBySlot.emplace("X", makeEncodedTensorBundle("X", {std::move(value)}));
+    const auto intermediate = runner->run(ctx);
+    ctx.activeStep = std::shared_ptr<const NativeExecutionStepSpec>(ctx.roleSteps,
+                                                                   &ctx.roleSteps->at(1));
+    ctx.stepInputsBySlot.clear();
+    ctx.stepInputsBySlot.emplace("H", intermediate.at("H"));
+    const auto outputs = runner->run(ctx);
+    const auto result = decodeTensorBundleViews(outputs.at("Y"));
+    BOOST_REQUIRE_EQUAL(result.size(), 1U);
+    BOOST_CHECK(result.front().elementType == TensorElementType::Float32);
+    BOOST_CHECK(result.front().shape == std::vector<std::int64_t>{2});
+    const std::array<float, 2> expected{8.0f, 18.0f};
+    BOOST_REQUIRE_EQUAL(result.front().payload.size(), sizeof(expected));
+    BOOST_CHECK(std::memcmp(result.front().payload.data(), expected.data(), sizeof(expected)) == 0);
+  };
+  execute(prepared);
+  execute(*warm);
+  BOOST_CHECK_EQUAL(warm->metadata.at(NATIVE_ONNX_ENTRY_TABLE),
+                    prepared.metadata.at(NATIVE_ONNX_ENTRY_TABLE));
+  {
+    std::ofstream changed(parent / table.back().relativeGraphPath,
+                          std::ios::binary | std::ios::app);
+    changed.put('\0');
+    BOOST_REQUIRE(changed.good());
+  }
+  BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(fetchers, projection, options, {}, {}));
+}
+
+BOOST_AUTO_TEST_CASE(SyntheticWanSizedEntryRunsWithExternalWeights)
+{
+  const auto* probe = std::getenv("NDNSF_DI_WAN_ENTRY_MEMORY_PROBE");
+  if (!probe) {
+    BOOST_TEST_MESSAGE("Set NDNSF_DI_WAN_ENTRY_MEMORY_PROBE to 1 or 2 to measure 314 MB entries");
+    return;
+  }
+  const std::string_view requested(probe);
+  BOOST_REQUIRE(requested == "1" || requested == "2");
+  const std::size_t entryCount = requested == "2" ? 2 : 1;
+
+  // Match the maximum selected DiT entry's parameter bytes with a synthetic
+  // MatMul and bias. Only one token is evaluated by this residency probe.
+  constexpr std::int64_t INPUT = 5120;
+  constexpr std::int64_t OUTPUT = 15360;
+  constexpr std::uint64_t WEIGHT_BYTES = INPUT * OUTPUT * sizeof(float);
+  constexpr std::uint64_t BIAS_BYTES = OUTPUT * sizeof(float);
+  constexpr char SIDECAR[] = "model.onnx.data";
+  auto scratch = ndnsf::test::makeTestScratchTemplate("ndnsf-wan-entry-memory");
+  BOOST_REQUIRE(::mkdtemp(scratch.data()));
+  const std::filesystem::path dir(scratch.data());
+  BOOST_SCOPE_EXIT_ALL(&dir) {
+    std::error_code error;
+    std::filesystem::remove_all(dir, error);
+  };
+  const auto writeValue = [] (std::ofstream& out, std::uint64_t element, float value) {
+    out.seekp(static_cast<std::streamoff>(element * sizeof(float)));
+    out.write(reinterpret_cast<const char*>(&value), sizeof(value));
+  };
+  {
+    std::ofstream out(dir / SIDECAR, std::ios::binary);
+    writeValue(out, 0, 2.0f);
+    writeValue(out, OUTPUT + 1, 3.0f);
+    writeValue(out, INPUT * OUTPUT - 1, 5.0f);
+    writeValue(out, INPUT * OUTPUT + 2, 4.0f);
+    writeValue(out, INPUT * OUTPUT + OUTPUT - 1, 1.0f);
+    out.close();
+    BOOST_REQUIRE(out.good());
+  }
+  BOOST_REQUIRE_EQUAL(std::filesystem::file_size(dir / SIDECAR), WEIGHT_BYTES + BIAS_BYTES);
+
+  onnx::ModelProto model;
+  model.set_ir_version(9);
+  model.add_opset_import()->set_version(17);
+  auto& graph = *model.mutable_graph();
+  const auto declarePort = [] (onnx::ValueInfoProto& port, const char* name, std::int64_t width) {
+    port.set_name(name);
+    auto& tensor = *port.mutable_type()->mutable_tensor_type();
+    tensor.set_elem_type(onnx::TensorProto::FLOAT);
+    tensor.mutable_shape()->add_dim()->set_dim_value(1);
+    tensor.mutable_shape()->add_dim()->set_dim_value(width);
+  };
+  declarePort(*graph.add_input(), "X", INPUT);
+  declarePort(*graph.add_output(), "Y", OUTPUT);
+  const auto weight = [&](const char* name, std::initializer_list<std::int64_t> shape,
+                          std::uint64_t offset, std::uint64_t bytes) {
+    auto& tensor = *graph.add_initializer();
+    tensor.set_name(name);
+    tensor.set_data_type(onnx::TensorProto::FLOAT);
+    for (auto dim : shape) tensor.add_dims(dim);
+    tensor.set_data_location(onnx::TensorProto::EXTERNAL);
+    for (const auto& [key, value] : std::map<std::string, std::string>{
+           {"location", SIDECAR}, {"offset", std::to_string(offset)},
+           {"length", std::to_string(bytes)}}) {
+      auto& field = *tensor.add_external_data();
+      field.set_key(key);
+      field.set_value(value);
+    }
+  };
+  weight("W", {INPUT, OUTPUT}, 0, WEIGHT_BYTES);
+  weight("B", {OUTPUT}, WEIGHT_BYTES, BIAS_BYTES);
+  const auto addNode = [&](const char* op, const char* input, const char* weight,
+                           const char* output) {
+    auto& node = *graph.add_node();
+    node.set_op_type(op);
+    node.add_input(input);
+    node.add_input(weight);
+    node.add_output(output);
+  };
+  addNode("MatMul", "X", "W", "H");
+  addNode("Add", "H", "B", "Y");
+  NativeModelRunnerSpec spec;
+  spec.role = "/fixture/wan/rank";
+  spec.backend = "onnxruntime";
+  spec.path = (dir / "model.onnx").string();
+  auto table = NativeJson::array();
+  auto steps = std::make_shared<std::vector<NativeExecutionStepSpec>>();
+  for (std::size_t index = 0; index < entryCount; ++index) {
+    const auto entryId = "projection-" + std::to_string(index);
+    graph.set_name(entryId);
+    const auto wire = model.SerializeAsString();
+    const auto graphDigest = digest(wire);
+    const auto entryFile = "entry-" + graphDigest.substr(7) + ".onnx";
+    std::ofstream out(dir / entryFile, std::ios::binary);
+    out.write(wire.data(), static_cast<std::streamsize>(wire.size()));
+    out.close();
+    BOOST_REQUIRE(out.good());
+    table.push_back({{"id", entryId}, {"file", entryFile}, {"digest", graphDigest},
+                     {"inputs", {"X"}}, {"outputs", {"Y"}}});
+    auto& step = steps->emplace_back();
+    step.unitId = spec.role;
+    step.stepId = step.artifactEntry = entryId;
+    step.operation = "CALL_SUBGRAPH";
+    step.inputSlots = {{"X", "float32", {std::int64_t{1}, INPUT}, graphDigest,
+                        "EPOCH_INPUT", {}, {}}};
+    step.outputSlots = {{"Y", "float32", {std::int64_t{1}, OUTPUT}, graphDigest,
+                         "LOCAL_STEP", {}, {}}};
+  }
+  spec.metadata[NATIVE_ONNX_ENTRY_TABLE] = nativeCanonicalJson(table);
+
+  const auto memory = [](const char* phase) {
+    std::ifstream status("/proc/self/status");
+    BOOST_REQUIRE(status.good());
+    unsigned fields = 0;
+    for (std::string line; std::getline(status, line);) {
+      if (line.rfind("VmRSS:", 0) == 0 || line.rfind("RssAnon:", 0) == 0 ||
+          line.rfind("VmHWM:", 0) == 0) {
+        BOOST_TEST_MESSAGE("Wan entry " << phase << " " << line);
+        ++fields;
+      }
+    }
+    BOOST_REQUIRE_EQUAL(fields, 3U);
+  };
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  memory("before-create");
+  auto runner = factory.create(spec);
+  memory("after-create");
+  RoleExecutionContext ctx;
+  ctx.sessionId = "synthetic-wan-sized-entry";
+  ctx.role = spec.role;
+  ctx.roleSteps = steps;
+  std::vector<float> input(INPUT, 0.0f), expected(OUTPUT, 0.0f);
+  input[0] = 3.0f;
+  input[1] = -1.0f;
+  input.back() = 2.0f;
+  expected[0] = 6.0f;
+  expected[1] = -3.0f;
+  expected[2] = 4.0f;
+  expected.back() = 11.0f;
+  NamedTensor tensor;
+  tensor.name = "X";
+  tensor.elementType = TensorElementType::Float32;
+  tensor.shape = {1, INPUT};
+  tensor.payload.resize(input.size() * sizeof(float));
+  std::memcpy(tensor.payload.data(), input.data(), tensor.payload.size());
+  ctx.stepInputsBySlot.emplace("X", makeEncodedTensorBundle("X", {std::move(tensor)}));
+  for (const auto* phase : {"first-run", "repeat-run"}) {
+    for (const auto& step : *ctx.roleSteps) {
+      ctx.activeStep = std::shared_ptr<const NativeExecutionStepSpec>(ctx.roleSteps, &step);
+      const auto output = runner->run(ctx);
+      const auto result = decodeTensorBundleViews(output.at("Y"));
+      BOOST_REQUIRE_EQUAL(result.size(), 1U);
+      BOOST_CHECK(result.front().elementType == TensorElementType::Float32);
+      BOOST_CHECK(result.front().shape == (std::vector<std::int64_t>{1, OUTPUT}));
+      BOOST_REQUIRE_EQUAL(result.front().payload.size(), expected.size() * sizeof(float));
+      BOOST_CHECK(std::memcmp(result.front().payload.data(), expected.data(),
+                             result.front().payload.size()) == 0);
+    }
+    memory(phase);
+  }
+  runner.reset();
+  memory("after-release");
+}
+
 BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
 {
   const auto fixture = findFixture();
@@ -1821,63 +2209,53 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   BOOST_CHECK(spoolPaths(lateOptions.cacheDir).empty());
   BOOST_CHECK(spoolPaths(lateOptions.cacheDir, "model.onnx.data").empty());
   std::filesystem::remove_all(lateOptions.cacheDir, cleanupError);
-  // The receipt is an authenticated continuation of the root binding, not a
-  // merely reachable index.  A root that points at a receipt with a foreign
-  // graph identity must fail before any selected bundle is assembled.
-  auto badReceiptJson = NativeJson::parse(receiptText);
-  badReceiptJson["graphDigest"] = zeroDigest('c');
-  const auto badReceiptText = nativeCanonicalJson(badReceiptJson);
-  const std::vector<std::uint8_t> badReceiptBytes(badReceiptText.begin(), badReceiptText.end());
-  auto badRootText = rootText;
-  const auto receiptDigestText = digest(receiptBytes);
-  const auto receiptDigestPosition = badRootText.find(receiptDigestText);
-  BOOST_REQUIRE_NE(receiptDigestPosition, std::string::npos);
-  badRootText.replace(receiptDigestPosition, receiptDigestText.size(), digest(badReceiptBytes));
-  const std::vector<std::uint8_t> badRootBytes(badRootText.begin(), badRootText.end());
-  auto badProjection = makeProjection(digest(badRootBytes), profileDigest,
-                                      identity.graphDigest, identity.initializerDigest);
-  badProjection.canonicalArtifactName = rootName.toUri();
-  badProjection.assembly.nodeIndices = projection.assembly.nodeIndices;
-  badProjection.assembly.canonicalInitializerDigest = identity.initializerDigest;
-  badProjection.assembly.maxAssembledBytes = projection.assembly.maxAssembledBytes;
-  badProjection.assembly.recipeDigest = recipeDigestFor(badProjection.assembly);
-  NativeCanonicalOnnxFetchers badFetchers = fetchers;
-  badFetchers.getArtifact = [rootName, badRootBytes] (const ndn::Name& name)
-    -> std::optional<ndn::Buffer> {
-    if (name != rootName) return std::nullopt;
-    return ndn::Buffer(badRootBytes.data(), badRootBytes.size());
+  const auto expectReceiptRejected = [&](const NativeJson& receipt, std::string_view code) {
+    const auto badReceipt = nativeCanonicalJson(receipt);
+    auto root = nativeParseJson(rootText);
+    root.at("metadata")["materialReceiptDigest"] = digest(badReceipt);
+    root.at("metadata")["materialReceiptBytes"] = badReceipt.size();
+    const auto badRoot = nativeCanonicalJson(root);
+    auto badProjection = projection;
+    badProjection.assembly.modelManifestDigest = digest(badRoot);
+    badProjection.assembly.recipeDigest = recipeDigestFor(badProjection.assembly);
+    NativeCanonicalOnnxFetchers badFetchers;
+    badFetchers.getArtifact = [&](const ndn::Name& name) -> std::optional<ndn::Buffer> {
+      if (name != rootName) return std::nullopt;
+      return ndn::Buffer(reinterpret_cast<const std::uint8_t*>(badRoot.data()), badRoot.size());
+    };
+    badFetchers.fetchEncryptedLargeData = [&](const ndn::Name& name, const ndn::Name& service)
+      -> std::optional<ndn::Buffer> {
+      if (service != ndn::Name("/LLM/Qwen")) return std::nullopt;
+      if (name == manifestName)
+        return ndn::Buffer(manifestBytes.data(), manifestBytes.size());
+      if (name == receiptName)
+        return ndn::Buffer(reinterpret_cast<const std::uint8_t*>(badReceipt.data()),
+                           badReceipt.size());
+      BOOST_ERROR("receipt should be rejected before reading " + name.toUri());
+      return std::nullopt;
+    };
+    auto badOptions = options;
+    badOptions.cacheDir = options.cacheDir + "-bad-receipt";
+    std::filesystem::remove_all(badOptions.cacheDir, cleanupError);
+    BOOST_CHECK_EXCEPTION(
+      prepareNativeCanonicalOnnxRole(badFetchers, badProjection, badOptions), std::runtime_error,
+      [&](const auto& error) { return std::string_view(error.what()).find(code) !=
+                                      std::string_view::npos; });
+    BOOST_CHECK(spoolPaths(badOptions.cacheDir).empty());
+    std::filesystem::remove_all(badOptions.cacheDir, cleanupError);
   };
-  badFetchers.fetchEncryptedLargeData = [=] (const ndn::Name& name, const ndn::Name& service)
-    -> std::optional<ndn::Buffer> {
-    if (service != ndn::Name("/LLM/Qwen")) return std::nullopt;
-    if (name == manifestName)
-      return ndn::Buffer(manifestBytes.data(), manifestBytes.size());
-    if (name == receiptName)
-      return ndn::Buffer(badReceiptBytes.data(), badReceiptBytes.size());
-    for (const auto& [payloadId, payloadName] : payloadNames) {
-      if (name != ndn::Name(payloadName))
-        continue;
-      const auto payload = std::find_if(
-        materialSource.materialManifest->payloads.begin(),
-        materialSource.materialManifest->payloads.end(),
-        [&] (const auto& item) { return item.payloadId == payloadId; });
-      if (payload == materialSource.materialManifest->payloads.end())
-        return std::nullopt;
-      return ndn::Buffer(payload->data(), payload->byteSize());
-    }
-    return std::nullopt;
-  };
-  auto badOptions = options;
-  badOptions.cacheDir = (std::filesystem::temp_directory_path() /
-                         "spec189-material-consumer-bad-receipt").string();
-  std::filesystem::remove_all(badOptions.cacheDir, cleanupError);
-  BOOST_CHECK_EXCEPTION(
-    prepareNativeCanonicalOnnxRole(badFetchers, badProjection, badOptions), std::runtime_error,
-    [] (const std::runtime_error& error) {
-      return std::string(error.what()).find("DI_CANONICAL_MATERIAL_RECEIPT_IDENTITY_MISMATCH") !=
-             std::string::npos;
-    });
-  std::filesystem::remove_all(badOptions.cacheDir, cleanupError);
+  auto badReceipt = nativeParseJson(receiptText);
+  badReceipt["graphDigest"] = zeroDigest('c');
+  expectReceiptRejected(badReceipt, "DI_CANONICAL_MATERIAL_RECEIPT_IDENTITY_MISMATCH");
+
+  badReceipt = nativeParseJson(receiptText);
+  auto& receiptRows = badReceipt.at("materialObjects");
+  const auto row = std::find_if(receiptRows.begin(), receiptRows.end(), [&](const auto& item) {
+    return item.at("payloadId") == materialSource.materialManifest->templatePayloadId;
+  });
+  BOOST_REQUIRE(row != receiptRows.end());
+  (*row)["digest"] = zeroDigest('d');
+  expectReceiptRejected(badReceipt, "DI_CANONICAL_MATERIAL_RECEIPT_MISMATCH");
   auto largeBundleReceipt = NativeJson::parse(receiptText);
   for (auto& object : largeBundleReceipt["materialObjects"]) {
     if (object.contains("bundleBytes"))

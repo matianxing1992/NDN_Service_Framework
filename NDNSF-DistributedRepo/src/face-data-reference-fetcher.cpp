@@ -528,7 +528,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
   }
 
   void
-  startStandard()
+  startStandard(const ndn::Data& firstPacket)
   {
     try {
       const auto transfer = std::make_shared<SegmentedTransfer>(
@@ -588,7 +588,9 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         options.rttOptions.maxRto);
       options.maxTimeout = std::min(options.maxTimeout,
         ndn::time::milliseconds(remaining.count()));
-      ndn::Interest interest(packetName(0));
+      // SegmentFetcher sets CanBePrefix on its probe. Keep that probe exact
+      // with the digest of the Data already received by the named fetch.
+      ndn::Interest interest(firstPacket.getFullName());
       interest.setMustBeFresh(false);
       if (!reference.forwardingHint.empty())
         interest.setForwardingHint({forwardingHint});
@@ -891,7 +893,7 @@ struct FetchState : std::enable_shared_from_this<FetchState>
         ++received;
       }
     }
-    if (promote) startStandard();
+    if (promote) startStandard(data);
     else launchWindow();
   }
 

@@ -1074,7 +1074,7 @@ def build(bld):
             di_library_use += ' ONNXRUNTIME'
         di_compile_use = di_library_use + (' TOKENIZER_BRIDGE' if bld.env.enable_shared else '')
         di_source_groups = [('ndnsf-di-core-objects', di_core_sources)]
-        for adapter in ('onnx', 'yolo', 'qwen'):
+        for adapter in ('onnx', 'yolo', 'qwen', 'wan'):
             di_source_groups.append((
                 'ndnsf-di-adapter-' + adapter + '-objects',
                 bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/' + adapter + '/*.cpp')))

@@ -401,6 +401,7 @@ public:
         const std::map<std::string, std::string>& stableTokens);
     void setUserToken(const std::string& userToken);
     void setPayload(ndn::Buffer& payload, size_t size);
+    void setPayload(ndn::Buffer&& payload);
     void setPayloadBlock(const ndn::Block& payloadBlock);
     void setPolicyEpoch(size_t policyEpoch);
     void setControllerVersion(const ControllerVersion& version);

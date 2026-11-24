@@ -423,6 +423,7 @@ void NativeRequestPreparation::validateRoleBindingsForCheckedCandidate(
   if (roles.size() != expected.size()) throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
   const auto postprocessing = nativeParseJson(candidate.postprocessingJson);
   for (const auto& role : roles) {
+    validateNativeOnnxEntrySelection(candidate.executionPlan, role);
     // The candidate, not an independently supplied role, owns postprocessing.
     // Keep the maintained egress-only projection for both ONNX and native merge.
     const bool egress = role.role == candidate.resultEgressRole;

@@ -513,7 +513,8 @@ NdnsfCollaborationDependencyIo::NdnsfCollaborationDependencyIo(
   std::shared_ptr<ProviderGroupCoordinator> groupCoordinator,
   std::shared_ptr<ProtectedRuntime> protectedRuntime,
   std::size_t prefetchWorkerCount,
-  std::shared_ptr<NativeWorkStatistics> workStatistics)
+  std::shared_ptr<NativeWorkStatistics> workStatistics,
+  std::uint64_t exactPacketDiskBudget)
   : m_ctx(ctx)
   , m_fetchTimeoutMs(fetchTimeoutMs)
   , m_maxSegmentSize(maxSegmentSize)
@@ -521,6 +522,7 @@ NdnsfCollaborationDependencyIo::NdnsfCollaborationDependencyIo(
   , m_groupCoordinator(std::move(groupCoordinator))
   , m_protectedRuntime(std::move(protectedRuntime))
   , m_workStatistics(std::move(workStatistics))
+  , m_exactPacketDiskBudget(exactPacketDiskBudget)
 {
   if (prefetchWorkerCount != 0) {
     m_prefetchWorkers = std::make_unique<ndn_service_framework::BoundedWorkerPool>(
@@ -1803,6 +1805,14 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       if (cached != m_tensorPublications.end()) {
         if (cached->second.fingerprint != fingerprint)
           throw std::invalid_argument("immutable tensor publication conflict");
+        if (cached->second.retainedMetrics) {
+          if (!m_ctx.hasRetainedExactData(ndn::Name(edge.manifestDataName)))
+            throw std::runtime_error("failed to reopen signed tensor originals");
+          attachTransferObservation(edge, bundle, "send", *cached->second.retainedMetrics);
+          if (!m_groupCoordinator->recordProgress(nowEpochMs()))
+            throw std::runtime_error("tensor retry group deadline or cancellation");
+          return;
+        }
         if (cached->second.manifest || !cached->second.originals.empty()) {
           CollaborationTransferMetrics retryMetrics;
           const auto& keyScope = edge.transportScope.empty() ? edge.scope : edge.transportScope;
@@ -1823,20 +1833,26 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       else {
         if (m_tensorPublications.size() >= MAX_ORIGINAL_OBJECTS)
           throw std::length_error("tensor original cache entry capacity");
-        if (m_tensorPublicationBytes >= MAX_ORIGINAL_BYTES)
+        if ((m_exactPacketDiskBudget == 0 || edge.segmentManifest) &&
+            m_tensorPublicationBytes >= MAX_ORIGINAL_BYTES)
           throw std::length_error("tensor original cache byte capacity");
-        cached = m_tensorPublications.emplace(objectName, CachedTensorPublication{fingerprint, {}, 0, {}}).first;
+        cached = m_tensorPublications.emplace(
+          objectName, CachedTensorPublication{fingerprint, {}, 0, {}, {}}).first;
       }
       auto& cachedPublication = cached->second;
+      const auto batchWireBudget = m_exactPacketDiskBudget == 0
+        ? MAX_ORIGINAL_BYTES - m_tensorPublicationBytes : MAX_ORIGINAL_BYTES;
       const auto accountOriginals = [&] {
-        if (cachedPublication.wireBytes == 0 && !cachedPublication.originals.empty()) {
+        if (m_exactPacketDiskBudget == 0 && cachedPublication.wireBytes == 0 &&
+            !cachedPublication.originals.empty()) {
           for (const auto& packet : cachedPublication.originals)
             cachedPublication.wireBytes += packet->wireEncode().size();
           m_tensorPublicationBytes += cachedPublication.wireBytes;
         }
       };
       const auto reservation = ndn::make_scope_exit([&] {
-        if (!cachedPublication.manifest && cachedPublication.originals.empty()) {
+        if (!cachedPublication.manifest && cachedPublication.originals.empty() &&
+            !cachedPublication.retainedMetrics) {
           m_tensorPublications.erase(cached);
         }
         else accountOriginals();
@@ -1858,7 +1874,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         exactNames);
 
       NativeWorkScope encodeWork(m_workStatistics, "tensor-segment-encode", NativeWorkKind::LOCAL);
-      auto encodedSegments = ProviderGroupCoordinator::encodeSegmentsCompact(sealed);
+      const auto encodedSegments = ProviderGroupCoordinator::encodeSegmentsCompact(sealed);
       encodeWork.finish();
 
       std::uint64_t numericProducerRank = 0;
@@ -1928,6 +1944,11 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
           ndn::Buffer(encodedSegments[index].begin(),
                       encodedSegments[index].end()));
       }
+      // The protected batch is ready for Core signing. Keep the same hard
+      // deadline and reject an expired group before exposing any exact Data.
+      if (!m_groupCoordinator->recordProgress(nowEpochMs())) {
+        throw std::runtime_error("NDNSF_DATA_V1 group deadline or cancellation before publication");
+      }
       CollaborationTransferMetrics transportMetrics;
       transportMetrics.localWorkObserver = detail::makeCollaborationWorkObserver(
         m_workStatistics, publicationInferenceEpochForEdge(edge));
@@ -1965,7 +1986,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
           published = m_ctx.publishOwnedExactData(
             edge.transportScope.empty() ? edge.scope : edge.transportScope,
             inlinePublications, m_freshnessMs, &transportMetrics,
-            cachedPublication.originals, MAX_ORIGINAL_BYTES - m_tensorPublicationBytes);
+            cachedPublication.originals, batchWireBudget, m_exactPacketDiskBudget);
         }
         catch (const std::invalid_argument&) {
           accountOriginals();
@@ -1978,12 +1999,18 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         if (!published && !m_ctx.publishOwnedExactData(
               edge.transportScope.empty() ? edge.scope : edge.transportScope,
               publications, m_freshnessMs, &transportMetrics,
-              cachedPublication.originals, MAX_ORIGINAL_BYTES - m_tensorPublicationBytes)) {
+              cachedPublication.originals, batchWireBudget, m_exactPacketDiskBudget)) {
           throw std::runtime_error("failed to publish exact signed NDNSF_DATA_V1 tensor object");
         }
       }
       catch (...) { accountOriginals(); throw; }
       accountOriginals();
+      const auto publishedPacketCount = cachedPublication.originals.size();
+      if (m_exactPacketDiskBudget != 0 && !edge.segmentManifest) {
+        cachedPublication.retainedMetrics = transportMetrics;
+        cachedPublication.retainedMetrics->localWorkObserver = {};
+        cachedPublication.originals.clear();
+      }
       if (m_workStatistics && m_workStatistics->epochProfilingEnabled()) {
         NativeWorkScope profileWork(m_workStatistics, "profile-tensor-envelope",
                                     NativeWorkKind::LOCAL);
@@ -2000,10 +2027,11 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
             {"manifestBytes", manifestWire.size()}, {"segments", encodedSegments.size()},
             {"publishedDataPackets", edge.segmentManifest ? 1 + encodedSegments.size() +
               ndn_service_framework::SegmentManifestVerifier::pageCountFor(
-                edge.segmentManifest->sourceSegments) : cachedPublication.originals.size()},
+                edge.segmentManifest->sourceSegments) : publishedPacketCount},
             {"segmentManifest", edge.segmentManifest.has_value()},
             {"certificateSignatures", transportMetrics.manifestCertificateSignatures},
-            {"inlineFirstSegment", cachedPublication.originals.size() == encodedSegments.size()}}));
+            {"inlineFirstSegment", !edge.segmentManifest &&
+              publishedPacketCount == encodedSegments.size()}}));
         }
         catch (...) {
           m_workStatistics->addCount("profile.tensorEnvelopeUnavailable", 1);

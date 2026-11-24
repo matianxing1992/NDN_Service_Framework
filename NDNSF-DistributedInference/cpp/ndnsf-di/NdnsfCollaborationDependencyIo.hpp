@@ -36,7 +36,8 @@ public:
     std::shared_ptr<ProviderGroupCoordinator> groupCoordinator = nullptr,
     std::shared_ptr<ProtectedRuntime> protectedRuntime = nullptr,
     std::size_t prefetchWorkerCount = 0,
-    std::shared_ptr<NativeWorkStatistics> workStatistics = {});
+    std::shared_ptr<NativeWorkStatistics> workStatistics = {},
+    std::uint64_t exactPacketDiskBudget = 0);
 
   ~NdnsfCollaborationDependencyIo() override;
 
@@ -78,6 +79,7 @@ private:
   std::shared_ptr<ProviderGroupCoordinator> m_groupCoordinator;
   std::shared_ptr<ProtectedRuntime> m_protectedRuntime;
   std::shared_ptr<NativeWorkStatistics> m_workStatistics;
+  const std::uint64_t m_exactPacketDiskBudget;
   // Invocation-owned immutable originals. A live entry is never evicted or
   // re-encrypted; changed plaintext or protection bindings fail explicitly.
   struct CachedTensorPublication {
@@ -86,6 +88,7 @@ private:
     std::size_t wireBytes = 0;
     std::shared_ptr<const ndn_service_framework::ServiceProvider::CollaborationContext::
       ExactManifestPublication> manifest;
+    std::optional<ndn_service_framework::CollaborationTransferMetrics> retainedMetrics;
   };
   std::mutex m_tensorPublicationMutex;
   std::map<ndn::Name, CachedTensorPublication> m_tensorPublications;

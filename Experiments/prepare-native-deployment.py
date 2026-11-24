@@ -56,7 +56,7 @@ def digest(data):
 def write_json(path, value):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with path.open("x") as stream:
-        json.dump(value, stream, indent=2, sort_keys=True)
+        json.dump(value, stream, sort_keys=True, separators=(',', ':'))
         stream.write("\n")
 
 
@@ -164,19 +164,28 @@ def ed25519_key(openssl, stem, env, root):
 
 
 def policy_text(identities, network, provider_roles, tp_base_role):
-    repo_services = [network["repo_service"] + "/" + op for op in REPO_OPERATIONS]
+    repo_services = ([network["repo_service"] + "/" + op for op in REPO_OPERATIONS]
+                     if "repo" in identities else [])
     def rule(kind, identity, services):
         return "{}-policy {{ for {} allow {{ {} }} }}".format(kind, identity, "\n".join(services))
-    providers = [rule("provider", identities["repo"], repo_services),
-                 rule("provider", identities["authority"], [network["artifact_service"]])]
+    def role_permission(role):
+        if role.startswith('/') and re.fullmatch(r'/[A-Za-z0-9/_.-]+', role):
+            return network["service"] + "/ROLE" + role
+        if re.fullmatch(r'[A-Za-z0-9_.-]+', role):
+            suffix = role if role.strip('.') else '...' + role
+            return network["service"] + "/ROLE/" + suffix
+        raise ValueError('Controller role requires an absolute Name or a safe single label')
+    providers = [rule("provider", identities["repo"], repo_services)] if repo_services else []
+    providers.append(rule("provider", identities["authority"], [network["artifact_service"]]))
     for actor, roles in provider_roles.items():
         scoped_roles = ([tp_base_role] if tp_base_role else []) + roles
         providers.append(rule("provider", identities[actor], [network["service"]] +
-            [network["service"] + "/ROLE" + role for role in scoped_roles] +
+            [role_permission(role) for role in scoped_roles] +
             ["/NDNSF/Network/Probe/v1"]))
     users = [rule("user", identities["requester"], repo_services + [
         network["service"], network["artifact_service"], "/NDNSF/Network/Probe/v1"])]
-    users += [rule("user", identities[actor], repo_services) for actor in provider_roles]
+    if repo_services:
+        users += [rule("user", identities[actor], repo_services) for actor in provider_roles]
     return ("name " + identities["controller"] + "/NDNSF/ControllerPolicy/v1\n" +
             "provider-policies {\n" + "\n".join(providers) + "\n}\n" +
             "user-policies {\n" + "\n".join(users) + "\n}\n")

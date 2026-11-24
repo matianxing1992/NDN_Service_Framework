@@ -740,6 +740,14 @@ const ModelManifest& PreparedModel::manifest() const noexcept
   return m_package ? m_package->manifest : empty;
 }
 
+std::string
+PreparedModel::modelIntentDigest() const
+{
+  if (!m_package)
+    throw DiError("INVALID_HANDLE", "local", "model", "prepared model is empty");
+  return m_package->catalog.model.descriptor.intentDigest();
+}
+
 const PreparationReceipt& PreparedModel::receipt() const noexcept
 {
   return m_receipt;
@@ -750,6 +758,14 @@ ModelCapabilities PreparedModel::capabilities() const
   if (!m_package)
     throw std::runtime_error("prepared model is empty");
   return m_package->capabilities;
+}
+
+std::size_t
+PreparedModel::maxPayloadBytes() const
+{
+  if (!m_package)
+    throw DiError("INVALID_HANDLE", "local", "model", "prepared model is empty");
+  return m_package->catalog.preparation->maxPayloadBytesFor(m_package->catalog.model.descriptor);
 }
 
 NativeApplicationInput PreparedModel::encodeInput(const Input& input) const
@@ -781,7 +797,7 @@ NativeApplicationInput PreparedModel::encodeInput(const Input& input) const
     try {
       const auto reference = nativeParseJson(input.m_reference.m_canonical);
       if (reference.at("plaintextSize").get<std::uint64_t>() >
-          m_package->catalog.preparation->maxPayloadBytesFor(m_package->catalog.model.descriptor))
+          maxPayloadBytes())
         throw DiError("INVALID_DATA_REFERENCE", "local", "input",
                       "repository plaintext size exceeds the verified adapter bound");
     }
@@ -836,6 +852,7 @@ NativeRequestOptions PreparedModel::projectOptions(const RequestOptions& options
   native.taskName = m_package->manifest.taskName;
   native.outputMode = options.outputMode.empty() ? "FULL" : options.outputMode;
   native.applicationRequestId = options.applicationRequestId;
+  native.maxInlineInputBytes = options.maxInlineInputBytes;
   for (const auto& providerName : options.providerNames) {
     try {
       const ndn::Name parsed(providerName);
@@ -1078,8 +1095,9 @@ RequestHandle PreparedModel::requestInternal(
       return RequestStatus::Failed;
     };
     state->result = [native](std::chrono::milliseconds timeout) {
-      const auto value = native->result(timeout);
-      return Result{value.payload, native->requestId(), value.modelDigest, value.planDigest};
+      auto value = native->result(timeout);
+      return Result{std::move(value.payload), native->requestId(),
+                    std::move(value.modelDigest), std::move(value.planDigest)};
     };
     state->cancel = [native] { native->cancel(); };
     state->deadline = native->deadline();

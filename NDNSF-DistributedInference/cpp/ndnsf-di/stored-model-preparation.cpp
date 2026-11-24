@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/material-receipt.hpp"
 
 #include <algorithm>
 #include <set>
@@ -15,7 +16,6 @@ using Reference = NativeCanonicalSource::MaterialReference;
 using Audience = std::set<std::string>;
 constexpr std::size_t MAX_OBJECTS = 4096;
 constexpr std::size_t METADATA_OBJECTS = 5;
-constexpr std::size_t MAX_CATALOG_BYTES = 4U << 20;
 
 void
 require(bool value)
@@ -37,16 +37,35 @@ struct Bundle
 };
 
 std::map<std::string, Audience>
-payloadAudiences(const Manifest& manifest, const NativeCanonicalRolePreparer::NodeMap& mapping,
-                 const std::function<void()>& current)
+payloadAudiences(const Manifest& manifest, const NativeJson& config,
+                 const NativeRequestCatalog& catalog, const std::function<void()>& current)
 {
   manifest.validate(current);
+  const auto mapping = config.at("node_mapping").get<NativeCanonicalRolePreparer::NodeMap>();
   require(!mapping.empty());
-  std::map<std::uint64_t, std::string> unitByNode;
+  const auto policy = config.at("publication").value("material_bundle_policy", std::string{});
+  const bool groupByRole = policy == "prepared-role-v1";
+  require(policy.empty() || groupByRole);
+  std::map<std::uint64_t, Audience> audienceByNode;
   for (const auto& item : mapping) {
     require(!item.first.empty() && !item.second.empty());
     for (const auto node : item.second)
-      require(unitByNode.emplace(node, item.first).second);
+      require(audienceByNode.emplace(node, groupByRole ? Audience{} : Audience{item.first}).second);
+  }
+  if (groupByRole) {
+    const auto& split = config.at("splitter");
+    require(split.at("kind") == "ONNX_SOURCE" && split.contains("step_template_v2") &&
+            catalog.planningCache && !catalog.planningCache->candidates.empty());
+    // Catalog roles authorize complete assignments independently of Provider or device.
+    for (const auto& prepared : catalog.planningCache->candidates) {
+      require(!prepared.roles.empty());
+      for (const auto& role : prepared.roles) {
+        current();
+        const auto owner = prepared.candidate.candidateDigest + "\n" + role.selectedRole;
+        for (const auto node : role.nodeIndices)
+          require(audienceByNode.at(node).insert(owner).second);
+      }
+    }
   }
   std::map<std::string, const Reference*> initializers;
   std::map<std::string, Audience> audience;
@@ -63,25 +82,33 @@ payloadAudiences(const Manifest& manifest, const NativeCanonicalRolePreparer::No
   for (const auto& reference : manifest.references) {
     current();
     if (reference.kind != "graph-node") continue;
-    require(nodes.insert(reference.nodeIndex).second && unitByNode.count(reference.nodeIndex));
-    const auto& unit = unitByNode.at(reference.nodeIndex);
-    audience[reference.payloadId].insert(unit);
+    require(nodes.insert(reference.nodeIndex).second && audienceByNode.count(reference.nodeIndex));
+    const auto& owners = audienceByNode.at(reference.nodeIndex);
+    audience[reference.payloadId].insert(owners.begin(), owners.end());
     for (const auto& dependency : reference.dependencies) {
       require(initializers.count(dependency));
       const auto& initializer = *initializers.at(dependency);
-      audience[initializer.payloadId].insert(unit);
-      for (const auto& chunk : initializer.chunkPayloadIds) audience[chunk].insert(unit);
+      audience[initializer.payloadId].insert(owners.begin(), owners.end());
+      for (const auto& chunk : initializer.chunkPayloadIds)
+        audience[chunk].insert(owners.begin(), owners.end());
     }
   }
-  require(templates == 1 && nodes.size() == unitByNode.size());
+  require(templates == 1 && nodes.size() == audienceByNode.size());
+  if (groupByRole) {
+    // A canonical Add replaced by native SUM may have no physical CALL owner.
+    // Keep such material separate from the graph template and every role.
+    for (auto& [id, owners] : audience) {
+      if (id != manifest.templatePayloadId && owners.empty())
+        owners.insert("unassigned");
+    }
+  }
   return audience;
 }
 
 std::vector<Bundle>
-planBundles(const Manifest& manifest, const NativeCanonicalRolePreparer::NodeMap& mapping,
+planBundles(const Manifest& manifest, const std::map<std::string, Audience>& audience,
             const std::function<void()>& current)
 {
-  const auto audience = payloadAudiences(manifest, mapping, current);
   require(manifest.payloadsComplete);
   // Template bytes are needed by every role and must not share an encryption key with weights.
   std::map<Audience, std::vector<std::size_t>> groups;
@@ -115,11 +142,13 @@ planBundles(const Manifest& manifest, const NativeCanonicalRolePreparer::NodeMap
 std::string
 sourceFreeConfiguration(const std::string& configuration)
 {
-  require(configuration.size() <= MAX_CATALOG_BYTES);
+  require(configuration.size() <= NATIVE_REQUEST_CATALOG_MAX_BYTES);
   auto value = nativeParseJson(configuration);
-  require(value.is_object() && value.at("schema") == "ndnsf-di-native-request-catalog-v1" &&
-          (value.at("splitter").at("kind") == "QWEN" ||
-           value.at("splitter").at("kind") == "LLAMA"));
+  require(value.is_object() && value.at("schema") == "ndnsf-di-native-request-catalog-v1");
+  const auto& split = value.at("splitter");
+  const auto& kind = split.at("kind");
+  require(kind == "QWEN" || kind == "LLAMA" ||
+          (kind == "ONNX_SOURCE" && split.contains("step_template_v2")));
   const auto& original = value.at("source");
   NativeJson source = NativeJson::object();
   for (const auto* key : {"data_name", "digest", "model_manifest_digest",
@@ -166,7 +195,8 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
   bool importLegacyJournal, const NativeStoredModelHandleOutput* output)
 {
-  require(loadCatalog && io.requireCurrent && configurationJson.size() <= MAX_CATALOG_BYTES);
+  require(loadCatalog && io.requireCurrent &&
+          configurationJson.size() <= NATIVE_REQUEST_CATALOG_MAX_BYTES);
   io.requireCurrent();
   const auto configuration = sourceFreeConfiguration(configurationJson);
   const auto catalogId = "catalog-" + nativePlanningDigest(configuration).substr(7);
@@ -190,6 +220,18 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
       {"materialIdentityDigest", manifest.manifestDigest},
       {"materialManifestDigest", nativePlanningDigest(materialJson)},
       {"materialObjects", std::move(objectRows)}});
+    if (config.at("publication").contains("material_bundle_policy")) {
+      require(catalog.planningCache != nullptr);
+      for (const auto& prepared : catalog.planningCache->candidates) {
+        for (const auto& role : prepared.roles) {
+          io.requireCurrent();
+          if (materialJson.size() > role.maxSourceBytes || receipt.size() > role.maxSourceBytes ||
+              !nativeCanonicalMaterialParseReservation(materialJson.size(), receipt.size(),
+                                                       role.maxAssembledBytes))
+            throw std::invalid_argument("DI_STORED_PREPARATION_MATERIAL_METADATA_BUDGET");
+        }
+      }
+    }
     const auto& model = catalog.model;
     NativeJson facts{{"canonicalSourceBytes", model.canonicalSourceBytes},
       {"canonicalSourceDigest", model.canonicalSourceDigest}, {"materialBacked", true},
@@ -233,7 +275,7 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
     // This API exposes an ownership fence rather than a separate deadline.
     const NativeAssemblyControl metadataControl{
       std::chrono::steady_clock::time_point::max(), io.requireCurrent, 0,
-      NativeCanonicalMaterialPublicationMaxBytes};
+      NATIVE_PREPARED_METADATA_MAX_BYTES};
     validateNativePreparedMetadataVersion(nativeParseJson(source->preparedMetadataJson), metadataControl);
     options = catalog.preparation->publicationFor(catalog.model.descriptor);
     require(nativeCanonicalPublicationIdentity(nativeParseJson(configurationJson)) ==
@@ -247,11 +289,12 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
     const auto mapping = config.at("node_mapping").get<NativeCanonicalRolePreparer::NodeMap>();
     require(mapping.size() == catalog.model.graph.nodes.size());
     for (const auto& node : catalog.model.graph.nodes) require(mapping.count(node.id));
-    bundles = planBundles(manifest, mapping, io.requireCurrent);
+    bundles = planBundles(manifest, payloadAudiences(manifest, config, catalog, io.requireCurrent),
+                          io.requireCurrent);
     require(!bundles.empty());
     materialJson = manifest.canonicalJson();
     require(materialJson.size() <= NativeCanonicalMaterialPublicationMaxBytes &&
-            source->preparedMetadataJson.size() <= NativeCanonicalMaterialPublicationMaxBytes);
+            source->preparedMetadataJson.size() <= NATIVE_PREPARED_METADATA_MAX_BYTES);
     NativeJson plannedRows = NativeJson::array();
     const auto placeholderDigest = nativePlanningDigest("stored-bundle-preflight");
     for (const auto& bundle : bundles) {
@@ -338,9 +381,11 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
 
 NativeStoredPreparedModel
 nativeOpenStoredPreparedModel(const NativeStoredModelHandle& handle,
-  const NativeStoredModelPacketIo& io, const NativeAssemblyControl& control)
+  const NativeStoredModelPacketIo& io, const NativeAssemblyControl& control,
+  std::size_t maxCatalogBytes)
 {
   control.requireActive();
+  require(maxCatalogBytes > 0 && maxCatalogBytes <= NATIVE_REQUEST_CATALOG_MAX_BYTES);
   auto objects = nativeLoadStoredModelCatalog(handle, io);
   const auto& catalogId = objects.catalogId();
   require(catalogId.size() == 72 && catalogId.compare(0, 8, "catalog-") == 0 &&
@@ -348,8 +393,9 @@ nativeOpenStoredPreparedModel(const NativeStoredModelHandle& handle,
   require(objects.objects().size() > METADATA_OBJECTS);
   for (const auto& item : objects.objects()) {
     const auto& id = item.first;
-    const auto limit = id == catalogId ? MAX_CATALOG_BYTES :
-      (id == "business-root" ? 4096 : NativeCanonicalMaterialPublicationMaxBytes);
+    const auto limit = id == catalogId ? maxCatalogBytes :
+      (id == "business-root" ? 4096 : (id == "prepared-metadata" ?
+        NATIVE_PREPARED_METADATA_MAX_BYTES : NativeCanonicalMaterialPublicationMaxBytes));
     require(item.second.object.plaintextBytes <= limit &&
       (id == catalogId || id == "business-root" || id == "prepared-metadata" ||
        id == "material-manifest" || id == "material-receipt" ||
@@ -409,8 +455,10 @@ nativeOpenStoredPreparedModel(const NativeStoredModelHandle& handle,
             rows.at(reference.payloadId)->at("bytes") == reference.bytes);
   }
   require(requiredIds.size() == rows.size());
-  const auto audiences = payloadAudiences(*source.materialManifest,
-    config.at("node_mapping").get<NativeCanonicalRolePreparer::NodeMap>(), io.requireCurrent);
+  publication.materialManifest = source.materialManifest;
+  auto catalog = NativeRequestCatalog::load(configuration, std::move(source), control);
+  const auto audiences = payloadAudiences(*publication.materialManifest, config, catalog,
+    [&] { control.requireActive(); });
   require(audiences.size() == rows.size());
   std::map<ndn::Name, std::vector<std::pair<std::uint64_t, std::uint64_t>>> ranges;
   std::map<ndn::Name, Audience> bundleAudiences;
@@ -463,10 +511,8 @@ nativeOpenStoredPreparedModel(const NativeStoredModelHandle& handle,
   publication.rootDataName = objects.objects().at("business-root").object.name.toUri(
     ndn::name::UriFormat::CANONICAL);
   publication.artifactProfileDigest = root.at("artifactProfileDigest");
-  publication.materialManifest = source.materialManifest;
   publication.rollbackOwned = false;
   publication.validate();
-  auto catalog = NativeRequestCatalog::load(configuration, std::move(source), control);
   if (catalog.model.canonicalInitializerBytes) {
     require(facts.at("canonicalInitializerBytes") == catalog.model.canonicalInitializerBytes &&
             facts.at("canonicalInitializerObjectDigest") ==

@@ -48,6 +48,12 @@ struct RepoFixture
       std::filesystem::perm_options::replace, error);
     if (error)
       throw std::runtime_error("unable to make Repo fixture root private: " + error.message());
+    reopen();
+  }
+
+  void reopen()
+  {
+    repo.reset();
     StorageCapability capability;
     capability.repoNode = "/spec189/local-repo";
     capability.freeBytes = 16U * 1024U * 1024U;
@@ -213,9 +219,7 @@ BOOST_AUTO_TEST_CASE(RepoSourceMissReusesValidatedInitializer)
 
   const auto first = provider.load(request, fallback);
   BOOST_CHECK_EQUAL(fallbackCalls, 1U);
-  BOOST_REQUIRE(first.initializerBytes.has_value());
-  BOOST_CHECK_EQUAL_COLLECTIONS(first.initializerBytes->begin(), first.initializerBytes->end(),
-                               initializerBytes.begin(), initializerBytes.end());
+  BOOST_CHECK(!first.initializerBytes);
   BOOST_REQUIRE(first.initializerRangeSource);
   BOOST_CHECK_EQUAL(first.initializerRangeSource->size(), initializerBytes.size());
   const auto firstRange = first.initializerRangeSource->read(0, initializerBytes.size());
@@ -230,11 +234,76 @@ BOOST_AUTO_TEST_CASE(RepoSourceMissReusesValidatedInitializer)
     return NativeCanonicalSource{};
   });
   BOOST_CHECK_EQUAL(fallbackCalls, 1U);
-  BOOST_REQUIRE(second.initializerBytes.has_value());
-  BOOST_CHECK_EQUAL_COLLECTIONS(second.initializerBytes->begin(), second.initializerBytes->end(),
-                               initializerBytes.begin(), initializerBytes.end());
+  BOOST_CHECK(!second.initializerBytes);
   BOOST_REQUIRE(second.initializerRangeSource);
   BOOST_CHECK_EQUAL(second.initializerRangeSource->size(), initializerBytes.size());
+  BOOST_CHECK(second.initializerRangeSource->read(0, initializerBytes.size()) == initializerBytes);
+}
+
+BOOST_AUTO_TEST_CASE(RangeOnlyInitializerLoadsPublishesAndReopensWithoutFallback)
+{
+  RepoFixture fixture;
+  PublicationInput input;
+  std::vector<std::uint8_t> bytes((2U << 20) + 3, 0x57);
+  bytes.front() = 0x19;
+  bytes.back() = 0xa3;
+  const auto file = fixture.root / "input.bin";
+  {
+    std::ofstream output(file, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    BOOST_REQUIRE(output.good());
+  }
+  input.model.canonicalInitializerBytes = bytes.size();
+  input.model.canonicalInitializerObjectDigest = nativePlanningDigest(bytes.data(), bytes.size());
+  const NativeAssemblyControl control{
+    input.control.deadline, [] {}, 4U << 20, 4U << 20};
+  input.source.initializerRangeSource = openNativeCanonicalInitializerFile(
+    file.string(), bytes.size(), input.model.canonicalInitializerObjectDigest, control);
+  const auto sourceName = "/spec189/range/source";
+  const NativeJson catalog{{"source", {
+    {"data_name", sourceName}, {"digest", input.model.canonicalSourceDigest},
+    {"bytes", input.source.modelBytes.size()}, {"initializer_bytes", bytes.size()},
+    {"initializer_digest", input.model.canonicalInitializerObjectDigest}}}};
+  RepositorySourceRequest request{"range", nativeCanonicalJson(catalog), 4U << 20,
+                                  input.control.deadline};
+  std::size_t calls = 0;
+  const auto fallback = [&] (const RepositorySourceRequest&) {
+    ++calls;
+    return input.source;
+  };
+  NativePreparedCanonicalPublication receipt;
+  {
+    RepoSourceProvider provider(fixture.repo);
+    const auto loaded = provider.load(request, fallback);
+    BOOST_CHECK(!loaded.initializerBytes);
+    BOOST_REQUIRE(loaded.initializerRangeSource);
+    BOOST_CHECK_EQUAL(nativeCanonicalInitializerDigest(loaded, control),
+                      input.model.canonicalInitializerObjectDigest);
+    receipt = provider.publish("range", "/service", input.model, loaded,
+                                input.options, input.control);
+    BOOST_CHECK(!receipt.initializerDataName.empty());
+    BOOST_CHECK_EQUAL(fixture.repo->getManifest(receipt.initializerDataName).size, bytes.size());
+    const auto hit = provider.publish("range", "/service", input.model, loaded,
+                                      input.options, input.control);
+    BOOST_CHECK_EQUAL(hit.manifestDigest, receipt.manifestDigest);
+    BOOST_CHECK_EQUAL(provider.stats().publicationHits, 1U);
+  }
+  BOOST_CHECK_EQUAL(calls, 1U);
+  // A new store instance must find persisted bytes without the writer's index.
+  fixture.reopen();
+  RepoSourceProvider reopened(fixture.repo);
+  const auto loaded = reopened.load(request, [&] (const RepositorySourceRequest&) {
+    ++calls;
+    throw std::runtime_error("reopened initializer must come from Repo");
+    return NativeCanonicalSource{};
+  });
+  BOOST_CHECK_EQUAL(calls, 1U);
+  BOOST_CHECK(!loaded.initializerBytes);
+  BOOST_CHECK_EQUAL(nativeCanonicalInitializerDigest(loaded, control),
+                    input.model.canonicalInitializerObjectDigest);
+  BOOST_CHECK(fixture.repo->getRange(receipt.initializerDataName, {bytes.size() - 3, 3}) ==
+              std::vector<std::uint8_t>(bytes.end() - 3, bytes.end()));
+  BOOST_CHECK(std::filesystem::is_regular_file(file));
 }
 
 BOOST_AUTO_TEST_CASE(LegacyCanonicalReceiptWithoutLayersStillReuses)

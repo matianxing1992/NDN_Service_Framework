@@ -45,6 +45,12 @@ inline constexpr char kNdnSf182ResponseMagic[8] = {'N', 'D', 'I', '1', '8', '2',
 
 // Response metadata cap preserved from the old helper (MaxHelperMetadataBytes).
 inline constexpr std::size_t kNativeOnnxWorkerMaxMetadataBytes = 65536;
+inline constexpr std::size_t kNativeOnnxWorkerMaxRequestMetadataBytes = 256 * 1024;
+// File-backed roles carry dense node indices and full named tensor port
+// contracts. The tiled 81-frame Wan VAE needs up to 3.23 MB in either request
+// and 1.18 MB in either result.
+inline constexpr std::size_t kNativeOnnxWorkerMaxFileRequestMetadataBytes = 4 * 1024 * 1024;
+inline constexpr std::size_t kNativeOnnxWorkerMaxFileResultMetadataBytes = 2 * 1024 * 1024;
 
 // Result JSON schemas written by the worker child.
 inline constexpr const char* kNativeOnnxAssemblyResultSchema =
@@ -130,7 +136,7 @@ private:
 
 /**
  * Incremental response-frame decoder used by the parent.  Bounds the metadata
- * at kNativeOnnxWorkerMaxMetadataBytes and rejects bytes beyond the frame.
+ * at the limit for its response status and rejects bytes beyond the frame.
  */
 class NativeOnnxResponseDecoder
 {

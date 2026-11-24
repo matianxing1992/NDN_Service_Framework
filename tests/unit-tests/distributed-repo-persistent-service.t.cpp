@@ -4349,6 +4349,94 @@ BOOST_AUTO_TEST_CASE(OwnedInsertRespectsFundedQuotaBeforePublishingOriginalPacke
   BOOST_CHECK(fixture.node->core().list().empty());
 }
 
+BOOST_AUTO_TEST_CASE(OwnedInsertRestartCancelsOnlyPhysicallyConfirmedAbsentReservation)
+{
+  OwnedPacketFixture fixture;
+  const auto operation = fixture.request.operationId;
+  const auto& reference = fixture.request.reference;
+  {
+    SqliteArtifactMetadataStore journal((fixture.temp.path() / "metadata.sqlite3").string());
+    BOOST_REQUIRE(journal.reconcileUserStorageInventory("/repo/a", {}, fixture.now()).ready);
+    const RepoUserStorageObject reserved{reference.objectName, reference.expectedSha256,
+      fixture.request.generation, reference.expectedSize, 64};
+    journal.reserveUserStorage("/provider/a", "/repo/a", "/owner/a",
+      fixture.request.storageBinding.grantId, operation, reserved, fixture.now());
+    BOOST_CHECK_GT(fixture.usage().reservedBytes, 0U);
+  }
+  fixture.provider.reset();
+  fixture.node.reset();
+  {
+    DirectoryFsyncFailureScope failure;
+    BOOST_CHECK_THROW(fixture.open(), std::exception);
+  }
+  {
+    SqliteArtifactMetadataStore journal((fixture.temp.path() / "metadata.sqlite3").string());
+    const auto pending = journal.lookupUserStorageWrite("/repo/a", "/owner/a", operation);
+    BOOST_REQUIRE(pending);
+    BOOST_CHECK(pending->state == RepoUserStorageWriteState::RESERVED);
+    BOOST_CHECK_GT(pending->reservedBytes, 0U);
+  }
+  fixture.open();
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+  {
+    SqliteArtifactMetadataStore journal((fixture.temp.path() / "metadata.sqlite3").string());
+    const auto previous = journal.lookupUserStorageWrite("/repo/a", "/owner/a", operation);
+    BOOST_REQUIRE(previous);
+    BOOST_CHECK(previous->state == RepoUserStorageWriteState::CANCELLED);
+    BOOST_CHECK(journal.pendingUserStorageWrites("/repo/a").empty());
+  }
+  // The cancelled operation remains terminal; the next attempt has its own ID.
+  const auto replay = fixture.node->insertWirePackets(fixture.request, fixture.packets, "/provider/a");
+  BOOST_CHECK_EQUAL(replay.state, "FAILED");
+  fixture.request.operationId = "owned-original-retry";
+  const auto retried = fixture.node->insertWirePackets(fixture.request, fixture.packets, "/provider/a");
+  BOOST_REQUIRE_MESSAGE(retried.state == "DONE", retried.message);
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, 0U);
+  BOOST_CHECK_GT(fixture.usage().committedBytes, 0U);
+  fixture.node.reset();
+  fixture.open();
+  for (std::size_t i = 0; i < fixture.packets.size(); ++i) {
+    const auto name = reference.packetSetMetadata->packetNames.at(i);
+    BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(ndn::Name(name))) == fixture.packets[i]);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(OwnedInsertRestartRetainsReservationWhenUnknownStagingRemains)
+{
+  OwnedPacketFixture fixture;
+  const auto& reference = fixture.request.reference;
+  {
+    SqliteArtifactMetadataStore journal((fixture.temp.path() / "metadata.sqlite3").string());
+    BOOST_REQUIRE(journal.reconcileUserStorageInventory("/repo/a", {}, fixture.now()).ready);
+    const RepoUserStorageObject reserved{reference.objectName, reference.expectedSha256,
+      fixture.request.generation, reference.expectedSize, 64};
+    journal.reserveUserStorage("/provider/a", "/repo/a", "/owner/a",
+      fixture.request.storageBinding.grantId, fixture.request.operationId, reserved, fixture.now());
+  }
+  const auto charged = fixture.usage().reservedBytes;
+  const auto stage = fixture.temp.path() / "objects/staging" /
+    (reference.expectedSha256 + ".99.part");
+  {
+    std::ofstream output(stage);
+    output << "unknown restart staging";
+    BOOST_REQUIRE(output.good());
+  }
+  fixture.provider.reset();
+  fixture.node.reset();
+  fixture.open();
+  BOOST_CHECK(std::filesystem::exists(stage));
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, charged);
+  BOOST_CHECK_EQUAL(fixture.usage().committedBytes, 0U);
+  fixture.request.operationId = "owned-original-blocked-retry";
+  const auto blocked = fixture.node->insertWirePackets(fixture.request, fixture.packets, "/provider/a");
+  BOOST_CHECK_EQUAL(blocked.state, "FAILED");
+  BOOST_CHECK_EQUAL(blocked.message, "repo-user-storage-reconciliation-required");
+  BOOST_CHECK(fixture.node->core().list().empty());
+  BOOST_CHECK(std::filesystem::exists(stage));
+  BOOST_CHECK_EQUAL(fixture.usage().reservedBytes, charged);
+}
+
 BOOST_AUTO_TEST_CASE(OwnedInsertRestartRecoversPhysicalCommitBeforeClaimPublication)
 {
   OwnedPacketFixture fixture;
@@ -4766,7 +4854,10 @@ BOOST_AUTO_TEST_CASE(PersistentOriginalReadUsesAcceptedHolderAndStandardInterest
   BOOST_REQUIRE_EQUAL(fixture.insert().state, "DONE");
   const auto& wire = fixture.packets.back();
   const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
-  BOOST_CHECK(fixture.node->getDataPacket(ndn::Interest(packet.getFullName())) == wire);
+  // SegmentFetcher sets CanBePrefix even when its probe identifies a full Data Name.
+  ndn::Interest bootstrap(packet.getFullName());
+  bootstrap.setCanBePrefix(true);
+  BOOST_CHECK(fixture.node->getDataPacket(bootstrap) == wire);
   ndn::Name wrong = packet.getName();
   const std::vector<uint8_t> digest(32, 0);
   wrong.appendImplicitSha256Digest(ndn::span<const uint8_t>(digest.data(), digest.size()));
@@ -4802,7 +4893,8 @@ BOOST_AUTO_TEST_CASE(PersistentOriginalFaceServesExactWireAndBoundsPendingWorkTh
     } while (std::chrono::steady_clock::now() < deadline);
     return complete();
   };
-  fixture.node->registerOriginalDataServing(face);
+  const ndn::Name syncGroup("/repo-test/group");
+  fixture.node->registerOriginalDataServing(face, syncGroup);
   BOOST_REQUIRE(pumpUntil([&] { return fixture.node->isOriginalDataServingReady(); }));
   const auto pending = RepoNodeTestAccess::pending(*fixture.node);
   const auto [pendingBytes, byteLimit] = RepoNodeTestAccess::pendingBytes(*fixture.node);
@@ -4818,12 +4910,17 @@ BOOST_AUTO_TEST_CASE(PersistentOriginalFaceServesExactWireAndBoundsPendingWorkTh
     [](const ndn::Interest&, const ndn::Data&) {},
     [](const ndn::Interest&, const ndn::lp::Nack&) {},
     [](const ndn::Interest&) {});
+  for (const auto version : {2, 3}) {
+    ndn::Interest sync(ndn::Name(syncGroup).appendVersion(version));
+    sync.setApplicationParameters("state-vector");
+    face.receive(sync);
+  }
   auto dispatched = std::make_shared<bool>(false);
   boost::asio::post(face.getIoContext(), [&face, dispatched] {
     boost::asio::post(face.getIoContext(), [dispatched] { *dispatched = true; });
   });
   BOOST_REQUIRE(pumpUntil([&] { return *dispatched; }));
-  // Locally expressed fetches must not loop into Repo's own serving worker.
+  // Neither local fetches nor this group's Sync Interests belong in the read queue.
   BOOST_CHECK_EQUAL(RepoNodeTestAccess::admission(*fixture.node).first, 0U);
   local.cancel();
   received->clear();

@@ -118,6 +118,9 @@ struct NativeExecutionStepSpec
   std::vector<std::string> localStateSlots;
   // Half-open interval of source model layers owned by this step, if declared.
   std::pair<std::uint64_t, std::uint64_t> sourceLayers{};
+  // Canonical source node selection for stateless ONNX CALLs. Its owning
+  // role's assembly recipe independently restricts the union of these cuts.
+  std::vector<std::uint64_t> onnxNodeIndices;
 
   void validate() const;
 };

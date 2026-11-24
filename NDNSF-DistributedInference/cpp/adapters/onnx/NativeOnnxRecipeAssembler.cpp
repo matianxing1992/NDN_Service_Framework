@@ -4,9 +4,12 @@
 #include "automatic-onnx-inference.hpp"
 #include "native-onnx-source-transform.hpp"
 #include "onnx-tensor-type.hpp"
+#include "native-onnx-entry-extraction.hpp"
+#include "prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-owned-initializer-file.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
 
@@ -688,6 +691,58 @@ std::vector<std::uint8_t> deterministicMessageVector(const google::protobuf::Mes
   return bytes;
 }
 
+using ValueNames = std::set<std::string_view>;
+
+ValueNames
+collectGraphCaptures(const onnx::GraphProto& graph, std::size_t depth);
+
+void
+collectNodeCaptures(const onnx::NodeProto& node, std::size_t depth, ValueNames& names)
+{
+  const auto insert = [&] (const onnx::GraphProto& graph) {
+    const auto captured = collectGraphCaptures(graph, depth + 1);
+    names.insert(captured.begin(), captured.end());
+  };
+  for (const auto& attribute : node.attribute()) {
+    if (attribute.has_g()) insert(attribute.g());
+    for (const auto& graph : attribute.graphs()) insert(graph);
+  }
+}
+
+ValueNames
+collectGraphCaptures(const onnx::GraphProto& graph, std::size_t depth)
+{
+  if (depth > 64) fail("GRAPH_SCOPE_DEPTH");
+  ValueNames local;
+  for (const auto& input : graph.input()) local.insert(input.name());
+  for (const auto& tensor : graph.initializer()) local.insert(tensor.name());
+  for (const auto& tensor : graph.sparse_initializer()) local.insert(tensor.values().name());
+  for (const auto& node : graph.node()) {
+    for (const auto& output : node.output()) local.insert(output);
+  }
+  ValueNames used;
+  for (const auto& node : graph.node()) {
+    for (const auto& input : node.input()) used.insert(input);
+    collectNodeCaptures(node, depth, used);
+  }
+  for (const auto& output : graph.output()) used.insert(output.name());
+  for (const auto name : local) used.erase(name);
+  used.erase(std::string_view{});
+  return used;
+}
+
+// Preserve explicit input order and multiplicity in existing planning metadata.
+template<typename Visitor>
+void
+visitNodeDependencies(const onnx::NodeProto& node, Visitor&& visit)
+{
+  for (const auto& input : node.input()) visit(std::string_view(input));
+  ValueNames captured;
+  collectNodeCaptures(node, 0, captured);
+  for (const auto& input : node.input()) captured.erase(input);
+  for (const auto name : captured) visit(name);
+}
+
 // Reverse DFS from one requested output tensor, stopping at graph input and
 // declared role-boundary names; node producers are exact matches on the node
 // output list, exactly like utils.py _dfs_search_reachable_nodes.  Every
@@ -713,8 +768,10 @@ dfsReachNodes(const std::string& outputName,
     unreachable.erase(index);
   }
   for (const std::size_t index : producers) {
-    for (const auto& input : nodes.Get(static_cast<int>(index)).input())
-      dfsReachNodes(input, graphInputNames, nodes, unreachable, reachable);
+    visitNodeDependencies(nodes.Get(static_cast<int>(index)), [&] (std::string_view input) {
+      if (!input.empty())
+        dfsReachNodes(std::string(input), graphInputNames, nodes, unreachable, reachable);
+    });
   }
 }
 
@@ -779,6 +836,77 @@ collectBoundaryIo(const google::protobuf::RepeatedPtrField<onnx::ValueInfoProto>
   return result;
 }
 
+std::int32_t
+materialDtypeCode(const std::string& value)
+{
+  static const std::map<std::string, std::int32_t> labels{
+    {"float32", onnx::TensorProto::FLOAT},
+    {"uint8", onnx::TensorProto::UINT8},
+    {"int8", onnx::TensorProto::INT8},
+    {"uint16", onnx::TensorProto::UINT16},
+    {"int16", onnx::TensorProto::INT16},
+    {"int32", onnx::TensorProto::INT32},
+    {"int64", onnx::TensorProto::INT64},
+    {"string", onnx::TensorProto::STRING},
+    {"bool", onnx::TensorProto::BOOL},
+    {"float16", onnx::TensorProto::FLOAT16},
+    {"float64", onnx::TensorProto::DOUBLE},
+    {"uint32", onnx::TensorProto::UINT32},
+    {"uint64", onnx::TensorProto::UINT64},
+    {"complex64", onnx::TensorProto::COMPLEX64},
+    {"complex128", onnx::TensorProto::COMPLEX128},
+    {"bfloat16", onnx::TensorProto::BFLOAT16}};
+  const auto named = labels.find(value);
+  if (named != labels.end()) return named->second;
+  if (value.empty() || !std::all_of(value.begin(), value.end(), [] (unsigned char c) {
+        return std::isdigit(c) != 0;
+      }))
+    fail("MATERIAL_BOUNDARY");
+  try {
+    const auto parsed = std::stoll(value);
+    if (parsed < 0 || parsed > std::numeric_limits<std::int32_t>::max())
+      fail("MATERIAL_BOUNDARY");
+    return static_cast<std::int32_t>(parsed);
+  }
+  catch (const std::exception&) {
+    fail("MATERIAL_BOUNDARY");
+  }
+}
+
+onnx::ValueInfoProto
+makeMaterialValueInfo(const NativeAssemblyTensorContractV3& contract)
+{
+  onnx::ValueInfoProto value;
+  value.set_name(contract.name);
+  auto* tensor = value.mutable_type()->mutable_tensor_type();
+  tensor->set_elem_type(materialDtypeCode(contract.dtype));
+  // An empty contract shape records an authenticated source tensor whose
+  // metadata carried no rank (ONNX value_info without a shape field).  The
+  // wire contract cannot distinguish that from a rank-0 scalar, so leave
+  // the shape field absent: an empty TensorShapeProto would assert a
+  // scalar boundary type, and ONNX consumers such as Reshape reject a
+  // rank-0 shape input ("shape input must be 1D tensor").  Unknown rank
+  // keeps the role boundary consistent with compareBoundaryContracts(),
+  // which compares the dimension count only.
+  if (!contract.shape.empty()) {
+    auto* shape = tensor->mutable_shape();
+    for (const auto& dimension : contract.shape) {
+      auto* dim = shape->add_dim();
+      if (std::holds_alternative<std::int64_t>(dimension)) {
+        const auto number = std::get<std::int64_t>(dimension);
+        if (number < 0) fail("MATERIAL_BOUNDARY");
+        dim->set_dim_value(number);
+      }
+      else {
+        const auto& symbol = std::get<std::string>(dimension);
+        if (symbol.empty()) fail("MATERIAL_BOUNDARY");
+        dim->set_dim_param(symbol);
+      }
+    }
+  }
+  return value;
+}
+
 // Rebuild of the extractor metadata, field set exactly like the python
 // 1.17 make_model(graph, ...) call: ir_version, opset_import copies,
 // producer_name, then a graph holding name, selected nodes in original
@@ -791,13 +919,14 @@ makeExtractedModel(onnx::ModelProto& inferredSource,
                    const std::vector<std::size_t>& reachable,
                    const std::vector<const onnx::ValueInfoProto*>& inputs,
                    const std::vector<const onnx::ValueInfoProto*>& outputs,
-                   const std::vector<const onnx::FunctionProto*>& functions)
+                   const std::vector<const onnx::FunctionProto*>& functions,
+                   bool consumeInitializers = true)
 {
   const auto& graph = inferredSource.graph();
   std::unordered_set<std::string> keepNames;
   for (const std::size_t index : reachable) {
     const auto& node = graph.node(static_cast<int>(index));
-    for (const auto& input : node.input()) keepNames.insert(input);
+    visitNodeDependencies(node, [&] (std::string_view input) { keepNames.emplace(input); });
     for (const auto& output : node.output()) keepNames.insert(output);
   }
   if (graph.sparse_initializer_size() != 0 ||
@@ -820,7 +949,8 @@ makeExtractedModel(onnx::ModelProto& inferredSource,
     // the selected TensorProto instead of copying its potentially GiB-sized
     // raw_data string while the source graph is still resident.
     auto* output = outGraph->add_initializer();
-    output->Swap(inferredSource.mutable_graph()->mutable_initializer(i));
+    if (consumeInitializers) output->Swap(inferredSource.mutable_graph()->mutable_initializer(i));
+    else *output = initializer;
   }
   for (const auto& value : graph.value_info())
     if (keepNames.count(value.name()) != 0)
@@ -2330,9 +2460,9 @@ void materializeSelectedExternalInitializers(
   for (const auto index : selectedNodes) {
     if (index >= static_cast<std::size_t>(graph.node_size()))
       fail("NODE_COVER");
-    for (const auto& input : graph.node(static_cast<int>(index)).input())
-      if (!input.empty())
-        required.insert(input);
+    visitNodeDependencies(graph.node(static_cast<int>(index)), [&] (std::string_view input) {
+      if (!input.empty()) required.emplace(input);
+    });
   }
   std::vector<onnx::TensorProto*> tensors;
   collectModelTensors(model, tensors);
@@ -3158,15 +3288,15 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
     "graph-template", {}, "graph-template", "__template__", 0,
     result->payloads.back().digest, result->payloads.back().bytes.size(), {}, {}});
 
-  std::set<std::string> initializerNames;
+  std::set<std::string, std::less<>> initializerNames;
   std::map<std::string, std::string> initializerPayloadByDigest;
   for (int i = 0; i < model.graph().initializer_size(); ++i) {
     checkActive(control);
     auto& initializer = *model.mutable_graph()->mutable_initializer(i);
     initializerNames.insert(initializer.name());
-    const auto normalized = std::find_if(entries.begin(), entries.end(),
-      [&initializer] (const auto& item) { return item.name == initializer.name(); });
-    if (normalized == entries.end())
+    const auto normalized = std::lower_bound(entries.begin(), entries.end(), initializer.name(),
+      [] (const auto& item, const auto& name) { return item.name < name; });
+    if (normalized == entries.end() || normalized->name != initializer.name())
       failNormalization("INITIALIZER_ENCODING_INVALID");
     if (initializer.data_location() == onnx::TensorProto::EXTERNAL) {
       // Do not serialize a 300+ MiB TensorProto just to publish one weight.
@@ -3313,10 +3443,10 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
     const auto payloadId = "node-" + std::to_string(i);
     result->payloads.push_back({payloadId, payloadDigest, bytes});
     std::vector<std::string> dependencies;
-    for (const auto& input : node.input()) {
+    visitNodeDependencies(node, [&] (std::string_view input) {
       if (initializerNames.count(input) != 0)
-        dependencies.push_back(input);
-    }
+        dependencies.emplace_back(input);
+    });
     std::sort(dependencies.begin(), dependencies.end());
     dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
     result->references.push_back({
@@ -3465,38 +3595,39 @@ materializeCanonicalModel(NativeCanonicalSource& source,
     checkMaterialActive();
     payloads.emplace(payload.payloadId, &payload);
   }
-  const auto referencesForPayload = [&] (const std::string& payloadId) {
-    std::vector<const NativeCanonicalSource::MaterialReference*> matches;
+  using Reference = NativeCanonicalSource::MaterialReference;
+  using ReferenceKey = std::pair<std::string_view, std::string_view>;
+  std::map<ReferenceKey, const Reference*> references;
+  {
+    std::set<std::string_view> boundPayloads;
     for (const auto& reference : source.materialManifest->references) {
-      if (reference.payloadId == payloadId ||
-          std::find(reference.chunkPayloadIds.begin(), reference.chunkPayloadIds.end(),
-                    payloadId) != reference.chunkPayloadIds.end())
-        matches.push_back(&reference);
+      checkActive(control);
+      references.emplace(ReferenceKey{reference.kind, reference.logicalName}, &reference);
+      const auto direct = payloads.find(reference.payloadId);
+      if (direct != payloads.end()) {
+        if (reference.digest != direct->second->digest ||
+            reference.bytes != direct->second->byteSize())
+          fail("MATERIAL_PAYLOAD");
+        boundPayloads.insert(direct->first);
+      }
+      for (const auto& chunkId : reference.chunkPayloadIds) {
+        checkActive(control);
+        const auto chunk = payloads.find(chunkId);
+        if (chunk == payloads.end()) continue;
+        if (chunk->second->byteSize() > NativeCanonicalMaterialBundleMaxBytes)
+          fail("MATERIAL_PAYLOAD");
+        boundPayloads.insert(chunk->first);
+      }
     }
-    return matches;
-  };
-  for (const auto& item : payloads) {
-    const auto matches = referencesForPayload(item.first);
-    if (matches.empty())
+    if (boundPayloads.size() != payloads.size())
       fail("MATERIAL_PAYLOAD");
-    for (const auto* match : matches) {
-      const bool chunkPayload = match->payloadId != item.first;
-      if ((!chunkPayload && (match->digest != item.second->digest ||
-                             match->bytes != item.second->byteSize())) ||
-          (chunkPayload && item.second->byteSize() > NativeCanonicalMaterialBundleMaxBytes))
-        fail("MATERIAL_PAYLOAD");
-    }
   }
   std::uint64_t retainedMaterialBytes = source.materialManifest->canonicalJson().size();
   for (const auto& payload : source.materialPayloads)
     retainedMaterialBytes = checkedAdd(retainedMaterialBytes, payload.byteSize());
-  const auto findReference = [&] (const std::string& kind,
-                                  const std::string& logicalName)
-    -> const NativeCanonicalSource::MaterialReference* {
-    for (const auto& reference : source.materialManifest->references)
-      if (reference.kind == kind && reference.logicalName == logicalName)
-        return &reference;
-    return nullptr;
+  const auto findReference = [&](std::string_view kind, std::string_view logicalName) {
+    const auto found = references.find({kind, logicalName});
+    return found == references.end() ? nullptr : found->second;
   };
   const auto templateReference = findReference("graph-template", "__template__");
   if (templateReference == nullptr)
@@ -3527,77 +3658,12 @@ materializeCanonicalModel(NativeCanonicalSource& source,
     std::set<std::string> outputNames;
     validateContracts(expectedInputs, inputNames);
     validateContracts(expectedOutputs, outputNames);
-    const auto dtypeCode = [] (const std::string& value) -> std::int32_t {
-      static const std::map<std::string, std::int32_t> labels{
-        {"float32", onnx::TensorProto::FLOAT},
-        {"uint8", onnx::TensorProto::UINT8},
-        {"int8", onnx::TensorProto::INT8},
-        {"uint16", onnx::TensorProto::UINT16},
-        {"int16", onnx::TensorProto::INT16},
-        {"int32", onnx::TensorProto::INT32},
-        {"int64", onnx::TensorProto::INT64},
-        {"string", onnx::TensorProto::STRING},
-        {"bool", onnx::TensorProto::BOOL},
-        {"float16", onnx::TensorProto::FLOAT16},
-        {"float64", onnx::TensorProto::DOUBLE},
-        {"uint32", onnx::TensorProto::UINT32},
-        {"uint64", onnx::TensorProto::UINT64},
-        {"complex64", onnx::TensorProto::COMPLEX64},
-        {"complex128", onnx::TensorProto::COMPLEX128},
-        {"bfloat16", onnx::TensorProto::BFLOAT16}};
-      const auto named = labels.find(value);
-      if (named != labels.end()) return named->second;
-      if (value.empty() || !std::all_of(value.begin(), value.end(), [] (unsigned char c) {
-            return std::isdigit(c) != 0;
-          }))
-        fail("MATERIAL_BOUNDARY");
-      try {
-        const auto parsed = std::stoll(value);
-        if (parsed < 0 || parsed > std::numeric_limits<std::int32_t>::max())
-          fail("MATERIAL_BOUNDARY");
-        return static_cast<std::int32_t>(parsed);
-      }
-      catch (const std::exception&) {
-        fail("MATERIAL_BOUNDARY");
-      }
-    };
-    const auto valueInfo = [&] (const NativeAssemblyTensorContractV3& contract) {
-      onnx::ValueInfoProto value;
-      value.set_name(contract.name);
-      auto* tensor = value.mutable_type()->mutable_tensor_type();
-      tensor->set_elem_type(dtypeCode(contract.dtype));
-      // An empty contract shape records an authenticated source tensor whose
-      // metadata carried no rank (ONNX value_info without a shape field).  The
-      // wire contract cannot distinguish that from a rank-0 scalar, so leave
-      // the shape field absent: an empty TensorShapeProto would assert a
-      // scalar boundary type, and ONNX consumers such as Reshape reject a
-      // rank-0 shape input ("shape input must be 1D tensor").  Unknown rank
-      // keeps the role boundary consistent with compareBoundaryContracts(),
-      // which compares the dimension count only.
-      if (!contract.shape.empty()) {
-        auto* shape = tensor->mutable_shape();
-        for (const auto& dimension : contract.shape) {
-          auto* dim = shape->add_dim();
-          if (std::holds_alternative<std::int64_t>(dimension)) {
-            const auto number = std::get<std::int64_t>(dimension);
-            if (number < 0) fail("MATERIAL_BOUNDARY");
-            dim->set_dim_value(number);
-          }
-          else {
-            const auto& symbol = std::get<std::string>(dimension);
-            if (symbol.empty()) fail("MATERIAL_BOUNDARY");
-            dim->set_dim_param(symbol);
-          }
-        }
-      }
-      return value;
-    };
     model.mutable_graph()->clear_input();
     model.mutable_graph()->clear_output();
     for (const auto& contract : expectedInputs)
-      *model.mutable_graph()->add_input() = valueInfo(contract);
+      *model.mutable_graph()->add_input() = makeMaterialValueInfo(contract);
     for (const auto& contract : expectedOutputs)
-      *model.mutable_graph()->add_output() = valueInfo(contract);
+      *model.mutable_graph()->add_output() = makeMaterialValueInfo(contract);
   }
 
   std::set<std::uint64_t> seenNodes;
@@ -3844,6 +3910,98 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
   return materializeNativeCanonicalModel(source, nodeIndices, {}, {}, control);
 }
 
+void
+extractNativeOnnxEntryGraphs(
+  const NativeSelectionProjectionV3& projection, const std::vector<std::uint8_t>& roleBytes,
+  std::uint64_t initializerBytes, const NativeAssemblyControl& control,
+  const std::function<void(const NativeExecutionStepSpec&, std::vector<std::uint8_t>)>& sink)
+{
+  checkActive(control);
+  projection.plan.validateSteps();
+  const auto& role = projection.assemblyContract();
+  validateNativeOnnxEntrySelection(projection.plan, role);
+  auto usedBytes = checkedAdd(roleBytes.size(), initializerBytes);
+  if (!sink || roleBytes.empty() || usedBytes > control.maxAssembledBytes ||
+      roleBytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    fail("ENTRY_BUDGET");
+  onnx::ModelProto source;
+  if (!source.ParseFromArray(roleBytes.data(), static_cast<int>(roleBytes.size())) ||
+      !source.has_graph() || static_cast<std::size_t>(source.graph().node_size()) !=
+        role.nodeIndices.size())
+    fail("ENTRY_SOURCE");
+  const auto& graph = source.graph();
+  std::set<std::string> initializers;
+  for (const auto& value : graph.initializer()) initializers.insert(value.name());
+
+  std::size_t entries = 0;
+  for (const auto& step : projection.plan.steps) {
+    if (step.unitId != role.selectedRole || step.operation != "CALL_SUBGRAPH") continue;
+    checkActive(control);
+    if (step.onnxNodeIndices.empty()) fail("ENTRY_SELECTION");
+    std::vector<std::size_t> dense;
+    for (const auto node : step.onnxNodeIndices) {
+      const auto found = std::lower_bound(role.nodeIndices.begin(), role.nodeIndices.end(), node);
+      if (found == role.nodeIndices.end() || *found != node) fail("ENTRY_SELECTION");
+      dense.push_back(static_cast<std::size_t>(found - role.nodeIndices.begin()));
+    }
+    const auto makeValues = [](const auto& slots) {
+      std::vector<onnx::ValueInfoProto> values;
+      for (const auto& slot : slots)
+        values.push_back(makeMaterialValueInfo({slot.slotId, slot.dtype, slot.shape}));
+      return values;
+    };
+    const auto inputs = makeValues(step.inputSlots);
+    const auto outputs = makeValues(step.outputSlots);
+    std::vector<const onnx::ValueInfoProto*> inputPointers, outputPointers;
+    std::set<std::string> inputNames, readInputs, produced;
+    for (const auto& port : inputs) {
+      if (initializers.count(port.name()) != 0) fail("ENTRY_BOUNDARY");
+      inputPointers.push_back(&port);
+      inputNames.insert(port.name());
+    }
+    for (const auto node : dense) {
+      checkActive(control);
+      const auto& selected = graph.node(static_cast<int>(node));
+      visitNodeDependencies(selected, [&](std::string_view name) {
+        if (name.empty()) return;
+        const std::string key(name);
+        if (produced.count(key) != 0 || initializers.count(key) != 0) return;
+        if (inputNames.count(key) == 0) fail("ENTRY_BOUNDARY");
+        readInputs.insert(key);
+      });
+      for (const auto& name : selected.output()) {
+        if (!name.empty() && (inputNames.count(name) != 0 || initializers.count(name) != 0 ||
+                             !produced.insert(name).second))
+          fail("ENTRY_BOUNDARY");
+      }
+    }
+    if (readInputs != inputNames) fail("ENTRY_BOUNDARY");
+    for (const auto& port : outputs) {
+      if (produced.count(port.name()) == 0) fail("ENTRY_BOUNDARY");
+      outputPointers.push_back(&port);
+    }
+    auto entry = makeExtractedModel(source, dense, inputPointers, outputPointers,
+                                    referredLocalFunctions(source, dense, graph.node()), false);
+    std::vector<onnx::TensorProto*> tensors;
+    collectModelTensors(entry, tensors, true);
+    const auto location = validateAndPinLocation(tensors);
+    if (!location.empty() && location != "model.onnx.data") fail("ENTRY_INITIALIZER");
+    for (const auto* tensor : tensors) {
+      if (tensor->data_location() != onnx::TensorProto::EXTERNAL) continue;
+      if (validatedExternalByteRange(*tensor, initializerBytes).length == 0)
+        fail("ENTRY_INITIALIZER");
+    }
+    usedBytes = checkedAdd(usedBytes, entry.ByteSizeLong());
+    if (usedBytes > control.maxAssembledBytes) fail("ENTRY_BUDGET");
+    auto bytes = deterministicMessageVector(entry);
+    checkActive(control);
+    sink(step, std::move(bytes));
+    ++entries;
+  }
+  if (entries == 0) fail("ENTRY_SELECTION");
+  checkActive(control);
+}
+
 void validateNativeCanonicalMaterialManifest(
   const NativeCanonicalSource& source,
   const NativeCanonicalSource::MaterialManifest& manifest,
@@ -3866,15 +4024,24 @@ void validateNativeCanonicalMaterialManifest(
       manifest.initializerDigest != sha256HexOf(initializerContentJson(entries)))
     throw std::invalid_argument("native canonical material manifest source identity differs");
 
+  std::map<std::string_view, const NativeCanonicalSource::MaterialPayload*> payloadsById;
+  for (const auto& payload : manifest.payloads) {
+    checkActive(control);
+    payloadsById.emplace(payload.payloadId, &payload);
+  }
+  const auto findPayload = [&](std::string_view id) {
+    const auto found = payloadsById.find(id);
+    return found == payloadsById.end() ? nullptr : found->second;
+  };
+
   const auto templateIt = std::find_if(manifest.references.begin(), manifest.references.end(),
     [] (const auto& reference) { return reference.kind == "graph-template"; });
   if (templateIt == manifest.references.end())
     throw std::invalid_argument("native canonical material template reference is missing");
-  const auto templatePayloadIt = std::find_if(manifest.payloads.begin(), manifest.payloads.end(),
-    [&templateIt] (const auto& payload) { return payload.payloadId == templateIt->payloadId; });
-  if (templatePayloadIt == manifest.payloads.end())
+  const auto* templatePayload = findPayload(templateIt->payloadId);
+  if (!templatePayload)
     throw std::invalid_argument("native canonical material template payload is missing");
-  const auto templatePayloadBytes = templatePayloadIt->copyBytes();
+  const auto templatePayloadBytes = templatePayload->copyBytes();
   onnx::ModelProto templateModel;
   if (!templateModel.ParseFromArray(templatePayloadBytes.data(),
                                     static_cast<int>(templatePayloadBytes.size())) ||
@@ -3890,28 +4057,30 @@ void validateNativeCanonicalMaterialManifest(
   if (deterministicMessageVector(expectedTemplate) != templatePayloadBytes)
     throw std::invalid_argument("native canonical material template identity is invalid");
 
-  std::map<std::string, std::string> initializerDigestByName;
+  std::map<std::string_view, std::string_view> initializerDigestByName;
   for (const auto& entry : entries)
     initializerDigestByName.emplace(entry.name, entry.contentDigest);
+  std::map<std::string_view, const onnx::TensorProto*> sourceInitializersByName;
+  for (const auto& initializer : model.graph().initializer()) {
+    checkActive(control);
+    sourceInitializersByName.emplace(initializer.name(), &initializer);
+  }
   std::set<std::string> coveredInitializers;
   std::set<std::uint64_t> coveredNodes;
   for (const auto& reference : manifest.references) {
     checkActive(control);
-    const auto payload = std::find_if(manifest.payloads.begin(), manifest.payloads.end(),
-      [&reference] (const auto& item) { return item.payloadId == reference.payloadId; });
-    if (payload == manifest.payloads.end())
+    const auto* payload = findPayload(reference.payloadId);
+    if (!payload)
       throw std::invalid_argument("native canonical material reference payload is missing");
     if (reference.kind == "shared-initializer") {
       const auto expected = initializerDigestByName.find(reference.logicalName);
       if (expected == initializerDigestByName.end() || expected->second != reference.sharedDigest ||
           !coveredInitializers.insert(reference.logicalName).second)
         throw std::invalid_argument("native canonical material initializer binding is invalid");
-      const auto sourceInitializer = std::find_if(model.graph().initializer().begin(),
-        model.graph().initializer().end(), [&reference] (const auto& initializer) {
-          return initializer.name() == reference.logicalName;
-        });
-      if (sourceInitializer == model.graph().initializer().end())
+      const auto sourceEntry = sourceInitializersByName.find(reference.logicalName);
+      if (sourceEntry == sourceInitializersByName.end())
         throw std::invalid_argument("native canonical material initializer payload is invalid");
+      const auto* sourceInitializer = sourceEntry->second;
       const bool hasChunks = !reference.chunkPayloadIds.empty();
       auto expectedHeader = *sourceInitializer;
       if (sourceInitializer->data_location() == onnx::TensorProto::EXTERNAL || hasChunks) {
@@ -3965,21 +4134,23 @@ void validateNativeCanonicalMaterialManifest(
         }
         std::uint64_t total = 0;
         for (const auto& chunkId : reference.chunkPayloadIds) {
-          const auto chunk = std::find_if(manifest.payloads.begin(), manifest.payloads.end(),
-            [&chunkId] (const auto& item) { return item.payloadId == chunkId; });
-          if (chunk == manifest.payloads.end() ||
-              chunk->byteSize() > NativeCanonicalMaterialBundleMaxBytes)
+          checkActive(control);
+          const auto* chunk = findPayload(chunkId);
+          if (!chunk || chunk->byteSize() > NativeCanonicalMaterialBundleMaxBytes)
             throw std::invalid_argument("native canonical material initializer chunks are invalid");
-          const auto chunkBytes = chunk->copyBytes();
           if (total > length || chunk->byteSize() > length - total)
             throw std::invalid_argument("native canonical material initializer chunks differ");
-          if (expectedRange) {
-            if (readNativeCanonicalInitializerRange(source, offset + total, chunk->byteSize(),
-                                                    control) != chunkBytes)
+          // Manifest validation already hashed this payload. The same owner and
+          // interval bind it to the source without rereading either copy.
+          if (!expectedRange || chunk->rangeSource != source.initializerRangeSource ||
+              chunk->rangeOffset != offset + total) {
+            const auto chunkBytes = chunk->copyBytes([&] { checkActive(control); });
+            const bool matches = expectedRange
+              ? readNativeCanonicalInitializerRange(source, offset + total, chunk->byteSize(),
+                                                    control) == chunkBytes
+              : std::equal(chunkBytes.begin(), chunkBytes.end(), expectedBytes + total);
+            if (!matches)
               throw std::invalid_argument("native canonical material initializer chunks differ");
-          }
-          else if (!std::equal(chunkBytes.begin(), chunkBytes.end(), expectedBytes + total)) {
-            throw std::invalid_argument("native canonical material initializer chunks differ");
           }
           total = checkedAdd(total, chunk->byteSize());
         }
@@ -3998,8 +4169,12 @@ void validateNativeCanonicalMaterialManifest(
           deterministicMessageVector(model.graph().node(static_cast<int>(reference.nodeIndex))) != payloadBytes)
         throw std::invalid_argument("native canonical material node payload is invalid");
       std::set<std::string> expectedDependencies;
-      for (const auto& input : model.graph().node(static_cast<int>(reference.nodeIndex)).input())
-        if (initializerDigestByName.count(input) != 0) expectedDependencies.insert(input);
+      visitNodeDependencies(model.graph().node(static_cast<int>(reference.nodeIndex)),
+        [&] (std::string_view input) {
+          std::string name(input);
+          if (initializerDigestByName.count(name) != 0)
+            expectedDependencies.insert(std::move(name));
+        });
       std::set<std::string> actualDependencies(reference.dependencies.begin(), reference.dependencies.end());
       if (actualDependencies != expectedDependencies || actualDependencies.size() != reference.dependencies.size())
         throw std::invalid_argument("native canonical material node dependencies are invalid");
@@ -4068,6 +4243,79 @@ planningGraphDigestFromMetadata(const NativeJson& metadata, const std::string& a
     {"nodes", metadata.at("nodes")}, {"tensor_producers", metadata.at("tensorProducers")},
     {"tensor_consumers", metadata.at("tensorConsumers")}};
   return nativePlanningDigest(nativeCanonicalJson(identity));
+}
+
+static NativeGraphSnapshot
+planningGraphFromFacts(const NativeJson& metadata, const NativeAssemblyControl& control)
+{
+  const auto& tensors = metadata.at("tensors");
+  const auto producers = metadata.at("tensorProducers").get<std::map<std::string, std::uint64_t>>();
+  const auto consumers =
+    metadata.at("tensorConsumers").get<std::map<std::string, std::vector<std::uint64_t>>>();
+  const auto inputs = metadata.at("inputs").get<std::vector<std::string>>();
+  const auto outputs = metadata.at("outputs").get<std::vector<std::string>>();
+  const auto& nodes = metadata.at("nodes");
+  if (!nodes.is_array()) fail("GRAPH_METADATA_NODES");
+  NativeGraphSnapshot result;
+  for (const auto& node : nodes) {
+    checkActive(control);
+    const auto i = result.nodes.size();
+    if (!node.at("index").is_number_unsigned() &&
+        !(node.at("index").is_number_integer() && node.at("index").get<std::int64_t>() >= 0))
+      fail("GRAPH_METADATA_NODES");
+    if (node.at("index").get<std::uint64_t>() != i) fail("GRAPH_METADATA_NODES");
+    auto id = "onnx-node-" + std::to_string(i);
+    result.topologicalOrder.push_back(id);
+    result.nodes.push_back({std::move(id), node.at("opType").get<std::string>(), i});
+  }
+  const auto contract = [&](const std::string& name) {
+    NativeTensorContract tensor;
+    tensor.name = name; tensor.dtype = "unknown";
+    const auto found = tensors.find(name);
+    if (found == tensors.end()) return tensor;
+    tensor.dtype = found->at("dtype").get<std::string>();
+    for (const auto& dim : found->at("shape")) {
+      if (dim.is_string()) tensor.shape.emplace_back(dim.get<std::string>());
+      else tensor.shape.emplace_back(dim.get<std::int64_t>());
+    }
+    if (!found->at("sizeBytes").is_null()) tensor.estimatedBytes = found->at("sizeBytes").get<std::uint64_t>();
+    return tensor;
+  };
+  for (const auto& producer : producers) {
+    checkActive(control);
+    const auto users = consumers.find(producer.first);
+    if (users == consumers.end() || users->second.empty()) continue;
+    NativeGraphEdge edge;
+    edge.id = producer.first; edge.producer = "onnx-node-" + std::to_string(producer.second);
+    edge.tensor = contract(edge.id);
+    // An ONNX node may consume one tensor in several operand slots. Keep
+    // that multiplicity in metadata/identity, but a dependency consumer is
+    // a node identity and must occur only once in the planning edge.
+    std::set<std::uint64_t> uniqueUsers;
+    for (const auto user : users->second)
+      if (uniqueUsers.insert(user).second) edge.consumers.push_back("onnx-node-" + std::to_string(user));
+    result.edges.push_back(std::move(edge));
+    // Every forward edge crosses the sequential cut after its producer.
+    // The union of all maintained cuts is therefore exactly this edge set;
+    // validate() below rejects backward or otherwise invalid dependencies.
+    result.legalCutEdges.push_back(producer.first);
+  }
+  for (const auto& name : inputs) result.modelInputs.push_back(contract(name));
+  for (const auto& name : outputs) result.modelOutputs.push_back(contract(name));
+  return result;
+}
+
+NativeGraphSnapshot
+restoreNativeOnnxPlanningGraph(const std::string& graphMetadataJson,
+                              const NativeModelDescriptor& model,
+                              const NativeAssemblyControl& control)
+{
+  checkActive(control);
+  const auto metadata = nativeParseJson(graphMetadataJson);
+  auto result = planningGraphFromFacts(metadata, control);
+  result.graphDigest = planningGraphDigestFromMetadata(metadata, model.adapter.descriptorDigest());
+  result.validate(model);
+  return result;
 }
 
 static NativeOnnxGraphInspection
@@ -4298,12 +4546,17 @@ inspectSourceGraphFacts(const NativeCanonicalSource& source,
     const auto id = "onnx-node-" + std::to_string(index);
     const auto name = node.name().empty() ? std::to_string(index) + ":" + node.op_type() : node.name();
     std::vector<std::string> in, out;
-    for (const auto& value : node.input()) {
-      if (initializers.count(value)) result.initializerConsumers[value].push_back(index);
-    }
-    for (const auto& value : node.input()) if (!value.empty() && !initializers.count(value)) {
-      in.push_back(value); consumers[value].push_back(index);
-    }
+    visitNodeDependencies(node, [&] (std::string_view dependency) {
+      if (dependency.empty()) return;
+      std::string value(dependency);
+      if (initializers.count(value)) {
+        result.initializerConsumers[value].push_back(index);
+      }
+      else {
+        in.push_back(value);
+        consumers[value].push_back(index);
+      }
+    });
     for (const auto& value : node.output()) if (!value.empty()) {
       out.push_back(value); producers[value] = index;
     }
@@ -4316,48 +4569,14 @@ inspectSourceGraphFacts(const NativeCanonicalSource& source,
     nodes.push_back(NativeJson{{"index", index}, {"name", name}, {"opType", node.op_type()},
                                {"inputs", in}, {"outputs", out},
                                {"integerAttributes", std::move(attributes)}});
-    result.graph.nodes.push_back({id, node.op_type(), std::uint64_t(index)});
-    result.graph.topologicalOrder.push_back(id);
     result.nodeNames.push_back(name);
     result.canonicalNodeIndices[id] = index;
   }
-  const auto contract = [&](const std::string& name) {
-    NativeTensorContract tensor;
-    tensor.name = name; tensor.dtype = "unknown";
-    const auto found = tensors.find(name);
-    if (found == tensors.end()) return tensor;
-    tensor.dtype = found->at("dtype").get<std::string>();
-    for (const auto& dim : found->at("shape")) {
-      if (dim.is_string()) tensor.shape.emplace_back(dim.get<std::string>());
-      else tensor.shape.emplace_back(dim.get<std::int64_t>());
-    }
-    if (!found->at("sizeBytes").is_null()) tensor.estimatedBytes = found->at("sizeBytes").get<std::uint64_t>();
-    return tensor;
-  };
-  for (const auto& producer : producers) {
-    const auto users = consumers.find(producer.first);
-    if (users == consumers.end() || users->second.empty()) continue;
-    NativeGraphEdge edge;
-    edge.id = producer.first; edge.producer = "onnx-node-" + std::to_string(producer.second);
-    edge.tensor = contract(edge.id);
-    // An ONNX node may consume one tensor in several operand slots. Keep
-    // that multiplicity in metadata/identity, but a dependency consumer is
-    // a node identity and must occur only once in the planning edge.
-    std::set<std::uint64_t> uniqueUsers;
-    for (const auto user : users->second)
-      if (uniqueUsers.insert(user).second) edge.consumers.push_back("onnx-node-" + std::to_string(user));
-    result.graph.edges.push_back(std::move(edge));
-    // Every forward edge crosses the sequential cut after its producer.
-    // The union of all maintained cuts is therefore exactly this edge set;
-    // validate() below rejects backward or otherwise invalid dependencies.
-    result.graph.legalCutEdges.push_back(producer.first);
-  }
-  for (const auto& name : inputs) result.graph.modelInputs.push_back(contract(name));
-  for (const auto& name : outputs) result.graph.modelOutputs.push_back(contract(name));
   const std::vector<std::string> initializerNames(initializers.begin(), initializers.end());
   const NativeJson metadata{
     {"inputs", inputs}, {"outputs", outputs}, {"initializers", initializerNames}, {"tensors", tensors},
     {"nodes", nodes}, {"tensorProducers", producers}, {"tensorConsumers", consumers}};
+  result.graph = planningGraphFromFacts(metadata, control);
   result.graph.graphDigest = planningGraphDigestFromMetadata(
     metadata, expectedModel.adapter.descriptorDigest());
   auto sourceModel = expectedModel;

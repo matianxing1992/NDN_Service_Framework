@@ -841,6 +841,18 @@ BOOST_AUTO_TEST_CASE(StoredPublicationUsesThePreparationMemoryAdmission)
   BOOST_CHECK(metadataAdmission < (512ULL << 20));
   BOOST_CHECK(metadataAdmission < stored.maxSourceBytes);
   BOOST_CHECK(metadataAdmission < stored.maxAssembledBytes);
+
+  // The two independently retained configuration strings both count.
+  stored.configurationJson.resize(13U << 20);
+  stored.catalogConfigurationJson.resize(13U << 20);
+  ModelPreparationCache smallStoredCache(480ULL << 20, 1, std::chrono::seconds(5));
+  BOOST_CHECK_EXCEPTION(DiPreparationTestAccess::reserveMemory(smallStoredCache, stored),
+    std::runtime_error, [] (const auto& error) {
+      return std::string(error.what()) == "DI_NATIVE_PREPARATION_CACHE_BUDGET_EXCEEDED";
+    });
+  BOOST_CHECK_EQUAL(DiPreparationTestAccess::reserveMemory(storedCache, stored),
+                    (492U << 20) + (256U << 10));
+  BOOST_CHECK_EQUAL(fixture.fetches, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(RequireReadyAndUseOrWaitNeverPerformAnImplicitFetch)

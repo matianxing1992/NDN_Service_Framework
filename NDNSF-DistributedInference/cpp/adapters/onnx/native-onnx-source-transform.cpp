@@ -1,5 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
-#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+
+#include "NativeOnnxRecipeAssembler.hpp"
+#include "initializer-slice.hpp"
 
 #include <onnx/checker.h>
 
@@ -50,22 +52,40 @@ countOf(const onnx::TensorProto& tensor)
   return count;
 }
 
+bool
+isExternal(const onnx::TensorProto& tensor)
+{
+  return tensor.data_location() == onnx::TensorProto::EXTERNAL || !tensor.external_data().empty();
+}
+
+std::pair<std::string, std::uint64_t>
+externalInitializerLocation(const onnx::TensorProto& tensor, std::uint64_t bytes,
+                            const NativeOnnxExternalReader& external)
+{
+  std::string location, offset, length;
+  for (const auto& entry : tensor.external_data()) {
+    if (entry.key() == "location") location = entry.value();
+    else if (entry.key() == "offset") offset = entry.value();
+    else if (entry.key() == "length") length = entry.value();
+  }
+  if (location.empty() || !external) {
+    throw std::invalid_argument("source transform requires external initializer bytes");
+  }
+  const std::uint64_t start = offset.empty() ? 0 : std::stoull(offset);
+  if ((!length.empty() && std::stoull(length) != bytes) ||
+      start > std::numeric_limits<std::uint64_t>::max() - bytes) {
+    throw std::invalid_argument("source transform external initializer range differs");
+  }
+  return {std::move(location), start};
+}
+
 std::vector<std::uint8_t>
 rawBytes(const onnx::TensorProto& tensor, const NativeOnnxExternalReader& external)
 {
   const auto bytes = countOf(tensor) * elementBytes(tensor.data_type());
-  if (tensor.data_location() == onnx::TensorProto::EXTERNAL || !tensor.external_data().empty()) {
-    std::string location, offset, length;
-    for (const auto& entry : tensor.external_data()) {
-      if (entry.key() == "location") location = entry.value();
-      else if (entry.key() == "offset") offset = entry.value();
-      else if (entry.key() == "length") length = entry.value();
-    }
-    if (location.empty() || !external)
-      throw std::invalid_argument("source transform requires external initializer bytes");
-    const auto start = offset.empty() ? 0 : std::stoull(offset);
-    const auto want = length.empty() ? bytes : std::stoull(length);
-    auto result = external(location, start, want);
+  if (isExternal(tensor)) {
+    const auto [location, start] = externalInitializerLocation(tensor, bytes, external);
+    auto result = external(location, start, bytes);
     if (result.size() != bytes)
       throw std::invalid_argument("source transform external initializer length differs");
     return result;
@@ -75,6 +95,9 @@ rawBytes(const onnx::TensorProto& tensor, const NativeOnnxExternalReader& extern
     return {raw.begin(), raw.end()};
   }
   if (tensor.float_data_size() != 0) {
+    if (static_cast<std::uint64_t>(tensor.float_data_size()) != bytes / sizeof(float)) {
+      throw std::invalid_argument("source transform float initializer length differs");
+    }
     std::vector<std::uint8_t> result(static_cast<std::size_t>(bytes));
     for (int i = 0; i < tensor.float_data_size(); ++i) {
       const auto value = tensor.float_data(i);
@@ -99,8 +122,7 @@ bool
 hasExternalInitializers(const onnx::ModelProto& model)
 {
   for (const auto& initializer : model.graph().initializer())
-    if (initializer.data_location() == onnx::TensorProto::EXTERNAL ||
-        !initializer.external_data().empty())
+    if (isExternal(initializer))
       return true;
   return false;
 }
@@ -1846,11 +1868,58 @@ lowerNativeMaterializedFfnEntry(onnx::ModelProto source,
   return source;
 }
 
+onnx::TensorProto
+sliceNativeOnnxFloatInitializer(const onnx::TensorProto& tensor, std::size_t axis,
+                                std::uint64_t begin, std::uint64_t end,
+                                const NativeOnnxExternalReader& external)
+{
+  if (std::any_of(tensor.dims().begin(), tensor.dims().end(), [] (auto dim) { return dim <= 0; })) {
+    throw std::invalid_argument("source transform initializer dimensions must be positive");
+  }
+  const std::vector<std::uint64_t> dimensions(tensor.dims().begin(), tensor.dims().end());
+  const InitializerSlice range(dimensions, axis, begin, end,
+                               elementBytes(tensor.data_type()));
+  const auto location = isExternal(tensor)
+    ? externalInitializerLocation(tensor, range.sourceBytes(), external)
+    : std::pair<std::string, std::uint64_t>{};
+  const auto full = location.first.empty() ? rawBytes(tensor, external)
+                                          : std::vector<std::uint8_t>{};
+  if (location.first.empty() && range.sourceBytes() != full.size()) {
+    throw std::invalid_argument("source transform initializer size mismatch");
+  }
+  std::vector<std::uint8_t> sliced(static_cast<std::size_t>(range.sliceBytes()));
+  std::size_t destination = 0;
+  range.forEachRange(NativeCanonicalMaterialBundleMaxBytes,
+    [&] (std::uint64_t offset, std::uint64_t count) {
+      if (location.first.empty()) {
+        std::memcpy(sliced.data() + destination, full.data() + offset, count);
+      }
+      else {
+        const auto bytes = external(location.first, location.second + offset, count);
+        if (bytes.size() != count) {
+          throw std::invalid_argument("source transform external slice length differs");
+        }
+        std::memcpy(sliced.data() + destination, bytes.data(), count);
+      }
+      destination += static_cast<std::size_t>(count);
+    });
+  // Carry identity and shape without copying the source's full inline weight.
+  onnx::TensorProto result;
+  result.set_name(tensor.name());
+  result.set_data_type(tensor.data_type());
+  if (tensor.has_doc_string()) result.set_doc_string(tensor.doc_string());
+  *result.mutable_dims() = tensor.dims();
+  result.set_dims(static_cast<int>(axis), static_cast<std::int64_t>(end - begin));
+  setInlineBytes(result, std::move(sliced));
+  return result;
+}
+
 onnx::ModelProto
 applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
                                const NativeOnnxSourceTransformV1& transform,
                                const NativeOnnxExternalReader& external,
-                               const NativeOnnxExternalAppender& append)
+                               const NativeOnnxExternalAppender& append,
+                               const NativeOnnxInitializerSlicer& slicer)
 {
   transform.validate();
   onnx::ModelProto result = source;
@@ -1918,8 +1987,8 @@ applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
     if (conv->output_size() != 1 || conv->output(0) != transform.output)
       throw std::invalid_argument("source transform Conv output differs");
     auto* weight = findInitializer(result, transform.weight);
-    if (weight == nullptr || weight->dims_size() != 4)
-      throw std::invalid_argument("source transform Conv weight is missing or not 4-D");
+    if (weight == nullptr || (weight->dims_size() != 4 && weight->dims_size() != 5))
+      throw std::invalid_argument("source transform Conv weight is missing or has unsupported rank");
     if (static_cast<std::uint64_t>(weight->dims(1)) != transform.extent)
       throw std::invalid_argument("source transform extent differs from the Conv weight");
     const auto inChannels = static_cast<std::uint64_t>(weight->dims(1));
@@ -2001,22 +2070,8 @@ applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
 
     // Slice the weight along the input-channel axis (axis 1) into rank bytes.
     weight = findInitializer(result, transform.weight);
-    auto full = rawBytes(*weight, external);
-    const auto channels = static_cast<std::uint64_t>(weight->dims(1));
-    const auto kernel = static_cast<std::uint64_t>(weight->dims(2)) *
-                        static_cast<std::uint64_t>(weight->dims(3));
-    const auto outChannels = static_cast<std::uint64_t>(weight->dims(0));
-    const auto width = transform.end - transform.begin;
-    const auto block = kernel * 4;
-    std::vector<std::uint8_t> sliced(static_cast<std::size_t>(outChannels * width * block));
-    for (std::uint64_t channel = 0; channel < outChannels; ++channel) {
-      const auto base = (channel * channels + transform.begin) * block;
-      std::memcpy(sliced.data() + static_cast<std::size_t>(channel * width * block),
-                  full.data() + static_cast<std::size_t>(base),
-                  static_cast<std::size_t>(width * block));
-    }
-    weight->set_dims(1, static_cast<std::int64_t>(width));
-    setInlineBytes(*weight, std::move(sliced));
+    *weight = slicer ? slicer(*weight, 1, transform.begin, transform.end) :
+      sliceNativeOnnxFloatInitializer(*weight, 1, transform.begin, transform.end, external);
     return result;
   }
 

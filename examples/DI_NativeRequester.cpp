@@ -1,5 +1,8 @@
 #include "ndnsf-di/api.hpp"
+#include "interruptible-preparation.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/wan/wan-generation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
@@ -23,8 +26,12 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/scope_exit.hpp>
 #include <ndn-cxx/util/logger.hpp>
+#include <ndn-cxx/util/sha256.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <array>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -33,7 +40,11 @@
 #include <map>
 #include <new>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
+#include <functional>
+#include <exception>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -64,12 +75,13 @@ using boost::property_tree::ptree;
 
 constexpr std::uint64_t MAX_NATIVE_INPUT_BYTES = 16 * 1024 * 1024;
 
-volatile std::sig_atomic_t interrupted = 0;
+static_assert(std::atomic<std::sig_atomic_t>::is_always_lock_free);
+std::atomic<std::sig_atomic_t> interrupted{0};
 
 void
 onSignal(int)
 {
-  interrupted = 1;
+  interrupted.store(1, std::memory_order_relaxed);
 }
 
 std::vector<std::uint8_t>
@@ -100,9 +112,8 @@ ptree
 readJson(const std::filesystem::path& path)
 {
   ptree value;
-  std::ifstream input(path);
-  if (!input)
-    throw std::runtime_error("requester configuration is unavailable: " + path.string());
+  const auto bytes = readBytes(path, NATIVE_RUNTIME_CONFIG_MAX_BYTES);
+  std::istringstream input(std::string(bytes.begin(), bytes.end()));
   boost::property_tree::read_json(input, value);
   return value;
 }
@@ -587,14 +598,277 @@ writeResult(const Result& result, const std::filesystem::path& path)
     throw std::runtime_error("requester output could not be written");
 }
 
+wan::WanPromptTokens
+readWanPrompt(const ptree& config)
+{
+  wan::WanPromptTokens result;
+  result.validTokens = config.get<std::size_t>("valid_tokens");
+  for (const auto& item : config.get_child("ids")) {
+    if (!item.first.empty() || result.ids.size() == 512)
+      throw std::invalid_argument("Wan token IDs must be a bounded array");
+    result.ids.push_back(item.second.get_value<std::int64_t>());
+  }
+  return result;
+}
+
+void
+validateWanPlacement(const ptree& text, const ptree& denoiser, const ptree& decoder,
+                     const std::map<std::string, std::string>& providerByRole)
+{
+  std::array<std::vector<std::size_t>, 3> degrees;
+  std::array<std::vector<ndn::Name>, 3> providers;
+  const std::array<const ptree*, 3> components{&text, &denoiser, &decoder};
+  for (std::size_t i = 0; i < components.size(); ++i) {
+    std::set<ndn::Name> unique;
+    for (const auto& stage : components[i]->get_child(
+           "catalog.splitter.step_template_v2.stage_layout")) {
+      const auto& roles = stage.second.get_child("unit_role_ids");
+      degrees[i].push_back(roles.size());
+      for (const auto& role : roles) {
+        const auto mapping = providerByRole.find(role.second.get_value<std::string>());
+        if (mapping == providerByRole.end())
+          throw std::invalid_argument("Wan fixed placement is missing a component role");
+        ndn::Name provider(mapping->second);
+        if (provider.empty() || !unique.insert(provider).second)
+          throw std::invalid_argument("Wan component requires distinct Provider identities");
+        providers[i].push_back(std::move(provider));
+      }
+    }
+  }
+  const std::vector<std::size_t> tp{2}, pp{1, 1};
+  const std::vector<std::size_t> single{1};
+  if (degrees[0] == single && degrees[1] == single && degrees[2] == single &&
+      providers[0] == providers[1] && providers[0] == providers[2])
+    return;
+  if (degrees[0] == tp && degrees[1] == tp && degrees[2] == tp &&
+      providers[0] == providers[1] && providers[0] == providers[2])
+    return;
+  if (degrees[0] == pp && degrees[2] == pp &&
+      (degrees[1] == pp || degrees[1] == std::vector<std::size_t>{1, 2} ||
+       degrees[1] == std::vector<std::size_t>{2, 1}))
+    return;
+  throw std::invalid_argument("Wan component placements do not form a supported generation layout");
+}
+
+void
+writeWanClip(const std::filesystem::path& destination, std::uint32_t framesPerSecond,
+             const std::function<void()>& current, std::uint64_t traceMaxBytes,
+             const std::function<wan::WanGenerationResult(const wan::WanRgb24Sink&,
+                                                           const wan::WanTensorObserver&)>& generate)
+{
+  if (std::filesystem::exists(destination) || destination.filename().empty())
+    throw std::invalid_argument("Wan output directory requires a fresh destination");
+  const auto sibling = destination.parent_path() / (destination.filename().string() + "-XXXXXX");
+  auto pattern = sibling.string();
+  const auto* temporaryPath = ::mkdtemp(pattern.data());
+  if (!temporaryPath)
+    throw std::runtime_error("Wan output staging directory could not be created");
+  const std::filesystem::path temporary(temporaryPath);
+  bool committed = false;
+  BOOST_SCOPE_EXIT_ALL(&) {
+    if (!committed) {
+      std::error_code cleanup;
+      std::filesystem::remove_all(temporary, cleanup);
+    }
+  };
+  std::ofstream frames(temporary / "frames.rgb24", std::ios::binary);
+  if (!frames) throw std::runtime_error("Wan RGB24 staging file could not be opened");
+  ndn::util::Sha256 frameDigest;
+  std::uint64_t written = 0;
+  auto trace = NativeJson::array();
+  std::uint64_t traceBytes = 0;
+  wan::WanTensorObserver observe;
+  if (traceMaxBytes != 0) {
+    observe = [&](const std::string& phase, const NamedTensorView& tensor,
+                  const wan::WanChildReceipt* child,
+                  const std::optional<wan::WanSamplingReceipt>& sample) {
+      current();
+      const auto wire = encodeTensorBundleViews({tensor});
+      if (wire.size() > traceMaxBytes - traceBytes)
+        throw std::runtime_error("Wan fixture trace exceeded its byte budget");
+      const auto file = "trace-" + std::to_string(trace.size()) + ".bundle";
+      std::ofstream output(temporary / file, std::ios::binary);
+      output.write(reinterpret_cast<const char*>(wire.data()), wire.size());
+      output.close();
+      if (!output)
+        throw std::runtime_error("Wan fixture trace could not be written");
+      traceBytes += wire.size();
+      NativeJson entry{{"phase", phase}, {"file", file},
+                       {"digest", nativePlanningDigest(wire.data(), wire.size())}};
+      if (child) {
+        entry["request_id"] = child->requestId;
+        entry["plan_digest"] = child->planDigest;
+      }
+      if (sample) {
+        entry["timestep"] = sample->timestep;
+        entry["predictor_order"] = sample->predictorOrder;
+        entry["corrector_order"] = sample->correctorOrder;
+      }
+      trace.push_back(std::move(entry));
+    };
+  }
+  const auto result = generate([&](ndn::span<const std::uint8_t> chunk) {
+    frames.write(reinterpret_cast<const char*>(chunk.data()), chunk.size());
+    if (!frames) throw std::runtime_error("Wan RGB24 output could not be written");
+    frameDigest.update(chunk);
+    written += chunk.size();
+  }, observe);
+  frames.close();
+  if (!frames || written != result.rgb24Bytes)
+    throw std::runtime_error("Wan RGB24 staging file is incomplete");
+  auto children = NativeJson::array();
+  for (const auto& child : result.children) {
+    children.push_back({{"phase", child.label}, {"request_id", child.requestId},
+                        {"plan_digest", child.planDigest}, {"input_digest", child.inputDigest}});
+  }
+  {
+    std::ofstream manifest(temporary / "manifest.json");
+    NativeJson clip{
+      {"schema", "ndnsf-di-wan-rgb24-v1"}, {"format", "rgb24"}, {"file", "frames.rgb24"},
+      {"frames", result.framesHeightWidth[0]}, {"height", result.framesHeightWidth[1]},
+      {"width", result.framesHeightWidth[2]}, {"bytes", written},
+      {"first_pts", 0}, {"time_base", {1, framesPerSecond}}, {"ticks_per_frame", 1},
+      {"digest", "sha256:" + ndn::toHex(*frameDigest.computeDigest(), false)},
+      {"initial_latent_digest", result.initialLatentDigest}, {"children", std::move(children)}};
+    if (traceMaxBytes != 0) {
+      clip["fixture_trace"] = std::move(trace);
+      clip["fixture_trace_bytes"] = traceBytes;
+      clip["fixture_trace_max_bytes"] = traceMaxBytes;
+    }
+    manifest << nativeCanonicalJson(clip);
+    manifest.close();
+    if (!manifest) throw std::runtime_error("Wan clip manifest could not be written");
+  }
+  current();
+  // Directory rename is the visibility boundary for frames and manifest.
+  if (::renameat2(AT_FDCWD, temporary.c_str(), AT_FDCWD, destination.c_str(),
+                  RENAME_NOREPLACE) != 0)
+    throw std::runtime_error("Wan clip output directory could not be committed");
+  committed = true;
+}
+
+int
+runWanRequester(const ptree& config, const std::filesystem::path& base, Runtime& runtime,
+                const User& user, const PreparedModel& textEncoder,
+                const std::optional<ndnsf_distributed_repo::RepoArtifactTarget>& target,
+                const std::map<std::string, std::filesystem::path>& componentConfigs,
+                Milliseconds preparationTimeout, const RequestOptions& childOptions,
+                std::uint64_t traceMaxBytes)
+{
+  wan::WanGenerationOptions options;
+  auto dim = options.latentShape.begin();
+  for (const auto& item : config.get_child("latent_shape")) {
+    if (!item.first.empty() || dim == options.latentShape.end())
+      throw std::invalid_argument("Wan latent_shape must be [C,T,H,W]");
+    *dim++ = item.second.get_value<std::int64_t>();
+  }
+  if (dim != options.latentShape.end())
+    throw std::invalid_argument("Wan latent_shape must be [C,T,H,W]");
+  options.paddedVideoTokens = config.get<std::int64_t>("padded_video_tokens");
+  options.textWidth = config.get<std::int64_t>("text_width");
+  options.vaeSpatialStride = config.get<std::int64_t>("vae_spatial_stride", 8);
+  if (traceMaxBytes != 0) options.traceMaxBytes = traceMaxBytes;
+  options.steps = config.get<std::size_t>("steps");
+  options.shift = config.get<double>("shift");
+  options.guidance = config.get<float>("guidance");
+  options.seed = config.get<std::uint64_t>("seed");
+  options.inlineLimit = config.get<std::size_t>("inline_limit_bytes", 4096);
+  options.generationId = config.get<std::string>("generation_id");
+  const auto timeout = config.get<std::int64_t>("timeout_ms");
+  options.deadline = std::chrono::steady_clock::now() + Milliseconds(timeout);
+  options.childRequest = childOptions;
+  const auto prompts = [&] {
+    if (const auto tokenizer = config.get_child_optional("tokenizer")) {
+      if (config.get_child_optional("positive_tokens") ||
+          config.get_child_optional("negative_tokens"))
+        throw std::invalid_argument("Wan text prompts conflict with pre-tokenized inputs");
+      const auto path = relativeTo(base, tokenizer->get<std::string>("file"));
+      return wan::tokenizeWanPrompts(path.string(), tokenizer->get<std::string>("digest"),
+        tokenizer->get<std::size_t>("slots"), config.get<std::string>("positive_prompt"),
+        config.get<std::string>("negative_prompt"));
+    }
+    if (config.get_optional<std::string>("positive_prompt") ||
+        config.get_optional<std::string>("negative_prompt"))
+      throw std::invalid_argument("Wan text prompts require a digest-bound UMT5 tokenizer");
+    return std::array<wan::WanPromptTokens, 2>{
+      readWanPrompt(config.get_child("positive_tokens")),
+      readWanPrompt(config.get_child("negative_tokens"))};
+  }();
+  const auto framesPerSecond = config.get<std::uint32_t>("frames_per_second", 16);
+  if (framesPerSecond == 0)
+    throw std::invalid_argument("Wan frames_per_second must be positive");
+  const auto destination = relativeTo(base, config.get<std::string>("output_directory"));
+  const auto current = [&] {
+    if (interrupted)
+      throw DiError("WAN_GENERATION_CANCELLED", "local", "wan-generation", "interrupted");
+    if (std::chrono::steady_clock::now() >= options.deadline)
+      throw DiError("WAN_GENERATION_TIMEOUT", "local", "wan-generation", "deadline expired");
+  };
+  const auto prepare = [&] (const std::string& key) {
+    current();
+    const auto& path = componentConfigs.at(key);
+    const auto modelInput = readJson(path).get_child("model_input");
+    const auto mode = modelInput.get<std::string>("mode");
+    const auto remaining = std::chrono::duration_cast<Milliseconds>(
+      options.deadline - std::chrono::steady_clock::now());
+    const auto budget = std::min(remaining, preparationTimeout);
+    if (budget.count() <= 0)
+      throw DiError("WAN_GENERATION_TIMEOUT", "local", "wan-prepare",
+                    "remaining generation deadline cannot cover preparation");
+    if (mode != "source" && mode != "stored")
+      throw std::invalid_argument("Wan secondary model must use source or stored mode");
+    return ndnsf::examples::runInterruptiblePreparation([&] {
+      if (!target) {
+        if (mode != "source" || modelInput.size() != 1)
+          throw std::invalid_argument("Wan local cache requires source-only component records");
+        PrepareOptions prepareOptions;
+        prepareOptions.timeout = budget;
+        return user.prepare(key, prepareOptions);
+      }
+      const auto handle = relativeTo(path.parent_path(),
+                                     modelInput.get<std::string>("private_handle_file"));
+      if (mode == "stored") return user.openStoredModel(key, handle, *target, budget);
+      return user.prepareStoredModel(key, *target,
+        relativeTo(path.parent_path(), modelInput.get<std::string>("preparation_state_file")),
+        handle, budget);
+    }, current, [&runtime] { runtime.close(); });
+  };
+  const auto denoiser = prepare("wan-denoiser");
+  const auto decoder = prepare("wan-decoder");
+  writeWanClip(destination, framesPerSecond, current, traceMaxBytes,
+               [&](const wan::WanRgb24Sink& sink, const wan::WanTensorObserver& observe) {
+    std::optional<wan::WanGenerationResult> result;
+    std::exception_ptr failure;
+    try {
+      result.emplace(wan::runWanGeneration(user, textEncoder, denoiser, decoder,
+                                            prompts[0], prompts[1], options, sink, current, observe));
+    }
+    catch (...) {
+      failure = std::current_exception();
+    }
+    runtime.close();
+    try {
+      const auto drainBudget = failure ? std::chrono::seconds(6) : std::chrono::seconds(5);
+      if (!runtime.drain(drainBudget))
+        throw std::runtime_error("WAN_GENERATION_DRAIN_TIMEOUT");
+    }
+    catch (const std::exception& error) {
+      if (!failure) throw;
+      std::cerr << "Wan request cleanup: " << error.what() << '\n';
+    }
+    if (failure) std::rethrow_exception(failure);
+    return std::move(*result);
+  });
+  return 0;
+}
+
 class NativeRepoSourceOwner final : public RepositorySourceProvider
 {
 public:
-  NativeRepoSourceOwner(std::filesystem::path root, std::filesystem::path base,
-                        ndn::Name producer,
+  NativeRepoSourceOwner(std::filesystem::path root, ndn::Name producer,
                         std::shared_ptr<ndnsf_distributed_repo::RepoSourceProvider> preparedOwner,
                         std::filesystem::path preparedIndexRoot)
-    : m_root(std::move(root)), m_base(std::move(base)), m_producer(std::move(producer)),
+    : m_root(std::move(root)), m_producer(std::move(producer)),
       m_preparedOwner(std::move(preparedOwner)),
       m_protectedIndex(std::move(preparedIndexRoot), m_producer),
       m_api(ndnsf_distributed_repo::RepoClient::makeInApp(
@@ -609,6 +883,8 @@ public:
   try {
     const auto catalog = nativeParseJson(request.catalogConfigurationJson);
     const auto& source = catalog.at("source");
+    if (!request.baseDirectory.is_absolute())
+      throw std::invalid_argument("native Repo source configuration directory is missing");
     const auto checkDeadline = [&] {
       if (std::chrono::steady_clock::now() >= request.deadline)
         throw RepositorySourceError(RepositorySourceError::Kind::Timeout,
@@ -617,7 +893,8 @@ public:
     const auto loadFile = [&] (const char* fileField, const char* digestField,
                               const char* label, const auto& consume) {
       checkDeadline();
-      const auto path = (m_base / source.at(fileField).get<std::string>()).lexically_normal();
+      const auto path = (request.baseDirectory / source.at(fileField).get<std::string>())
+                          .lexically_normal();
       const auto digest = source.at(digestField).get<std::string>();
       const auto sizeField = std::string(label) == "source" ? "bytes" : "initializer_bytes";
       const auto size = source.contains(sizeField)
@@ -741,7 +1018,6 @@ public:
 
 private:
   std::filesystem::path m_root;
-  std::filesystem::path m_base;
   ndn::Name m_producer;
   std::shared_ptr<ndnsf_distributed_repo::RepoSourceProvider> m_preparedOwner;
   ProtectedPreparationIndex m_protectedIndex;
@@ -789,6 +1065,10 @@ run(int argc, char** argv, bool& drainFailed)
   if (config.get<std::string>("schema", {}) != "ndnsf-di-native-requester-v1")
     throw std::invalid_argument("unsupported requester configuration schema");
   const auto modelInput = config.get_child_optional("model_input");
+  const auto wanConfig = config.get_child_optional("wan_generation");
+  const bool localWanCache = wanConfig && !modelInput &&
+    config.get<bool>("cache_compatibility.enabled", false) &&
+    !config.get<std::string>("cache_compatibility.source_directory", "").empty();
   const auto modelInputMode = modelInput
     ? modelInput->get<std::string>("mode", "") : std::string("source");
   if (modelInputMode != "source" && modelInputMode != "publish-stored" &&
@@ -812,7 +1092,8 @@ run(int argc, char** argv, bool& drainFailed)
   std::optional<ndnsf_distributed_repo::RepoArtifactTarget> storedModelRepository;
   std::filesystem::path storedPreparationState;
   std::filesystem::path storedPrivateHandle;
-  if (modelInputMode == "publish-stored" || (modelInputMode == "source" && !legacyArgs)) {
+  if (modelInputMode == "publish-stored" ||
+      (modelInputMode == "source" && !legacyArgs && !localWanCache)) {
     if ((modelInputMode == "publish-stored" && !prepareOnly) || modelRepository ||
         config.get_child_optional("encrypted_repository") ||
         config.get_child_optional("cache_compatibility"))
@@ -858,7 +1139,31 @@ run(int argc, char** argv, bool& drainFailed)
     storedPrivateHandle = relativeTo(base, *handleFile);
   }
   const auto& request = config.get_child("request");
-  const auto turns = prepareOnly ? std::vector<TurnSpec>{} : readTurnSpecs(
+  if (localWanCache && (modelRepository || config.get_child_optional("encrypted_repository") ||
+                        config.get_child_optional("repository")))
+    throw std::invalid_argument("Wan local cache cannot combine model publication modes");
+  if (wanConfig) {
+    const auto timeout = wanConfig->get<std::int64_t>("timeout_ms");
+    if (timeout <= 0 || timeout > 259'200'000)
+      throw std::invalid_argument("Wan generation timeout_ms is outside the supported range");
+  }
+  const auto captureFixtureTrace = config.get<bool>("test_wan_fixture_trace", false);
+  if (captureFixtureTrace && (!wanConfig || !config.get<bool>("test_only", false)))
+    throw std::invalid_argument("test_wan_fixture_trace requires Wan generation and test_only=true");
+  if (config.get_child_optional("test_wan_fixture_trace_max_bytes") && !captureFixtureTrace)
+    throw std::invalid_argument("Wan trace byte limit requires test_wan_fixture_trace=true");
+  const auto traceMaxBytes = captureFixtureTrace
+    ? (config.get_child_optional("test_wan_fixture_trace_max_bytes")
+         ? config.get<std::uint64_t>("test_wan_fixture_trace_max_bytes")
+         : wan::WAN_FIXTURE_TRACE_MAX_BYTES)
+    : 0;
+  if (captureFixtureTrace && (traceMaxBytes == 0 || traceMaxBytes > wan::WAN_TRACE_HARD_MAX_BYTES))
+    throw std::invalid_argument("Wan trace byte limit must be in [1,2147483648]");
+  if (wanConfig && (legacyArgs || prepareOnly || config.get_child_optional("turns") ||
+                   config.get_child_optional("conversation") ||
+                   !config.get_child_optional("fixed_placement")))
+    throw std::invalid_argument("Wan generation requires fixed placement and its own clip options");
+  const auto turns = prepareOnly || wanConfig ? std::vector<TurnSpec>{} : readTurnSpecs(
     config, base,
     legacyArgs ? std::optional<std::filesystem::path>(
       std::filesystem::absolute(argv[4]).lexically_normal()) : std::nullopt,
@@ -890,6 +1195,18 @@ run(int argc, char** argv, bool& drainFailed)
 
   RuntimeConfig runtimeConfig;
   runtimeConfig.nativeConfigPath = configPath.string();
+  std::map<std::string, std::filesystem::path> wanComponentConfigs;
+  if (wanConfig) {
+    std::signal(SIGINT, onSignal);
+    std::signal(SIGTERM, onSignal);
+    for (const auto* component : {"denoiser", "decoder"}) {
+      const auto key = std::string("wan-") + component;
+      const auto path = relativeTo(base, wanConfig->get<std::string>(
+        std::string(component) + "_config_file"));
+      wanComponentConfigs.emplace(key, path);
+      runtimeConfig.models.push_back({key, path.string()});
+    }
+  }
   std::string fixedPlacementStrategyId;
   std::string requestPlacementStrategyId;
   const auto placementScoreMode = request.get<std::string>(
@@ -919,6 +1236,9 @@ run(int argc, char** argv, bool& drainFailed)
           !providerByRole.emplace(item.first, item.second.data()).second)
         throw std::invalid_argument("fixed_placement.role_providers contains an invalid or duplicate role");
     }
+    if (wanConfig)
+      validateWanPlacement(config, readJson(wanComponentConfigs.at("wan-denoiser")),
+                            readJson(wanComponentConfigs.at("wan-decoder")), providerByRole);
     auto strategy = std::make_shared<NativeFixedProviderPlacement>(std::move(providerByRole));
     fixedPlacementStrategyId = strategy->identity().name;
     runtimeConfig.fixedPlacementStrategy = std::move(strategy);
@@ -947,7 +1267,7 @@ run(int argc, char** argv, bool& drainFailed)
     if (sourceCachePath.is_relative())
       sourceCachePath = base / sourceCachePath;
     runtimeConfig.repositorySourceProvider = std::make_shared<NativeRepoSourceOwner>(
-      std::move(sourceCachePath), base,
+      std::move(sourceCachePath),
       ndn::Name(config.get<std::string>("core.requester_identity")), std::move(sourceOwner), path);
   }
   if (const auto compatibility = config.get_child_optional("cache_compatibility")) {
@@ -1078,20 +1398,32 @@ run(int argc, char** argv, bool& drainFailed)
   }
   logSpec220PreparationStage("user-prepare.begin");
   std::optional<PreparedModel> preparedView;
-  if (modelInputMode == "stored") {
-    if (!storedModelRepository)
-      throw std::logic_error("stored model Repo target was not configured");
-    preparedView.emplace(user.openStoredModel("default", storedPrivateHandle,
-      *storedModelRepository, prepareOptions.timeout));
-  }
-  else if (!legacyArgs) {
-    if (!storedModelRepository)
-      throw std::logic_error("source model Repo target was not configured");
-    preparedView.emplace(user.prepareStoredModel("default", *storedModelRepository,
-      storedPreparationState, storedPrivateHandle, prepareOptions.timeout));
+  const auto prepareMainModel = [&] {
+    if (modelInputMode == "stored") {
+      if (!storedModelRepository)
+        throw std::logic_error("stored model Repo target was not configured");
+      return user.openStoredModel("default", storedPrivateHandle,
+        *storedModelRepository, prepareOptions.timeout);
+    }
+    if (!legacyArgs && !localWanCache) {
+      if (!storedModelRepository)
+        throw std::logic_error("source model Repo target was not configured");
+      return user.prepareStoredModel("default", *storedModelRepository,
+        storedPreparationState, storedPrivateHandle, prepareOptions.timeout);
+    }
+    return user.prepare("default", prepareOptions);
+  };
+  if (wanConfig) {
+    const auto deadline = std::chrono::steady_clock::now() + prepareOptions.timeout;
+    preparedView.emplace(ndnsf::examples::runInterruptiblePreparation(prepareMainModel, [&] {
+      if (interrupted)
+        throw DiError("WAN_GENERATION_CANCELLED", "local", "wan-prepare", "interrupted");
+      if (std::chrono::steady_clock::now() >= deadline)
+        throw DiError("PREPARATION_TIMEOUT", "local", "wan-prepare", "preparation expired");
+    }, [&runtime] { runtime->close(); }));
   }
   else {
-    preparedView.emplace(user.prepare("default", prepareOptions));
+    preparedView.emplace(prepareMainModel());
   }
   logSpec220PreparationStage("user-prepare.complete");
   std::optional<NativeModelRepositoryReceipt> stored;
@@ -1140,6 +1472,11 @@ run(int argc, char** argv, bool& drainFailed)
     options.placement = runtime->placementStrategy(fixedPlacementStrategyId);
     if (diagnosticOutputEnabled())
       std::cout << "NATIVE_FIXED_PLACEMENT strategy=" << fixedPlacementStrategyId << std::endl;
+  }
+  if (wanConfig) {
+    return runWanRequester(*wanConfig, base, *runtime, user, prepared, storedModelRepository,
+                           wanComponentConfigs, prepareOptions.timeout, options,
+                           traceMaxBytes);
   }
   if (options.timeout.count() <= 0 || options.ackTimeout.count() <= 0 ||
       options.ackTimeout >= options.timeout) {

@@ -123,7 +123,7 @@ NativeFilesystemArtifactPublisher::publish(
   NativeMaterialFragmentCache objects(m_root / "objects");
   const auto store = [&] (const std::string& value) {
     control.requireActive();
-    if (value.empty() || value.size() > 64ULL * 1024 * 1024)
+    if (value.empty() || value.size() > NativeCanonicalMaterialPublicationMaxBytes)
       throw std::runtime_error("DI_FILESYSTEM_CACHE_OBJECT_LIMIT");
     const auto digest = nativePlanningDigest(value);
     if (!objects.write(digest, ndn::span<const std::uint8_t>(
@@ -150,7 +150,12 @@ NativeFilesystemArtifactPublisher::publish(
           payload.rangeOffset > payload.rangeSource->size() ||
           bytes > payload.rangeSource->size() - payload.rangeOffset)
         throw std::invalid_argument("DI_FILESYSTEM_CACHE_SOURCE_RANGE_MISMATCH");
-      name = ndn::Name(m_prefix).append("RANGE").append(std::to_string(payload.rangeOffset))
+      const auto& initializer = model.canonicalInitializerObjectDigest;
+      if (initializer.size() != 71 || initializer.substr(0, 7) != "sha256:" ||
+          !validHex(initializer.substr(7)))
+        throw std::invalid_argument("DI_FILESYSTEM_CACHE_INITIALIZER_IDENTITY_INVALID");
+      name = ndn::Name(m_prefix).append("RANGE").append(initializer.substr(7))
+        .append(std::to_string(payload.rangeOffset))
         .append(std::to_string(bytes)).append(payload.digest.substr(7))
         .toUri(ndn::name::UriFormat::CANONICAL);
     }
@@ -182,8 +187,6 @@ NativeFilesystemArtifactPublisher::publish(
   NativeJson metadata{{"canonicalSourceDigest", model.canonicalSourceDigest},
     {"cacheCompatibilityNamespace", "sha256:" + componentText(m_prefix[-1])},
     {"canonicalSourceBytes", model.canonicalSourceBytes},
-    {"canonicalInitializerBytes", model.canonicalInitializerBytes},
-    {"canonicalInitializerObjectDigest", model.canonicalInitializerObjectDigest},
     {"materialBacked", true}, {"materialIdentityDigest", manifest.manifestDigest},
     {"materialManifestDataName", result.materialManifestDataName},
     {"materialManifestDigest", result.materialManifestDigest},
@@ -191,6 +194,10 @@ NativeFilesystemArtifactPublisher::publish(
     {"materialReceiptDataName", result.materialReceiptDataName},
     {"materialReceiptDigest", result.materialReceiptDigest},
     {"materialReceiptBytes", result.materialReceiptBytes}};
+  if (model.canonicalInitializerBytes != 0) {
+    metadata["canonicalInitializerBytes"] = model.canonicalInitializerBytes;
+    metadata["canonicalInitializerObjectDigest"] = model.canonicalInitializerObjectDigest;
+  }
   if (!options.packageManifestDigest.empty())
     metadata["packageManifestDigest"] = options.packageManifestDigest;
   result.canonicalManifestJson = nativeCanonicalJson(NativeJson{
@@ -222,7 +229,7 @@ readNativeFilesystemArtifact(const std::filesystem::path& root, const ndn::Name&
     return std::nullopt;
   const auto hex = componentText(name[-1]);
   if (!validHex(hex)) return std::nullopt;
-  maxBytes = std::min<std::uint64_t>(maxBytes, 64ULL * 1024 * 1024);
+  maxBytes = std::min<std::uint64_t>(maxBytes, NativeCanonicalMaterialPublicationMaxBytes);
   if (name.size() == prefix.size() + 2 && componentText(name[-2]) == "OBJECT") {
     std::error_code error;
     const auto bytes = std::filesystem::file_size(objectPath(root, hex), error);
@@ -233,29 +240,39 @@ readNativeFilesystemArtifact(const std::filesystem::path& root, const ndn::Name&
     buffer.swap(*value);
     return buffer;
   }
-  if (name.size() != prefix.size() + 4 || componentText(name[-4]) != "RANGE")
+  const bool hasInitializer = name.size() == prefix.size() + 5 &&
+    componentText(name[-5]) == "RANGE";
+  if (!hasInitializer &&
+      (name.size() != prefix.size() + 4 || componentText(name[-4]) != "RANGE"))
     return std::nullopt;
   const auto offset = decimal(name[-3]);
   const auto bytes = decimal(name[-2]);
   if (bytes == 0 || bytes > maxBytes || bytes > NativeCanonicalMaterialBundleMaxBytes)
     return std::nullopt;
-  const auto markerPath = root / "cache-identity.json";
-  std::error_code error;
-  if (std::filesystem::symlink_status(markerPath, error).type() !=
-        std::filesystem::file_type::regular || error)
-    return std::nullopt;
-  const auto markerBytes = std::filesystem::file_size(markerPath, error);
-  if (markerBytes > 65536 || markerBytes == 0 || error) return std::nullopt;
-  std::ifstream marker(markerPath);
-  std::string markerText(static_cast<std::size_t>(markerBytes), '\0');
-  if (!marker.read(markerText.data(), markerText.size()) || marker.peek() != EOF)
-    return std::nullopt;
-  const auto identity = nativeParseJson(markerText);
-  const auto initializer = identity.at("initializerDigest").get<std::string>();
-  if (initializer.size() != 71 || initializer.substr(0, 7) != "sha256:" ||
-      !validHex(initializer.substr(7))) return std::nullopt;
-  const auto path = root / "payloads" / "sha256" / initializer.substr(7, 2) /
-    initializer.substr(7);
+  std::string initializer;
+  if (hasInitializer) {
+    initializer = componentText(name[-4]);
+  }
+  else {
+    const auto markerPath = root / "cache-identity.json";
+    std::error_code error;
+    if (std::filesystem::symlink_status(markerPath, error).type() !=
+          std::filesystem::file_type::regular || error)
+      return std::nullopt;
+    const auto markerBytes = std::filesystem::file_size(markerPath, error);
+    if (markerBytes > 65536 || markerBytes == 0 || error) return std::nullopt;
+    std::ifstream marker(markerPath);
+    std::string markerText(static_cast<std::size_t>(markerBytes), '\0');
+    if (!marker.read(markerText.data(), markerText.size()) || marker.peek() != EOF)
+      return std::nullopt;
+    const auto identity = nativeParseJson(markerText);
+    const auto digest = identity.at("initializerDigest").get<std::string>();
+    if (digest.size() != 71 || digest.substr(0, 7) != "sha256:")
+      return std::nullopt;
+    initializer = digest.substr(7);
+  }
+  if (!validHex(initializer)) return std::nullopt;
+  const auto path = root / "payloads" / "sha256" / initializer.substr(0, 2) / initializer;
   const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (fd < 0) return std::nullopt;
   BOOST_SCOPE_EXIT_ALL(fd) { ::close(fd); };

@@ -1,0 +1,4 @@
+# Offline host conversion only. Install the PyTorch CPU wheel from the official CPU index.
+torch==2.6.0+cpu
+numpy==1.26.4
+einops==0.8.1

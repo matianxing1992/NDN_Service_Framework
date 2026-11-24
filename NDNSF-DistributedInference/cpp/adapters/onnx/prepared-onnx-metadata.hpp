@@ -13,6 +13,12 @@ struct AutomaticOnnxContract;
 struct AutomaticOnnxModel;
 struct NativeInspectedModel;
 
+/** Rebuild planning edges and ports from the same inspected facts used at cold prepare. */
+NativeGraphSnapshot
+restoreNativeOnnxPlanningGraph(const std::string& graphMetadataJson,
+                              const NativeModelDescriptor& model,
+                              const NativeAssemblyControl& control);
+
 /** Decoded preparation facts; neither signature trust nor execution permission. */
 struct NativePreparedOnnxMetadata
 {

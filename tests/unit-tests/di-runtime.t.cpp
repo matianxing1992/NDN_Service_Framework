@@ -1,4 +1,5 @@
 #include "tests/fixtures/test-resource-paths.hpp"
+#include "examples/interruptible-preparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -255,15 +256,10 @@ public:
     catalog["publication"] = {{"artifact_root", "/fixture/artifacts"}};
     catalog["input_format"] = "JSON";
     catalog["max_payload_bytes"] = 32;
-    const ndnsf::di::NativeJson component = {
-      {"candidate_id", "semantic-v1"}, {"priority", 1},
-      {"roles", {"Front", "Branch", "Merge"}},
-      {"node_names_by_role", ndnsf::di::NativeJson::object()},
-      {"input_ingress_role", "Front"}, {"result_egress_role", "Merge"},
-      {"merge_kind", "NATIVE_POSTPROCESS"},
-      {"candidate_digest", oracle.at("registered_digest")},
-      {"semantic_partition", oracle.at("partition")} };
-    catalog["splitter"] = {{"kind", "YOLO"}, {"components", {component}}};
+    catalog["splitter"] = {
+      {"kind", "ONNX_SOURCE"}, {"mode", "full"}, {"roles", {"FullModel"}},
+      {"input_ingress_role", "FullModel"}, {"result_egress_role", "FullModel"},
+      {"postprocessing", ndnsf::di::NativeJson::object()}};
 
     std::ifstream input(configPath);
     ndnsf::di::NativeJson runtime;
@@ -396,6 +392,64 @@ private:
 
 BOOST_AUTO_TEST_SUITE(DiRuntime)
 
+BOOST_AUTO_TEST_CASE(InterruptiblePreparationReturnsOrPropagatesWorkerFailure)
+{
+  unsigned calls = 0;
+  unsigned closes = 0;
+  const auto current = [&] { ++calls; };
+  const auto close = [&] { ++closes; };
+  BOOST_CHECK_EQUAL(ndnsf::examples::runInterruptiblePreparation(
+    [] { return 42; }, current, close), 42);
+  BOOST_CHECK_GE(calls, 3U);
+  BOOST_CHECK_EQUAL(closes, 0U);
+  BOOST_CHECK_EXCEPTION(ndnsf::examples::runInterruptiblePreparation([] () -> int {
+    throw std::runtime_error("fixture-worker-failed");
+  }, current, close), std::runtime_error, [] (const auto& error) {
+    return std::string(error.what()) == "fixture-worker-failed";
+  });
+  BOOST_CHECK_EQUAL(closes, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(InterruptiblePreparationClosesAndJoinsBeforeUnwinding)
+{
+  std::mutex mutex;
+  std::condition_variable wake;
+  bool closed = false;
+  std::atomic<bool> finished{false};
+  std::atomic<bool> cooperativelyReleased{false};
+  std::promise<void> started;
+  const auto startedFuture = started.get_future();
+  const auto prepare = [&] {
+    started.set_value();
+    std::unique_lock<std::mutex> lock(mutex);
+    const bool released = wake.wait_for(lock, std::chrono::seconds(2), [&] { return closed; });
+    cooperativelyReleased.store(released, std::memory_order_release);
+    finished.store(true, std::memory_order_release);
+    if (!released) throw std::runtime_error("fixture operation was not closed");
+    return 1;
+  };
+  const auto current = [&] {
+    if (startedFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
+      throw std::runtime_error("fixture-cancelled");
+  };
+  const auto close = [&] {
+    std::lock_guard<std::mutex> lock(mutex);
+    closed = true;
+    wake.notify_all();
+  };
+  BOOST_CHECK_EXCEPTION(ndnsf::examples::runInterruptiblePreparation(prepare, current, close),
+    std::runtime_error, [] (const auto& error) {
+      return std::string(error.what()) == "fixture-cancelled";
+    });
+  BOOST_CHECK(closed);
+  BOOST_CHECK(finished.load(std::memory_order_acquire));
+  BOOST_CHECK(cooperativelyReleased.load(std::memory_order_acquire));
+  unsigned launches = 0;
+  BOOST_CHECK_THROW(ndnsf::examples::runInterruptiblePreparation([&] { return ++launches; },
+    [] { throw std::runtime_error("cancelled-before-admission"); }, [] {}), std::runtime_error);
+  BOOST_CHECK_EQUAL(launches, 0U);
+}
+
 BOOST_AUTO_TEST_CASE(MissingControllerCertificateDoesNotMintForeignIdentity)
 {
   TempRuntimeConfig files;
@@ -440,6 +494,42 @@ BOOST_AUTO_TEST_CASE(ValidPinnedConfigurationOpensAndDefersModelSource)
   // operator metadata only; source acquisition belongs to T003/T004 prepare.
   std::filesystem::remove(configPath);
   BOOST_CHECK_NO_THROW(runtime->user());
+}
+
+BOOST_AUTO_TEST_CASE(LargeNativeCatalogFreezesWithinRequesterFileBound)
+{
+  TempRuntimeConfig files;
+  const auto sourcePath = files.makeConfig("requester.json");
+  std::ifstream input(sourcePath);
+  ndnsf::di::NativeJson configJson;
+  input >> configJson;
+  configJson.at("catalog")["description"] = std::string(84U << 20, 'c');
+  RuntimeConfig config;
+  config.nativeConfigPath = files.write("wide-requester.json",
+    ndnsf::di::nativeCanonicalJson(configJson)).string();
+  auto runtime = Runtime::open(config);
+  BOOST_REQUIRE(runtime);
+  BOOST_CHECK_NO_THROW(runtime->user());
+  runtime->close();
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+
+  constexpr auto LIMIT = ndnsf::di::NATIVE_REQUEST_CATALOG_MAX_BYTES;
+  configJson.at("catalog")["description"] = std::string(LIMIT + 1, 'c');
+  config.nativeConfigPath = files.write("oversized-catalog.json",
+    ndnsf::di::nativeCanonicalJson(configJson)).string();
+  auto oversized = Runtime::open(config);
+  BOOST_REQUIRE(oversized);
+  BOOST_CHECK_EXCEPTION(oversized->user().prepare(), DiError, [] (const DiError& error) {
+    return error.code() == "INVALID_RUNTIME_CONFIGURATION" && error.boundary() == "catalog";
+  });
+  oversized->close();
+  BOOST_CHECK(oversized->drain(std::chrono::seconds(2)));
+  std::filesystem::resize_file(config.nativeConfigPath,
+    ndnsf::di::NATIVE_RUNTIME_CONFIG_MAX_BYTES + 1);
+  BOOST_CHECK_EXCEPTION(Runtime::open(config), DiError, [] (const DiError& error) {
+    return error.code() == "INVALID_RUNTIME_CONFIGURATION" &&
+      error.boundary() == "configuration";
+  });
 }
 
 BOOST_AUTO_TEST_CASE(RequestTimeStoredPreparationRejectsInvalidInputsWithoutSideEffects)
@@ -1078,6 +1168,190 @@ BOOST_AUTO_TEST_CASE(RepositoryLoaderPreservesDeadlineAndCancellation)
   BOOST_CHECK(keywordRuntime->drain(std::chrono::seconds(2)));
 }
 
+BOOST_AUTO_TEST_CASE(RepositoryOwnerReceivesEachRegisteredModelDirectory)
+{
+  namespace fs = std::filesystem;
+  using ndnsf::di::NativeCanonicalSource;
+  using ndnsf::di::RepositorySourceProvider;
+  using ndnsf::di::RepositorySourceRequest;
+  using Paths = std::map<std::string, fs::path>;
+  struct SourceProbe final : RepositorySourceProvider
+  {
+    explicit SourceProbe(Paths directories)
+      : directories(std::move(directories))
+    {
+    }
+
+    NativeCanonicalSource load(const RepositorySourceRequest& request,
+                               const Fallback& fallback) const override
+    {
+      if (request.baseDirectory != directories.at(request.modelKey))
+        throw std::runtime_error("Repo source owner's model directory differs");
+      const auto bytes = fallback(request);
+      const auto expected = request.modelKey == "default" ? "primary" : "secondary";
+      ndnsf::di::NativeAssemblyControl control{
+        request.deadline, [] {}, request.maxSourceBytes, request.maxSourceBytes};
+      const auto initializer = ndnsf::di::readNativeCanonicalInitializerRange(
+        bytes, 0, std::string(expected).size(), control);
+      if (std::string(bytes.modelBytes.begin(), bytes.modelBytes.end()) != expected ||
+          bytes.initializerBytes || !bytes.initializerRangeSource ||
+          bytes.initializerRangeSource->size() != std::string(expected).size() ||
+          std::string(initializer.begin(), initializer.end()) != expected)
+        throw std::runtime_error("SDK did not resolve both model files from its configuration");
+      throw RepositorySourceError(RepositorySourceError::Kind::Unavailable,
+                                  "verified fixture source bytes before ONNX inspection");
+    }
+
+    Paths directories;
+  };
+
+  TempRuntimeConfig files;
+  const auto primary = files.makeConfig("requester.json");
+  ndnsf::di::NativeJson primaryJson;
+  std::ifstream(primary) >> primaryJson;
+  primaryJson["catalog"]["source"] = {
+    {"file", "model.onnx"}, {"initializer_file", "model.data"},
+    {"initializer_digest", ndnsf::di::nativePlanningDigest("primary")}};
+  files.write("requester.json", ndnsf::di::nativeCanonicalJson(primaryJson));
+  files.write("model.onnx", "primary");
+  files.write("model.data", "primary");
+
+  auto secondaryJson = primaryJson;
+  secondaryJson["catalog"]["source"]["initializer_bytes"] = std::string("secondary").size();
+  secondaryJson["catalog"]["source"]["initializer_digest"] =
+    ndnsf::di::nativePlanningDigest("secondary");
+  const auto absolute = [&files] (auto& owner, const std::string& field) {
+    owner[field] = (files.root() / owner.at(field).template get<std::string>()).string();
+  };
+  absolute(secondaryJson.at("core"), "trust_schema_file");
+  absolute(secondaryJson.at("grant"), "authority_public_key_file");
+  absolute(secondaryJson.at("grant"), "requester_private_key_file");
+  for (auto& path : secondaryJson.at("offer_admission").at("public_key_files"))
+    path = (files.root() / path.get<std::string>()).string();
+  fs::create_directory(files.root() / "component");
+  files.write("component/requester.json", ndnsf::di::nativeCanonicalJson(secondaryJson));
+  files.write("component/model.onnx", "secondary");
+  files.write("component/model.data", "secondary");
+
+  RuntimeConfig config;
+  config.nativeConfigPath = primary.string();
+  config.models = {{"component", "component/requester.json"}};
+  config.repositorySourceProvider = std::make_shared<SourceProbe>(
+    Paths{{"default", files.root()}, {"component", files.root() / "component"}});
+  auto runtime = Runtime::open(std::move(config));
+  for (const auto* key : {"default", "component"}) {
+    BOOST_CHECK_EXCEPTION(runtime->user().prepare(key), DiError, [](const DiError& error) {
+      return error.code() == "PREPARATION_SOURCE_UNAVAILABLE" &&
+             std::string(error.what()) == "verified fixture source bytes before ONNX inspection";
+    });
+  }
+  runtime->close();
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+}
+
+BOOST_AUTO_TEST_CASE(LocalInitializerFileRejectsWrongCommitmentsBeforeCatalog)
+{
+  namespace fs = std::filesystem;
+  TempRuntimeConfig files;
+  const auto original = files.makeConfig("requester.json");
+  ndnsf::di::NativeJson configuration;
+  std::ifstream(original) >> configuration;
+  files.write("model.onnx", "not-an-onnx-graph");
+  files.write("model.data", "initializer");
+  configuration["catalog"]["source"] = {
+    {"file", "model.onnx"}, {"initializer_file", "model.data"},
+    {"initializer_bytes", std::string("initializer").size()},
+    {"initializer_digest", ndnsf::di::nativePlanningDigest("initializer")}};
+  for (const auto* boundary : {"digest", "length", "limit"}) {
+    auto candidate = configuration;
+    std::string expected = "DI_NATIVE_ONNX_INITIALIZER_FILE";
+    if (std::string(boundary) == "digest") {
+      candidate["catalog"]["source"]["initializer_digest"] =
+        ndnsf::di::nativePlanningDigest("different");
+      expected = "DI_NATIVE_ONNX_INITIALIZER_DIGEST";
+    }
+    else if (std::string(boundary) == "length") {
+      candidate["catalog"]["source"]["initializer_bytes"] = 10;
+    }
+    else {
+      // A sparse file exceeds the configured bound without allocating model weights.
+      const auto maximum = candidate["limits"]["max_source_bytes"].get<std::uint64_t>();
+      fs::resize_file(files.root() / "model.data", maximum + 1);
+      candidate["catalog"]["source"]["initializer_bytes"] = maximum + 1;
+    }
+    const auto path = files.write(std::string(boundary) + ".json",
+                                  ndnsf::di::nativeCanonicalJson(candidate));
+    RuntimeConfig config;
+    config.nativeConfigPath = path.string();
+    auto runtime = Runtime::open(std::move(config));
+    BOOST_CHECK_EXCEPTION(runtime->user().prepare(), DiError, [&] (const DiError& error) {
+      return error.code() == "PREPARATION_SOURCE_UNAVAILABLE" &&
+             error.boundary() == "preparation" && std::string(error.what()) == expected;
+    });
+    BOOST_CHECK(fs::exists(files.root() / "model.data"));
+    runtime->close();
+    BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(LocalInitializerFilePreservesTerminalReasonAtOpen)
+{
+  struct TerminalProbe final : ndnsf::di::RepositorySourceProvider
+  {
+    std::function<void()> beforeFallback;
+    mutable std::promise<std::string> terminal;
+
+    ndnsf::di::NativeCanonicalSource load(
+      const ndnsf::di::RepositorySourceRequest& request, const Fallback& fallback) const override
+    {
+      if (beforeFallback) beforeFallback();
+      else std::this_thread::sleep_until(request.deadline + std::chrono::milliseconds(1));
+      try {
+        return fallback(request);
+      }
+      catch (const DiError& error) {
+        terminal.set_value(error.code());
+        throw;
+      }
+    }
+  };
+  for (const bool cancel : {false, true}) {
+    TempRuntimeConfig files;
+    const auto path = files.makeConfig("requester.json");
+    ndnsf::di::NativeJson configuration;
+    std::ifstream(path) >> configuration;
+    files.write("model.onnx", "graph");
+    files.write("model.data", "initializer");
+    configuration["catalog"]["source"] = {
+      {"file", "model.onnx"}, {"initializer_file", "model.data"},
+      {"initializer_digest", ndnsf::di::nativePlanningDigest("initializer")}};
+    files.write("requester.json", ndnsf::di::nativeCanonicalJson(configuration));
+    const auto probe = std::make_shared<TerminalProbe>();
+    auto terminal = probe->terminal.get_future();
+    RuntimeConfig config;
+    config.nativeConfigPath = path.string();
+    config.repositorySourceProvider = probe;
+    config.preparationJobTimeout = std::chrono::milliseconds(cancel ? 1000 : 100);
+    auto runtime = Runtime::open(std::move(config));
+    if (cancel) {
+      probe->beforeFallback = [weak = std::weak_ptr<Runtime>(runtime)] {
+        if (const auto owner = weak.lock()) owner->close();
+      };
+    }
+    BOOST_CHECK_EXCEPTION(runtime->user().prepare(), DiError, [&] (const DiError& error) {
+      return cancel ? error.code() == "RUNTIME_CLOSED" || error.code() == "PREPARATION_CANCELLED"
+                    : error.code() == "PREPARATION_TIMEOUT";
+    });
+    const auto observed = terminal.wait_for(std::chrono::seconds(2));
+    BOOST_CHECK(observed == std::future_status::ready);
+    if (observed == std::future_status::ready)
+      BOOST_CHECK_EQUAL(terminal.get(), cancel ? "PREPARATION_CANCELLED" : "PREPARATION_TIMEOUT");
+    runtime->close();
+    BOOST_REQUIRE(runtime->drain(std::chrono::seconds(2)));
+    BOOST_CHECK(std::filesystem::is_regular_file(files.root() / "model.data"));
+  }
+}
+
 BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
 {
   TempRuntimeConfig files;
@@ -1203,9 +1477,6 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   const auto ownerStats = sourceOwner->stats();
   BOOST_CHECK_EQUAL(ownerStats.lookups, 1U);
   BOOST_CHECK_EQUAL(ownerStats.missIngests, 1U);
-  std::ifstream oracleFile(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
-  ndnsf::di::NativeJson oracle;
-  oracleFile >> oracle;
   BOOST_CHECK_EQUAL(prepared.manifest().modelName, "yolo26n");
   BOOST_CHECK_EQUAL(prepared.manifest().taskName, "task");
   BOOST_CHECK_EQUAL(prepared.manifest().canonicalGraphDigest, files.canonicalGraphDigest);

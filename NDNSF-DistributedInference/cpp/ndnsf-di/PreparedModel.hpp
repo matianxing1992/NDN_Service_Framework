@@ -121,6 +121,10 @@ struct RequestOptions
   std::optional<StreamOptions> stream;
   /** Optional request-owned observations; has no protocol or cache authority. */
   std::shared_ptr<class NativeWorkStatistics> workStatistics;
+  /** Publish larger encoded inputs as service-protected Data for this request.
+   * Applies to ordinary non-streaming requests using Input::inlineBytes.
+   */
+  std::optional<std::size_t> maxInlineInputBytes;
 };
 
 struct Result
@@ -268,8 +272,12 @@ public:
   PreparedModel() = delete;
 
   const ModelManifest& manifest() const noexcept;
+  /** Identity used by Result::modelDigest to bind the verified model intent. */
+  std::string modelIntentDigest() const;
   const PreparationReceipt& receipt() const noexcept;
   ModelCapabilities capabilities() const;
+  /** Maximum encoded input or result accepted by the verified adapter. */
+  std::size_t maxPayloadBytes() const;
 
   /**
    * Compatibility entry point. Prefer User::request(model, input, options),

@@ -112,10 +112,9 @@ def _pairs(items):
     return result
 
 
-# The installed stack ledger is a legitimate operator artifact that exceeds a few
-# MiB (the local install records its whole file list), so the JSON reader keeps a
-# generous but still bounded limit.
-MAX_JSON_BYTES = 64 * 1024 * 1024
+# Full video catalogs and installed stack ledgers are legitimate large operator
+# inputs. Keep a finite file bound, including the enclosing runtime settings.
+MAX_JSON_BYTES = 128 * 1024 * 1024
 
 
 def _read_json(path):
@@ -124,7 +123,7 @@ def _read_json(path):
     with path.open("rb") as stream:
         raw = stream.read(MAX_JSON_BYTES + 1)
     if len(raw) > MAX_JSON_BYTES:
-        _fail("config", "JSON exceeds 64 MiB")
+        _fail("config", f"JSON exceeds {MAX_JSON_BYTES // (1024 * 1024)} MiB")
     try:
         return json.loads(raw, object_pairs_hook=_pairs)
     except (UnicodeError, json.JSONDecodeError, RecursionError):
@@ -279,8 +278,8 @@ def load_deployment(path, *, prepare_only=False):
                 read_paths.add(candidate)
             return str(candidate)
         candidate = source.parent / candidate
-        if field in {'requester.model_input.private_handle_file',
-                     'requester.model_input.preparation_state_file'} and any(
+        if field.endswith(('.model_input.private_handle_file',
+                           '.model_input.preparation_state_file')) and any(
                 item.is_symlink() for item in (candidate, *candidate.parents)):
             _fail(field, 'private file path must not use symlinks')
         candidate = candidate.resolve()
@@ -706,6 +705,10 @@ def _translate_native(config, by_kind, resolve):
                              authority_identity, paths, bind,
                              operation=config.get('operation', 'run'),
                              allow_test_barriers=config['platform']['kind'] == 'minindn')
+        if 'wan_generation' in requester:
+            if not local:
+                _fail('requester.wan_generation', 'requires local native component files')
+            track_wan_component_paths(requester, paths)
         if requester.get('model_input', {}).get('mode') == 'source-cache':
             for provider in by_kind['provider']:
                 if provider['external']:
@@ -768,7 +771,9 @@ def _translate_native(config, by_kind, resolve):
             _object(parameters, "provider.parameters", {
                 "roles", "selection-offer-key-file", "offer-backend", "offer-can-provision",
                 "offer-has-model", "permission-wait-ms", "workers", "handler-threads", "ack-threads",
-                "artifact-cache-dir", "artifact-cache-max-mib", "statistics-file",
+                "artifact-cache-dir", "artifact-cache-max-mib", "exact-packet-disk-mib",
+                "tensor-segment-bytes",
+                "statistics-file",
                 "cache-compatibility-source-dir",
                 "allow-selection-generation-options", "sample-kv-state-values",
                 "enable-segment-manifest",
@@ -815,13 +820,18 @@ def _translate_native(config, by_kind, resolve):
                     _fail(field, "requires complete KV mode and a tensor name of at most 1024 bytes")
             for key in ("permission-wait-ms", "workers", "handler-threads", "ack-threads",
                         "admission-lease-ttl-ms", "repo-fetch-timeout-ms", "conversation-retention-ms",
-                        "assembly-timeout-ms", "artifact-cache-max-mib"):
+                        "assembly-timeout-ms", "artifact-cache-max-mib", "exact-packet-disk-mib",
+                        "tensor-segment-bytes"):
                 if key in parameters:
                     _integer(parameters[key], "provider.parameters." + key)
             if parameters.get("repo-fetch-timeout-ms", 1) > 2147483647:
                 _fail("provider.parameters.repo-fetch-timeout-ms", "exceeds native signed int timeout")
             if parameters.get("artifact-cache-max-mib", 1) > 2147483647:
                 _fail("provider.parameters.artifact-cache-max-mib", "exceeds native signed int MiB limit")
+            if parameters.get("exact-packet-disk-mib", 1) > 131072:
+                _fail("provider.parameters.exact-packet-disk-mib", "exceeds native disk ceiling")
+            if parameters.get("tensor-segment-bytes", 1) > 8800:
+                _fail("provider.parameters.tensor-segment-bytes", "exceeds native NDN packet ceiling")
             if parameters.get("conversation-retention-ms", 1) > 3600000:
                 _fail("provider.parameters.conversation-retention-ms", "exceeds native retention limit")
             if parameters.get("assembly-timeout-ms", 1) > 3600000:
@@ -884,7 +894,76 @@ def _translate_native(config, by_kind, resolve):
     for path, _, location in writes:
         if path in barrier_outputs and location not in barrier_locations:
             _fail(location, 'barrier path overlaps another output')
+    if 'wan_generation' in requester and not requester_external and not benchmark:
+        output = Path(requester['wan_generation']['output_directory'])
+        for path, _, location in writes:
+            if location == 'requester.wan_generation.output_directory':
+                continue
+            target = Path(path)
+            if target == output or output in target.parents:
+                _fail(location, 'overlaps Wan clip output directory')
     return writes
+
+
+def wan_component_files(requester):
+    """Read the two native model records with paths relative to each file."""
+    for component in ('denoiser', 'decoder'):
+        path = Path(requester['wan_generation'][component + '_config_file'])
+        location = 'requester.wan_generation.' + component
+        yield path, _object(_read_json(path), location), location
+
+
+def track_wan_component_paths(requester, paths):
+    local_cache = requester['model_input']['mode'] == 'source-cache'
+    seen_private = {requester['model_input'][key] for key in
+                    ('private_handle_file', 'preparation_state_file')
+                    if key in requester['model_input']}
+    for path, config, location in wan_component_files(requester):
+        if config.get('schema') != 'ndnsf-di-native-requester-v1' or (
+                config.keys() & {'wan_generation', 'turns', 'conversation', 'kv_handoff'}):
+            _fail(location, 'expected one native Wan component configuration')
+
+        def component_paths(obj, fields, field, **options):
+            copies = {key: str(path.parent / _string(obj[key], field + '.' + key))
+                      for key in fields if key in obj}
+            paths(copies, fields, field, **options)
+            return copies
+
+        model = _object(config.get('model_input'), location + '.model_input', required={'mode'})
+        mode = model['mode']
+        if mode not in ('source', 'stored'):
+            _fail(location + '.model_input.mode', 'expected source or stored')
+        if local_cache:
+            if model != {'mode': 'source'}:
+                _fail(location + '.model_input', 'local Wan cache requires a source-only component')
+        else:
+            target = requester['model_input']['repo_target']
+            if model.get('repo_target', target) != target:
+                _fail(location + '.model_input.repo_target', 'must match the Requester Repo target')
+            model_keys = ['private_handle_file']
+            if mode == 'source':
+                model_keys.append('preparation_state_file')
+            _object(model, location + '.model_input', required=set(model_keys))
+            private = component_paths(model, model_keys, location + '.model_input',
+                                      exists=mode == 'stored')
+            if (len(set(private.values())) != len(private) or
+                    seen_private.intersection(private.values())):
+                _fail(location + '.model_input', 'component private files must be distinct')
+            seen_private.update(private.values())
+        source = _object(_object(config.get('catalog'), location + '.catalog').get('source'),
+                         location + '.catalog.source')
+        if mode == 'source' and not local_cache:
+            component_paths(source, ('file', 'initializer_file'), location + '.catalog.source')
+        elif source.keys() & {'file', 'initializer_file'}:
+            _fail(location + '.catalog.source', 'use only the configured model store')
+        for key, fields in (
+                ('core', ('trust_schema_file',)),
+                ('grant', ('requester_private_key_file', 'authority_public_key_file'))):
+            component_paths(_object(config.get(key), location + '.' + key), fields,
+                            location + '.' + key)
+        admission = _object(config.get('offer_admission', {}), location + '.offer_admission')
+        keys = _object(admission.get('public_key_files', {}), location + '.offer_admission.keys')
+        component_paths(keys, tuple(keys), location + '.offer_admission.public_key_files')
 
 
 def _translate_requester(requester, network, security, controller, requester_identity,
@@ -894,6 +973,32 @@ def _translate_requester(requester, network, security, controller, requester_ide
     mode = model_input.get('mode')
     if mode not in ('source', 'publish-stored', 'stored', 'source-cache'):
         _fail('requester.model_input.mode', 'expected source, publish-stored, stored or source-cache')
+    wan = requester.get('wan_generation')
+    if 'wan_generation' in requester:
+        if operation != 'run' or mode not in ('source', 'stored', 'source-cache') or (
+                requester.keys() & {'turns', 'conversation', 'kv_handoff'}):
+            _fail('requester.wan_generation', 'requires a Wan model source without turns')
+        field = 'requester.wan_generation'
+        models = ('denoiser_config_file', 'decoder_config_file')
+        _object(wan, field, required={*models, 'output_directory'})
+        paths(wan, models, field)
+        if wan[models[0]] == wan[models[1]]:
+            _fail(field, 'expected distinct DiT and VAE configuration files')
+        paths(wan, ('output_directory',), field, exists=False, directory=True)
+        if 'tokenizer' in wan:
+            tokenizer = _object(wan['tokenizer'], field + '.tokenizer', required={'file'})
+            paths(tokenizer, ('file',), field + '.tokenizer')
+    if 'test_wan_fixture_trace' in requester:
+        enabled = _boolean(requester['test_wan_fixture_trace'], 'requester.test_wan_fixture_trace')
+        if enabled and (not allow_test_barriers or requester.get('test_only') is not True or not wan):
+            _fail('requester.test_wan_fixture_trace',
+                  'requires MiniNDN Wan generation and test_only=true')
+    if 'test_wan_fixture_trace_max_bytes' in requester:
+        field = 'requester.test_wan_fixture_trace_max_bytes'
+        if requester.get('test_wan_fixture_trace') is not True:
+            _fail(field, 'requires test_wan_fixture_trace=true')
+        if _integer(requester['test_wan_fixture_trace_max_bytes'], field) > 2 << 30:
+            _fail(field, 'exceeds native trace byte limit')
     barrier_paths = set()
     for key in ('test_stream_barrier', 'test_handoff_barrier'):
         if key not in requester:
@@ -985,7 +1090,8 @@ def _translate_requester(requester, network, security, controller, requester_ide
                       optional=True)
         paths(requester, ('statistics_file',), 'requester', exists=False)
         return
-    _array(requester.get("turns"), "requester.turns", True)
+    if wan is None:
+        _array(requester.get("turns"), "requester.turns", True)
     grant = requester.setdefault("grant", {})
     _object(grant, "requester.grant", required={
         "requester_private_key_file", "authority_public_key_file", "protection_epoch"})
@@ -1024,7 +1130,7 @@ def _translate_requester(requester, network, security, controller, requester_ide
         paths(requester["repository"], ("source_cache_path",), "requester.repository",
               exists=False, directory=True)
     paths(requester, ("statistics_file",), "requester", exists=False)
-    for turn in requester["turns"]:
+    for turn in requester.get("turns", []):
         _object(turn, "requester.turns", required={"input_file", "options_file", "output_file"})
         paths(turn, ("input_file", "options_file"), "requester.turns")
         paths(turn, ("output_file", "checkpoint_output_file"), "requester.turns", exists=False)

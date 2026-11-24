@@ -3,6 +3,7 @@
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
 #include <cerrno>
+#include <fcntl.h>
 #include <limits>
 #include <stdexcept>
 #include <system_error>
@@ -21,6 +22,11 @@ std::FILE* openPrivateFile(const std::filesystem::path& directory)
     const int error = errno;
     ::close(fd);
     throw std::system_error(error, std::generic_category(), "packet file unlink");
+  }
+  if (::fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
+    const int error = errno;
+    ::close(fd);
+    throw std::system_error(error, std::generic_category(), "packet file descriptor flags");
   }
   auto* file = ::fdopen(fd, "w+b");
   if (!file) {
@@ -46,8 +52,7 @@ void seekExact(std::FILE* file, std::uint64_t offset)
       ::fseeko(file, static_cast<off_t>(offset), SEEK_SET) != 0)
     throw std::runtime_error("ORIGINAL_PACKET_SEEK_FAILED");
 }
-void checkPacket(const std::vector<std::uint8_t>& wire, const ndn::Name& expected,
-                 std::uint64_t finalSegment)
+ndn::Data decodePacket(const std::vector<std::uint8_t>& wire, const ndn::Name& expected)
 {
   if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE)
     throw std::runtime_error("ORIGINAL_PACKET_SIZE_INVALID");
@@ -57,6 +62,13 @@ void checkPacket(const std::vector<std::uint8_t>& wire, const ndn::Name& expecte
   const ndn::Data data(block);
   if (data.getName() != expected)
     throw std::runtime_error("ORIGINAL_PACKET_NAME_MISMATCH");
+  return data;
+}
+
+void checkPacket(const std::vector<std::uint8_t>& wire, const ndn::Name& expected,
+                 std::uint64_t finalSegment)
+{
+  const auto data = decodePacket(wire, expected);
   if (!data.getFinalBlock() || !data.getFinalBlock()->isSegment() ||
       data.getFinalBlock()->toSegment() != finalSegment)
     throw std::runtime_error("ORIGINAL_PACKET_FINAL_BLOCK_MISMATCH");
@@ -104,13 +116,78 @@ std::shared_ptr<const OriginalPacketFile> OriginalPacketFile::create(
   return owner;
 }
 
-std::vector<std::uint8_t> OriginalPacketFile::read(std::uint64_t segment) const
+std::shared_ptr<OriginalPacketFile>
+OriginalPacketFile::createExact(const std::filesystem::path& directory,
+                                const ndn::Name& producer, std::uint64_t maxStorageBytes)
+{
+  if (producer.empty() || maxStorageBytes == 0 ||
+      maxStorageBytes > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max()))
+    throw std::invalid_argument("ORIGINAL_EXACT_PACKET_SET_INVALID");
+  auto owner = std::shared_ptr<OriginalPacketFile>(new OriginalPacketFile);
+  owner->m_dataPrefix = producer;
+  owner->m_exactBudget = maxStorageBytes;
+  owner->m_packets = openPrivateFile(directory);
+  owner->m_index = openPrivateFile(directory);
+  return owner;
+}
+
+std::uint64_t
+OriginalPacketFile::appendExact(const std::vector<std::shared_ptr<const ndn::Data>>& originals,
+                                const std::function<void()>& current)
+{
+  if (m_exactBudget == 0 || originals.empty())
+    throw std::invalid_argument("ORIGINAL_EXACT_PACKET_SET_INVALID");
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto begin = m_segmentCount;
+  auto offset = m_exactPacketOffset;
+  auto storage = m_storageBytes;
+  // The committed counters stay unchanged on failure. A retry overwrites any
+  // uncommitted bytes, which were also charged against the file bound.
+  if (current) current();
+  std::clearerr(m_index);
+  std::clearerr(m_packets);
+  seekExact(m_index, begin * sizeof(std::uint64_t));
+  seekExact(m_packets, offset);
+  for (const auto& packet : originals) {
+    if (current) current();
+    if (!packet || packet->getName() == m_dataPrefix || !m_dataPrefix.isPrefixOf(packet->getName()))
+      throw std::invalid_argument("ORIGINAL_EXACT_PACKET_PRODUCER_MISMATCH");
+    const auto& wire = packet->wireEncode();
+    const std::uint64_t length = wire.size();
+    if (length == 0 || length > ndn::MAX_NDN_PACKET_SIZE)
+      throw std::runtime_error("ORIGINAL_PACKET_SIZE_INVALID");
+    const auto cost = length + 2 * sizeof(std::uint64_t);
+    if (cost > m_exactBudget - storage)
+      throw std::runtime_error("ORIGINAL_PACKET_STORAGE_BUDGET_EXCEEDED");
+    writeExact(m_index, &offset, sizeof(offset));
+    writeExact(m_packets, &length, sizeof(length));
+    writeExact(m_packets, wire.data(), wire.size());
+    storage += cost;
+    offset += sizeof(length) + length;
+  }
+  if (std::fflush(m_packets) != 0 || std::fflush(m_index) != 0)
+    throw std::runtime_error("ORIGINAL_PACKET_FLUSH_FAILED");
+  if (current) current();
+  m_storageBytes = storage;
+  m_exactPacketOffset = offset;
+  m_segmentCount += originals.size();
+  return begin;
+}
+
+std::uint64_t
+OriginalPacketFile::storageBytes() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_storageBytes;
+}
+
+std::vector<std::uint8_t>
+OriginalPacketFile::readWire(std::uint64_t segment) const
 {
   if (segment >= m_segmentCount ||
       segment > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max()) /
                   sizeof(std::uint64_t))
     throw std::out_of_range("ORIGINAL_PACKET_SEGMENT_OUT_OF_RANGE");
-  std::lock_guard<std::mutex> lock(m_mutex);
   seekExact(m_index, segment * sizeof(std::uint64_t));
   std::uint64_t offset = 0, length = 0;
   readExact(m_index, &offset, sizeof(offset));
@@ -120,7 +197,27 @@ std::vector<std::uint8_t> OriginalPacketFile::read(std::uint64_t segment) const
     throw std::runtime_error("ORIGINAL_PACKET_SIZE_INVALID");
   std::vector<std::uint8_t> wire(static_cast<std::size_t>(length));
   readExact(m_packets, wire.data(), wire.size());
+  return wire;
+}
+
+std::vector<std::uint8_t>
+OriginalPacketFile::read(std::uint64_t segment) const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_exactBudget != 0) throw std::invalid_argument("ORIGINAL_PACKET_SET_INVALID");
+  auto wire = readWire(segment);
   checkPacket(wire, ndn::Name(m_dataPrefix).appendSegment(segment), m_segmentCount - 1);
+  return wire;
+}
+
+std::vector<std::uint8_t>
+OriginalPacketFile::readExactPacket(std::uint64_t ordinal, const ndn::Name& expectedName) const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_exactBudget == 0 || expectedName == m_dataPrefix || !m_dataPrefix.isPrefixOf(expectedName))
+    throw std::invalid_argument("ORIGINAL_EXACT_PACKET_PRODUCER_MISMATCH");
+  auto wire = readWire(ordinal);
+  (void)decodePacket(wire, expectedName);
   return wire;
 }
 } // namespace ndn_service_framework::detail

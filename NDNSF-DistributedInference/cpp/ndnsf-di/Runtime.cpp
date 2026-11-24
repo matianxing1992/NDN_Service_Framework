@@ -85,8 +85,6 @@ namespace {
 
 using detail::FrozenConfig;
 
-constexpr std::size_t MAX_RUNTIME_CONFIG_BYTES = 4 * 1024 * 1024;
-
 std::string readConfig(const std::filesystem::path& path)
 {
   std::error_code ec;
@@ -94,7 +92,7 @@ std::string readConfig(const std::filesystem::path& path)
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "configuration",
                   "native runtime configuration file is unavailable");
   const auto size = std::filesystem::file_size(path, ec);
-  if (ec || size == 0 || size > MAX_RUNTIME_CONFIG_BYTES)
+  if (ec || size == 0 || size > NATIVE_RUNTIME_CONFIG_MAX_BYTES)
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "configuration",
                   "native runtime configuration size is invalid");
   std::ifstream input(path, std::ios::binary);
@@ -306,6 +304,9 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
   spec.baseDirectory = frozen.path.parent_path();
   spec.configurationJson = frozen.canonicalJson;
   spec.catalogConfigurationJson = nativeCanonicalJson(catalog);
+  if (spec.catalogConfigurationJson.size() > NATIVE_REQUEST_CATALOG_MAX_BYTES)
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "catalog",
+                  "native request catalog configuration exceeds limit");
   spec.taskName = taskName;
   spec.taskContractDigest = taskContractDigest;
   spec.inputLayoutDigest = inputLayoutDigest;
@@ -329,8 +330,9 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
       if (std::chrono::steady_clock::now() >= deadline)
         throw DiError("PREPARATION_TIMEOUT", "local", "preparation", "preparation deadline expired");
       const RepositorySourceRequest request{
-        current.key, current.catalogConfigurationJson, current.maxSourceBytes, deadline};
-      const auto localFallback = [&current] (const RepositorySourceRequest&) {
+        current.key, current.catalogConfigurationJson, current.maxSourceBytes, deadline,
+        current.baseDirectory};
+      const auto localFallback = [&current, deadline] (const RepositorySourceRequest&) {
         const auto catalog = nativeParseJson(current.catalogConfigurationJson);
         const auto& source = catalog.at("source");
         const auto sourceFile = requiredString(source, "file");
@@ -340,7 +342,30 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
         if (source.contains("initializer_file")) {
           const auto initializerFile = requiredString(source, "initializer_file");
           const auto initializerPath = (current.baseDirectory / initializerFile).lexically_normal();
-          result.initializerBytes = readOperatorBytes(initializerPath, current.maxSourceBytes);
+          NativeAssemblyControl control{
+            deadline,
+            [deadline, cancelled = current.cancelled] {
+              if (cancelled && cancelled())
+                throw DiError("PREPARATION_CANCELLED", "local", "preparation",
+                              "preparation cancelled while opening initializer");
+              if (std::chrono::steady_clock::now() >= deadline)
+                throw DiError("PREPARATION_TIMEOUT", "local", "preparation",
+                              "preparation deadline expired while opening initializer");
+            },
+            current.maxSourceBytes, current.maxAssembledBytes};
+          try {
+            control.requireActive();
+            const auto bytes = source.contains("initializer_bytes")
+              ? source.at("initializer_bytes").get<std::uint64_t>()
+              : std::filesystem::file_size(initializerPath);
+            result.initializerRangeSource = openNativeCanonicalInitializerFile(
+              initializerPath.string(), bytes, requiredString(source, "initializer_digest"), control);
+          }
+          catch (...) {
+            // Preserve the job's typed terminal reason if the reader timed out first.
+            control.requireActive();
+            throw;
+          }
         }
         return result;
       };
@@ -2032,7 +2057,8 @@ User::openStoredModelImpl(detail::StoredModelPreparationOperation& operation,
       },
       currentSpec.maxSourceBytes,
       currentSpec.maxAssembledBytes};
-    auto opened = nativeOpenStoredPreparedModel(*handle, io, control);
+    auto opened = nativeOpenStoredPreparedModel(*handle, io, control,
+      nativeStoredCatalogReadLimit(configuration.size()));
     if (opened.configurationJson != nativeStoredModelConfigurationIdentity(configuration))
       throw std::runtime_error("DI_STORED_MODEL_LOCAL_POLICY_MISMATCH");
     return opened;

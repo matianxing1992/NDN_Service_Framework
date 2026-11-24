@@ -15,28 +15,11 @@ namespace ndnsf::di::qwen {
 namespace {
 
 std::string
-sha256File(const std::string& path)
+sha256Bytes(const std::vector<std::uint8_t>& bytes)
 {
-  std::ifstream input(path, std::ios::binary);
-  if (!input) {
-    throw std::invalid_argument("tokenizer file is unavailable");
-  }
-  SHA256_CTX context;
-  if (SHA256_Init(&context) != 1) {
-    throw std::runtime_error("tokenizer digest initialization failed");
-  }
-  std::array<char, 64 * 1024> buffer{};
-  while (input) {
-    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    const auto count = input.gcount();
-    if (count > 0 && SHA256_Update(&context, buffer.data(),
-                                   static_cast<std::size_t>(count)) != 1) {
-      throw std::runtime_error("tokenizer digest update failed");
-    }
-  }
   std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
-  if (SHA256_Final(digest.data(), &context) != 1) {
-    throw std::runtime_error("tokenizer digest finalization failed");
+  if (SHA256(bytes.data(), bytes.size(), digest.data()) == nullptr) {
+    throw std::runtime_error("tokenizer digest failed");
   }
   std::ostringstream output;
   output << "sha256:" << std::hex << std::setfill('0');
@@ -88,15 +71,15 @@ struct NativeTokenizer::Impl
   mutable std::mutex mutex;
 
   Impl(const std::string& path, const std::string& expected)
-    : digest(sha256File(path))
   {
+    const auto bytes = readBytes(path);
+    digest = sha256Bytes(bytes);
     if (expected.empty() || digest != expected) {
       throw std::invalid_argument("tokenizer digest mismatch");
     }
     // Verify the authenticated tokenizer bytes before constructing any Rust
     // engine.  This keeps an identity failure deterministic and prevents a
     // wrong artifact from ever reaching the engine.
-    const auto bytes = readBytes(path);
     const auto result = ndi_token_create(bytes.data(), bytes.size(), &handle);
     if (result.code != 0) {
       const auto detail = errorText(result);

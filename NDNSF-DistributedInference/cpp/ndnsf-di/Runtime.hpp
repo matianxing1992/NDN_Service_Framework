@@ -135,6 +135,8 @@ struct RepositorySourceRequest
   std::string catalogConfigurationJson;
   std::uint64_t maxSourceBytes = 0;
   std::chrono::steady_clock::time_point deadline{};
+  /** Resolve file locators from this model's frozen configuration directory. */
+  std::filesystem::path baseDirectory;
 };
 
 /** Small prepare-before-STORE lookup for an immutable Repo publication. */

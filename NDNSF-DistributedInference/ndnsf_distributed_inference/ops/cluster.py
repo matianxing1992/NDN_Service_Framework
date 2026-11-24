@@ -18,7 +18,7 @@ import uuid
 from .deployment_config import (REPO_MANIFEST_BENCHMARK_OPTIONS, REPO_MANIFEST_SERVER_OPTIONS,
                                 _identifier, _object, _read_json, _string, _name,
                                 actor_file_keyring, load_deployment, provider_cache_path,
-                                provider_recipient_map)
+                                provider_recipient_map, wan_component_files)
 from .processes import process_identity, owned_state, stop_owned, write_json
 
 
@@ -311,18 +311,25 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
         if (kind == 'requester' and config.get('operation') not in
                 ('prepare', 'repo-benchmark')):
             native.setdefault('statistics_file', str(directory / (actor['id'] + '-statistics.jsonl')))
-            for turn in native['turns']:
+            for turn in native.get('turns', []):
                 for key in ('output_file', 'checkpoint_output_file'):
                     if key in turn:
                         Path(turn[key]).parent.mkdir(parents=True, exist_ok=True)
             checkpoint = native.get('conversation', {}).get('checkpoint_output_file')
             if checkpoint:
                 Path(checkpoint).parent.mkdir(parents=True, exist_ok=True)
+            if 'wan_generation' in native:
+                _private_directory(Path(native['wan_generation']['output_directory']).parent)
+                for component_path, component, _ in wan_component_files(native):
+                    if not source_cache and component['model_input']['mode'] == 'source':
+                        for key in ('preparation_state_file', 'private_handle_file'):
+                            path = component_path.parent / component['model_input'][key]
+                            _private_directory(path.parent)
         path = directory / (actor['id'] + '.json')
         write_json(path, native)
         program = 'DI_NativeRequester' if kind == 'requester' else 'DI_NativeArtifactAuthority'
         argv = [str(prefix / program), '--config', str(path)]
-        if source_cache:
+        if source_cache and 'wan_generation' not in native:
             # Existing native compatibility form keeps planning, grants and
             # execution in C++; only model transport changes to local files.
             argv += ['--input', native['turns'][0]['input_file'],
@@ -515,6 +522,9 @@ def _provider_stop_grace(row):
 
 
 def _stop_launch(row):
+    if row.get('kind') == 'repo':
+        # The native Repo allows ten seconds to drain owner tokens after shutdown starts.
+        return stop_owned(row.get('proof'), term_seconds=15)
     grace = _provider_stop_grace(row)
     if grace is not None:
         return stop_owned(row.get('proof'), term_seconds=grace)
@@ -1027,6 +1037,9 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
             raise ClusterError('benchmark CPU placement requires local MiniNDN')
         cpu_placement = _benchmark_cpu_placement(config, repo_benchmark['cpu_placement'])
     prepare_only = config.get('operation') == 'prepare'
+    if timeout > 86400 and (config['platform']['kind'] != 'minindn' or
+                            prepare_only or repo_benchmark is not None):
+        raise ClusterError('timeout above 86400 seconds requires a MiniNDN inference run')
     if repo_benchmark is not None:
         if config['platform']['kind'] == 'minindn':
             if not prepare_only:
@@ -1053,8 +1066,8 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
     if config['platform']['kind'] == 'slurm-apptainer':
         from .slurm import up
         return up(config, source, root, timeout, debug, timing, repo_benchmark)
-    if timeout > 3600:
-        raise ClusterError('timeout above 3600 seconds requires slurm-apptainer')
+    if timeout > 3600 and config['platform']['kind'] != 'minindn':
+        raise ClusterError('timeout above 3600 seconds requires MiniNDN or slurm-apptainer')
     _private_directory(root)
     with _lock(root):
         old = _read_state(root)
@@ -1314,7 +1327,8 @@ def _stop_provider(root, state, actor_id, timeout):
 def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_id=None,
                 repo_benchmark=None):
     """Run the host operation or inspect/close its persisted owned processes."""
-    maximum = 86400 if action in ('up', 'prepare', 'benchmark-repo') else 3600
+    maximum = (259200 if action == 'up' else
+               86400 if action in ('prepare', 'benchmark-repo') else 3600)
     if type(timeout) not in (int, float) or not 0 < timeout <= maximum:
         raise ClusterError('timeout must be in (0,%d] seconds' % maximum)
     if type(debug) is not bool or (debug and action not in ('up', 'prepare', 'benchmark-repo')):

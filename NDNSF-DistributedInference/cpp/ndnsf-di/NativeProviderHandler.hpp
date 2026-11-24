@@ -249,6 +249,8 @@ struct NativeProviderHandlerConfig
   std::size_t maxSegmentSize = 7000;
   bool segmentManifestEnabled = false;
   int freshnessMs = 60000;
+  // Optional per-request reservation for exact signed original packet files.
+  std::uint64_t exactPacketDiskBudget = 0;
   // Optional request-scoped cross-Provider data-plane coordinator.  When
   // absent, dependencies retain the ordinary COLLAB-LARGE path.
   std::shared_ptr<ProviderGroupCoordinator> groupCoordinator;

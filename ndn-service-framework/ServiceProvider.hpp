@@ -59,6 +59,7 @@ namespace ndn_service_framework{
     class VerifiedInputObject;
     class AdmittedInputSet;
     class InputAdmissionOperation;
+    struct RetainedPackets;
     struct InputAdmissionResult;
     struct CollaborationInputSpec;
     struct DependencyPacketPlan;
@@ -691,6 +692,10 @@ namespace ndn_service_framework{
                 std::optional<ndn::Buffer> fetchEncryptedLargeDataCurrent(
                     const ndn::Name& dataName,
                     std::chrono::steady_clock::time_point deadline);
+                /** Fetch a canonical protected manifest of the expected Producer. */
+                std::optional<ndn::Buffer> fetchEncryptedLargeDataCurrent(
+                    const ndn::Name& dataName, const ndn::Name& expectedProducer,
+                    std::chrono::steady_clock::time_point deadline);
                 /** Fetch a producer-owned immutable service-protected object.
                  * Exact typed-version name, all segment/key signer checks and
                  * the current-work fence are mandatory; no legacy fallback.
@@ -722,6 +727,13 @@ namespace ndn_service_framework{
                  * Returns whether authority was newly revoked. A caller requiring
                  * a stream confirmation must also check streamCancelled(). */
                 bool revokeCurrentWorkAuthority() noexcept;
+                /**
+                 * End exact publication after the caller has verified that all
+                 * consumers have finished. Returns true when the file reservation
+                 * is released. A queued reader may require another check.
+                 * Work and final Response authority remain active.
+                 */
+                bool tryReleaseExactPacketRetention();
                 /** Query whether this dispatch still authorizes new work commits. */
                 bool hasCurrentWorkAuthority() const noexcept;
                 /** Unwrap one bounded application capsule on the KeyChain owner
@@ -1113,6 +1125,7 @@ namespace ndn_service_framework{
                     std::chrono::steady_clock::time_point deadline);
                 std::function<bool()> currentWorkPredicate(
                     std::chrono::steady_clock::time_point deadline) const;
+                std::function<bool()> currentExactPublicationPredicate() const;
                 std::function<bool()> cancelWhenWorkNotCurrent(
                     std::function<bool()> external) const;
                 bool consumeCurrentCrypto(std::chrono::steady_clock::time_point deadline,
@@ -1124,7 +1137,7 @@ namespace ndn_service_framework{
                     const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
                     int freshnessMs, CollaborationTransferMetrics* metrics,
                     std::vector<std::shared_ptr<const ndn::Data>>& originals,
-                    std::size_t maxWireBytes);
+                    std::size_t maxWireBytes, std::uint64_t maxRetainedDiskBytes = 0);
                 bool replayOwnedExactData(KeyScope keyScope,
                     const std::vector<std::shared_ptr<const ndn::Data>>& originals,
                     CollaborationTransferMetrics* metrics);
@@ -1178,6 +1191,9 @@ namespace ndn_service_framework{
                 replayManifestAuthenticatedExactData(
                     const KeyScope& keyScope, const ExactManifestPublication& publication,
                     CollaborationTransferMetrics* metrics);
+
+                bool hasRetainedExactData(const ndn::Name& name);
+                std::weak_ptr<RetainedPackets> m_retainedExactPacketSet;
                 std::shared_ptr<StreamEventPublisher> streamPublisher() const;
                 ServiceProvider& m_provider;
                 ndn::Name m_requesterName;
@@ -1186,6 +1202,8 @@ namespace ndn_service_framework{
                 CollaborationAssignment m_assignment;
                 std::shared_ptr<ScopedProtectedObjectKeys> m_objectKeys;
                 std::shared_ptr<std::atomic<bool>> m_workAuthorityRevoked =
+                    std::make_shared<std::atomic<bool>>(false);
+                std::shared_ptr<std::atomic<bool>> m_exactPublicationClosed =
                     std::make_shared<std::atomic<bool>>(false);
                 std::shared_ptr<std::mutex> m_workAuthorityCommitMutex =
                     std::make_shared<std::mutex>();
@@ -1962,6 +1980,9 @@ namespace ndn_service_framework{
 
 
             bool replyFromIMS(const ndn::Interest &interest);
+            bool replyFromRetainedPackets(const ndn::Interest& interest);
+            std::pair<std::shared_ptr<RetainedPackets>, std::uint64_t>
+            findRetainedExactPacket(const ndn::Name& name);
             void rememberPendingImsInterest(const ndn::Interest& interest);
             void insertDataIntoIMS(const ndn::Data& data);
             void insertDataIntoIMS(const ndn::Data& data,
@@ -2843,7 +2864,9 @@ namespace ndn_service_framework{
                 int freshnessMs, CollaborationTransferMetrics* metrics,
                 std::vector<std::shared_ptr<const ndn::Data>>* originals,
                 std::size_t maxWireBytes, const std::function<bool()>& current,
-                const std::shared_ptr<std::mutex>& authorityMutex);
+                const std::shared_ptr<std::mutex>& authorityMutex,
+                const std::function<void(const std::vector<std::shared_ptr<const ndn::Data>>&)>&
+                    retain = {});
             bool replayCollaborationOwnedExactData(
                 const std::vector<std::shared_ptr<const ndn::Data>>& originals,
                 CollaborationTransferMetrics* metrics);
@@ -2851,7 +2874,20 @@ namespace ndn_service_framework{
                 const std::vector<std::shared_ptr<const ndn::Data>>& originals,
                 CollaborationTransferMetrics* metrics,
                 const std::function<bool()>& current,
-                const std::shared_ptr<std::mutex>& authorityMutex);
+                const std::shared_ptr<std::mutex>& authorityMutex,
+                const std::function<void(const std::vector<std::shared_ptr<const ndn::Data>>&)>&
+                    retain = {});
+            void retainExactPackets(std::weak_ptr<RetainedPackets>& request,
+                std::chrono::steady_clock::time_point deadline, std::uint64_t diskLimit,
+                const std::vector<std::shared_ptr<const ndn::Data>>& originals,
+                const std::function<bool()>& current);
+            bool retirePacketRetention(const std::shared_ptr<RetainedPackets>& request);
+            void scheduleRetainedPacketExpiry(
+                const std::shared_ptr<RetainedPackets>& request);
+            void retainSegmentedResponse(
+                const ndn::Name& prefix, std::uint64_t segmentCount,
+                std::chrono::steady_clock::time_point deadline,
+                const std::function<std::vector<std::uint8_t>(std::uint64_t)>& nextPacket);
             std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -3168,6 +3204,8 @@ namespace ndn_service_framework{
                     std::chrono::system_clock::now().time_since_epoch()).count());
             // Face-executor-owned original protected packets; never request-owned.
             std::unique_ptr<ImmutableProtectedPublicationStore> m_immutableProtectedPublications;
+            std::mutex m_retainedPacketMutex;
+            std::vector<std::shared_ptr<RetainedPackets>> m_retainedPackets;
             std::function<void()> m_testImmutablePublicationQueued;
             std::function<void(const ndn::Name&)> m_testBeforeImmutablePublicationCommit;
             std::function<void(const ndn::Name&)> m_testAfterImmutablePublicationCommit;
@@ -3183,6 +3221,9 @@ namespace ndn_service_framework{
             std::shared_ptr<std::atomic<bool>> m_fetchStopping =
                 std::make_shared<std::atomic<bool>>(false);
             BoundedWorkerPool m_fetchPool{"ServiceProvider collaboration fetches"};
+            BoundedWorkerPool m_retainedPacketReadPool{"ServiceProvider exact packet reads", 256};
+            std::shared_ptr<std::atomic_size_t> m_retainedPacketReads =
+                std::make_shared<std::atomic_size_t>(0);
             std::shared_ptr<detail::CollaborationInputBudget> m_inputBudget;
 
             // ChanllengeID->(Token->RequestNameWithoutRequestID)

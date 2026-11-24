@@ -18,6 +18,9 @@ void
 validateNativeRoleDataflowContractV3(const NativeRoleDataflowContractV3& dataflow);
 NativeJson nativeDeviceBindingJson(const NativeDeviceBindingV3& binding);
 void validateNativeAssembly(const NativeSelectionRoleV3& role);
+/** Verify that the selected recipe authorizes exactly the canonical CALL cuts. */
+void validateNativeOnnxEntrySelection(const NativeExecutionPlan& plan,
+                                      const NativeSelectionRoleV3& role);
 /** Check Qwen rank membership and authenticate the original recipe before assembly. */
 void
 validateNativeQwenTensorAssembly(const NativeSelectionRoleV3& role,
@@ -30,6 +33,8 @@ namespace detail {
 std::string nativeRoleStepContractDigest(const NativeExecutionPlan& plan, std::string_view role);
 // Reuse the complete endpoint admission contract at the naming leaf.
 void validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpoint);
+/** Encode a complete step or port ID as a bounded public name component. */
+std::string nativeTensorNamingCoordinate(const std::string& id);
 // Internal wire path. root must be the unchanged read_json result of this exact
 // wire, owned by the caller in the same callback-free scope. Strict wire/type
 // parsing and the complete public semantic decoder still run here.

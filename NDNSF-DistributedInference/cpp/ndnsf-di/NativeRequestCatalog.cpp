@@ -8,10 +8,13 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/wan/wan-preparation.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-step-template-json.hpp"
 
 #include <onnx/onnx_pb.h>
 
@@ -396,7 +399,18 @@ NativePreparedPlanningTemplate::NativePreparedPlanningTemplate(
     // unit up in that list. Slot references between steps follow the same rename, per
     // rank, so an intra-unit edge keeps pointing at its own rank's producer rather than
     // at whichever rank was rewritten last.
-    if (!execution.steps.empty()) {
+    const bool canonicalEntries = std::any_of(execution.steps.begin(), execution.steps.end(),
+      [] (const auto& step) { return !step.onnxNodeIndices.empty(); });
+    if (canonicalEntries) {
+      // These step IDs, producer references and dependencies already identify
+      // physical ONNX CALL owners. Stage expansion would rename only the steps.
+      for (const auto& unit : prepared.candidate.executionPlan.roles) {
+        if (selectedByStage.at(unit) != std::vector<std::string>{unit})
+          throw std::invalid_argument("prepared canonical ONNX roles require physical unit IDs");
+      }
+      execution.validateSteps();
+    }
+    else if (!execution.steps.empty()) {
       std::vector<NativeExecutionStepSpec> expandedSteps;
       expandedSteps.reserve(execution.steps.size() * selectedByStage.size());
       for (const auto& step : execution.steps) {
@@ -562,8 +576,10 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
   const NativeAssemblyControl& control, std::vector<NativeOnnxNodeLayout>* layouts)
 {
   control.requireActive();
-  if (configurationJson.size() > 4 * 1024 * 1024)
-    throw std::invalid_argument("request catalog configuration exceeds limit");
+  if (configurationJson.size() > NATIVE_REQUEST_CATALOG_MAX_BYTES)
+    throw std::invalid_argument("request catalog configuration exceeds limit: actual=" +
+      std::to_string(configurationJson.size()) + " limit=" +
+      std::to_string(NATIVE_REQUEST_CATALOG_MAX_BYTES));
   const auto root = nativeParseJson(configurationJson);
   if (root.at("schema") != "ndnsf-di-native-request-catalog-v1")
     throw std::invalid_argument("unsupported native request catalog schema");
@@ -574,6 +590,8 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
   const auto route = parseCatalogRoute(split.at("kind").get<std::string>());
   if (layouts != nullptr && route != CatalogRoute::ONNX_SOURCE)
     throw std::invalid_argument("tensor layout preflight requires ONNX_SOURCE");
+  const bool canonicalSteps = route == CatalogRoute::ONNX_SOURCE &&
+    split.contains("step_template_v2");
   const bool sourceDefined = route == CatalogRoute::QWEN || route == CatalogRoute::LLAMA;
   using RankArtifacts = std::map<std::string, std::vector<std::string>>;
   const auto rankArtifacts = sourceDefined
@@ -591,7 +609,7 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
   model.modelManifestDigest = sourceConfig.at("model_manifest_digest").get<std::string>();
   model.canonicalGraphDigest = sourceConfig.at("canonical_graph_digest").get<std::string>();
   if (referenceOnly) {
-    if (source.preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
+    if (source.preparedMetadataJson.size() > NATIVE_PREPARED_METADATA_MAX_BYTES)
       throw std::invalid_argument("native prepared metadata exceeds publication bound");
     const auto metadata = nativeParseJson(source.preparedMetadataJson);
     auto decodedMetadata = decodeNativePreparedOnnxMetadata(metadata, control);
@@ -622,7 +640,7 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
     }
     else if (sourceConfig.contains("initializer_digest"))
       throw std::invalid_argument("pinned initializer object is missing");
-    if (model.descriptor.modelFormat == "onnx") {
+    if (model.descriptor.modelFormat == "onnx" && !canonicalSteps) {
       // Internal initializers live in the model bytes; external ones are pinned
       // above. Both need the normalized initializer identity for prepared
       // metadata and the assembly recipe.
@@ -638,6 +656,9 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
   if (entry.recipe.quantization != model.descriptor.quantizationSubtype)
     throw std::invalid_argument("request recipe quantization differs from model identity");
   const auto& publication = root.at("publication");
+  if (publication.contains("material_bundle_policy") &&
+      (!canonicalSteps || publication.at("material_bundle_policy") != "prepared-role-v1"))
+    throw std::invalid_argument("native catalog material bundle policy is unsupported");
   entry.publication.artifactRoot = publication.at("artifact_root").get<std::string>();
   entry.publication.packageManifestDigest = publication.value("package_manifest_digest", model.modelManifestDigest);
   if (entry.publication.packageManifestDigest != model.modelManifestDigest)
@@ -753,6 +774,66 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
     auto strategy = std::make_shared<yolo::NativeYoloComponentSplit>(
       yolo::NativeYoloComponentSplit::fromOnnxCatalog(model.descriptor, source, control,
         std::move(components), nativeCanonicalJson(split.value("postprocessing", NativeJson::object()))));
+    result.cooperativeSplitter = strategy;
+    result.splitter = std::move(strategy);
+  }
+  else if (canonicalSteps) {
+    if (model.descriptor.modelFormat != "onnx" || model.descriptor.adapterId != "wan" ||
+        root.contains("conversation_input") ||
+        !root.value("state_inputs", NativeJson::object()).empty() ||
+        !root.value("state_outputs", NativeJson::object()).empty())
+      throw std::invalid_argument("canonical ONNX step graph requires a stateless ONNX source");
+    const auto graphWork = detail::nativePhaseStarted();
+    if (!referenceOnly) {
+      entry.sourceGraphInspection = inspectNativeOnnxPlanningGraph(source, model.descriptor,
+                                                                   control);
+      // Inspection already derives the normalized identity from the source bytes.
+      model.canonicalInitializerDigest =
+        entry.sourceGraphInspection->canonicalIdentity.initializerDigest;
+    }
+    auto& inspection = *entry.sourceGraphInspection;
+    if (referenceOnly) {
+      if (automaticContract || inspection.canonicalIdentity.graphDigest !=
+          model.canonicalGraphDigest || inspection.canonicalIdentity.initializerDigest !=
+          model.canonicalInitializerDigest)
+        throw std::invalid_argument("prepared canonical ONNX source identity differs");
+      auto graph = restoreNativeOnnxPlanningGraph(inspection.graphMetadataJson,
+                                                 model.descriptor, control);
+      if (graph.graphDigest != inspection.graph.graphDigest ||
+          graph.topologicalOrder != inspection.nodeNames)
+        throw std::invalid_argument("prepared canonical ONNX node index differs");
+      inspection.graph = std::move(graph);
+    }
+    if (entry.nodes != wan::makeWanMaterialNodeMap(inspection))
+      throw std::invalid_argument("canonical ONNX step graph requires exact source node mapping");
+    const auto preparationId = "/NDNSF/DI/PREPARE/" + model.canonicalSourceDigest.substr(7);
+    detail::logNativeWorkPhase(preparationId, "catalog-graph-inspection", graphWork);
+    const auto candidateWork = detail::nativePhaseStarted();
+    model.graph = inspection.graph;
+    wan::OnnxParallelPlan layout;
+    layout.plan = nativeCanonicalOnnxStepPlanFromJson(split.at("step_template_v2"),
+                                                       split.at("dependencies"));
+    const auto ports = [] (const auto& slots) {
+      std::vector<NativeAssemblyTensorContractV3> result;
+      for (const auto& slot : slots)
+        result.push_back({slot.slotId, slot.dtype, slot.shape});
+      return result;
+    };
+    for (const auto& step : layout.plan.steps) {
+      if (step.operation != "CALL_SUBGRAPH") continue;
+      if (!layout.entries.emplace(step.artifactEntry, wan::OnnxEntryCut{
+            step.onnxNodeIndices, ports(step.inputSlots), ports(step.outputSlots)}).second)
+        throw std::invalid_argument("canonical ONNX step graph repeats a CALL entry id");
+    }
+    const NativeRequestControl planningControl{
+      preparationId, 1, control.deadline,
+      [&control] { control.requireActive(); return false; }};
+    auto resources = resourceProfilesFromCatalog(split, layout.plan.roles,
+                                                  model.descriptor.adapter.backends);
+    auto candidate = wan::makeWanSplitCandidate(model, inspection, layout,
+      split.at("service_name").get<std::string>(), std::move(resources), planningControl);
+    detail::logNativeWorkPhase(preparationId, "catalog-split-candidate", candidateWork);
+    auto strategy = std::make_shared<wan::NativeWanSplitStrategy>(std::move(candidate));
     result.cooperativeSplitter = strategy;
     result.splitter = std::move(strategy);
   }
@@ -1116,12 +1197,12 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
     // identity check meaningful without an explicit ONNX node mapping.
     if (route == CatalogRoute::AUTOMATIC && automaticModel)
       entry.sourceGraphInspection = automaticModel->inspection;
-    else
+    else if (!entry.sourceGraphInspection)
       entry.sourceGraphInspection = inspectNativeOnnxSourceGraph(source, model.descriptor, control);
     // Only adapters with a reference-only restore contract publish this
     // metadata. Unsupported adapters remain on the source-backed path and
     // therefore cannot create a receipt that a later prepare cannot restore.
-    if (sourceDefined)
+    if (sourceDefined || canonicalSteps)
       source.preparedMetadataJson = encodeNativePreparedOnnxMetadata(
         model, *entry.sourceGraphInspection, nullptr, control);
     else if (route == CatalogRoute::AUTOMATIC) {
@@ -1169,7 +1250,8 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
   // Hybrid cold/restore planning consumes the same inspected facts, without retaining
   // another model-sized byte copy after the source moves into the preparation catalog.
   const std::vector<std::uint8_t> planningGraphBytes =
-    sourceBoundTensorPlan ? std::vector<std::uint8_t>{} : source.modelBytes;
+    route == CatalogRoute::QWEN && !sourceBoundTensorPlan ? source.modelBytes :
+      std::vector<std::uint8_t>{};
   // The same holds for the recorded graph facts: the sharded branch runs after the entry
   // has moved into the preparation catalog, so a reference-only restore could not reach
   // them there.
@@ -1182,6 +1264,7 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
   const auto assemblyByteLimit = entry.recipe.maxAssembledBytes;
   std::vector<NativeCanonicalCatalogEntry> entries;
   entries.push_back(std::move(entry));
+  const auto materialWork = detail::nativePhaseStarted();
   result.preparation = std::make_shared<const NativeCanonicalPreparationCatalog>(
     std::move(entries), control,
     sourceDefined ? NativeStateContractBinding::SOURCE : NativeStateContractBinding::DECLARED);
@@ -1193,6 +1276,8 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
   NativeRequestControl planningControl{
     "/NDNSF/DI/PREPARE/" + result.model.canonicalSourceDigest.substr(7), 1,
     control.deadline, [&control] { control.requireActive(); return false; }};
+  detail::logNativeWorkPhase(planningControl.requestId, "catalog-material-preparation", materialWork);
+  const auto rolesWork = detail::nativePhaseStarted();
   NativeCandidateBudget preparationBudget{1024, 60'000, 16};
   ExtensionControl extensionControl{
     control.deadline, [&control] { control.requireActive(); return false; }};
@@ -1359,8 +1444,15 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
       candidate.requirementsByRole = resourceProfiles;
       candidate.candidateDigest = candidate.computedDigest();
     }
-    auto bound = result.preparation->bindCatalogStateContracts(
-      result.model, candidate, result.stateMapping, planningControl);
+    // A declared stateless candidate has no tensor-to-source mapping to bind.
+    // prepareRoles below still validates the candidate and its source boundary.
+    const bool needsStateBinding = sourceDefined || !result.stateMapping.inputs.empty() ||
+      !result.stateMapping.outputs.empty() || !candidate.roleStateInputsByRole.empty() ||
+      !candidate.roleStateOutputsByRole.empty();
+    auto bound = needsStateBinding
+      ? result.preparation->bindCatalogStateContracts(
+          result.model, candidate, result.stateMapping, planningControl)
+      : std::move(candidate);
     auto roles = result.preparation->prepareRoles(result.model, bound, planningControl);
     preparedCandidates.push_back({std::move(bound), std::move(roles)});
   }
@@ -1386,6 +1478,7 @@ NativeRequestCatalog::loadImpl(const std::string& configurationJson, NativeCanon
   }
   if (preparedCandidates.empty())
     throw std::runtime_error("DI_NATIVE_PREPARATION_NO_PLANNING_CANDIDATE");
+  detail::logNativeWorkPhase(planningControl.requestId, "catalog-role-preparation", rolesWork);
   auto transferProfiles = root.value("request_transfer_profiles", NativeJson::array());
   if (!transferProfiles.is_array() || transferProfiles.size() > 8)
     throw std::invalid_argument("invalid request transfer profile collection");

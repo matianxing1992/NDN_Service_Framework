@@ -311,6 +311,7 @@ namespace ndn_service_framework
     ndn::Buffer encodeLargeDataReferencePayload(const LargeDataReference& reference);
     std::optional<LargeDataReference> parseLargeDataReferencePayload(const ndn::Buffer& payload);
     bool isLargeDataReferencePayload(const ndn::Buffer& payload);
+    bool isLargeDataReferencePayload(ndn::span<const std::uint8_t> payload);
 
     // Register one Interest filter with a bounded retry on transient RIB
     // authorization rejections.  NFD's offline command authenticator can

@@ -2112,8 +2112,7 @@ namespace ndn_service_framework
             for (size_t offset = 0; offset < payload.size();) {
                 if (requireActive) requireActive();
                 const auto chunk = std::min(chunkSize, payload.size() - offset);
-                digest << std::string(reinterpret_cast<const char*>(payload.data() + offset),
-                                      chunk);
+                digest << payload.subspan(offset, chunk);
                 offset += chunk;
             }
             auto hex = digest.toString();
@@ -12125,6 +12124,12 @@ namespace ndn_service_framework
 
     bool ServiceUser::CancelCollaboration(const RequestId& requestId)
     {
+        return CancelCollaboration(requestId, {});
+    }
+
+    bool
+    ServiceUser::CancelCollaboration(const RequestId& requestId, const KeyScope& controlScope)
+    {
         auto pending = m_pendingCalls.find(requestId);
         if (pending == m_pendingCalls.end() || !pending->second.isCollaboration) {
             return false;
@@ -12141,10 +12146,16 @@ namespace ndn_service_framework
             m_verifiedCollaborationData.erase(requestId);
             auto keys = m_userCollaborationScopeKeys.find(requestId);
             if (keys != m_userCollaborationScopeKeys.end()) {
-                for (auto& entry : keys->second) {
-                    if (!entry.second.empty()) OPENSSL_cleanse(entry.second.data(), entry.second.size());
+                for (auto key = keys->second.begin(); key != keys->second.end();) {
+                    if (!controlScope.empty() && key->first == controlScope) {
+                        ++key;
+                        continue;
+                    }
+                    if (!key->second.empty())
+                        OPENSSL_cleanse(key->second.data(), key->second.size());
+                    key = keys->second.erase(key);
                 }
-                m_userCollaborationScopeKeys.erase(keys);
+                if (keys->second.empty()) m_userCollaborationScopeKeys.erase(keys);
             }
         }
         // Use the same cleanup as normal completion: release an admission
@@ -12902,6 +12913,8 @@ namespace ndn_service_framework
     if (terminal) return;
     terminal = true;
     deadline.cancel();
+    onValidated.disconnect();
+    onData.disconnect();
     onComplete.disconnect();
     onError.disconnect();
     if (fetcher) fetcher->stop();
@@ -12929,18 +12942,28 @@ namespace ndn_service_framework
       finalizeTimedOutPendingCall(requestId);
       return;
     }
-    auto owner = std::make_shared<LargeResponseFetch>();
+    const auto authority = [this, requestId, provider = providerName.toUri()]
+      () -> std::pair<const RequestKeyBundle*, const RequestSecurityBinding*> {
+      const auto call = m_pendingCalls.find(requestId);
+      if (call == m_pendingCalls.end() || !call->second.requestScopedConfidentiality) return {};
+      const auto& state = call->second;
+      const auto scoped = state.requestScopedProviderStates.find(provider);
+      if (scoped != state.requestScopedProviderStates.end())
+        return {&scoped->second.keys, &scoped->second.binding};
+      if (state.requestScopedKeys && state.requestScopedBinding)
+        return {&*state.requestScopedKeys, &*state.requestScopedBinding};
+      return {};
+    };
+    const auto owner = std::make_shared<LargeResponseFetch>();
     if (!pending->second.largeResponseFetches.emplace(providerName, owner).second) return;
     const auto weakOwner = std::weak_ptr<LargeResponseFetch>(owner);
     const bool timing = isTruthyEnv("NDNSF_RESPONSE_LARGE_FETCH_TIMING");
     const auto started = std::chrono::steady_clock::now();
-    const auto finish = [this, weakOwner, current, responseMessage, responseName,
-                         serviceName, requestId, providerName, timing, started]
-      (ndn::ConstBufferPtr buffer, std::string error) {
+    const auto finish = [this, weakOwner, current, authority, responseMessage, responseName,
+                         serviceName, requestId, providerName, reference = *reference,
+                         timing, started](std::string error) {
       const auto active = weakOwner.lock();
       if (!active || active->terminal) return;
-      // stop() removes Interests/timers synchronously. Its queued self release
-      // retains only SegmentFetcher, never this User or invocation key state.
       active->stop();
       auto call = m_pendingCalls.find(requestId);
       if (call == m_pendingCalls.end()) return;
@@ -12950,15 +12973,41 @@ namespace ndn_service_framework
         finalizeTimedOutPendingCall(requestId);
         return;
       }
-      if (!authorizeControllerTransition(serviceName, ProtectedTransition::RESPONSE_DELIVERY)) {
+      if (!authorizeControllerTransition(serviceName, ProtectedTransition::RESPONSE_DELIVERY))
         return;
-      }
-      std::optional<ResponseMessage> resolved;
-      const auto decodeStarted = std::chrono::steady_clock::now();
-      if (error.empty() && buffer) {
+
+      if (!active->error.empty()) error = active->error;
+      ResponseMessage resolved(responseMessage);
+      if (error.empty()) {
         try {
-          resolved = decodeLargeResponseReferencePayload(
-            responseMessage, responseName, serviceName, *buffer, error);
+          const auto [keys, binding] = authority();
+          if (!keys || !binding || keys->keyId != active->keyId ||
+              !keys->isValid(nowMilliseconds())) {
+            throw std::runtime_error("request-scoped large response key is no longer current");
+          }
+          if (active->nonces.empty() || active->plaintext.size() != reference.plaintextSize ||
+              (!reference.digest.empty() &&
+               sha256DigestString(active->plaintext) != reference.digest)) {
+            throw std::runtime_error("request-scoped large response size or digest mismatch");
+          }
+          if (!current()) {
+            finalizeTimedOutPendingCall(requestId);
+            return;
+          }
+          const auto now = nowMilliseconds();
+          if (!keys->isValid(now))
+            throw std::runtime_error("request-scoped large response key expired before commit");
+          const auto lifetime = std::chrono::milliseconds(std::min<std::uint64_t>(
+            keys->expiresAtMs - now, std::numeric_limits<int>::max()));
+          resolved.setPayload(std::move(active->plaintext));
+          resolved.clearAeadEnvelope();
+          if (!m_requestScopedNonceRegistry.reserveBatch(keys->keyId, active->nonces, lifetime))
+            throw std::runtime_error("request-scoped large response segment nonce was replayed");
+          NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_LARGE_RESPONSE_RESOLVED"
+            << " name=" << reference.dataName.toUri() << " requestId=" << requestId.toUri()
+            << " serviceName=" << serviceName.toUri()
+            << " plaintextBytes=" << resolved.getPayloadSize()
+            << " segments=" << active->nonces.size());
         }
         catch (const std::exception& failure) {
           error = failure.what();
@@ -12966,35 +13015,68 @@ namespace ndn_service_framework
       }
       if (timing) {
         NDN_LOG_INFO("NDNSF_RESPONSE_LARGE_FETCH_TIMING event="
-          << (resolved ? "complete" : "error") << " responseName=" << responseName
+          << (error.empty() ? "complete" : "error") << " responseName=" << responseName
           << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::steady_clock::now() - started).count() / 1000.0
-          << " encoded_bytes=" << (buffer ? buffer->size() : 0)
-          << " decode_ms=" << std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::steady_clock::now() - decodeStarted).count() / 1000.0);
+               std::chrono::steady_clock::now() - started).count() / 1000.0
+          << " encoded_bytes=" << active->encodedBytes);
       }
       if (!current()) {
         finalizeTimedOutPendingCall(requestId);
         return;
       }
-      if (!resolved) {
+      if (!error.empty()) {
         NDN_LOG_ERROR("Failed to resolve large response reference: " << error);
-        ResponseMessage failure(responseMessage);
-        failure.setStatus(false);
-        failure.setErrorInfo("large response reference fetch failed: " + error);
-        handleDecryptedResponse(requestId, providerName, failure, true);
-        return;
+        resolved = responseMessage;
+        resolved.setStatus(false);
+        resolved.setErrorInfo("large response reference fetch failed: " + error);
       }
-      handleDecryptedResponse(requestId, providerName, *resolved, true);
+      handleDecryptedResponse(requestId, providerName, resolved, true);
     };
-    owner->deadline = m_scheduler.schedule(ndn::time::seconds(30), [finish] {
-      finish({}, "large response fetch timed out");
-    });
+
     try {
-      if (!reference->encrypted || reference->dataName.empty()) {
-        finish({}, "large response reference is not encrypted or has empty Data name");
-        return;
+      constexpr auto MAX_PENDING_RESPONSE_BYTES = 2 * MAX_REQUEST_RESPONSE_BYTES;
+      constexpr std::size_t MAX_PENDING_LARGE_RESPONSES = 32;
+      if (reference->keyScope != "request" || !reference->encrypted ||
+          !providerName.isPrefixOf(reference->dataName) ||
+          reference->dataName.size() <= providerName.size() ||
+          !reference->dataName.at(-1).isVersion()) {
+        throw std::runtime_error("invalid request-scoped large response reference");
       }
+      if (reference->plaintextSize == 0 || reference->plaintextSize > MAX_REQUEST_RESPONSE_BYTES)
+        throw std::length_error("large response exceeds plaintext bound");
+      std::uint64_t reservedBytes = 0;
+      std::size_t activeFetches = 0;
+      for (const auto& [id, call] : m_pendingCalls) {
+        for (const auto& [provider, fetch] : call.largeResponseFetches) {
+          reservedBytes += fetch->expectedBytes;
+          activeFetches += fetch->expectedBytes != 0;
+        }
+      }
+      if (activeFetches >= MAX_PENDING_LARGE_RESPONSES ||
+          reference->plaintextSize > MAX_PENDING_RESPONSE_BYTES - reservedBytes)
+        throw std::length_error("pending large responses exceed receive budget");
+      const auto [keys, binding] = authority();
+      if (!keys || !binding || !keys->isValid(nowMilliseconds()) ||
+          binding->serviceName != serviceName || binding->requestId != requestId ||
+          !responseMessage.hasControllerVersion() ||
+          responseMessage.getControllerVersion() != binding->controllerVersion ||
+          ndn::security::extractIdentityFromCertName(binding->providerEncryptionCertName) !=
+            providerName) {
+        throw std::runtime_error("request-scoped large response binding or key is invalid");
+      }
+      owner->keyId = keys->keyId;
+      owner->expectedBytes = reference->plaintextSize;
+      owner->deadline = m_scheduler.schedule(ndn::time::seconds(30), [finish] {
+        finish("large response fetch timed out");
+      });
+
+      // Finish outside the validation/data slot: SegmentFetcher is still
+      // updating this window when it emits those two signals.
+      const auto reject = [this, finish](LargeResponseFetch& active, std::string error) {
+        if (!active.error.empty()) return;
+        active.error = std::move(error);
+        boost::asio::post(m_face.getIoContext(), [finish] { finish({}); });
+      };
       const int lifetimeMs = std::max(50,
         intEnvOrDefault("NDNSF_RESPONSE_LARGE_INTEREST_LIFETIME_MS", 4000));
       ndn::Interest interest(reference->dataName);
@@ -13003,221 +13085,86 @@ namespace ndn_service_framework
       interest.setInterestLifetime(ndn::time::milliseconds(lifetimeMs));
       ndn::SegmentFetcher::Options options;
       options.probeLatestVersion = false;
+      options.inOrder = true;
       options.useConstantCwnd = true;
-      options.initCwnd = std::max(1, intEnvOrDefault("NDNSF_RESPONSE_LARGE_FETCH_INIT_CWND", 8));
+      options.initCwnd = std::clamp(
+        intEnvOrDefault("NDNSF_RESPONSE_LARGE_FETCH_INIT_CWND", 8), 1, 256);
+      options.flowControlWindow = 256;
       options.maxTimeout = ndn::time::seconds(10);
       options.interestLifetime = ndn::time::milliseconds(lifetimeMs);
       auto transportValidator = validator;
       owner->fetcher = ndn::SegmentFetcher::start(m_face, interest,
         transportValidator->getConfiguredValidatorForSegmentFetcher(), options);
-      owner->onComplete = owner->fetcher->onComplete.connect(
-        [finish, transportValidator] (ndn::ConstBufferPtr buffer) {
-          finish(std::move(buffer), {});
+      owner->onValidated = owner->fetcher->afterSegmentValidated.connect(
+        [weakOwner, reject, transportValidator, providerName, prefix = reference->dataName]
+        (const ndn::Data& data) {
+          const auto active = weakOwner.lock();
+          if (!active || active->terminal || !active->error.empty()) return;
+          const auto& name = data.getName();
+          if (name.size() != prefix.size() + 1 || !prefix.isPrefixOf(name) ||
+              !name.at(-1).isSegment() || name.at(-1).toSegment() >= MAX_REQUEST_RESPONSE_SEGMENTS ||
+              !transportValidator->isProducerSignerAuthorized(data, providerName)) {
+            reject(*active, "large response segment Producer or name mismatch");
+          }
         });
+      owner->onData = owner->fetcher->onInOrderData.connect(
+        [this, weakOwner, current, authority, serviceName, reject](ndn::ConstBufferPtr buffer) {
+          const auto active = weakOwner.lock();
+          if (!active || active->terminal || !active->error.empty()) return;
+          try {
+            if (!current() ||
+                !authorizeControllerTransition(serviceName, ProtectedTransition::RESPONSE_DELIVERY))
+              throw std::runtime_error("large response delivery is no longer current");
+            const auto [keys, scoped] = authority();
+            if (!keys || !scoped || keys->keyId != active->keyId ||
+                !keys->isValid(nowMilliseconds()))
+              throw std::runtime_error("request-scoped large response key is no longer current");
+            const auto ordinal = active->nonces.size();
+            if (!buffer || buffer->size() > ndn::MAX_NDN_PACKET_SIZE ||
+                ordinal >= MAX_REQUEST_RESPONSE_SEGMENTS)
+              throw std::length_error("large response exceeds segment bound");
+            const auto [parsed, block] = ndn::Block::fromBuffer(buffer);
+            AeadEnvelope envelope;
+            if (!parsed || block.size() != buffer->size() || !envelope.wireDecode(block) ||
+                envelope.segmentOrEventId != "response/" + std::to_string(ordinal))
+              throw std::runtime_error("request-scoped large response segment envelope is invalid");
+            if (envelope.ciphertext.empty() ||
+                envelope.ciphertext.size() > active->expectedBytes - active->plaintext.size())
+              throw std::length_error("large response exceeds declared plaintext size");
+            auto binding = *scoped;
+            binding.segmentOrEventId = envelope.segmentOrEventId;
+            ndn::Buffer plaintext;
+            RequestCryptoFailure failure = RequestCryptoFailure::NONE;
+            if (!decryptRequestContent(keys->responseKey, keys->keyId, binding, envelope,
+                                       plaintext, &failure)) {
+              throw std::runtime_error(std::string("request-scoped large response decryption failed: ") +
+                                       requestCryptoFailureName(failure));
+            }
+            if (ordinal == 0) active->plaintext.reserve(active->expectedBytes);
+            active->plaintext.insert(active->plaintext.end(), plaintext.begin(), plaintext.end());
+            active->nonces.push_back(std::move(envelope.nonce));
+            active->encodedBytes += buffer->size();
+          }
+          catch (const std::exception& failure) {
+            reject(*active, failure.what());
+          }
+        });
+      owner->onComplete = owner->fetcher->onInOrderComplete.connect(
+        [finish, transportValidator] { finish({}); });
       owner->onError = owner->fetcher->onError.connect(
-        [finish, transportValidator] (uint32_t code, const std::string& reason) {
-          finish({}, "SegmentFetcher error " + std::to_string(code) + ": " + reason);
+        [finish, transportValidator](std::uint32_t code, const std::string& reason) {
+          finish("SegmentFetcher error " + std::to_string(code) + ": " + reason);
         });
       if (timing) {
         NDN_LOG_INFO("NDNSF_RESPONSE_LARGE_FETCH_TIMING event=start dataName="
           << reference->dataName << " interest_lifetime_ms=" << lifetimeMs
-          << " init_cwnd=" << options.initCwnd);
+          << " init_cwnd=" << options.initCwnd << " mode=in-order");
       }
     }
     catch (const std::exception& failure) {
-      finish({}, failure.what());
+      finish(failure.what());
     }
   }
-
-    std::optional<ResponseMessage>
-    ServiceUser::decodeLargeResponseReferencePayload(
-        const ResponseMessage& responseMessage,
-        const ndn::Name& responseName,
-        const ndn::Name& serviceName,
-        const ndn::Buffer& encodedEnvelope,
-        std::string& errorMessage)
-    {
-        const auto reference = parseLargeDataReferencePayload(responseMessage.getPayload());
-        if (!reference) return responseMessage;
-        if (!reference->encrypted || reference->dataName.empty()) {
-            errorMessage = "large response reference is not encrypted or has empty Data name";
-            return std::nullopt;
-        }
-
-        ndn::Name providerName;
-        ndn::Name requestId;
-        if (auto parsedV2 = parsePendingResponseName(responseName)) {
-            providerName = parsedV2->providerName;
-            requestId = parsedV2->requestId;
-        }
-        else {
-            errorMessage = "large response reference requires a V2 response name";
-            return std::nullopt;
-        }
-
-        // Request-scoped large responses are a sequence of independently
-        // authenticated AeadEnvelope TLVs.  Do not route them through the
-        // legacy service-wide HybridMessageCrypto key carrier: the pending
-        // invocation's response key and binding are the only decryption
-        // authority for this branch.
-        if (reference->keyScope == "request") {
-            const auto pendingIt = m_pendingCalls.find(requestId);
-            if (pendingIt == m_pendingCalls.end() ||
-                !pendingIt->second.requestScopedConfidentiality) {
-                errorMessage =
-                    "request-scoped large response has no pending invocation key state";
-                return std::nullopt;
-            }
-            const auto scopedStateIt =
-                pendingIt->second.requestScopedProviderStates.find(
-                    providerName.toUri());
-            const RequestKeyBundle* scopedKeys = nullptr;
-            const RequestSecurityBinding* scopedBinding = nullptr;
-            if (scopedStateIt !=
-                pendingIt->second.requestScopedProviderStates.end()) {
-                scopedKeys = &scopedStateIt->second.keys;
-                scopedBinding = &scopedStateIt->second.binding;
-            }
-            else if (pendingIt->second.requestScopedKeys &&
-                     pendingIt->second.requestScopedBinding) {
-                scopedKeys = &*pendingIt->second.requestScopedKeys;
-                scopedBinding = &*pendingIt->second.requestScopedBinding;
-            }
-            if (!scopedKeys || !scopedBinding) {
-                errorMessage =
-                    "request-scoped large response has no Provider key state";
-                return std::nullopt;
-            }
-            if (!responseMessage.hasControllerVersion() ||
-                responseMessage.getControllerVersion() !=
-                    scopedBinding->controllerVersion) {
-                errorMessage =
-                    "request-scoped large response ControllerVersion mismatch";
-                return std::nullopt;
-            }
-            try {
-                if (ndn::security::extractIdentityFromCertName(
-                        scopedBinding->providerEncryptionCertName) !=
-                    providerName) {
-                    errorMessage =
-                        "request-scoped large response provider certificate mismatch";
-                    return std::nullopt;
-                }
-            }
-            catch (const std::exception&) {
-                errorMessage =
-                    "request-scoped large response provider certificate is invalid";
-                return std::nullopt;
-            }
-            if (scopedBinding->serviceName != serviceName ||
-                scopedBinding->requestId != requestId ||
-                reference->plaintextSize == 0) {
-                errorMessage = "request-scoped large response binding or size is invalid";
-                return std::nullopt;
-            }
-
-            const auto nowMs = nowMilliseconds();
-            if (!scopedKeys->isValid(nowMs)) {
-                errorMessage = "request-scoped large response key is expired";
-                return std::nullopt;
-            }
-            const auto lifetimeMs = std::chrono::milliseconds(std::max<uint64_t>(
-                1, scopedKeys->expiresAtMs - nowMs));
-            ndn::Buffer plaintext;
-            std::set<std::string> segmentIds;
-            std::vector<ndn::Buffer> authenticatedNonces;
-            size_t offset = 0;
-            size_t segmentIndex = 0;
-            while (offset < encodedEnvelope.size()) {
-                auto [parsed, block] = ndn::Block::fromBuffer(ndn::span<const uint8_t>(
-                    encodedEnvelope.data() + offset,
-                    encodedEnvelope.size() - offset));
-                if (!parsed || block.type() != AeadEnvelope::TYPE || block.size() == 0) {
-                    errorMessage =
-                        "request-scoped large response contains malformed segment envelope";
-                    return std::nullopt;
-                }
-                offset += block.size();
-                AeadEnvelope envelope;
-                if (!envelope.wireDecode(block)) {
-                    errorMessage =
-                        "request-scoped large response segment envelope decode failed";
-                    return std::nullopt;
-                }
-                const auto expectedSegment =
-                    "response/" + std::to_string(segmentIndex);
-                if (envelope.segmentOrEventId != expectedSegment ||
-                    !segmentIds.insert(envelope.segmentOrEventId).second) {
-                    errorMessage =
-                        "request-scoped large response segment identity is invalid";
-                    return std::nullopt;
-                }
-                auto binding = *scopedBinding;
-                binding.segmentOrEventId = envelope.segmentOrEventId;
-                ndn::Buffer segmentPlaintext;
-                RequestCryptoFailure failure = RequestCryptoFailure::NONE;
-                if (!decryptRequestContent(
-                        scopedKeys->responseKey,
-                        scopedKeys->keyId,
-                        binding,
-                        envelope,
-                        segmentPlaintext,
-                        &failure)) {
-                    errorMessage = std::string(
-                        "request-scoped large response segment decryption failed: ") +
-                        requestCryptoFailureName(failure);
-                    return std::nullopt;
-                }
-                // Decrypt/authenticate every segment before changing replay
-                // state.  A malformed later segment must not consume the
-                // earlier nonces and poison a valid retry of the reference.
-                authenticatedNonces.push_back(envelope.nonce);
-                plaintext.insert(plaintext.end(),
-                                 segmentPlaintext.begin(), segmentPlaintext.end());
-                ++segmentIndex;
-            }
-            if (segmentIndex == 0 ||
-                plaintext.size() != reference->plaintextSize ||
-                (!reference->digest.empty() &&
-                 sha256DigestString(plaintext) != reference->digest)) {
-                errorMessage = "request-scoped large response size or digest mismatch";
-                return std::nullopt;
-            }
-            const auto& call = pendingIt->second;
-            const auto deadlineUs = call.requestDeadlineUs != 0 ? call.requestDeadlineUs :
-                (call.timeoutMs > 0 ? call.createdAtUs + uint64_t(call.timeoutMs) * 1000 : 0);
-            if (deadlineUs != 0 && nowMicroseconds() >= deadlineUs) {
-                errorMessage = "request deadline expired before large response replay commit";
-                return std::nullopt;
-            }
-            if (!m_requestScopedNonceRegistry.reserveBatch(
-                    scopedKeys->keyId,
-                    authenticatedNonces, lifetimeMs)) {
-                errorMessage = "request-scoped large response segment nonce was replayed";
-                return std::nullopt;
-            }
-            ResponseMessage resolved(responseMessage);
-            resolved.setPayload(plaintext, plaintext.size());
-            resolved.clearAeadEnvelope();
-            NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_LARGE_RESPONSE_RESOLVED"
-                         << " name=" << reference->dataName.toUri()
-                         << " requestId=" << requestId.toUri()
-                         << " serviceName=" << serviceName.toUri()
-                         << " plaintextBytes=" << plaintext.size()
-                         << " segments=" << segmentIndex);
-            return resolved;
-        }
-
-        // Spec179 migration (T012): the legacy service-wide response-key
-        // carrier was removed after the request-scoped default passed its
-        // MiniNDN gate.  A large-response reference that does not declare
-        // the authenticated request-scoped key scope cannot be resolved any
-        // more; fail closed with a typed error instead of consuming a
-        // service-wide ABE-wrapped key.
-        errorMessage = "large response reference without request-scoped key scope "
-                       "(legacy service-wide response-key carrier removed)";
-        return std::nullopt;
-    }
 
     void ServiceUser::dispatchDecryptedResponseByName(const ndn::Name& responseName,
                                                       const ndn::Name& requestId,
@@ -13318,6 +13265,10 @@ namespace ndn_service_framework
         auto parsedV2 = parsePendingResponseName(responseName);
         if (!parsedV2) {
             NDN_LOG_WARN("Reject unmatched or inactive response: " << responseName);
+            return;
+        }
+        if (!expectedRequestId.empty() && parsedV2->requestId != expectedRequestId) {
+            NDN_LOG_WARN("Reject response for a different pending call: " << responseName);
             return;
         }
         serviceName = parsedV2->serviceName;
@@ -19203,7 +19154,12 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
         auto keysIt = m_userCollaborationScopeKeys.find(requestId);
         if (keysIt != m_userCollaborationScopeKeys.end()) {
-            keysIt->second.erase(keyScope);
+            const auto key = keysIt->second.find(keyScope);
+            if (key != keysIt->second.end()) {
+                if (!key->second.empty())
+                    OPENSSL_cleanse(key->second.data(), key->second.size());
+                keysIt->second.erase(key);
+            }
             if (keysIt->second.empty()) {
                 m_userCollaborationScopeKeys.erase(keysIt);
             }

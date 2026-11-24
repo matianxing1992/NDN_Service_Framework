@@ -588,6 +588,13 @@ NativeExecutionStepSpec::validate() const
   if ((operation == "CALL_SUBGRAPH") != !artifactEntry.empty()) {
     throw std::invalid_argument("execution step artifact entry disagrees with its operation");
   }
+  if (!onnxNodeIndices.empty() &&
+      (operation != "CALL_SUBGRAPH" || !localStateSlots.empty() ||
+       inputSlots.empty() || outputSlots.empty() ||
+       std::adjacent_find(onnxNodeIndices.begin(), onnxNodeIndices.end(),
+                          std::greater_equal<std::uint64_t>{}) != onnxNodeIndices.end())) {
+    throw std::invalid_argument("execution step has an invalid canonical ONNX node selection");
+  }
   std::set<std::string> inputIds;
   for (const auto& slot : inputSlots) {
     slot.validate();
@@ -996,9 +1003,22 @@ NativeExecutionPlan::validateSteps() const
     throw std::invalid_argument("execution plan declares duplicate units: " + detail);
   }
 
+  const bool withOnnxCuts = std::any_of(steps.begin(), steps.end(), [](const auto& step) {
+    return !step.onnxNodeIndices.empty();
+  });
+  std::set<std::uint64_t> onnxNodes;
+  std::set<std::string> onnxEntries;
   std::map<std::string, const NativeExecutionStepSpec*> byId;
   for (const auto& step : steps) {
     step.validate();
+    if (withOnnxCuts && step.operation == "CALL_SUBGRAPH") {
+      if (!stepPlanV2 || step.onnxNodeIndices.empty() || !onnxEntries.insert(step.artifactEntry).second)
+        throw std::invalid_argument("canonical ONNX step plan requires a distinct cut per CALL");
+      for (const auto node : step.onnxNodeIndices) {
+        if (!onnxNodes.insert(node).second)
+          throw std::invalid_argument("canonical ONNX step plans cannot overlap node cuts");
+      }
+    }
     if (roleSet.count(step.unitId) == 0) {
       std::string detail = "execution step belongs to an undeclared unit: " + step.unitId +
         " declared={";

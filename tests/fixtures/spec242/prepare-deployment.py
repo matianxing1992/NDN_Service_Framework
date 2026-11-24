@@ -72,6 +72,18 @@ def secure_random(path):
         stream.write(os.urandom(32))
 
 
+def prepare_file_keyrings(root, actors, requester_key_id):
+    # The Controller seals ABE state. The Requester seals its model handle.
+    for actor in actors:
+        if actor['kind'] not in ('controller', 'requester'):
+            continue
+        key_id = 'controller-abe' if actor['kind'] == 'controller' else requester_key_id
+        keyring = root / (actor['id'] + '.keyring')
+        with open(keyring, 'x', opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
+            stream.write(key_id + ' ' + os.urandom(32).hex() + '\n')
+        actor['file_keyring'] = str(keyring)
+
+
 def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid", historical=False):
     checkout = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(checkout / "Experiments"))
@@ -207,12 +219,7 @@ def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid", hi
     repo_identity = by_id["repo"]["identity"]
     requester = by_id["requester"]["identity"]
     security_digest = digest(policy.read_bytes())
-    # Only the Controller owns its ABE-state seal. Only the Requester opens the model handle.
-    for actor_id, key_id in (("controller", "controller-abe"), ("requester", "spec242-protection")):
-        keyring = root / (actor_id + ".keyring")
-        with open(keyring, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
-            stream.write(key_id + " " + os.urandom(32).hex() + "\n")
-        by_id[actor_id]["file_keyring"] = str(keyring)
+    prepare_file_keyrings(root, actors, "spec242-protection")
     options_file = str(bundle / "generation.json")
     turns = [dict(input_file=str(bundle / input_name), options_file=options_file,
                   output_file=str(root / f"output-{i}.json"),

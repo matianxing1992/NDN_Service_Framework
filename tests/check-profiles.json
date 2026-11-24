@@ -14,6 +14,10 @@
     "tests/fixtures/naming-installed-consumer.cpp": "core",
     "tests/fixtures/gpu-query.cpp": "di",
     "tests/fixtures/spec261/ort-detection-oracle.cpp": "di",
+    "tests/fixtures/wan-video/wan-video-fixture.cpp": "di",
+    "tests/fixtures/wan-video/wan-video-oracle.cpp": "di",
+    "tests/fixtures/wan-video/wan-video-reference.cpp": "di",
+    "tests/fixtures/wan-video/write-wan-video-fixture.cpp": "di",
     "tests/standalone/native-source-inspect.cpp": "di",
     "tests/standalone/native-yolo-tp-checkpoints.cpp": "di",
     "tests/fixtures/spec220/ort-required-operators.cpp": "di",
@@ -136,6 +140,7 @@
     "tests/unit-tests/di-native-onnx-recipe.t.cpp": "di",
     "tests/unit-tests/di-native-plan-sealer.t.cpp": "di",
     "tests/unit-tests/di-native-planning.t.cpp": "di",
+    "tests/unit-tests/wan-source-layout.t.cpp": "di",
     "tests/unit-tests/di-native-preparation.t.cpp": "di",
     "tests/unit-tests/di-native-provider-host.t.cpp": "di",
     "tests/unit-tests/di-native-tensor-parallel.t.cpp": "di",
@@ -412,6 +417,7 @@
             "excludeSuites": ["DiProcess",
                               "Spec192LegacyRepoImportIntegration/productionCliMatchesNativeImportAndReplayWithoutSourceMutation",
                               "Spec175NativeAssembly/DirectInt8CandidateAssemblyRunsOrtAndContinuation",
+                              "Spec181ExactTensorTransport/FileBackedExactPublicationFitsWanTileBudget",
                               "Spec181ExactTensorTransport/RepeatedExactPrefetchThreadAndCpuProbe",
                               "Spec181ExactTensorTransport/RepeatedPooledExactPrefetchThreadAndCpuProbe"]
           }
@@ -492,6 +498,7 @@
           "requiresComponents": ["di"],
           "selector": {
             "include": ["Spec175NativeAssembly/DirectInt8CandidateAssemblyRunsOrtAndContinuation",
+                        "Spec181ExactTensorTransport/FileBackedExactPublicationFitsWanTileBudget",
                         "Spec181ExactTensorTransport/RepeatedExactPrefetchThreadAndCpuProbe",
                         "Spec181ExactTensorTransport/RepeatedPooledExactPrefetchThreadAndCpuProbe"]
           }
