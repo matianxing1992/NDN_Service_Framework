@@ -2166,8 +2166,9 @@ validateNativePreparedRunnerSpec(
     auto expected = spec;
     expected.metadata.erase("sourceEntryProgram");
     sourceProgram = detail::bindNativeSourceProgramEntries(projection, expected);
-    if (spec.sourceProgramDependencyEntries != expected.sourceProgramDependencyEntries ||
-        spec.deferDependencyInputWarmup)
+    if (spec.deferDependencyInputWarmup ||
+        ((sourceProgram || spec.metadata.count(NATIVE_ONNX_ENTRY_TABLE) == 0) &&
+         spec.dependencyInputWarmupEntries != expected.dependencyInputWarmupEntries))
       return "DI_PROVIDER_SOURCE_PROGRAM_ENTRY_MISMATCH";
     if (sourceProgram && metadataValue(spec, {"sourceEntryProgram"}) !=
                          expected.metadata.at("sourceEntryProgram"))
@@ -2185,6 +2186,9 @@ validateNativePreparedRunnerSpec(
       if (sourceProgram || !canonicalEntries || tensorParallelBackend)
         return "DI_PROVIDER_ASSEMBLY_ENTRY_TABLE_MISMATCH";
       validateNativeOnnxEntryTable(projection, spec);
+      if (spec.dependencyInputWarmupEntries !=
+          nativeDependencyInputEntries(projection.plan, spec.role))
+        return "DI_PROVIDER_ASSEMBLY_ENTRY_TABLE_MISMATCH";
     }
     catch (const std::exception&) {
       return "DI_PROVIDER_ASSEMBLY_ENTRY_TABLE_MISMATCH";

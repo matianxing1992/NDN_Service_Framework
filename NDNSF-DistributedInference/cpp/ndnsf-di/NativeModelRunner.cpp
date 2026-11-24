@@ -438,11 +438,11 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
       auto child = spec;
       child.entryContract.reset();
       child.role = entry.entryId;
-      child.deferDependencyInputWarmup = sourceProgram &&
-        std::find(spec.sourceProgramDependencyEntries.begin(),
-                  spec.sourceProgramDependencyEntries.end(), entry.entryId) !=
-        spec.sourceProgramDependencyEntries.end();
-      child.sourceProgramDependencyEntries.clear();
+      child.deferDependencyInputWarmup = (sourceProgram || canonicalEntries) &&
+        std::find(spec.dependencyInputWarmupEntries.begin(),
+                  spec.dependencyInputWarmupEntries.end(), entry.entryId) !=
+        spec.dependencyInputWarmupEntries.end();
+      child.dependencyInputWarmupEntries.clear();
       if (sourceProgram || canonicalEntries) {
         child.path = (root / entry.relativeGraphPath).string();
         for (auto metadata = child.metadata.begin(); metadata != child.metadata.end();) {

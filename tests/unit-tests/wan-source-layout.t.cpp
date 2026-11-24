@@ -1715,8 +1715,11 @@ BOOST_AUTO_TEST_CASE(CanonicalCallOwnershipSurvivesSelectionAndFixedInvocation)
   bindNativeRunnerPreparationContext(runnerSpec, decoded,
                                      {decoded.provider, "fixture-boot", 1, dir.string()});
   validateNativeOnnxEntryTable(decoded, runnerSpec);
+  BOOST_REQUIRE_EQUAL(runnerSpec.dependencyInputWarmupEntries.size(), 1);
+  BOOST_CHECK_EQUAL(runnerSpec.dependencyInputWarmupEntries.front(), second.artifactEntry);
   auto current = decoded;
   current.plan.steps[0].artifactEntry = "renamed-latent-entry";
+  current.plan.steps[1].artifactEntry = "renamed-hidden-entry";
   auto reboundSpec = runnerSpec;
   BOOST_CHECK_THROW(validateNativeOnnxEntryTable(current, reboundSpec), std::invalid_argument);
   bindNativeRunnerPreparationContext(reboundSpec, current,
@@ -1724,6 +1727,8 @@ BOOST_AUTO_TEST_CASE(CanonicalCallOwnershipSurvivesSelectionAndFixedInvocation)
   validateNativeOnnxEntryTable(current, reboundSpec);
   BOOST_CHECK_EQUAL(readNativeOnnxEntryTable(reboundSpec).front().entryId,
                     "renamed-latent-entry");
+  BOOST_REQUIRE_EQUAL(reboundSpec.dependencyInputWarmupEntries.size(), 1);
+  BOOST_CHECK_EQUAL(reboundSpec.dependencyInputWarmupEntries.front(), "renamed-hidden-entry");
   table.at(1)["inputs"] = {"latent"};
   auto wrongSpec = runnerSpec;
   wrongSpec.metadata[NATIVE_ONNX_ENTRY_TABLE] = nativeCanonicalJson(table);
@@ -1734,7 +1739,8 @@ BOOST_AUTO_TEST_CASE(CanonicalCallOwnershipSurvivesSelectionAndFixedInvocation)
   const auto evidence = runner->executionEvidenceSnapshot();
   BOOST_REQUIRE(evidence);
   BOOST_CHECK(evidence->loadCompleted);
-  BOOST_CHECK(evidence->warmupCompleted);
+  BOOST_CHECK(!evidence->warmupCompleted);
+  BOOST_CHECK(evidence->warmupDeferredDependencyInput);
   BOOST_CHECK(evidence->runnerKind == RunnerKind::OnnxRuntimeCpu);
   BOOST_CHECK_EQUAL(evidence->artifactDigests.at(role.selectedRole), role.artifactDigest);
   RoleExecutionContext ctx;

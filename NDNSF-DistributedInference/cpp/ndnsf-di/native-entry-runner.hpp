@@ -64,6 +64,10 @@ inline constexpr const char* NATIVE_ONNX_ENTRY_CAPABILITY_V1 = "onnx-call-entry-
 std::vector<NativeSubgraphEntryContract>
 readNativeOnnxEntryTable(const NativeModelRunnerSpec& spec);
 
+/** CALL entries that require a real local or remote step result before they can execute. */
+std::vector<std::string>
+nativeDependencyInputEntries(const NativeExecutionPlan& plan, const std::string& role);
+
 /** Recheck an assembled entry table against the current selected step template. */
 void
 validateNativeOnnxEntryTable(const NativeSelectionProjectionV3& projection,

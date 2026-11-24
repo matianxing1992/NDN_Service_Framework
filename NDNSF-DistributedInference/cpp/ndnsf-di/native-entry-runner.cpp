@@ -97,6 +97,21 @@ readNativeOnnxEntryTable(const NativeModelRunnerSpec& spec)
   return entries;
 }
 
+std::vector<std::string>
+nativeDependencyInputEntries(const NativeExecutionPlan& plan, const std::string& role)
+{
+  std::vector<std::string> entries;
+  for (const auto& call : plan.steps) {
+    if (call.unitId == role && call.operation == "CALL_SUBGRAPH" &&
+        std::any_of(call.inputSlots.begin(), call.inputSlots.end(), [] (const auto& slot) {
+          return slot.source == "LOCAL_STEP" || slot.source == "REMOTE_STEP";
+        })) {
+      entries.push_back(call.artifactEntry);
+    }
+  }
+  return entries;
+}
+
 namespace {
 
 NativeJson
@@ -154,6 +169,7 @@ bindNativeOnnxEntryTable(const NativeSelectionProjectionV3& projection,
 {
   const auto rebound = checkOnnxEntryTable(projection, spec, true);
   spec.metadata.at(NATIVE_ONNX_ENTRY_TABLE) = nativeCanonicalJson(rebound);
+  spec.dependencyInputWarmupEntries = nativeDependencyInputEntries(projection.plan, spec.role);
 }
 
 void
