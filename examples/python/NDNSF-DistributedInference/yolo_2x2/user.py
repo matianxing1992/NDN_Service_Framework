@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import replace
 from ndnsf_distributed_inference.app_sdk import APPClient, ProviderOfferTrustVerifier
 from pathlib import Path
@@ -645,12 +646,12 @@ def _emit_native_request_result(record: str) -> None:
         raise OSError("incomplete native YOLO result record write")
 
 
-def _load_yolo_native_payload(client, args) -> int:
+def _load_yolo_native_payload(runtime, args) -> int:
     """Submit the maintained YOLO payload through the native requester.
 
     The native configuration is the only composition authority in this branch:
     catalog, grant/admission, preparation and split/placement owners are
-    constructed by ``APPClient``.  The tensor bundle is published once as an
+    constructed by the public C++ Runtime. The tensor bundle is published as an
     encrypted repository object and the bound reference is submitted through
     the native requester; the selected Provider owns fetch/decrypt.  The
     historical ACK-driven Python planner remains a separate explicitly
@@ -667,114 +668,120 @@ def _load_yolo_native_payload(client, args) -> int:
     if args.lifecycle_output_dir or args.lifecycle_case or args.request_id:
         raise RuntimeError(
             "native YOLO route does not yet support Spec180 lifecycle journaling")
-    if (args.async_requests != 1 or args.sequential_duration_s != 0 or
-            args.preflight_requests != 0 or args.sequential_interval_ms != 0 or
-            args.sequential_requests < 0):
-        raise RuntimeError(
-            "native YOLO route requires a nonnegative sequential request count "
-            "and no async, duration, preflight or interval options")
+    duration = float(args.sequential_duration_s)
+    if (args.async_requests < 1 or args.sequential_requests < 0 or
+            args.preflight_requests < 0 or args.sequential_interval_ms < 0 or
+            not math.isfinite(duration) or duration < 0):
+        raise ValueError("native YOLO request counts, duration and interval are invalid")
 
     package = Path(args.canonical_package).expanduser().resolve()
     registry = Path(args.catalogue_registry).expanduser().resolve()
     adapter = build_yolo26n_adapter(package, registry_path=registry)
     numerical_reference, payload = _prepare_yolo_input(args, package)
 
-    # This call is intentionally before any request construction.  It binds
-    # the native catalog/runtime/grant owner and fails closed on configuration
-    # drift; no Python planner is consulted by the native branch.
-    client.configure_native_requester_from_config(args.native_requester_config)
-    from ndnsf import _ndnsf
+    from ndnsf_distributed_inference import api
 
-    native_model = getattr(client, "_native_model", None)
+    user = runtime.user()
+    model = user.prepare()
     manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
     source = manifest.get("source")
     expected_digest = (
         "sha256:" + str(source.get("checkpointSha256", ""))
         if isinstance(source, dict) else "")
-    if (native_model is None or native_model.model_name != "YOLO26n" or
-            native_model.adapter_id != adapter.descriptor.name or
-            native_model.content_digest != expected_digest):
+    input_schema = json.loads(model.capabilities.input_schema_json)
+    if (model.manifest.model_name != "YOLO26n" or
+            model.manifest.model_digest != expected_digest or
+            input_schema.get("digest") != adapter.descriptor.input_schema_digest):
         raise RuntimeError("native YOLO requester model identity does not match package")
 
-    options = _ndnsf.NativeRequestOptions()
-    options.timeout_ms = int(args.timeout_ms)
-    options.ack_timeout_ms = int(args.ack_timeout_ms)
+    options = api.RequestOptions()
+    options.timeout_s = args.timeout_ms / 1000
+    options.ack_timeout_s = args.ack_timeout_ms / 1000
     options.output_mode = "FULL"
-    runtime = getattr(client, "_native_runtime", None)
+    operator_request = json.loads(
+        Path(args.native_requester_config).read_text(encoding="utf-8"))["request"]
+    options.provider_names = operator_request.get("provider_names", [])
     gate_dir = Path(args.native_restart_gate) if args.native_restart_gate else None
     if gate_dir is not None and (
             not args.native_restart_ticket or args.native_restart_after < 2 or
-            args.sequential_requests < args.native_restart_after + 2):
+            args.sequential_requests < args.native_restart_after + 2 or duration > 0):
         raise RuntimeError("native restart gate requires a ticket and two requests on each side")
-    contract = getattr(runtime, "contract", None)
-    task_name = str(getattr(contract, "task_name", ""))
-    if not task_name:
+    if not model.manifest.task_name:
         raise RuntimeError("native YOLO runtime has no task identity")
 
-    service = yolo_inference_service(client.deployment)
-    for request_index in range(max(1, args.sequential_requests)):
+    pending = []
+
+    def submit(index, prefix):
         started = time.monotonic()
-        print(f"YOLO_NATIVE_REQUEST_START index={request_index}", flush=True)
-        # Keep the native runtime warm, but publish a fresh input for each call.
-        reference = client.publish_application_input_reference(
-            service,
-            payload,
-            object_label="inference-input-image",
-            object_type="application/x-ndnsf-di-input+native-tensor",
-            freshness_ms=120000,
-        )
-        handle = client.request_native_reference(
-            reference,
-            options=options,
-            task_name=task_name,
-            application_options=b"{}",
-        )
+        print(f"{prefix}_REQUEST_START index={index}", flush=True)
+        reference = user.publish_input(model, list(payload), timeout_s=options.timeout_s)
+        handle = user.request(model, api.Input.repository(reference, list(b"{}")), options=options)
         completed = Event()
-        completion = handle._on_completion(lambda _error, _result: completed.set())
+        completed_at = [None]
+
+        def observe_completion(_error, _result):
+            if completed_at[0] is None:
+                completed_at[0] = time.monotonic()
+            completed.set()
+
         try:
-            # Keep SIGINT responsive while the native request owns the deadline
-            # and the terminal result.
-            if not completed.wait((options.timeout_ms + 1000) / 1000):
-                handle.cancel()
-                raise TimeoutError("native request did not report completion")
-            result = handle.result(0)
-        except KeyboardInterrupt:
+            completion = handle.on_completion(observe_completion)
+        except BaseException:
             handle.cancel()
-            _emit_native_request_result(
-                f"YOLO_NATIVE_REQUEST_INTERRUPTED request={handle.request_id} "
-                f"status={handle.status_name}")
             raise
-        except Exception as exc:
-            _emit_native_request_result(
-                "YOLO_NATIVE_REQUEST_RESULT status=false "
-                f"request={handle.request_id} index={request_index} "
-                f"elapsed_ms={(time.monotonic() - started) * 1000:.3f} error={exc}",
-            )
-            return 3
-        finally:
-            completion.cancel()
-        elapsed_ms = (time.monotonic() - started) * 1000
-        response_payload = bytes(result.payload)
-        matched = False
+        item = (handle, completed, completion, started, index, prefix, completed_at)
+        pending.append(item)
+        return item
+
+    def finish(item):
+        handle, completed, completion, started, index, prefix, completed_at = item
+        finished_at = None
         try:
-            _, actual = decode_yolo_output(response_payload, native_predictions_only=True)
-            oracle = compare_reference(numerical_reference, actual)
-            matched = bool(oracle["matched"])
-            max_diff = oracle["maxAbsError"]
-            mean_diff = None
-        except (ValueError, KeyError, UnicodeError, OverflowError):
-            max_diff = float("inf")
-            mean_diff = float("inf")
-        succeeded = bool(result.payload) and matched
-        _emit_native_request_result(
-            "YOLO_NATIVE_REQUEST_RESULT "
-            f"status={str(succeeded).lower()} "
-            f"request={handle.request_id} payload_bytes={len(response_payload)} "
-            f"max_diff={max_diff} mean_diff={mean_diff} "
-            f"index={request_index} elapsed_ms={elapsed_ms:.3f}",
-        )
-        if not succeeded:
-            return 4
+            try:
+                ready = completed.wait(options.timeout_s + 1)
+                finished_at = completed_at[0] if ready else time.monotonic()
+                if not ready:
+                    raise TimeoutError("native request did not report completion")
+                result = handle.result(timeout_s=0)
+            except KeyboardInterrupt:
+                handle.cancel()
+                _emit_native_request_result(
+                    f"{prefix}_REQUEST_INTERRUPTED request={handle.id} "
+                    f"status={handle.status_name}")
+                raise
+            except Exception as exc:
+                handle.cancel()
+                if finished_at is None:
+                    finished_at = time.monotonic()
+                _emit_native_request_result(
+                    f"{prefix}_REQUEST_RESULT status=false request={handle.id} "
+                    f"index={index} elapsed_ms={(finished_at - started) * 1000:.3f} "
+                    f"error={exc}")
+                return 3
+            response_payload = bytes(result.payload)
+            try:
+                _, actual = decode_yolo_output(response_payload, native_predictions_only=True)
+                oracle = compare_reference(numerical_reference, actual)
+                matched = bool(oracle["matched"])
+                max_diff = oracle["maxAbsError"]
+                mean_diff = None
+            except (ValueError, KeyError, UnicodeError, OverflowError):
+                matched = False
+                max_diff = mean_diff = float("inf")
+            succeeded = bool(response_payload) and matched
+            _emit_native_request_result(
+                f"{prefix}_REQUEST_RESULT status={str(succeeded).lower()} "
+                f"request={handle.id} payload_bytes={len(response_payload)} "
+                f"max_diff={max_diff} mean_diff={mean_diff} index={index} "
+                f"elapsed_ms={(finished_at - started) * 1000:.3f}")
+            return 0 if succeeded else 4
+        finally:
+            try:
+                completion.cancel()
+            finally:
+                pending.remove(item)
+
+    def restart_boundary(request_index):
         if gate_dir is not None and request_index + 1 == args.native_restart_after:
             # No request is active here; the harness may restart Providers while
             # this process retains its native runtime and published fixed source.
@@ -793,11 +800,50 @@ def _load_yolo_native_payload(client, args) -> int:
                 time.sleep(0.05)
             if json.loads(release.read_text(encoding="utf-8")) != marker:
                 raise RuntimeError("native Provider restart gate release does not match")
-            if getattr(client, "_native_runtime", None) is not runtime:
-                raise RuntimeError("native runtime changed across Provider restart gate")
             print("YOLO_NATIVE_RESTART_GATE_RELEASED " + json.dumps(marker), flush=True)
-    return 0
 
+    try:
+        for index in range(args.preflight_requests):
+            code = finish(submit(index, "YOLO_NATIVE_PREFLIGHT"))
+            if code:
+                return code
+        if args.sequential_requests or duration > 0:
+            deadline = time.monotonic() + duration if duration > 0 else None
+            index = 0
+            while ((deadline is not None and time.monotonic() < deadline) or
+                   (deadline is None and index < args.sequential_requests)):
+                item = submit(index, "YOLO_NATIVE")
+                code = finish(item)
+                if code:
+                    return code
+                restart_boundary(index)
+                index += 1
+                delay = item[3] + args.sequential_interval_ms / 1000 - time.monotonic()
+                if deadline is not None:
+                    delay = min(delay, max(0, deadline - time.monotonic()))
+                if delay > 0:
+                    time.sleep(delay)
+        else:
+            batch = [submit(index, "YOLO_NATIVE") for index in range(args.async_requests)]
+            for item in batch:
+                code = finish(item)
+                if code:
+                    return code
+        return 0
+    finally:
+        active_failure = sys.exc_info()[0] is not None
+        cleanup_errors = []
+        for handle, _event, subscription, _started, _index, _prefix, _finished in pending:
+            for release in (handle.cancel, subscription.cancel):
+                try:
+                    release()
+                except Exception as exc:
+                    cleanup_errors.append(str(exc))
+        if cleanup_errors:
+            _emit_native_request_result(
+                "YOLO_NATIVE_CLEANUP_FAILED errors=" + repr(cleanup_errors))
+            if not active_failure:
+                raise RuntimeError("native YOLO request cleanup failed")
 
 def main() -> int:
     parser = parse_args_with_common("Run YOLO 2x2 user")
@@ -846,7 +892,7 @@ def main() -> int:
         "--native-requester-config", default="",
         help=(
             "operator-pinned ndnsf-di-native-requester-v1 configuration; "
-            "when set, submit inline YOLO tensor bytes through the native "
+            "when set, submit encrypted YOLO tensor references through the native "
             "requester without Python planner fallback"),
     )
     parser.add_argument(
@@ -861,7 +907,7 @@ def main() -> int:
                         help="offline-only legacy reference JSON; rejected by ACK-driven mode")
     parser.add_argument("--input-payload-file", default="",
                         help="encoded YOLO input bytes to publish; omitted uses the deterministic fixture")
-    parser.add_argument("--envelope-key-file", required=True,
+    parser.add_argument("--envelope-key-file", default="",
                         help="owner-only raw 32-byte key protecting persistent request state")
     parser.add_argument(
         "--offer-trust-root",
@@ -886,6 +932,8 @@ def main() -> int:
     if args.native_requester_config and args.offline_oracle:
         raise SystemExit(
             "--native-requester-config and --offline-oracle are mutually exclusive")
+    if not args.native_requester_config and not args.envelope_key_file:
+        parser.error("--envelope-key-file is required without --native-requester-config")
     if args.dry_run:
         print("Run YOLO 2x2 user")
         print("config:", args.config)
@@ -893,6 +941,20 @@ def main() -> int:
 
     with optional_local_nfd(args.start_local_nfd):
         trace_init = os.environ.get("NDNSF_DI_INIT_TRACE") == "1"
+        if args.native_requester_config:
+            from ndnsf_distributed_inference import api
+            config = api.RuntimeConfig()
+            config.native_config_path = str(Path(args.native_requester_config).resolve())
+            runtime = api.Runtime.open(config)
+            try:
+                if trace_init:
+                    print("NDNSF_DI_INIT_TRACE stage=user_after_runtime", flush=True)
+                return _load_yolo_native_payload(runtime, args)
+            finally:
+                runtime.close()
+                if not runtime.drain(timeout_s=6):
+                    raise RuntimeError("native YOLO requester did not drain")
+                _emit_native_request_result("YOLO_NATIVE_REQUESTER_DRAINED")
         client = APPClient.from_config(
             args.config,
             envelope_key_file=args.envelope_key_file,
@@ -904,18 +966,6 @@ def main() -> int:
         )
         if trace_init:
             print("NDNSF_DI_INIT_TRACE stage=user_after_client", flush=True)
-        if args.native_requester_config:
-            try:
-                return _load_yolo_native_payload(client, args)
-            finally:
-                try:
-                    native_client = client.native_client
-                    if native_client is not None:
-                        if not native_client._close_and_drain(6000):
-                            raise RuntimeError("native YOLO requester did not drain")
-                        _emit_native_request_result("YOLO_NATIVE_REQUESTER_DRAINED")
-                finally:
-                    client.shutdown()
         if not args.offline_oracle:
             try:
                 return _load_yolo_ack_driven(client, args)
