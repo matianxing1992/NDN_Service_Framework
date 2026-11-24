@@ -229,7 +229,9 @@ private:
 
   friend struct RepoNodeTestAccess;
   void executeStorageWrite(uint64_t bytes, std::function<void()> write,
-                           const std::function<void()>& requireActive = {});
+                           const std::function<void()>& requireActive = {},
+                           std::chrono::steady_clock::time_point deadline =
+                             std::chrono::steady_clock::time_point::max());
   void runStorageWriteWorker() noexcept;
   void requestStorageWriteWorkerStop() noexcept;
   void stopStorageWriteWorker() noexcept;
@@ -254,7 +256,9 @@ private:
     const std::optional<RepoUserStorageBinding>& storageBinding,
     const std::function<void()>& requireActive = {},
     std::string* committedManifestOperationId = nullptr,
-    const RepoUserStorageAdmission& admission = {});
+    const RepoUserStorageAdmission& admission = {},
+    std::chrono::steady_clock::time_point deadline =
+      std::chrono::steady_clock::time_point::max());
   std::vector<uint8_t> handleInsert(const std::vector<uint8_t>& request,
                                    const std::string& requesterIdentity, bool networkRequest);
 

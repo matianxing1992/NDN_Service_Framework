@@ -2108,7 +2108,8 @@ RepoNode::stopOriginalPacketOperations() noexcept
 
 void
 RepoNode::executeStorageWrite(uint64_t bytes, std::function<void()> write,
-                              const std::function<void()>& requireActive)
+                              const std::function<void()>& requireActive,
+                              std::chrono::steady_clock::time_point deadline)
 {
   // Charge queued and active writes together; tiny requests also consume a slot budget.
   bytes = std::max<uint64_t>(bytes, 1024);
@@ -2137,7 +2138,23 @@ RepoNode::executeStorageWrite(uint64_t bytes, std::function<void()> write,
     m_storageWriteBytes += bytes;
   }
   m_storageWriteCondition.notify_all();
-  // The synchronous API retains its source until persistence or cancellation finishes.
+  if (deadline != std::chrono::steady_clock::time_point::max() &&
+      result.wait_until(deadline) == std::future_status::timeout) {
+    std::unique_lock<std::mutex> lock(m_storageWriteQueueMutex);
+    const auto pending = std::find_if(m_storageWrites.begin(), m_storageWrites.end(),
+      [&](const auto& job) { return job.completion == completion; });
+    if (pending != m_storageWrites.end()) {
+      auto cancelled = std::move(*pending);
+      m_storageWriteBytes -= cancelled.bytes;
+      m_storageWrites.erase(pending);
+      lock.unlock();
+      cancelled.write = {};
+      m_storageWriteCondition.notify_all();
+      if (requireActive) requireActive();
+      throw std::runtime_error("repo-storage-write-deadline");
+    }
+  }
+  // Running writes remain synchronous until persistence or cancellation finishes.
   result.get();
 }
 
@@ -2240,7 +2257,7 @@ RepoNode::insertWirePacketsImpl(
   const std::string& authenticatedWriter,
   const std::optional<RepoUserStorageBinding>& storageBinding,
   const std::function<void()>& requireActive, std::string* committedManifestOperationId,
-  const RepoUserStorageAdmission& admission)
+  const RepoUserStorageAdmission& admission, std::chrono::steady_clock::time_point deadline)
 {
   if (reference.objectName.empty()) {
     throw std::invalid_argument("repo data reference objectName must not be empty");
@@ -2561,7 +2578,7 @@ RepoNode::insertWirePacketsImpl(
         commitOwner(measurePersistentUserStorageObject(storedManifest));
       }
       traceStorage("worker-finish");
-    }, requireActive);
+    }, requireActive, deadline);
     traceStorage("wait-finish");
     if (verifyOutsideWorker) {
       // Only the physical bytes have committed. The reserved Owner write
@@ -3211,7 +3228,8 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
         [&](uint64_t offset, std::size_t length) { return packets->readRange(offset, length); },
         owned.operationId, owned.generation, requesterIdentity,
         owned.storageBinding, requireProof, &committedManifestOperationId,
-        {RepoUserStorageAdmissionMode::MANIFEST_V1, owned.segmentManifestBinding});
+        {RepoUserStorageAdmissionMode::MANIFEST_V1, owned.segmentManifestBinding},
+        validationDeadline);
       return toBytes(detail::encodeManifestInsertStatus(status, committedManifestOperationId));
     }
     if (m_dataReferenceSpoolFetcher) {

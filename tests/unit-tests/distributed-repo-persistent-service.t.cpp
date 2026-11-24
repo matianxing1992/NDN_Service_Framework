@@ -112,9 +112,11 @@ struct RepoNodeTestAccess
 {
   static void
   write(RepoNode& node, uint64_t bytes, std::function<void()> action,
-        const std::function<void()>& requireActive = {})
+        const std::function<void()>& requireActive = {},
+        std::chrono::steady_clock::time_point deadline =
+          std::chrono::steady_clock::time_point::max())
   {
-    node.executeStorageWrite(bytes, std::move(action), requireActive);
+    node.executeStorageWrite(bytes, std::move(action), requireActive, deadline);
   }
 
   static uint64_t
@@ -3540,6 +3542,57 @@ BOOST_AUTO_TEST_CASE(StorageWriterBackpressureCancelsBeforeAdmissionAndDrainsOnS
   BOOST_CHECK(!executed.load());
   BOOST_CHECK_EQUAL(RepoNodeTestAccess::storageWriteBytes(*fixture.node), 0U);
   BOOST_CHECK_THROW(RepoNodeTestAccess::write(*fixture.node, 1024, [] {}), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(StorageWriterExpiresQueuedWorkWithoutReleasingActiveSource)
+{
+  using namespace std::chrono_literals;
+  OwnedPacketFixture fixture;
+  const auto activeDeadline = std::chrono::steady_clock::now() + 300ms;
+  std::promise<void> entered;
+  auto ready = entered.get_future();
+  std::promise<void> release;
+  const auto released = release.get_future().share();
+  auto active = std::async(std::launch::async, [&] {
+    RepoNodeTestAccess::write(*fixture.node, 1024, [&] {
+      entered.set_value();
+      released.wait();
+    }, {}, activeDeadline);
+  });
+  const auto activeStatus = ready.wait_for(2s);
+  const auto deadline = std::chrono::steady_clock::now() + 300ms;
+  std::atomic<bool> expiredWasRun{false};
+  auto queued = std::async(std::launch::async, [&] {
+    try {
+      RepoNodeTestAccess::write(*fixture.node, 2048, [&] { expiredWasRun = true; }, [&] {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          throw std::runtime_error(detail::OWNED_MANIFEST_VALIDATION_DEADLINE);
+        }
+      }, deadline);
+      return false;
+    }
+    catch (const std::runtime_error& error) {
+      return std::string_view(error.what()) == detail::OWNED_MANIFEST_VALIDATION_DEADLINE;
+    }
+  });
+  bool chargedBoth = false;
+  while (!chargedBoth && std::chrono::steady_clock::now() < deadline) {
+    chargedBoth = RepoNodeTestAccess::storageWriteBytes(*fixture.node) == 3072;
+    if (!chargedBoth) std::this_thread::sleep_for(1ms);
+  }
+  const auto queuedStatus = queued.wait_for(2s);
+  const auto remainingCharge = RepoNodeTestAccess::storageWriteBytes(*fixture.node);
+  const auto remainingActive = active.wait_for(0ms);
+  release.set_value();
+  active.get();
+  BOOST_CHECK(activeStatus == std::future_status::ready);
+  BOOST_CHECK(chargedBoth);
+  BOOST_CHECK(queuedStatus == std::future_status::ready);
+  BOOST_CHECK(queued.get());
+  BOOST_CHECK(!expiredWasRun.load());
+  BOOST_CHECK_EQUAL(remainingCharge, 1024U);
+  BOOST_CHECK(remainingActive == std::future_status::timeout);
+  BOOST_CHECK_EQUAL(RepoNodeTestAccess::storageWriteBytes(*fixture.node), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(OwnedInsertStoresHashBoundOpaqueSignatureWithoutApprovingConsumerTrust)
