@@ -20,6 +20,14 @@
   signed role/device/artifact runner with its committed parent. Verify zero
   prefix recomputation, coverage of all required state ports and correct
   progression. Only claim GPU state-value agreement if the oracle compared it.
+- Read Slurm's `JobContainerType` before choosing where to retain the raw ORT
+  profile. Tiger's `job_container/tmpfs` isolates `/tmp` per allocation. A
+  subsequent job on the same host cannot read the original profile path. When
+  raw profiles are required, archive them from the original allocation before
+  teardown. Verify the job, boot, configuration, provider and profile request
+  bindings, then hash the copied files. Confirm any attached collection step
+  exits before the final process audit. Record whether the archive contains
+  the raw profile or the per-operator assignments extracted at admission.
 
 ## Diagnose the actual boundary
 
