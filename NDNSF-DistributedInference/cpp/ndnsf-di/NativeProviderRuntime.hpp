@@ -799,6 +799,12 @@ public:
   std::optional<ConversationStateUseLeaseV1> acquireConversationUse(
     const ConversationStateBinding& binding, std::uint64_t nowMs);
 
+  std::shared_ptr<NativeModelRunner>
+  committedConversationRunner(const ConversationStateBinding& binding, std::uint64_t nowMs) const
+  {
+    return m_conversationStateStore->adapterRunner(binding, nowMs);
+  }
+
   std::future<ProviderRoleResult> executeRoleWithConversationUseAsync(
     std::string sessionId, RoleSpec role, std::shared_ptr<DependencyIo> io,
     ConversationStateUseLeaseV1 use,

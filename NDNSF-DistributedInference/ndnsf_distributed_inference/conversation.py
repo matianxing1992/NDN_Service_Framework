@@ -342,6 +342,24 @@ class ProviderConversationStateReceiptV1:
                 "signature": self.signature}
 
     @classmethod
+    def from_transport_dict(cls, value: Mapping[str, Any]) -> "ProviderConversationStateReceiptV1":
+        """Expand the compact collaboration representation before canonical decoding."""
+        packed = value.get("stateComponentDigests") if isinstance(value, Mapping) else None
+        if isinstance(packed, str):
+            try:
+                raw = base64.b64decode(packed, validate=True)
+            except ValueError as exc:
+                raise ConversationCheckpointInvalid("Provider receipt digests are malformed") from exc
+            digest_size = hashlib.sha256().digest_size
+            if not raw or len(raw) % digest_size or base64.b64encode(raw).decode("ascii") != packed:
+                raise ConversationCheckpointInvalid("Provider receipt digests are malformed")
+            value = {**value, "stateComponentDigests": [
+                "sha256:" + raw[offset:offset + digest_size].hex()
+                for offset in range(0, len(raw), digest_size)
+            ]}
+        return cls.from_dict(value)
+
+    @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ProviderConversationStateReceiptV1":
         """Decode one canonical Provider receipt from a verified wire payload.
 

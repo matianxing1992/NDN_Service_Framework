@@ -299,6 +299,14 @@ struct NativeConversationJournalKey
 ProviderConversationStateReceiptV1
 nativeReadProviderConversationStateReceipt(const NativeJson& value);
 
+/** Encode the authenticated collaboration payload while preserving its receipt commitment. */
+std::string
+nativeEncodeProviderConversationReceipt(const ProviderConversationStateReceiptV1& receipt);
+
+/** Decode the collaboration payload and verify the restored canonical receipt. */
+ProviderConversationStateReceiptV1
+nativeDecodeProviderConversationReceipt(const std::string& wire);
+
 /** Owner's compact immutable recovery reference; representation alone grants no access. */
 struct NativeSavedKvRoleV1
 {

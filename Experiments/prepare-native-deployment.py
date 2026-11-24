@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare fresh CPU experiment inputs using a selected installed native prefix.
+"""Prepare fresh experiment inputs using a selected installed native prefix.
 
 This creates credentials and configuration, then runs read-only cluster check.
 It never starts actors, copies an earlier deployment, or grants runtime permission.
@@ -19,7 +19,8 @@ import stat
 import sys
 import tempfile
 
-from model_assets import contained_file, file_digest, read_json, validate_manifest
+from model_assets import (contained_file, file_digest, prepare_source_cache, read_json,
+                          validate_manifest, verify_file)
 from native_probe_validation_links import render_anchored_probe_validation_schema
 from TigerCluster.runtime.processes import run_finite_application
 
@@ -150,9 +151,49 @@ def run(argv, env, cwd, *, binary=False):
         return value if binary else value.decode()
 
 
-def ed25519_key(openssl, stem, env, root):
+def slurm_image_command(placement, home, argv, read_only=()):
+    platform = placement["platform"]
+    for path in (home, *read_only):
+        if not Path(path).is_absolute() or any(char in str(path) for char in ",:\n"):
+            raise ValueError("DEPLOYMENT_IMAGE_BIND_PATH_INVALID")
+    command = [platform["apptainer"], "exec", "--cleanenv", "--containall",
+               "--no-mount", "cwd,hostfs,bind-paths", "--pwd", "/",
+               "--home", f"{home}:{home}"]
+    for path in read_only:
+        command.extend(("--bind", f"{path}:{path}:ro"))
+    return [*command, platform["sif"], *argv]
+
+
+def check_slurm_image_inputs(placement, resources, env):
+    """Authenticate the image and its preparation resources before creating keys."""
+    platform, release = placement["platform"], placement["release"]
+    prefix = Path(release["prefix"])
+    receipt = Path(release["manifest"])
+    validator = resources / "TigerCluster/adapters/slurm-apptainer/scripts/validate-local-sif-build-record.py"
+    with tempfile.TemporaryDirectory(prefix="ndnsf-preparation-image-") as temporary:
+        home = Path(temporary)
+        run([sys.executable, validator, "--record", platform["build_record"], "--sif",
+             platform["sif"], "--expected-sha256", platform["sif_sha256"],
+             "--purpose", "deployment"], env, home)
+        expected = run(slurm_image_command(placement, home, [
+            "/bin/cat", prefix / "share/ndnsf/stack-install-manifest.json"
+        ]), env, home, binary=True)
+    if receipt.stat().st_size != len(expected) or receipt.read_bytes() != expected:
+        raise ValueError("DEPLOYMENT_IMAGE_INSTALL_RECEIPT_MISMATCH")
+    ledger = json.loads(expected)
+    if ledger.get("schema") != 1 or not isinstance(ledger.get("files"), dict):
+        raise ValueError("DEPLOYMENT_INSTALL_RECEIPT_INVALID")
+    for name in PREPARATION_RESOURCES:
+        if name == Path(__file__).name:
+            continue
+        row = ledger["files"].get(str(prefix / "share/ndnsf/Experiments" / name), {}).get("installed", {})
+        if row.get("kind") != "file" or row.get("sha256") != file_digest(contained_file(resources, name)):
+            raise ValueError("DEPLOYMENT_IMAGE_RESOURCE_MISMATCH: " + name)
+    return receipt
+
+
+def ed25519_key(openssl, stem, public, env, root):
     private = stem.with_name(stem.name + "-private.pem")
-    public = stem.with_name(stem.name + "-public.pem")
     run([openssl, "genpkey", "-algorithm", "ED25519", "-out", private], env, root)
     run([openssl, "pkey", "-in", private, "-pubout", "-out", public], env, root)
     der = run([openssl, "pkey", "-in", private, "-pubout", "-outform", "DER"],
@@ -209,6 +250,69 @@ def load_profile(resources, name):
     for field in ("inputTokens", "maxNewTokens", "expectedCommittedPrefix"):
         profile["rendering"][field] = profile["rendering"][field][:turns]
     return profile, layout
+
+
+def load_explicit_profile(path):
+    """Load committed host inputs; native code owns plan and tensor admission."""
+    path = path.absolute()
+    if path.resolve(strict=True) != path or not path.is_file():
+        raise ValueError("DEPLOYMENT_PROFILE_FILE_INVALID")
+    profile = read_json(path)
+    if (profile.get("schema") != "ndnsf-experiment-profile-v1" or
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", profile.get("id", "")) is None):
+        raise ValueError("DEPLOYMENT_PROFILE_FILE_INVALID")
+    recipe, catalog, options = (
+        read_json(verify_file(path.parent, profile[field]))
+        for field in ("assetRecipe", "catalog", "generationOptions"))
+    model = profile["model"]
+    native_model = catalog["model"]
+    if model["revision"] != recipe.get("revision"):
+        raise ValueError("DEPLOYMENT_PROFILE_ASSET_REVISION_MISMATCH")
+    for k, native in (("repository", "model_name"), ("revision", "source_revision"),
+                      ("precision", "precision")):
+        if model[k] != native_model[native]:
+            raise ValueError("DEPLOYMENT_PROFILE_MODEL_CONTRACT_MISMATCH: " + k)
+    if model["quantization"] != native_model.get("quantization_subtype", "none"):
+        raise ValueError("DEPLOYMENT_PROFILE_MODEL_CONTRACT_MISMATCH: quantization")
+    # NativeModelDescriptor omits the default subtype in its canonical form.
+    if native_model.get("quantization_subtype") == "none":
+        del native_model["quantization_subtype"]
+    budget = profile["budgets"]["maxPreparedBytes"]
+    if type(budget) is not int or budget <= 0:
+        raise ValueError("DEPLOYMENT_PROFILE_PREPARATION_BUDGET_INVALID")
+    retention = profile["budgets"]["conversationRetentionMs"]
+    request_timeout = profile["budgets"]["requestTimeoutMs"]
+    if (type(retention) is not int or type(request_timeout) is not int or
+            not 0 < request_timeout < retention <= 3600000):
+        raise ValueError("DEPLOYMENT_PROFILE_CONVERSATION_RETENTION_MUST_OUTLAST_REQUEST")
+
+    cache_mib = profile["budgets"].get("artifactCacheMaxMiB")
+    if "artifactCacheMaxMiB" in profile["budgets"] and (
+            type(cache_mib) is not int or not 0 < cache_mib <= 2147483647):
+        raise ValueError("DEPLOYMENT_PROFILE_ARTIFACT_CACHE_BUDGET_INVALID")
+
+    split = catalog["splitter"]
+    roles = split["roles"]
+    degrees = split["tensor_degrees"]
+    if degrees == [2] and len(roles) == 1:
+        expected = [roles[0] + "/Tensor/Rank/" + str(rank) for rank in range(2)]
+    elif degrees == [1, 1] and len(roles) == 2:
+        expected = roles
+    else:
+        raise ValueError("DEPLOYMENT_PROFILE_TWO_PROVIDER_LAYOUT_REQUIRED")
+    provider_roles = profile["providerRoles"]
+    if (not isinstance(provider_roles, list) or len(provider_roles) != 2 or
+            any(not isinstance(role, str) for role in provider_roles) or
+            set(provider_roles) != set(expected)):
+        raise ValueError("DEPLOYMENT_PROFILE_ROLE_MAP_INVALID")
+    turns = profile["turns"]
+    if (not isinstance(turns, list) or len(turns) != 2 or
+            any(not isinstance(text, str) or not text for text in turns)):
+        raise ValueError("DEPLOYMENT_PROFILE_REQUIRES_TWO_TURNS")
+    rendering = profile["rendering"]
+    if rendering["addSpecialTokens"] is not False or rendering["bos"] != "none":
+        raise ValueError("DEPLOYMENT_PROFILE_RENDERING_CONTRACT_MISMATCH")
+    return profile, recipe, catalog, options, expected
 
 
 def apply_pipeline_layout(catalog, layout, graph_row, weight_row, generation_options):
@@ -280,8 +384,64 @@ def prepare_provider_signer(prefix, ndnsec, identity, rsa_metadata, home, inputs
     return metadata
 
 
+def load_slurm_placement(path):
+    placement = read_json(path)
+    required = {"platform", "release", "nodes", "model_input"}
+    if not isinstance(placement, dict) or set(placement) - {"turns"} != required:
+        raise ValueError("DEPLOYMENT_SLURM_PLACEMENT_FIELDS_INVALID")
+    platform = placement["platform"]
+    nodes = placement["nodes"]
+    gpu_count = platform.get("slurm", {}).get("gpu", {}).get("count")
+    if (platform.get("kind") != "slurm-apptainer" or type(gpu_count) is not int or
+            gpu_count not in (0, 1) or not isinstance(nodes, list) or len(nodes) != 2 or
+            len({node["id"] for node in nodes}) != 2 or len({node["host"] for node in nodes}) != 2 or
+            any(node.get("gpu_devices", []) != ["allocated:0"] * gpu_count for node in nodes)):
+        raise ValueError("DEPLOYMENT_SLURM_TWO_NODE_PLACEMENT_INVALID")
+    if "turns" in placement:
+        turns = placement["turns"]
+        if not isinstance(turns, list) or len(turns) != 2 or any(not isinstance(t, str) or not t for t in turns):
+            raise ValueError("DEPLOYMENT_SLURM_TURNS_INVALID")
+    model_input = placement["model_input"]
+    if isinstance(model_input, dict) and set(model_input) == {"mode", "cache_root"}:
+        cache_root = Path(model_input["cache_root"])
+        if model_input["mode"] != "source-cache" or not cache_root.is_absolute() or not cache_root.is_dir():
+            raise ValueError("DEPLOYMENT_SLURM_SOURCE_CACHE_ROOT_INVALID")
+        return placement
+    if (not isinstance(model_input, dict) or set(model_input) != {
+            "mode", "source_directory", "source_namespace"} or model_input["mode"] != "source-cache"):
+        raise ValueError("DEPLOYMENT_SLURM_SOURCE_CACHE_REQUIRED")
+    cache_root = Path(model_input["source_directory"])
+    if not cache_root.is_absolute() or not (cache_root / "cache-identity.json").is_file():
+        raise ValueError("DEPLOYMENT_SLURM_SOURCE_CACHE_MARKER_REQUIRED")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", model_input["source_namespace"]) is None:
+        raise ValueError("DEPLOYMENT_SLURM_SOURCE_CACHE_NAMESPACE_INVALID")
+    return placement
+
+
+def apply_slurm_placement(config, placement):
+    """Place already prepared roles on an explicit two-node allocation."""
+    config.update(platform=placement["platform"], release=placement["release"], nodes=placement["nodes"])
+    first, second = config["nodes"]
+    providers = [actor for actor in config["actors"] if actor["kind"] == "provider"]
+    if len(providers) != 2:
+        raise ValueError("DEPLOYMENT_SLURM_TWO_PROVIDERS_REQUIRED")
+    for actor in config["actors"]:
+        node = second if actor is providers[1] else first
+        devices = node.get("gpu_devices", []) if actor["kind"] == "provider" else []
+        actor["node"] = node["id"]
+        actor["resources"].update(gpu_devices=devices, allow_sharing=False)
+        if actor["kind"] == "provider":
+            actor["parameters"]["offer-backend"] = "onnxruntime-cuda" if devices else "onnxruntime-cpu"
+    group = config["network"]["group"]
+    config["network"]["routes"] = [
+        {"from": local["id"], "to": remote["id"], "prefix": prefix}
+        for local, remote in ((first, second), (second, first))
+        for prefix in (group, *(actor["identity"] for actor in config["actors"] if actor["node"] == remote["id"]))]
+
+
 def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, namespace,
-            install_receipt, ndnsec, openssl, env, resources, interpreter, facilities):
+            install_receipt, ndnsec, openssl, env, resources, interpreter, facilities, placement=None,
+            explicit_inputs=None, image_tools=False):
     inputs = root / "inputs"
     inputs.mkdir(mode=0o700)
     credentials = root / "credentials"
@@ -292,14 +452,30 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
     # this private parent before any actor is launched.
     (root / "statistics").mkdir(mode=0o700)
     env = dict(env, HOME=str(operator_home))
-    catalog = read_json(contained_file(resources, profile["catalog"]))
-    generation_options = read_json(contained_file(resources, profile["generationOptions"]))
+    native_prefix = Path(placement["release"]["prefix"]) if image_tools else prefix
+    identity_check = native_prefix / "bin/ndnsf-identity-check"
+
+    def native_command(argv, home, read_only=()):
+        if image_tools:
+            return slurm_image_command(placement, home, argv, read_only)
+        return argv
+
+    if explicit_inputs is None:
+        catalog = read_json(contained_file(resources, profile["catalog"]))
+        generation_options = read_json(contained_file(resources, profile["generationOptions"]))
+    else:
+        catalog, generation_options, explicit_roles = explicit_inputs
     graph_row, weight_row = recipe["files"]["canonicalGraph"], recipe["files"]["canonicalWeights"]
     splitter = catalog["splitter"]
     base_role = splitter["roles"][0]
-    wired = profile["id"] in WIRED_VARIANTS
+    wired = explicit_inputs is None and profile["id"] in WIRED_VARIANTS
     tensor_parallel = layout is None and (not wired or profile["id"] == WIRED_TP)
-    if wired:
+    if explicit_inputs is not None:
+        tensor_parallel = splitter["tensor_degrees"] == [2]
+        roles = explicit_roles
+        provider_nodes = ["control", "worker"]
+        stage_providers = [profile["providerRoles"].index(role) for role in roles]
+    elif wired:
         actor_nodes = profile["actorNodes"]
         node_names = profile["nodes"]
         provider_count = profile["providers"]
@@ -330,8 +506,10 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
     provider_roles = {"provider-" + str(index): [] for index in range(len(provider_nodes))}
     for role, index in zip(roles, stage_providers):
         provider_roles["provider-" + str(index)].append(role)
-    identities = {name: namespace + "/" + name
-                  for name in ("controller", "authority", "requester", "repo", *provider_roles)}
+    names = ["controller", "authority", "requester", *provider_roles]
+    if placement is None:
+        names.insert(3, "repo")
+    identities = {name: namespace + "/" + name for name in names}
     if not wired:
         actor_nodes = dict.fromkeys(identities, "control")
         actor_nodes.update(zip(provider_roles, provider_nodes))
@@ -339,7 +517,9 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
     if set(actor_nodes) != set(identities) or not set(actor_nodes.values()) <= set(node_names):
         raise ValueError("DEPLOYMENT_PROFILE_ACTOR_NODES_INVALID")
     network = dict(group=namespace + "/group", service=namespace + "/inference",
-                   artifact_service=namespace + "/artifact-grants", repo_service=namespace + "/repo-service")
+                   artifact_service=namespace + "/artifact-grants")
+    if "repo" in identities:
+        network["repo_service"] = namespace + "/repo-service"
     certificates, metadata, homes, offer_signers = {}, {}, {}, {}
     for actor, identity in identities.items():
         home = credentials / actor
@@ -347,9 +527,10 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
         actor_env = dict(env, HOME=str(home))
         certificates[actor] = inputs / (actor + ".cert")
         certificates[actor].write_bytes(run(
-            [ndnsec, "key-gen", "-t", "r", identity], actor_env, root, binary=True))
-        metadata[actor] = json.loads(run([
-            prefix / "bin/ndnsf-identity-check", "--credential-metadata", home, identity],
+            native_command([ndnsec, "key-gen", "-t", "r", identity], home),
+            actor_env, root, binary=True))
+        metadata[actor] = json.loads(run(native_command([
+            identity_check, "--credential-metadata", home, identity], home),
             actor_env, root))
         if metadata[actor]["identity"] != identity:
             raise ValueError("DEPLOYMENT_CREDENTIAL_IDENTITY_MISMATCH")
@@ -359,8 +540,11 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
             if profile.get("providerSigning") == "ecdsa":
                 offer_signers[actor] = prepare_provider_signer(
                     prefix, ndnsec, identity, metadata[actor], home, inputs, actor_env, root)
-    authority_key = ed25519_key(openssl, homes["authority"] / "grant", env, root)
-    requester_key = ed25519_key(openssl, homes["requester"] / "requester", env, root)
+    # Peers mount each public key as an input without opening any other role's home.
+    authority_key = ed25519_key(openssl, homes["authority"] / "grant",
+                                inputs / "authority-grant-public.pem", env, root)
+    requester_key = ed25519_key(openssl, homes["requester"] / "requester",
+                                inputs / "requester-public.pem", env, root)
     content_key = homes["authority"] / "content-key.bin"
     content_key.write_bytes(secrets.token_bytes(32))
     journal_key = homes["requester"] / "conversation.key"
@@ -368,8 +552,10 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
     content_key_id = "content-" + secrets.token_hex(16)
     recipients, offers, parameters = {}, {}, {}
     for actor, actor_roles in provider_roles.items():
-        recipient = ed25519_key(openssl, homes[actor] / "recipient", env, root)
-        offer = ed25519_key(openssl, homes[actor] / "offer", env, root)
+        recipient = ed25519_key(openssl, homes[actor] / "recipient",
+                                inputs / (actor + "-recipient-public.pem"), env, root)
+        offer = ed25519_key(openssl, homes[actor] / "offer",
+                            inputs / (actor + "-offer-public.pem"), env, root)
         recipients[identities[actor]] = str(recipient[1])
         offers[actor] = offer
         public = homes[actor] / "public"
@@ -397,13 +583,20 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
             "conversation-retention-ms": profile["budgets"]["conversationRetentionMs"],
             "statistics-file": str(root / "statistics" / (actor + ".jsonl")),
             "roles": ",".join(actor_roles)}
+        if explicit_inputs is not None and "artifactCacheMaxMiB" in profile["budgets"]:
+            parameters[actor]["artifact-cache-max-mib"] = profile["budgets"]["artifactCacheMaxMiB"]
         if wired:
             parameters[actor]["capture-complete-kv-state"] = False
     trust = inputs / "trust-schema.conf"
     trust.write_text(render_anchored_probe_validation_schema(
         namespace, certificates.values(), sync_prefix=network["group"]))
-    topology = inputs / "topology.conf"
-    shutil.copyfile(contained_file(resources, topology_resource), topology)
+    if placement is None:
+        topology = inputs / "topology.conf"
+        shutil.copyfile(contained_file(resources, topology_resource), topology)
+        platform = dict(kind="minindn", topology=str(topology),
+                        topology_sha256="sha256:" + file_digest(topology))
+    else:
+        platform = placement["platform"]
     policy = inputs / "controller-policy.info"
     policy.write_text(policy_text(identities, network, provider_roles,
                                   base_role if tensor_parallel else None))
@@ -432,14 +625,18 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
         "max_publication_bytes": catalog["recipe"]["max_source_bytes"] +
             catalog["recipe"]["max_assembled_bytes"] + profile["budgets"]["publicationMarginBytes"]}
     rendering = profile["rendering"]
+    # Slurm stores the frozen deployment under evidence; that tree must stay read-only.
+    output_root = root / ("outputs" if placement is not None else "evidence")
     turns, frozen = [], []
     for index, text in enumerate(profile["turns"]):
         rendered = (rendering["priorTurnSuffix"] if index else "") + rendering["userPrefix"] + text + rendering["assistantSuffix"]
         text_path = inputs / ("turn-" + str(index) + "-prompt.txt")
         text_path.write_text(rendered)
-        encoded = json.loads(run([prefix / "bin/ndnsf-di-tokenize-input", "--tokenizer", assets["tokenizer"],
+        encoded = json.loads(run(native_command([
+            native_prefix / "bin/ndnsf-di-tokenize-input", "--tokenizer", assets["tokenizer"],
             "--tokenizer-digest", "sha256:" + recipe["files"]["tokenizer"]["sha256"],
-            "--text-file", text_path, "--no-special-tokens"], env, root))
+            "--text-file", text_path, "--no-special-tokens"], operator_home,
+            (inputs, assets["tokenizer"])), env, root))
         if (len(encoded["tokenIds"]) != rendering["inputTokens"][index] or
                 encoded["decodedText"] != rendered or encoded["addSpecialTokens"] is not False):
             raise ValueError("DEPLOYMENT_PROMPT_TOKENIZATION_MISMATCH: turn " + str(index))
@@ -451,8 +648,8 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
         options_path = inputs / ("turn-" + str(index) + "-options.json")
         write_json(options_path, options)
         turns.append(dict(input_file=str(input_path), options_file=str(options_path),
-                          output_file=str(root / "evidence" / ("turn-" + str(index) + "-output.json")),
-                          checkpoint_output_file=str(root / "evidence" / ("turn-" + str(index) + "-checkpoint.json"))))
+                          output_file=str(output_root / ("turn-" + str(index) + "-output.json")),
+                          checkpoint_output_file=str(output_root / ("turn-" + str(index) + "-checkpoint.json"))))
         frozen.append(dict(text=text, rendered=rendered, token_ids=encoded["tokenIds"],
                            input_sha256=file_digest(input_path), options_sha256=file_digest(options_path)))
     candidate_inputs = profile if layout is None else dict(profile=profile, layout=layout)
@@ -485,15 +682,18 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
         keyLocatorPrefix=offer_signers[actor]["keyName"],
         certificateName=offer_signers[actor]["certificateName"])
         for actor in provider_roles]
-    requester = dict(schema="ndnsf-di-native-requester-v1", catalog=catalog, request=request, turns=turns,
-        model_input=dict(mode="source", repo_target=dict(repo_node=identities["repo"], provider_identity=identities["repo"],
+    model_input = placement["model_input"] if placement is not None else dict(
+        mode="source", repo_target=dict(repo_node=identities["repo"], provider_identity=identities["repo"],
             service_prefix=network["repo_service"]), preparation_state_file=str(root / "private-model/preparation.json"),
-            private_handle_file=str(root / "private-model/handle.json")),
+            private_handle_file=str(root / "private-model/handle.json"))
+    requester = dict(schema="ndnsf-di-native-requester-v1", catalog=catalog, request=request, turns=turns,
+        model_input=model_input,
         grant=dict(requester_private_key_file=str(requester_key[0]), authority_public_key_file=str(authority_key[1]),
             authority_identity=identities["authority"], authority_service=network["artifact_service"], protection_epoch="epoch-1"),
         limits=dict(bootstrap_ms=profile["budgets"]["bootstrapMs"], max_prepared_entries=8,
             large_data_ims_limit=profile["budgets"]["largeDataImsLimit"],
-            max_prepared_bytes=6417469728, max_assembled_bytes=catalog["recipe"]["max_assembled_bytes"],
+            max_prepared_bytes=profile["budgets"].get("maxPreparedBytes", 6417469728),
+            max_assembled_bytes=catalog["recipe"]["max_assembled_bytes"],
             max_source_bytes=catalog["recipe"]["max_source_bytes"]),
         statistics_file=str(root / "statistics/requester.jsonl"),
         offer_admission=dict(candidate_digest=candidate_digest, public_key_files={key[2]: str(key[1]) for key in offers.values()},
@@ -501,15 +701,16 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
                 candidateDigest=candidate_digest, trustSchema=namespace + "/trust", entries=admission_entries)),
         conversation=dict(schema="ndnsf-di-native-conversation-v1",
             owner=dict(requester_identity=identities["requester"], service_name=network["service"], security_domain_digest=security_digest),
-            journal=dict(identity="qwen-cpu-continuous-generation", state_root=str(root / "journal"),
+            journal=dict(identity=profile["id"] if explicit_inputs is not None
+                         else "qwen-cpu-continuous-generation", state_root=str(root / "journal"),
                 quota_bytes=profile["budgets"]["journalBytes"], keys=[dict(id="active", file=str(journal_key))]),
             turn=dict(mode="FULL_CONTEXT", retention_duration_ms=profile["budgets"]["conversationRetentionMs"])))
-    if layout is not None or wired:
+    if layout is not None or wired or explicit_inputs is not None:
         requester["fixed_placement"] = {"role_providers": {
             role: identities[actor] for actor, actor_roles in provider_roles.items() for role in actor_roles}}
     config = dict(schema="ndnsf-di-deployment-v1", deployment_id=profile["id"] + "-" + secrets.token_hex(4),
         release=dict(prefix=str(prefix), manifest=str(install_receipt)),
-        platform=dict(kind="minindn", topology=str(topology), topology_sha256="sha256:" + file_digest(topology)),
+        platform=platform,
         nodes=[dict(id=name, host=name, cpus=6, gpu_devices=[], nfd=dict(mode="managed",
             socket=str(root / "sockets" / (name + ".sock")), address="127.0.0.1", port=6363)) for name in node_names],
         actors=actors, network=network,
@@ -519,6 +720,8 @@ def prepare(profile, layout, recipe, assets, asset_manifest, prefix, root, names
         model=dict(plan=str(plan_path), manifest=str(service_manifest), tokenizer=str(assets["tokenizer"])),
         requester=requester, artifact_authority=dict(schema="ndnsf-di-native-authority-v1", authority=authority,
             max_grant_ttl_ms=profile["budgets"]["conversationRetentionMs"], permission_bootstrap_ms=profile["budgets"]["permissionWaitMs"]))
+    if placement is not None:
+        apply_slurm_placement(config, placement)
     output = root / "deployment.json"
     write_json(output, config)
     run([prefix / "bin/ndnsf-di", "cluster", "check", "--config", output], env, root)
@@ -530,9 +733,20 @@ import ndnsf_di_launcher
 ndnsf_di_launcher._bind_package_root()
 from ndnsf_distributed_inference.ops.deployment_config import load_deployment
 from ndnsf_distributed_inference.ops.cluster import _inspect_trust_resources
-print(json.dumps(_inspect_trust_resources(load_deployment(sys.argv[1]),30)))
+from ndnsf_distributed_inference.ops.trust_resources import admit_resources, inspect_resources
+config = load_deployment(sys.argv[1])
+if config['platform']['kind'] == 'slurm-apptainer':
+    schema = config['security']['trust_schema']
+    resources, proof = inspect_resources([*json.loads(sys.argv[2]), '--trust-resources', schema], schema,
+                                        {'PATH':'/usr/local/bin:/usr/bin:/bin','NDN_LOG':'*=NONE'}, 30)
+    admit_resources(config, resources)
+else:
+    proof = _inspect_trust_resources(config, 30)
+print(json.dumps(proof))
 '''
-    trust_proof = json.loads(run([interpreter, '-I', '-B', '-c', trust_code, output], env, root))
+    trust_command = native_command([identity_check], operator_home, (inputs,))
+    trust_proof = json.loads(run([interpreter, '-I', '-B', '-c', trust_code, output,
+                                 json.dumps(list(map(str, trust_command)))], env, root))
     write_json(inputs / 'trust-resource-proof.json', trust_proof)
     write_json(root / "frozen-inputs.json", dict(tokenizer_sha256=recipe["files"]["tokenizer"]["sha256"], turns=frozen,
         new_tokens=rendering["inputTokens"], output_budget=rendering["maxNewTokens"], expected_committed_prefix=rendering["expectedCommittedPrefix"]))
@@ -552,19 +766,31 @@ def interrupted(signum, frame):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", required=True, choices=(TP_PROFILE, *PIPELINE_PROFILES, *WIRED_VARIANTS))
+    profiles = parser.add_mutually_exclusive_group(required=True)
+    profiles.add_argument("--profile", choices=(TP_PROFILE, *PIPELINE_PROFILES, *WIRED_VARIANTS))
+    profiles.add_argument("--profile-file", type=Path,
+                          help="committed inputs for an explicit two-provider Slurm deployment")
     parser.add_argument("--provider-signing", choices=("rsa", "ecdsa"), default="rsa",
                         help="use separate ECDSA signing certificates in the wired TP profile")
     parser.add_argument("--prefix", required=True, type=Path)
     parser.add_argument("--asset-manifest", required=True, type=Path)
     parser.add_argument("--work-root", required=True, type=Path)
     parser.add_argument("--namespace", required=True)
+    parser.add_argument("--slurm-placement", type=Path,
+                        help="explicit two-node Slurm placement, candidate, source cache and two turns")
+    parser.add_argument("--slurm-image-tools", action="store_true",
+                        help="run candidate native tools via Apptainer and use the host Ops prefix")
     parser.add_argument("--offline", action="store_true", help="all inputs must be local; this tool never downloads")
     parser.add_argument("--plan", action="store_true", help="validate prerequisites and print the preparation plan without writes")
     args = parser.parse_args(argv)
     owned = False
     root = args.work_root.absolute()
     try:
+        placement = load_slurm_placement(args.slurm_placement) if args.slurm_placement else None
+        if args.slurm_image_tools and placement is None:
+            raise ValueError("DEPLOYMENT_IMAGE_TOOLS_REQUIRE_SLURM_PLACEMENT")
+        if args.profile_file is not None and placement is None:
+            raise ValueError("DEPLOYMENT_PROFILE_FILE_REQUIRES_SLURM_PLACEMENT")
         if args.provider_signing == "ecdsa" and args.profile != WIRED_TP:
             raise ValueError("DEPLOYMENT_ECDSA_REQUIRES_WIRED_TP_PROFILE")
         if re.fullmatch(r"/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+", args.namespace) is None:
@@ -583,13 +809,26 @@ def main(argv=None):
             raise ValueError("DEPLOYMENT_PERSISTENT_WORK_ROOT_REQUIRED: conversation journal")
         prefix = args.prefix.resolve(strict=True)
         resources = prefix / "share/ndnsf/Experiments"
+        tool_path = str(prefix / "bin") + ":/usr/local/bin:/usr/bin:/bin"
+        env = dict(PATH=tool_path, LANG="C.UTF-8",
+                   LC_ALL="C.UTF-8", PYTHONNOUSERSITE="1")
         extra = ()
         if args.profile in WIRED_VARIANTS:
             extra = (WIRED_PROFILE, "Topology/spec270-wired-star.conf",
                      WIRED_FULL_CATALOG if args.profile == WIRED_SINGLE
                      else "fixtures/native-deployment/qwen06b-pp14-catalog.json")
-        receipt = installed_inputs(prefix, extra)
-        recipe = read_json(resources / "recipes/qwen3-0.6b-int4.json")
+        if args.slurm_image_tools:
+            resources = Path(__file__).resolve().parent
+            receipt = check_slurm_image_inputs(placement, resources, env)
+        else:
+            receipt = installed_inputs(prefix, extra)
+        explicit_inputs = None
+        if args.profile_file is not None:
+            profile, recipe, catalog, generation_options, roles = load_explicit_profile(args.profile_file)
+            layout = None
+            explicit_inputs = (catalog, generation_options, roles)
+        else:
+            recipe = read_json(resources / "recipes/qwen3-0.6b-int4.json")
         assets = validate_manifest(args.asset_manifest, recipe)
         if extra:
             profile = read_json(contained_file(resources, WIRED_PROFILE))
@@ -602,28 +841,42 @@ def main(argv=None):
                     any(profile[field] not in (*extra, *PREPARATION_RESOURCES)
                         for field in ("catalog", "generationOptions"))):
                 raise ValueError("DEPLOYMENT_PROFILE_RESOURCE_UNVERIFIED")
-        else:
+        elif explicit_inputs is None:
             profile, layout = load_profile(resources, args.profile)
+        if placement is not None:
+            if explicit_inputs is not None:
+                turns = placement.get("turns", profile["turns"])
+            else:
+                if layout is None or layout["stageProviders"] != [0, 1]:
+                    raise ValueError("DEPLOYMENT_SLURM_REQUIRES_DISTRIBUTED_PIPELINE_PROFILE")
+                turns = placement.get("turns", layout.get("slurmTurns"))
+            if turns is None:
+                raise ValueError("DEPLOYMENT_SLURM_TURNS_REQUIRED")
+            profile["turns"] = turns
+            profile["rendering"].update(inputTokens=[32, 32], maxNewTokens=[32, 32],
+                                        expectedCommittedPrefix=[64, 128])
         if args.provider_signing == "ecdsa":
             profile["providerSigning"] = args.provider_signing
-        for field in ("catalog", "generationOptions"):
-            contained_file(resources, profile[field])
-        tool_path = str(prefix / "bin") + ":/usr/local/bin:/usr/bin:/bin"
-        ndnsec = shutil.which("ndnsec", path=tool_path)
+        if explicit_inputs is None:
+            for field in ("catalog", "generationOptions"):
+                contained_file(resources, profile[field])
+        ndnsec = "/opt/ndn-base/bin/ndnsec" if args.slurm_image_tools else shutil.which("ndnsec", path=tool_path)
         openssl = shutil.which("openssl", path=tool_path)
         if not ndnsec or not openssl:
             raise ValueError("DEPLOYMENT_TOOL_MISSING: ndnsec and OpenSSL are required")
         if args.plan:
-            print(json.dumps(dict(profile=args.profile, prefix=str(prefix), work_root=str(root),
+            print(json.dumps(dict(profile=profile["id"], prefix=str(prefix), work_root=str(root),
                 provider_signing=args.provider_signing,
                 namespace=args.namespace, asset_manifest=str(args.asset_manifest),
                 steps=["ndnsec isolated actor identities", "OpenSSL isolated Ed25519 keys", "native prompt encoding",
                        "render anchored trust and native configuration", "installed cluster check"], actors_launched=False)))
             return 0
-        env = dict(PATH=tool_path, LANG="C.UTF-8",
-                   LC_ALL="C.UTF-8", PYTHONNOUSERSITE="1")
+        if placement is not None and "cache_root" in placement["model_input"]:
+            placement["model_input"] = prepare_source_cache(
+                placement["model_input"]["cache_root"], args.asset_manifest, recipe, assets)
         interpreter = operator_interpreter(prefix)
-        facilities = platform_facilities(interpreter, env)
+        facilities = (platform_facilities(interpreter, env) if placement is None
+                      else {"platform": "slurm-apptainer", "allocation_checked": False})
         mask = os.umask(0o077)
         previous = signal.signal(signal.SIGTERM, interrupted)
         try:
@@ -631,7 +884,7 @@ def main(argv=None):
             owned = True
             output = prepare(profile, layout, recipe, assets, args.asset_manifest, prefix, root,
                              args.namespace, receipt, ndnsec, openssl, env, resources,
-                             interpreter, facilities)
+                             interpreter, facilities, placement, explicit_inputs, args.slurm_image_tools)
         finally:
             signal.signal(signal.SIGTERM, previous)
             os.umask(mask)

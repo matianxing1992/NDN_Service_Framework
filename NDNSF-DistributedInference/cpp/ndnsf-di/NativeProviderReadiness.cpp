@@ -47,6 +47,21 @@ formatExecutionEvidenceUpdateSummary(const ExecutionEvidence& evidence)
   return record.str();
 }
 
+void
+retainReadinessEvidence(ExecutionEvidence& evidence)
+{
+  if (evidence.entryProfiles.empty()) return;
+  // ACK capability hints keep their previous first-profile summary. Detailed
+  // per-entry inventories are consumed by local qualification statistics.
+  const auto& first = evidence.entryProfiles.front().entryId;
+  ExecutionEvidence::NodeProviderAssignments summary;
+  for (const auto& node : evidence.getNodeProviderAssignments()) {
+    if (node.role == first) summary.push_back(node);
+  }
+  evidence.setNodeProviderAssignments(summary);
+  evidence.entryProfiles.clear();
+}
+
 bool
 hasSameExecutionEvidence(const ExecutionEvidence& left, const ExecutionEvidence& right)
 {
@@ -716,6 +731,7 @@ void
 NativeProviderReadinessState::setExecutionEvidence(ExecutionEvidence evidence)
 {
   evidence.validate();
+  retainReadinessEvidence(evidence);
   auto snapshot = std::make_shared<const ExecutionEvidence>(std::move(evidence));
   std::lock_guard<std::mutex> lock(m_mutex);
   m_executionEvidence.swap(snapshot);
@@ -730,6 +746,7 @@ NativeProviderReadinessState::setExecutionEvidenceByRole(
   }
   std::map<std::string, std::shared_ptr<const ExecutionEvidence>> snapshots;
   for (auto& item : evidenceByRole) {
+    retainReadinessEvidence(item.second);
     snapshots.emplace(item.first,
                       std::make_shared<const ExecutionEvidence>(std::move(item.second)));
   }
@@ -738,9 +755,15 @@ NativeProviderReadinessState::setExecutionEvidenceByRole(
 }
 
 std::string
-NativeProviderReadinessState::updateExecutionEvidence(const ExecutionEvidence& observed)
+NativeProviderReadinessState::updateExecutionEvidence(const ExecutionEvidence& evidence)
 {
-  observed.validate();
+  evidence.validate();
+  std::optional<ExecutionEvidence> limited;
+  if (!evidence.entryProfiles.empty()) {
+    limited = evidence;
+    retainReadinessEvidence(*limited);
+  }
+  const auto& observed = limited ? *limited : evidence;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (observed.roles.size() == 1 && m_executionEvidenceByRole.size() == 1) {

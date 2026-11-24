@@ -1194,6 +1194,18 @@ int main(int argc, char** argv)
                                   NativeJson selectors = NativeJson::array({"3"})) {
       deploymentFixture();
       auto config = readJsonFile(root / "configuration.json");
+      for (const auto& turn : config.at("requester").at("turns")) {
+        const auto optionsPath = turn.at("options_file").get<std::string>();
+        const auto outputPath = turn.at("output_file").get<std::string>();
+        auto options = readJsonFile(optionsPath);
+        auto output = readJsonFile(outputPath);
+        options["maxNewTokens"] = output.at("tokenIds").size();
+        options["eosTokenIds"] = {4};
+        output["finishReason"] = "max_tokens";
+        output["finishHint"] = "MAX_TOKENS";
+        write(optionsPath, options.dump());
+        write(outputPath, output.dump());
+      }
       config["platform"] = {{"kind", "slurm-apptainer"},
         {"build_record", (root / "build-record.json").string()},
         {"sif_sha256", "sha256:" + std::string(64, 'a')},
@@ -1332,6 +1344,11 @@ int main(int argc, char** argv)
               firstRequest = row["requestId"].get<std::string>();
               firstAttempt = row["attemptEpoch"].get<std::uint64_t>();
             }
+            const bool warm = row["requestId"] != firstRequest;
+            auto& prefill = row["cacheObservations"][0];
+            prefill["conversationStateHit"] = warm;
+            prefill["prefixWorkAvoided"] = warm ? 4 : 0;
+            prefill["representedPrefixTokenCount"] = warm ? 5 : 1;
             // The second host deliberately has a different monotonic origin.
             if (providerIndex == 1) {
               for (const auto* key : {"startedSteadyNs", "finishedSteadyNs"})
@@ -1341,28 +1358,34 @@ int main(int argc, char** argv)
                   item["lastBackendExecution"][key] =
                     item["lastBackendExecution"][key].get<std::int64_t>() + 1000000000;
             }
-            if (gpu) {
+            {
               row["admittedModelDigest"] = "sha256:model";
               row["admittedArtifactDigest"] = "sha256:artifact";
               ndnsf::di::ExecutionEvidence evidence;
               evidence.providerName = row["provider"];
               evidence.providerBootId = row["providerBootId"];
-              evidence.runnerKind = ndnsf::di::RunnerKind::OnnxRuntimeCuda;
-              evidence.realCompute = true; evidence.deviceKind = "cuda"; evidence.deviceId = "0";
+              evidence.runnerKind = gpu ? ndnsf::di::RunnerKind::OnnxRuntimeCuda
+                                        : ndnsf::di::RunnerKind::OnnxRuntimeCpu;
+              evidence.realCompute = true;
+              evidence.deviceKind = gpu ? "cuda" : "cpu";
+              evidence.deviceId = "0";
               evidence.runtimeVersion = "fixture-ort"; evidence.createdAtMs = 1;
               evidence.modelDigest = "sha256:model"; evidence.planDigest = row["planDigest"];
               evidence.roles = {row["role"].get<std::string>()};
               evidence.artifactDigests[evidence.roles.front()] = "sha256:artifact";
               evidence.loadCompleted = true; evidence.warmupCompleted = true;
-              evidence.gpuUuid = receipts.at(id)["gpu_admission"]["devices"][0]["uuid"];
-              evidence.gpuUuids = {evidence.gpuUuid}; evidence.cudaVisibleDevices = "0";
-              evidence.gpuIdentitySource = "cuda-runtime-pci+driver-uuid";
               evidence.processId = receipts.at(id)["launches"][0]["proof"]["pid"];
               evidence.requestId = row["requestId"]; evidence.attemptEpoch = row["attemptEpoch"];
-              evidence.executionCompleted = true; evidence.providerProfilePath = "/controlled/profile";
-              evidence.profileRequestId = firstRequest; evidence.profileAttemptEpoch = firstAttempt;
-              evidence.setNodeProviderAssignments({{evidence.roles.front(), "projection_kernel_time",
-                                                    "CUDAExecutionProvider", true}});
+              evidence.executionCompleted = true;
+              if (gpu) {
+                evidence.gpuUuid = receipts.at(id)["gpu_admission"]["devices"][0]["uuid"];
+                evidence.gpuUuids = {evidence.gpuUuid}; evidence.cudaVisibleDevices = "0";
+                evidence.gpuIdentitySource = "cuda-runtime-pci+driver-uuid";
+                evidence.providerProfilePath = "/controlled/profile";
+                evidence.profileRequestId = firstRequest; evidence.profileAttemptEpoch = firstAttempt;
+                evidence.setNodeProviderAssignments({{evidence.roles.front(), "projection_kernel_time",
+                                                      "CUDAExecutionProvider", true}});
+              }
               row["finalExecutionEvidence"] = NativeJson::parse(ndnsf::di::executionEvidenceToJson(evidence));
             }
           }
@@ -1385,6 +1408,15 @@ int main(int argc, char** argv)
       "--require-multi-token", "--require-distributed-gpu"};
     slurmFixture();
     check("", "", "", slurmGpu);
+    auto slurmFixed = slurmGpu;
+    slurmFixed.insert(slurmFixed.end(), {"--require-fixed-role-conversation", "1", "3"});
+    check("", "", "", slurmFixed);
+    slurmFixed[slurmFixed.size() - 2] = "2";
+    check("", "", "deployment-fixed-role-input-budget", slurmFixed);
+    slurmFixed[slurmFixed.size() - 2] = "1";
+    slurmFixed.back() = "4";
+    check("", "", "deployment-fixed-role-output-budget", slurmFixed);
+    slurmFixed.back() = "3";
     slurmFixture(true, NativeJson::array({"allocated:0"}));
     check("", "", "", slurmGpu);
     for (const auto* selector : {"allocated:1", "allocated:64", "allocated:00",
@@ -1396,6 +1428,8 @@ int main(int argc, char** argv)
     check("", "", "deployment-gpu-selector", slurmGpu);
     slurmFixture(false);
     check("", "", "", {"--deployment-state", (root / "allocation.json").string(), "--require-multi-token"});
+    check("", "", "", {"--deployment-state", (root / "allocation.json").string(),
+      "--require-fixed-role-conversation", "1", "3"});
     check("", "", "deployment-distributed-gpu-required", slurmGpu);
     const auto badSlurm = [&](const std::string& path, const std::string& reason,
                               const std::function<void(NativeJson&)>& mutate) {
@@ -1457,6 +1491,7 @@ int main(int argc, char** argv)
     };
     hostSlurmFixture();
     check("", "", "", slurmGpu);
+    check("", "", "", slurmFixed);
     const auto badHostSlurm = [&](const std::string& reason,
                                   const std::function<void(NativeJson&)>& mutate) {
       hostSlurmFixture();
@@ -1482,19 +1517,29 @@ int main(int argc, char** argv)
     badHostSlurm("deployment-gpu-role-binding", [](auto& j) {
       j["launches"][1]["native_argv"][0] = "/wrong/query";
     });
-    const auto badGpuStatistics = [&](const std::string& reason, const std::function<void(NativeJson&)>& mutate) {
+    const auto badGpuStatistics = [&](const std::string& reason,
+                                      const std::function<void(NativeJson&)>& mutate,
+                                      bool fixed = false) {
       slurmFixture();
       const auto path = root / "actors/provider-1/runtime/fixture/provider-1-statistics.jsonl";
       std::ifstream input(path); std::string line, records;
       bool changed = false;
       while (std::getline(input, line)) {
         auto value = NativeJson::parse(line);
-        if (!changed && value["type"] == "request") { mutate(value); changed = true; }
+        if (!changed && value["type"] == "request" &&
+            (!fixed || value["requestId"] == "request-1")) {
+          mutate(value);
+          changed = true;
+        }
         records += value.dump() + '\n';
       }
       input.close(); write(path, records);
-      check("", "", reason, slurmGpu);
+      if (!changed) throw std::runtime_error("fixture request not found");
+      check("", "", reason, fixed ? slurmFixed : slurmGpu);
     };
+    badGpuStatistics("deployment-exact-parent-state", [](auto& row) {
+      row["cacheObservations"][0]["conversationStateHit"] = false;
+    }, true);
     badGpuStatistics("deployment-gpu-execution-missing", [](auto& j) { j.erase("finalExecutionEvidence"); });
     for (const auto* key : {"gpuUuid", "requestId", "providerBootId", "planDigest"})
       badGpuStatistics("deployment-gpu-execution-binding", [=](auto& j) { j["finalExecutionEvidence"][key] = "wrong"; });

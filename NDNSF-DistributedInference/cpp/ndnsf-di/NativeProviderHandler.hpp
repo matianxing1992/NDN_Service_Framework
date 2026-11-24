@@ -115,6 +115,7 @@ struct NativeRequestStatistics
   std::vector<NativeEpochCoordinatorResult::RuntimeMetricsObservation> runtimeMetrics;
   std::vector<NativeEpochCoordinatorResult::CacheObservation> cacheObservations;
   std::optional<ExecutionEvidence> finalExecutionEvidence;
+  std::vector<std::string> sealedComputeEntries;
   std::shared_ptr<class NativeWorkStatistics> workStatistics;
 };
 

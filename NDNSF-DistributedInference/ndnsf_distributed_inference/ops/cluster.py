@@ -424,16 +424,20 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
 
 
 def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
-           network_namespace=None, cpu_affinity=None):
+           network_namespace=None, cpu_affinity=None, separate_stderr=False):
     row = {'id': actor_id, 'kind': kind, 'argv': argv, 'expected_exe': str(Path(argv[0]).resolve()),
            'bindings': {key: env[key] for key in (
                'NDNSF_DEPLOYMENT_ACTOR_ID', 'NDNSF_DEPLOYMENT_BOOT_ID',
                'NDNSF_DEPLOYMENT_CONFIG_SHA256')},
            'log': str(Path(state['evidence_root']) / (actor_id + '.log'))}
+    if separate_stderr:
+        row['stderr_log'] = str(Path(state['evidence_root']) / (actor_id + '.stderr.log'))
     state['launches'].append(row)
     write_json(root / 'state.json', state)  # durable launch intent precedes Popen
-    log = open(row['log'], 'wb')
-    try:
+    with contextlib.ExitStack() as streams:
+        log = streams.enter_context(open(row['log'], 'wb'))
+        stderr = (streams.enter_context(open(row['stderr_log'], 'wb')) if separate_stderr
+                  else subprocess.STDOUT)
         try:
             guard()
         except BaseException:
@@ -444,7 +448,7 @@ def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
             command = argv if cpu_affinity is None else [
                 '/usr/bin/taskset', '-c', ','.join(map(str, cpu_affinity)), *argv]
             child = (launcher or subprocess.Popen)(command, stdin=subprocess.DEVNULL, stdout=log,
-                                     stderr=subprocess.STDOUT, env=env, start_new_session=True)
+                                     stderr=stderr, env=env, start_new_session=True)
         except OSError:
             row['spawn_failed'] = True
             write_json(root / 'state.json', state)
@@ -489,8 +493,6 @@ def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
             if time.monotonic() >= capture_deadline:
                 raise ClusterError('cannot capture native process identity: ' + actor_id)
             time.sleep(0.01)
-    finally:
-        log.close()
 
 
 def _recover(row):

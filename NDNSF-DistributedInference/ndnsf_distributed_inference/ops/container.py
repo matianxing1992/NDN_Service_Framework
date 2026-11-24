@@ -791,6 +791,9 @@ def execute(args):
                     '--deployment-state', str(args.deployment.parent / 'allocation.json'),
                     '--require-multi-token']
         workload += reference_command
+        fixed_tokens = getattr(args, 'require_fixed_role_conversation', None)
+        if fixed_tokens:
+            workload += ['--require-fixed-role-conversation', *map(str, fixed_tokens)]
         gpu_nodes = {item['node'] for item in config['actors'] if not item['external'] and
                      item['kind'] == 'provider' and item['resources']['gpu_devices']}
         if len(gpu_nodes) >= 2:
@@ -901,10 +904,15 @@ def main(argv=None):
     parser.add_argument('--timing', action='store_true')
     parser.add_argument('--model-reference', action='store_true')
     parser.add_argument('--model-reference-source', type=Path)
+    parser.add_argument('--require-fixed-role-conversation', nargs=2, type=int,
+                        metavar=('INPUT_TOKENS', 'OUTPUT_TOKENS'))
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout) or args.timeout <= 0 or (args.management and not args.node):
         parser.error('finite positive timeout and management node are required')
+    if args.require_fixed_role_conversation and (
+            args.management != 'oracle' or min(args.require_fixed_role_conversation) < 1):
+        parser.error('positive fixed token counts require management oracle')
     def terminate(signum, frame):
         raise KeyboardInterrupt('SIGTERM')
 

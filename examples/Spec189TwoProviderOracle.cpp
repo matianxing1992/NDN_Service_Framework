@@ -1220,20 +1220,56 @@ validateGpuExecution(const NativeJson& row, const StatisticsRows& source, unsign
       evidence.planDigest != row.at("planDigest").get<std::string>() ||
       evidence.roles != std::vector<std::string>{role})
     chainFailure("deployment-gpu-execution-binding");
-  bool profileBound = false;
-  for (unsigned index = 0; index <= round; ++index) {
-    if (source.requests.at(index).at("requestId") == evidence.profileRequestId &&
-        nonnegativeInteger(source.requests.at(index).at("attemptEpoch")) == evidence.profileAttemptEpoch)
-      profileBound = true;
+  const auto profileBound = [&] (const std::string& request, std::uint64_t epoch) {
+    for (unsigned index = 0; index <= round; ++index) {
+      if (source.requests.at(index).at("requestId") == request &&
+          nonnegativeInteger(source.requests.at(index).at("attemptEpoch")) == epoch)
+        return true;
+    }
+    return false;
+  };
+  const auto expectedEntries = row.value("sealedComputeEntries", std::vector<std::string>{});
+  const std::set<std::string> expected(expectedEntries.begin(), expectedEntries.end());
+  if (expected.size() != expectedEntries.size() || expected.count("") != 0)
+    chainFailure("deployment-gpu-entry-contract");
+  bool observedEntries = false;
+  for (const auto& metrics : row.value("runtimeMetrics", NativeJson::array())) {
+    std::set<std::string> observed;
+    for (const auto& step : metrics.value("stepBackendExecutions", NativeJson::array())) {
+      if (step.at("operation") != "CALL_SUBGRAPH") continue;
+      observedEntries = true;
+      if (!step.at("completed").get<bool>())
+        chainFailure("deployment-gpu-entry-execution");
+      observed.insert(step.at("entryId").get<std::string>());
+    }
+    if (observed != expected)
+      chainFailure("deployment-gpu-entry-execution");
   }
-  unsigned kernels = 0;
+  if (expected.empty()) {
+    if (!evidence.entryProfiles.empty() ||
+        !profileBound(evidence.profileRequestId, evidence.profileAttemptEpoch) ||
+        evidence.providerProfilePath.empty())
+      chainFailure("deployment-gpu-kernel-proof");
+  }
+  else {
+    std::set<std::string> profiles;
+    for (const auto& profile : evidence.entryProfiles) {
+      if (!profileBound(profile.requestId, profile.attemptEpoch))
+        chainFailure("deployment-gpu-entry-profile-binding");
+      profiles.insert(profile.entryId);
+    }
+    if (profiles != expected || !observedEntries)
+      chainFailure("deployment-gpu-entry-profile-coverage");
+  }
+  std::set<std::string> kernelOwners;
   for (const auto& node : evidence.getNodeProviderAssignments()) {
     if (!node.modelNode) continue;
-    if (node.role != role || node.nodeName.empty() || node.provider != "CUDAExecutionProvider")
+    if ((expected.empty() ? node.role != role : expected.count(node.role) == 0) ||
+        node.nodeName.empty() || node.provider != "CUDAExecutionProvider")
       chainFailure("deployment-gpu-kernel-provider");
-    ++kernels;
+    kernelOwners.insert(node.role);
   }
-  if (!profileBound || evidence.providerProfilePath.empty() || kernels == 0)
+  if (expected.empty() ? kernelOwners.empty() : kernelOwners != expected)
     chainFailure("deployment-gpu-kernel-proof");
   if (round && !source.requests.front().at("finalExecutionEvidence").is_null()) {
     const auto first = ndnsf::di::executionEvidenceFromJson(
@@ -1413,7 +1449,9 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   if (exact && (!minindn || groupedTurns || turns.size() < 2 || automaticPlacement ||
                 handoff || placement.size() != exact->providers))
     chainFailure("deployment-exact-conversation-configuration");
-  if (fixed && (!minindn || groupedTurns || turns.size() < 2 || automaticPlacement))
+  if (fixed && ((!minindn && !slurm) || groupedTurns || turns.size() < 2 ||
+                automaticPlacement || (slurm && (turns.size() != 2 || roleCounts.size() != 2 ||
+                                                  placement.size() != 2))))
     chainFailure("deployment-fixed-role-conversation-configuration");
   std::set<std::string> tokenInputRoles;
   if (exact) {
@@ -1784,7 +1822,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
     }
     const auto& receipts = checkpoint.at("roleReceiptDigests");
     std::set<std::string> roles;
-    std::map<std::uint64_t, std::string> executionPids;
+    std::map<std::pair<std::string, std::uint64_t>, std::string> executionPids;
     unsigned publishers = 0;
     std::optional<std::uint64_t> attempt;
     for (const auto& observed : observations) {
@@ -1803,7 +1841,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       const auto currentAttempt = nonnegativeInteger(observation.at("attemptEpoch"));
       if (attempt && *attempt != currentAttempt) chainFailure("deployment-attempt-binding");
       attempt = currentAttempt;
-      if (exact) {
+      if (exact || (fixed && slurm)) {
         const auto& prefill = observation.at("cacheObservations").at(0);
         if (prefill.at("conversationStateHit") != (round != 0) ||
             nonnegativeInteger(prefill.at("prefixWorkAvoided")) != parentPrefixTokens ||
@@ -1834,14 +1872,18 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
         const auto admittedModel = observation.at("admittedModelDigest").get<std::string>();
         const auto admittedArtifact =
           observation.at("admittedArtifactDigest").get<std::string>();
-        const auto& launches = state.at("launches");
+        const auto& launchReceipt = slurm ? roleReceipts.at(provider.actor) : state;
+        const auto& launches = launchReceipt.at("launches");
+        const char* processProof = slurm &&
+          launchReceipt.at("cleanup_scope") == "HOST_AND_NATIVE_PROCESS_GROUPS"
+            ? "namespace_proof" : "proof";
         const auto launch = std::find_if(launches.begin(), launches.end(), [&] (const auto& item) {
           return item.at("id") == provider.actor;
         });
         if (launch == launches.end() || evidence.processId == 0 ||
-            evidence.processId != nonnegativeInteger(launch->at("proof").at("pid")) ||
-            executionPids.emplace(evidence.processId, provider.actor).first->second !=
-              provider.actor ||
+            evidence.processId != nonnegativeInteger(launch->at(processProof).at("pid")) ||
+            executionPids.emplace(std::make_pair(provider.host, evidence.processId),
+                                  provider.actor).first->second != provider.actor ||
             admittedModel.empty() || evidence.modelDigest != admittedModel ||
             admittedArtifact.empty() || artifact == evidence.artifactDigests.end() ||
             artifact->second != admittedArtifact ||
@@ -2450,7 +2492,7 @@ main(int argc, char** argv)
   if (invalidOptions || ((distributedGpu || modelReference) && !deploymentStateArg) ||
       (referenceSourceArg && (!modelReference || !deploymentStateArg)) ||
       (exact && (!modelReference || distributedGpu)) ||
-      (fixed && (!deploymentStateArg || distributedGpu || exact)) ||
+      (fixed && (!deploymentStateArg || exact)) ||
       (deploymentStateArg && (repoLifecycle || repoRootArg || runRootArg || placementOnly ||
         cacheCompatibility || expectedRevocationFailure || quietPerformance || roundsSeen)) ||
       (repoLifecycle && (repoRootArg == nullptr || runRootArg != nullptr ||

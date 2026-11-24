@@ -231,8 +231,10 @@ def _finite(state, root, argv, env, guard, *, allow_route_not_found=False,
     command = (_container_command(container_args, argv, separate_session=False)
                if container_args else argv)
     try:
+        # Apptainer's diagnostics must not enter native command readback.
         child, row = cluster._spawn(state, root, tag, 'management', command, owned_env,
-                                    guard, **({'launcher': launch} if container_args else {}))
+                                    guard, **({'launcher': launch, 'separate_stderr': True}
+                                              if container_args else {}))
         if container_args:
             row['native_argv'] = argv
         while child.poll() is None:
@@ -248,10 +250,20 @@ def _finite(state, root, argv, env, guard, *, allow_route_not_found=False,
     if len(data) > 1024 * 1024:
         raise cluster.ClusterError('NATIVE_MANAGEMENT_LOG_TOO_LARGE')
     output = data.decode('utf-8')
-    missing = allow_route_not_found and child.returncode == 6 and output.strip() == 'Route not found'
-    if child.returncode and not missing:
-        raise cluster.ClusterError('NATIVE_COMMAND_EXIT:' + str(child.returncode) + ':' + argv[0])
-    return output
+    if not child.returncode:
+        return output
+    if allow_route_not_found and child.returncode == 6:
+        if output.strip() == 'Route not found':
+            return output
+        if not output.strip() and 'stderr_log' in row:
+            # nfdc emits this specific absence result on stderr with exit code 6.
+            with Path(row['stderr_log']).open('rb') as stream:
+                stderr = stream.read(1024 * 1024 + 1)
+            if len(stderr) > 1024 * 1024:
+                raise cluster.ClusterError('NATIVE_MANAGEMENT_LOG_TOO_LARGE')
+            if b'Route not found' in stderr.splitlines():
+                return 'Route not found\n'
+    raise cluster.ClusterError('NATIVE_COMMAND_EXIT:' + str(child.returncode) + ':' + argv[0])
 
 
 def _identity(config, actor, state, root, env, guard, container_args=None):

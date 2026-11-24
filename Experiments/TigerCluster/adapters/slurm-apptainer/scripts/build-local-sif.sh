@@ -299,6 +299,11 @@ fi
 if ! boundary_json=$(python3 "$boundary_validator" --definition "$definition"); then
   exit 4
 fi
+runtime_layout=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("runtimeLayout", ""))' "$boundary_json")
+if [ "$build_only" = 1 ] && [ "$runtime_layout" != installed-v1 ]; then
+  echo LOCAL_SIF_BUILD_ONLY_REQUIRES_INSTALLED_LAYOUT >&2
+  exit 4
+fi
 
 mkdir -p "$(dirname "$sif")" "$(dirname "$record")"
 original_definition="$definition"
@@ -383,11 +388,6 @@ if [ -n "$resume_final_rootfs" ]; then
   resume_final_rootfs=$(readlink -f "$resume_final_rootfs")
   cmp "$definition" "$resume_final_rootfs/.singularity.d/Singularity"
   cmp "$source_seal" "$resume_final_rootfs/opt/ndnsf-di/current/manifest/source-seal.json"
-  "$apptainer_bin" exec --cleanenv --containall --writable-tmpfs --no-mount home,cwd,hostfs,bind-paths "$resume_final_rootfs" \
-    /usr/bin/env LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib \
-    /opt/venv/bin/python /opt/ndn-base/manifest/dependency-sdk.py verify
-  "$apptainer_bin" exec --cleanenv --containall --writable-tmpfs --no-mount home,cwd,hostfs,bind-paths "$resume_final_rootfs" \
-    /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-native.py final
   "$apptainer_bin" build --fakeroot --no-cleanup --force \
     --mksquashfs-args "$mksquashfs_args" "$partial" "$resume_final_rootfs"
 else
@@ -452,9 +452,115 @@ PY
 ); then
   exit 4
 fi
-# Verify the real image's default environment, not exports inherited from %post.
-"$apptainer_bin" exec --cleanenv --containall --writable-tmpfs --no-mount home,cwd,hostfs,bind-paths "$partial" \
-  /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-native.py final
+# Read the installed receipts and payload from the packed image. The host
+# verifies the bytes without extracting them or starting a Python runtime in
+# the SIF. Keep the same check for normal builds and retained-rootfs repacks.
+if [ "$runtime_layout" = installed-v1 ]; then
+runtime_exec=("$apptainer_bin" exec --cleanenv --containall --no-mount home,cwd,hostfs,bind-paths "$partial")
+python3 - "$source_seal_sha256" "$base_sif_sha256" "${runtime_exec[@]}" <<'PY'
+import hashlib
+import json
+from pathlib import PurePosixPath
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+source_sha, base_sha, *runtime = sys.argv[1:]
+prefix = "/opt/ndnsf-di/current"
+site = "/opt/venv/lib/python3.10/site-packages"
+
+def read_file(path):
+    return subprocess.check_output([*runtime, "/bin/cat", path])
+
+def require(condition, detail):
+    if not condition:
+        raise SystemExit(f"LOCAL_SIF_INSTALLED_PAYLOAD_INVALID: {detail}")
+
+def file_sha(stream):
+    digest = hashlib.sha256()
+    for block in iter(lambda: stream.read(1 << 20), b""):
+        digest.update(block)
+    return digest.hexdigest()
+
+ledger = json.loads(read_file(prefix + "/share/ndnsf/stack-install-manifest.json"))
+manifest = read_file(prefix + "/manifest/container-native-build.json")
+metadata = json.loads(manifest)
+sdk = read_file("/opt/ndn-base/manifest/dependency-sdk.json")
+sdk_inventory = json.loads(sdk)
+require(ledger["schema"] == 1 and metadata["finalVerification"] == "PASS", "unsealed receipt")
+for key, expected in {
+    "sourceSealSha256": "sha256:" + source_sha,
+    "baseSifSha256": "sha256:" + base_sha,
+    "baseSdkSha256": "sha256:" + hashlib.sha256(sdk).hexdigest(),
+}.items():
+    require(ledger[key] == metadata[key] == expected, key)
+require(ledger["containerNativeBuildSha256"] == "sha256:" + hashlib.sha256(manifest).hexdigest(),
+        "containerNativeBuildSha256")
+
+def verify_files(inventory, roots, *, follow_links=False):
+    files = {}
+    for path, row in inventory.items():
+        require(path.startswith(roots) and str(PurePosixPath(path)) == path
+                and ".." not in PurePosixPath(path).parts and "\n" not in path, path)
+        files[path[1:]] = row
+    with tempfile.TemporaryFile() as names:
+        names.write("".join(path + "\n" for path in files).encode())
+        names.seek(0)
+        command = [*runtime, "/bin/tar", "-C", "/", "-cf", "-", "--no-recursion",
+                   "--hard-dereference"]
+        if follow_links:
+            command.append("--dereference")
+        command.extend(["--verbatim-files-from", "-T", "-"])
+        with subprocess.Popen(command, stdin=names, stdout=subprocess.PIPE) as process:
+            try:
+                with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+                    for member in archive:
+                        row = files.pop(member.name, None)
+                        require(row is not None, member.name)
+                        if row["kind"] == "symlink":
+                            require(member.issym() and member.linkname == row["target"], member.name)
+                        else:
+                            require(row["kind"] == "file" and member.isfile()
+                                    and ("mode" not in row or member.mode == row["mode"])
+                                    and file_sha(archive.extractfile(member)) == row["sha256"],
+                                    member.name)
+                require(process.wait() == 0 and not files, "incomplete archive")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+
+installed = {path: row["installed"] for path, row in ledger["files"].items()}
+require(installed and all(item["runtimePath"] in installed for item in metadata["artifacts"]),
+        "missing installed artifacts")
+verify_files(installed, (prefix + "/", site + "/"))
+
+require(sdk_inventory["schema"] == "ndnsf-base-sdk-v1" and sdk_inventory["artifacts"],
+        "unsealed base SDK inventory")
+packages = subprocess.check_output([*runtime, "/usr/bin/dpkg-query", "-W",
+                                    r"-f=${Package}=${Version}\n"], text=True)
+require(packages == sdk_inventory["packages"], "base SDK packages changed")
+sdk_files = {path: {"kind": "file", "sha256": sha}
+             for path, sha in sdk_inventory["artifacts"].items()}
+verify_files(sdk_files, ("/opt/ndn-base/", "/opt/onnx/", "/opt/onnxruntime/",
+                         "/opt/rust/", "/opt/cargo-vendor/", "/opt/cargo-home/"), follow_links=True)
+ort_links = sdk_inventory.get("onnxRuntimeCpp", {}).get("symlinks", {})
+if ort_links:
+    verify_files({path: {"kind": "symlink", "target": target}
+                  for path, target in ort_links.items()}, ("/opt/onnxruntime/",))
+PY
+
+# Start installed C++ entry points with the actual packed environment. These
+# commands exercise loader and CLI startup; inference qualification is separate.
+(
+  smoke_home=$(mktemp -d "$build_tmp/ndnsf-sif-smoke.XXXXXX")
+  trap 'rm -rf -- "$smoke_home"' EXIT
+  native_exec=("$apptainer_bin" exec --cleanenv --containall --no-mount cwd,hostfs,bind-paths
+    --pwd / --home "$smoke_home:/home/ndnsf-smoke" "$partial")
+  "${native_exec[@]}" /opt/ndnsf-di/current/bin/DI_NativeRequester --help
+  "${native_exec[@]}" /opt/ndnsf-di/current/bin/DI_NativeArtifactAuthority --help
+)
+fi
 
 mv "$partial" "$sif"
 sif_sha256=$(sha256sum "$sif" | awk '{print $1}')

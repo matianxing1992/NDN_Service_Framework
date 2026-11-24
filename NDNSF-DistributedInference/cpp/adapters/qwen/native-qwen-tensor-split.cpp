@@ -27,6 +27,12 @@ namespace ndnsf::di::qwen {
 
 namespace {
 
+bool
+isQwenFloatingType(int scalar)
+{
+  return scalar == onnx::TensorProto::FLOAT || scalar == onnx::TensorProto::FLOAT16;
+}
+
 QwenTpShape
 deriveQwenTpRegionShape(const std::vector<std::uint8_t>& modelBytes,
                         std::uint64_t layerBegin, std::uint64_t layerEnd);
@@ -1348,7 +1354,6 @@ classifyQwenRegionNodes(const onnx::ModelProto& model, std::uint64_t layers,
   std::set<std::string> initializerNames;
   for (int i = 0; i < graph.initializer_size(); ++i)
     initializerNames.insert(graph.initializer(i).name());
-  std::vector<bool> relocated(names.size(), false);
   for (int i = 0; i < graph.node_size(); ++i) {
     const auto& node = graph.node(i);
     // Layer nodes keep their place; only the unclassified ones are candidates.
@@ -1392,7 +1397,44 @@ classifyQwenRegionNodes(const onnx::ModelProto& model, std::uint64_t layers,
     auto& targetNodes = entries[*consumers.begin()].nodeIndices;
     targetNodes.push_back(static_cast<std::uint64_t>(i));
     std::sort(targetNodes.begin(), targetNodes.end());
-    relocated[i] = true;
+  }
+
+  const auto init = std::find_if(entries.begin(), entries.end(), [] (const auto& entry) {
+    return entry.kind == "INIT";
+  });
+  const auto head = std::find_if(entries.begin(), entries.end(), [] (const auto& entry) {
+    return entry.kind == "HEAD";
+  });
+  if (init != entries.end() && head != entries.end()) {
+    // Exporters can leave terminal casts or other postprocessing unnamed.
+    // Follow values produced by HEAD in source order, without moving layer nodes.
+    std::set<std::string> headOutputs;
+    const auto rememberOutputs = [&] (std::uint64_t index) {
+      const auto& outputs = graph.node(static_cast<int>(index)).output();
+      headOutputs.insert(outputs.begin(), outputs.end());
+    };
+    for (const auto index : head->nodeIndices) rememberOutputs(index);
+    std::vector<std::uint64_t> retainedInit;
+    for (const auto index : init->nodeIndices) {
+      const auto& inputs = graph.node(static_cast<int>(index)).input();
+      const bool usesHeadOutput = std::any_of(inputs.begin(), inputs.end(), [&] (const auto& input) {
+        return !input.empty() && headOutputs.count(input) != 0;
+      });
+      const bool hasOtherDependency = std::any_of(
+        inputs.begin(), inputs.end(), [&] (const auto& input) {
+          return !input.empty() && headOutputs.count(input) == 0 &&
+                 initializerNames.count(input) == 0;
+        });
+      if (usesHeadOutput && !hasOtherDependency) {
+        head->nodeIndices.push_back(index);
+        rememberOutputs(index);
+      }
+      else {
+        retainedInit.push_back(index);
+      }
+    }
+    init->nodeIndices = std::move(retainedInit);
+    std::sort(head->nodeIndices.begin(), head->nodeIndices.end());
   }
   // Coverage is invariant: relocation moves a node, never drops one.
   std::size_t covered = 0;
@@ -2397,9 +2439,11 @@ validateWeightedQwenRegion(const NativeOnnxGraphInspection& source, const Native
         const auto& attrs = nodes.at(weightOwners->second.front()).at("integerAttributes");
         const auto blocks = slice.slicedK / QWEN_INT4_BLOCK_SIZE;
         const auto scaleCount = packedInt4Bytes(slice.slicedN, slice.slicedK) / QWEN_INT4_BLOB_BYTES;
+        const auto& scaleType = tensors.at(scale).at("dtype");
         if (attrs.at("K") != slice.slicedK || attrs.at("N") != slice.slicedN ||
             attrs.at("bits") != QWEN_INT4_BITS || attrs.at("block_size") != QWEN_INT4_BLOCK_SIZE ||
-            tensors.at(weight).at("dtype") != "uint8" || tensors.at(scale).at("dtype") != "float32" ||
+            tensors.at(weight).at("dtype") != "uint8" ||
+            (scaleType != "float32" && scaleType != "float16") ||
             tensors.at(weight).at("shape") != NativeJson::array({
               slice.slicedN, blocks, QWEN_INT4_BLOB_BYTES}) ||
             tensors.at(scale).at("shape") != NativeJson::array({scaleCount}))
@@ -2964,7 +3008,7 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
                 state->dims(1) != static_cast<std::int64_t>(sourceHeads) ||
                 state->dims(2) != 0 ||
                 state->dims(3) != static_cast<std::int64_t>(geometry.headDim) ||
-                state->data_type() != onnx::TensorProto::FLOAT ||
+                !isQwenFloatingType(state->data_type()) ||
                 state->data_location() != onnx::TensorProto::DEFAULT ||
                 !state->raw_data().empty() || state->float_data_size() != 0 ||
                 state->int32_data_size() != 0 || state->int64_data_size() != 0 ||
@@ -3133,7 +3177,7 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
     auto* shape = value->mutable_type()->mutable_tensor_type()->mutable_shape();
     // [batch, kvHeads, sequence, headDim]
     if (range && (shape->dim_size() != 4 ||
-                  value->type().tensor_type().elem_type() != onnx::TensorProto::FLOAT ||
+                  !isQwenFloatingType(value->type().tensor_type().elem_type()) ||
                   !shape->dim(1).has_dim_value() ||
                   shape->dim(1).dim_value() != static_cast<std::int64_t>(sourceHeads) ||
                   !shape->dim(3).has_dim_value() ||
@@ -3331,6 +3375,12 @@ verifyExplicitShardEntry(const std::filesystem::path& root, const onnx::GraphPro
       if (node.domain() != "com.microsoft" || node.input_size() < 5 || node.output_size() != 3)
         throw std::invalid_argument("unsupported tensor shard attention operator");
       const auto heads = narrowed ? localHeads : sourceHeads;
+      std::optional<int> stateDtype;
+      const auto checkDtype = [&] (int dtype) {
+        if (!isQwenFloatingType(dtype) || (stateDtype && *stateDtype != dtype)) return false;
+        stateDtype = dtype;
+        return true;
+      };
       requireShardOpAttribute(node, "kv_num_heads", heads);
       requireShardOpAttribute(node, "num_heads", heads * (geometry.queryWidth / geometry.kvWidth));
       const auto portIsValid = [&] (const auto& ports, const std::string& name) {
@@ -3339,7 +3389,7 @@ verifyExplicitShardEntry(const std::filesystem::path& root, const onnx::GraphPro
         if (port == ports.end() || !port->type().has_tensor_type()) return false;
         const auto& type = port->type().tensor_type();
         const auto& shape = type.shape();
-        return type.elem_type() == onnx::TensorProto::FLOAT && shape.dim_size() == 4 &&
+        return shape.dim_size() == 4 && checkDtype(type.elem_type()) &&
           shape.dim(1).has_dim_value() && shape.dim(1).dim_value() == static_cast<std::int64_t>(heads) &&
           shape.dim(3).has_dim_value() &&
           shape.dim(3).dim_value() == static_cast<std::int64_t>(geometry.headDim);
@@ -3359,7 +3409,7 @@ verifyExplicitShardEntry(const std::filesystem::path& root, const onnx::GraphPro
           if (tensor.dims_size() != 4 || tensor.dims(0) != 1 || tensor.dims(2) != 0 ||
               tensor.dims(1) != static_cast<std::int64_t>(heads) ||
               tensor.dims(3) != static_cast<std::int64_t>(geometry.headDim) ||
-              tensor.data_type() != onnx::TensorProto::FLOAT)
+              !checkDtype(tensor.data_type()))
             throw std::invalid_argument("tensor shard attention initial state has invalid shape");
         }
         if (present != "present." + suffix || !portIsValid(graph.output(), present))
@@ -3402,11 +3452,12 @@ verifyExplicitShardEntry(const std::filesystem::path& root, const onnx::GraphPro
     if (weight.data_type() != onnx::TensorProto::UINT8 || weight.dims_size() != 3 ||
         weight.dims(0) != static_cast<std::int64_t>(n) ||
         weight.dims(1) != static_cast<std::int64_t>(k / QWEN_INT4_BLOCK_SIZE) ||
-        weight.dims(2) != QWEN_INT4_BLOB_BYTES || scales.data_type() != onnx::TensorProto::FLOAT ||
+        weight.dims(2) != QWEN_INT4_BLOB_BYTES || !isQwenFloatingType(scales.data_type()) ||
         scales.dims_size() != 1 || scales.dims(0) != static_cast<std::int64_t>(scalesCount))
       throw std::invalid_argument("invalid packed tensor shard shape: " + slice.name);
     validateShardTensorStorage(root, weight, bytes);
-    validateShardTensorStorage(root, scales, scalesCount * sizeof(float));
+    const auto width = tensorElementByteSize(onnxTensorWireType(scales.data_type()).value());
+    validateShardTensorStorage(root, scales, scalesCount * width);
   }
 }
 
@@ -3547,7 +3598,10 @@ applyQwenTpRankSlices(onnx::ModelProto& entry,
     }
 
     // Scales share the weight's axis: one value per (row, block column).
-    if (scales != nullptr && scales->data_type() == onnx::TensorProto::FLOAT) {
+    if (scales != nullptr) {
+      if (!isQwenFloatingType(scales->data_type()))
+        throw std::invalid_argument("unsupported INT4 scale dtype: " + scaleName);
+      const auto width = tensorElementByteSize(onnxTensorWireType(scales->data_type()).value());
       std::vector<std::uint8_t> scaleBytes;
       if (scales->data_location() == onnx::TensorProto::EXTERNAL) {
         std::uint64_t baseOffset = 0;
@@ -3562,7 +3616,7 @@ applyQwenTpRankSlices(onnx::ModelProto& entry,
         scaleBytes.assign(scales->raw_data().begin(), scales->raw_data().end());
       }
       const auto slicedScales = sliceInt4Scales(scaleBytes, n, k, slice.axis,
-                                                slice.begin, slice.end);
+                                                slice.begin, slice.end, width);
       scales->set_data_location(onnx::TensorProto::DEFAULT);
       scales->clear_external_data();
       scales->set_raw_data(slicedScales.data(), slicedScales.size());
@@ -4030,7 +4084,7 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
   std::vector<std::string> hiddenInputs;
   for (const auto& input : graph.input()) {
     const auto& type = input.type().tensor_type();
-    if (type.elem_type() == onnx::TensorProto::FLOAT && type.shape().dim_size() == 3)
+    if (isQwenFloatingType(type.elem_type()) && type.shape().dim_size() == 3)
       hiddenInputs.push_back(input.name());
   }
 

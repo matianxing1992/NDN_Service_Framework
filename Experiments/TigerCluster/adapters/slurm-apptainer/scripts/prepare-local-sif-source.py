@@ -23,6 +23,7 @@ FILES = (
     "configure.sh",
     "scripts/build-safe.sh",
     "scripts/build-storage.py",
+    "scripts/host-build-jobs.sh",
     "scripts/ndnsf-di-workspace.py",
     "scripts/host_profile.py",
     "scripts/configure_dependencies.py",
@@ -184,6 +185,16 @@ def selected_files(workspace: Path) -> list[Path]:
         tree = ast.parse(build_file.read_text(encoding="utf-8"),
                          filename=str(build_file))
         for node in ast.walk(tree):
+            if (build_file == workspace / "wscript" and isinstance(node, ast.Assign) and
+                    any(isinstance(target, ast.Name) and target.id == "asset_tools"
+                        for target in node.targets)):
+                # The installed DI profile posts these same Waf install tasks.
+                for name in ast.literal_eval(node.value):
+                    relative = Path(name)
+                    if (relative.is_absolute() or ".." in relative.parts or
+                            not (workspace / relative).is_file()):
+                        raise SystemExit(f"LOCAL_SIF_SOURCE_MISSING:{relative}")
+                    selected.add(relative)
             if not isinstance(node, ast.Call):
                 continue
             function = node.func

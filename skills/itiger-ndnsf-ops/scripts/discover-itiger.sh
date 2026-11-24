@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-host="${ITIGER_SSH_HOST:-itiger}"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/tiger-ssh.sh"
+target="$(tiger_ssh_target "${ITIGER_SSH_HOST:-itiger}")"
 
-ssh -o BatchMode=yes -o ConnectTimeout=12 "${host}" '
+ssh "${TIGER_SSH_OPTIONS[@]}" "$target" '
 set +e
 printf "SECTION=IDENTITY\n"
 hostname

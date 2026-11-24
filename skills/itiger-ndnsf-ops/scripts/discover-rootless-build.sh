@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-host=${1:-itiger}
-ssh -o BatchMode=yes "$host" 'bash -s' <<'REMOTE'
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/tiger-ssh.sh"
+target="$(tiger_ssh_target "${1:-${ITIGER_SSH_HOST:-itiger}}")"
+ssh "${TIGER_SSH_OPTIONS[@]}" "$target" 'bash -s' <<'REMOTE'
 set -euo pipefail
 printf 'observedAt=%s\n' "$(date -u +%FT%TZ)"
 printf 'host=%s\n' "$(hostname)"

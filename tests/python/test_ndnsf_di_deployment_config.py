@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import select
 import signal
@@ -886,14 +887,14 @@ from pathlib import Path
 site, foreign = map(Path, sys.argv[1:])
 sys.path.append(str(foreign))
 import ndnsf_di_launcher as launcher
-assert Path(launcher.__file__).parent == site
+assert Path(launcher.__file__).resolve().parent == site.resolve()
 sys.argv = ['ndnsf-di', '--help']
 try:
     launcher.main()
 except SystemExit as result:
     assert result.code == 0
 import ndnsf_distributed_inference.ops as ops
-assert Path(ops.__file__).parent == site / 'ndnsf_distributed_inference/ops'
+assert Path(ops.__file__).resolve().parent == site.resolve() / 'ndnsf_distributed_inference/ops'
 '''
     result = subprocess.run([str(environment / 'bin/python'), '-I', '-c', code,
                              str(site), str(foreign)], capture_output=True, text=True, timeout=15)
@@ -3521,6 +3522,38 @@ def _write_tiger_record(root, record):
     (root / 'build-record.json').write_text(json.dumps(record))
 
 
+@pytest.mark.parametrize("gpu_count", [0, 1])
+def test_prepared_two_node_source_cache_config_enters_installed_slurm_schema(
+        ops, deployment, monkeypatch, gpu_count):
+    parser, _ = ops
+    root, config = deployment
+    _tiger_config(root, config)
+    config["actors"] = [actor for actor in config["actors"] if actor["kind"] != "repo"]
+    for actor in config["actors"]:
+        actor["parameters"] = {}
+    config["network"].pop("repo_service")
+    cache = root / "source-cache"
+    cache.mkdir()
+    (cache / "cache-identity.json").write_text("{}")
+    config["requester"]["model_input"] = dict(mode="source-cache", source_directory=str(cache),
+                                              source_namespace="sha256:" + "c" * 64)
+    config["platform"]["slurm"]["gpu"]["count"] = gpu_count
+    nodes = [dict(id=label, host="allocation-" + label, cpus=8, gpu_devices=["allocated:0"] * gpu_count,
+                  nfd=dict(mode="managed", address="192.0.2." + str(index), port=16363,
+                           socket="/remote/" + label + ".sock"))
+             for index, label in enumerate(("stage-a", "stage-b"), 1)]
+    monkeypatch.syspath_prepend(str(ROOT / "Experiments"))
+    helper = runpy.run_path(str(ROOT / "Experiments/prepare-native-deployment.py"))
+    helper["apply_slurm_placement"](config, dict(nodes=nodes, platform=config["platform"],
+                                                 release=config["release"]))
+    frozen = parser.load_deployment(write_config(root, config))
+    providers = [actor for actor in frozen["actors"] if actor["kind"] == "provider"]
+    assert frozen["platform"]["slurm"]["nodes"] == 2
+    assert [actor["node"] for actor in providers] == ["stage-a", "stage-b"]
+    assert all(actor["parameters"]["cache-compatibility-source-dir"] == str(cache) for actor in providers)
+    assert all(actor["resources"]["gpu_devices"] == ["allocated:0"] * gpu_count for actor in providers)
+
+
 @pytest.mark.parametrize('mutation, expected', [
     ('missing', 'missing fields build_record'),
     ('record', 'DIGEST_MISMATCH'),
@@ -4516,7 +4549,8 @@ def test_host_finite_keeps_native_arguments_separate_from_launcher(ops, tmp_path
     state = dict(boot_id='b'*32, configuration_sha256='a'*64,
                  evidence_root=str(tmp_path), launches=[])
     native = ['/opt/di/libexec/ndnsf-di/ndnsf-di-device-query', '--count', '1']
-    launcher = [sys.executable, '-c', 'import time; print("{}",flush=True); time.sleep(0.05)']
+    launcher = [sys.executable, '-c', 'import sys,time; print("{}",flush=True); '
+                'print("INFO: cleanup",file=sys.stderr,flush=True); time.sleep(0.05)']
     monkeypatch.setattr(owner, '_container_command',
         lambda args, argv, separate_session: launcher)
     env = owner.cluster._environment(tmp_path/'home', tmp_path/'nfd.sock', 'provider', state)
@@ -4526,6 +4560,7 @@ def test_host_finite_keeps_native_arguments_separate_from_launcher(ops, tmp_path
     row = state['launches'][0]
     assert row['native_argv'] == native and row['argv'] == launcher
     assert row['id'] == 'management-0' and row['exit_code'] == 0
+    assert Path(row['stderr_log']).read_text() == 'INFO: cleanup\n'
 
 
 def test_native_ready_and_withdrawal_use_namespace_pid(ops, tmp_path):
@@ -4904,6 +4939,44 @@ def test_native_launch_preserves_physical_mask_and_offers_logical_cuda(node_cont
     assert argv[argv.index('--offer-device') + 1] == 'cuda:0'
 
 
+def test_allocation_roles_receive_their_own_stop_grace(ops, monkeypatch, tmp_path):
+    module = importlib.import_module('_spec217_ops.allocation')
+    roles = [{'id': name} for name in ('nfd.worker', 'provider-1')]
+    state = {'roles': roles}
+    now = 0.0
+    stop_times = {}
+
+    def sleep(seconds):
+        nonlocal now
+        now += seconds
+
+    def write_stop(path, value):
+        assert value == {'boot_id': 'boot'}
+        stop_times[path.parents[2].name] = now
+
+    def poll(role_id):
+        started = stop_times.get(role_id)
+        return 0 if started is not None and now - started >= 6.0 else None
+
+    for role in roles:
+        (tmp_path / role['id'] / 'runtime' / 'run').mkdir(mode=0o700, parents=True)
+    children = {role['id']: SimpleNamespace(poll=lambda role_id=role['id']: poll(role_id))
+                for role in roles}
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: now, sleep=sleep))
+    monkeypatch.setattr(module, 'write_json', write_stop)
+    monkeypatch.setattr(module, 'read_role', lambda *args, **kwargs: {'status': 'SERVICES_READY'})
+    monkeypatch.setattr(module, '_receipt_path',
+                        lambda args, role, **kwargs: tmp_path / role['id'] / 'receipt.json')
+
+    assert module._stop_role_owners({'deployment_id': 'run'}, SimpleNamespace(boot_id='boot'),
+                                    state, children) == []
+    assert state['role_stop_requests'] == [
+        {'role_id': 'provider-1', 'status': 'EXITED'},
+        {'role_id': 'nfd.worker', 'status': 'EXITED'},
+    ]
+    assert now > module._ROLE_STOP_GRACE_SECONDS
+
+
 @pytest.fixture
 def allocation_facility(node_container, monkeypatch):
     """Replace only external Slurm/SIF facilities with real owned POSIX children."""
@@ -5081,10 +5154,7 @@ def test_allocation_owner_orders_real_steps_and_keeps_failure_boundaries(
         monkeypatch.setattr(module, '_ROLE_STOP_GRACE_SECONDS', 1.0)
     result = module.run_allocation(args, config)
     rows = [json.loads(line) for line in events.read_text().splitlines()]
-    if mode in ('missing-cs', 'nonzero-cs'):
-        assert result['status'] == 'UNKNOWN' and result['execution'] == 'COMPLETE'
-        assert result['failure'].startswith('ALLOCATION_HOST_AUDIT_CS_NOT_ZERO:')
-    elif mode in ('complete', 'negative-cache'):
+    if mode in ('complete', 'negative-cache', 'missing-cs', 'nonzero-cs'):
         assert result['status'] == 'STOPPED' and result['execution'] == 'COMPLETE'
         assert result['failure'] is None and result['oracle'] == 'NOT_RUN'
         launches = [row[1] for row in rows if row[0] == 'role']
@@ -5437,8 +5507,9 @@ def test_gpu_probe_wrapper_uses_exact_native_tool_without_nfd_or_model_mount(nod
 
 @pytest.mark.parametrize('distributed', [False, True])
 @pytest.mark.parametrize('reference', ['quiet', 'source', 'descriptor'])
+@pytest.mark.parametrize('fixed_tokens', [False, True])
 def test_post_job_oracle_wrapper_uses_fixed_cpu_workload_and_exact_read_only_files(
-        node_container, distributed, reference):
+        node_container, distributed, reference, fixed_tokens):
     config, container, frozen, capture, run = node_container
     owner = importlib.import_module('_spec217_ops.allocation')
     config['nodes'][0]['host'] = 'compute-a'
@@ -5498,6 +5569,8 @@ def test_post_job_oracle_wrapper_uses_fixed_cpu_workload_and_exact_read_only_fil
             source.pop('file')
             reference_files.append(descriptor)
             extra = ['--model-reference-source', str(descriptor)]
+    if fixed_tokens:
+        extra += ['--require-fixed-role-conversation', '32', '32']
     result = run('--management', 'oracle', '--node', 'local', workload=None,
                  *extra, environment=environment)
     assert result.returncode == 0, result.stderr
@@ -5508,6 +5581,8 @@ def test_post_job_oracle_wrapper_uses_fixed_cpu_workload_and_exact_read_only_fil
         expected.append('--model-reference')
         if reference == 'descriptor':
             expected += ['--model-reference-source', str(descriptor)]
+    if fixed_tokens:
+        expected += ['--require-fixed-role-conversation', '32', '32']
     if distributed:
         expected.append('--require-distributed-gpu')
     assert item['argv'][-len(expected):] == expected

@@ -204,10 +204,29 @@ Reuse v4FallbackReuseCost(const NativeSelectionRoleV3& role,
   using Cost = std::tuple<int, std::uint64_t, double, double, std::uint64_t,
                           double, double, double, std::string, std::string, std::string>;
 
+std::uint64_t
+chargedDeviceMemoryMb(const NativeSelectionRoleV3& role, const NativeObservedProviderOfferV3& offer,
+                      const std::string& device, const NativeOfferBindingContext* context)
+{
+  if (context != nullptr && device.rfind("cuda:", 0) == 0 &&
+      offer.devices.size() == 1 && offer.devices.front() == device &&
+      contains(offer.backends, "onnxruntime-cuda") &&
+      contains(offer.capabilities, NATIVE_RESIDENT_CONVERSATION_CUDA_V1)) {
+    const auto provider = context->preferredProvidersByRole.find(role.role);
+    const auto budget = context->pinnedConversationDeviceBudget.find(role.role);
+    if (provider != context->preferredProvidersByRole.end() && provider->second == offer.provider &&
+        budget != context->pinnedConversationDeviceBudget.end() && budget->second.first == device &&
+        budget->second.second > 0 && budget->second.second <= role.requiredDeviceMemoryMb)
+      return budget->second.second;
+  }
+  return role.requiredDeviceMemoryMb;
+}
+
 std::vector<Cost> feasibleChoices(const NativeSelectionRoleV3& role,
   const NativeObservedProviderOfferV3& offer,
   const std::vector<std::string>& requiredCapabilities, std::uint64_t nowMs,
-  const ExtensionControl* control, const NativeJson* v4FallbackOffer = nullptr)
+  const ExtensionControl* control, const NativeJson* v4FallbackOffer = nullptr,
+  const NativeOfferBindingContext* pinned = nullptr)
 {
   std::vector<Cost> choices;
   if (control) control->requireActive();
@@ -240,7 +259,8 @@ std::vector<Cost> feasibleChoices(const NativeSelectionRoleV3& role,
             if (it->device == device) { r = it; break; }
           }
           if ((!offersExactBackend && !offersCudaVariant) ||
-              r == offer.resources.end() || r->freeMemoryMb < role.requiredDeviceMemoryMb) continue;
+              r == offer.resources.end() || r->totalMemoryMb < role.requiredDeviceMemoryMb ||
+              r->freeMemoryMb < chargedDeviceMemoryMb(role, offer, device, pinned)) continue;
         }
         auto backend = role.backend;
         if (device == "cpu" && offersCpuVariant) backend = "onnxruntime-cpu";
@@ -407,7 +427,7 @@ NativeFixedProviderPlacement::proposeRolesImpl(
     if (admitted == offers.end())
       throw NativeNoFeasiblePlacement("fixed placement Provider was not admitted: " + fixed->second);
     const auto choices = feasibleChoices(role, admitted->observation(),
-      context.requiredExecutionCapabilities, nowMs, control);
+      context.requiredExecutionCapabilities, nowMs, control, nullptr, &context);
     if (choices.empty())
       throw NativeNoFeasiblePlacement("fixed placement Provider is not feasible for role " + key);
     const auto selected = *std::min_element(choices.begin(), choices.end());
@@ -633,7 +653,7 @@ void validateRolePlacementReferences(
     });
     if (admitted == offers.end()) throw std::invalid_argument("V3 proposal Provider was not admitted");
     const auto choices = feasibleChoices(**original, admitted->observation(),
-      proposal.context.requiredExecutionCapabilities, nowMs, nullptr);
+      proposal.context.requiredExecutionCapabilities, nowMs, nullptr, nullptr, &proposal.context);
     const auto device = role.deviceSet.empty() ? "cpu" : role.deviceSet.front();
     if (device != "cpu" && !usedDevices.insert(std::make_pair(assignment->second, device)).second)
       throw std::invalid_argument("V3 proposal reuses an exclusive Provider device");
@@ -646,12 +666,14 @@ void validateRolePlacementReferences(
       const auto keyMemory = std::make_pair(assignment->second, device);
       const auto reserved = reservedMemory.find(keyMemory);
       const auto alreadyReserved = reserved == reservedMemory.end() ? 0 : reserved->second;
+      const auto memory = chargedDeviceMemoryMb(**original, admitted->observation(),
+                                               device, &proposal.context);
       if (resource == admitted->observation().resources.end() || alreadyReserved > resource->freeMemoryMb ||
-          role.requiredDeviceMemoryMb > resource->freeMemoryMb - alreadyReserved)
+          memory > resource->freeMemoryMb - alreadyReserved)
         throw std::invalid_argument("V3 proposal exceeds Provider device memory");
-      if (alreadyReserved > std::numeric_limits<std::uint64_t>::max() - role.requiredDeviceMemoryMb)
+      if (alreadyReserved > std::numeric_limits<std::uint64_t>::max() - memory)
         throw std::overflow_error("V3 Provider device reservation overflows uint64");
-      reservedMemory[keyMemory] = alreadyReserved + role.requiredDeviceMemoryMb;
+      reservedMemory[keyMemory] = alreadyReserved + memory;
     }
     if (!samePreparedAssemblyMetadata(**original, role)) {
       auto expected = **original;

@@ -239,6 +239,8 @@ public:
 
   const NativeGrantLeaseScope& scope() const { return m_scope; }
 
+  const std::shared_ptr<const NativeFixedPlacementCoreV1>& fixedCore() const { return m_fixedCore; }
+
 private:
   NativeGrantLeaseScope m_scope;
   std::string m_model, m_graph, m_manifest;
@@ -317,6 +319,7 @@ bool sameOfferBindingContext(const NativeOfferBindingContext& left,
     left.serviceName == right.serviceName && left.modelDigest == right.modelDigest &&
     left.graphDigest == right.graphDigest && left.deadlineMs == right.deadlineMs &&
     left.preferredProvidersByRole == right.preferredProvidersByRole &&
+    left.pinnedConversationDeviceBudget == right.pinnedConversationDeviceBudget &&
     left.candidateSetDigest == right.candidateSetDigest &&
     left.candidateArtifactSetDigest == right.candidateArtifactSetDigest &&
     left.requesterIdentity == right.requesterIdentity &&
@@ -1764,6 +1767,49 @@ NativePlannedRequest planNativeRequestImpl(
     logPlanPhase(control.requestId, "candidate_role_copy", candidateCopyTiming);
     context.requiredExecutionCapabilities = nativePlanRequiredCapabilities(candidate);
     context.distinctProviderPairs = nativeDistinctProviderPairs(candidate);
+    // The authenticated conversation lease owns its role contracts even after
+    // the shorter, requester-wide placement cache evicts the cold plan.
+    std::shared_ptr<const NativeFixedPlacementCoreV1> previousFixedCore;
+    if (reusePinnedConversationPlacement) {
+      const auto& lease = *conversationTurn->grantLease;
+      if (lease.fixedContext && lease.fixedContext->scope().scopeDigest == lease.scope.scopeDigest)
+        previousFixedCore = lease.fixedContext->fixedCore();
+    }
+    if (!previousFixedCore && runtime.fixedRoleAssignments) {
+      previousFixedCore = runtime.fixedRoleAssignments->placementCore(runtime.requesterIdentity,
+        runtime.contract.serviceName, control.workStatistics);
+    }
+    context.pinnedConversationDeviceBudget.clear();
+    if (reusePinnedConversationPlacement && previousFixedCore) {
+      for (const auto& role : roles) {
+        const auto previous = previousFixedCore->roles().find(role.role);
+        if (previous == previousFixedCore->roles().end() ||
+            previous->second.backend != "onnxruntime-cuda" ||
+            previous->second.deviceSet.size() != 1 ||
+            previous->second.roleKind != "PIPELINE_RANGE")
+          continue;
+        auto selected = role;
+        selected.backend = previous->second.backend;
+        selected.deviceSet = previous->second.deviceSet;
+        // Publication rebinds the manifest and recipe certificates. Compare
+        // the exact source, artifact and interface before that step.
+        if (!nativeSelectionRoleContractsEqualExceptCertificatesV3(
+              selected, previous->second, true, true))
+          continue;
+        const auto requirement = candidate.requirementsByRole.find(role.role);
+        if (requirement == candidate.requirementsByRole.end()) continue;
+        auto workingSet = requirement->second;
+        workingSet.weightBytes = 0;
+        if (const auto peak = workingSet.estimatedPeakGpuMemoryBytes()) {
+          constexpr std::uint64_t MIB = 1024 * 1024;
+          const auto memoryMb = *peak / MIB + (*peak % MIB != 0);
+          context.pinnedConversationDeviceBudget.emplace(
+            role.role, std::make_pair(selected.deviceSet.front(), memoryMb));
+          logRuntimeEvidence("NDNSF_DI_RESIDENT_CONVERSATION_DEVICE_BUDGET requestId=" +
+            control.requestId + " role=" + role.role + " memoryMiB=" + std::to_string(memoryMb));
+        }
+      }
+    }
     NativeRolePlacementProposalV3 proposal;
     auto expectedPlacementIdentity = ports.placementIdentity;
     const auto placementStart = std::chrono::steady_clock::now();
@@ -1814,12 +1860,6 @@ NativePlannedRequest planNativeRequestImpl(
     // A legacy strategy need not carry the optional encoding hint. Reattach
     // our pin only after its actual current context has passed equality.
     proposal.context.preparedPlanningTemplate = context.preparedPlanningTemplate;
-    // Pin one immutable cache candidate through the current publication and
-    // sealing checks; replacement of the shared cache cannot change it.
-    const auto previousFixedCore = runtime.fixedRoleAssignments
-      ? runtime.fixedRoleAssignments->placementCore(runtime.requesterIdentity,
-          runtime.contract.serviceName, control.workStatistics)
-      : std::shared_ptr<const NativeFixedPlacementCoreV1>{};
     if (previousFixedCore)
       validateNativeRolePlacementWithFixedCore(proposal, roles, *previousFixedCore, offers, epochMs());
     else validateNativeRolePlacement(proposal, roles, offers, epochMs());

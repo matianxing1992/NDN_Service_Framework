@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -1159,6 +1160,65 @@ materializeTensorBundleWire(const TensorBundle& bundle,
   return wire;
 }
 
+namespace {
+
+float
+readBinary16(const std::uint8_t* source)
+{
+  static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559);
+  std::uint16_t bits;
+  std::memcpy(&bits, source, sizeof(bits));
+  const auto exponent = (bits >> 10) & 0x1f;
+  const auto fraction = bits & 0x3ff;
+  if (exponent == 0) {
+    const float magnitude = std::ldexp(static_cast<float>(fraction), -24);
+    return (bits & 0x8000) != 0 ? -magnitude : magnitude;
+  }
+
+  const auto floatExponent = exponent == 0x1f ? 0xff : exponent + 112;
+  const auto wire = (std::uint32_t(bits & 0x8000) << 16) |
+                    (std::uint32_t(floatExponent) << 23) |
+                    (std::uint32_t(fraction) << 13);
+  float value;
+  std::memcpy(&value, &wire, sizeof(value));
+  return value;
+}
+
+// Convert once after reduction, using round-to-nearest, ties-to-even.
+std::uint16_t
+encodeBinary16(float value)
+{
+  static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559);
+  std::uint32_t bits;
+  std::memcpy(&bits, &value, sizeof(bits));
+  const auto sign = static_cast<std::uint16_t>((bits >> 16) & 0x8000);
+  const auto exponent = static_cast<int>((bits >> 23) & 0xff);
+  auto fraction = bits & 0x7fffff;
+  if (exponent == 0xff) {
+    return sign | (fraction == 0 ? 0x7c00 : 0x7e00);
+  }
+
+  const int halfExponent = exponent - 112;
+  if (halfExponent > 30) {
+    return sign | 0x7c00;
+  }
+  if (halfExponent < -10) {
+    return sign;
+  }
+
+  unsigned shift = 13;
+  if (halfExponent <= 0) {
+    shift = 14 - halfExponent;
+    fraction |= 0x800000;
+  }
+  const auto halfway = std::uint32_t(1) << (shift - 1);
+  const auto rounded = (fraction + halfway - 1 + ((fraction >> shift) & 1)) >> shift;
+  const auto biased = static_cast<std::uint32_t>(std::max(halfExponent, 0)) << 10;
+  return sign | static_cast<std::uint16_t>(biased + rounded);
+}
+
+} // namespace
+
 TensorBundle
 sumTensorBundleViews(const std::string& outputScope,
                      const std::vector<std::vector<NamedTensorView>>& contributions,
@@ -1177,9 +1237,10 @@ sumTensorBundleViews(const std::string& outputScope,
     throw std::invalid_argument("tensor sum contribution holds no tensors");
   }
   for (const auto& tensor : first) {
-    if (tensor.elementType != TensorElementType::Float32) {
+    if (tensor.elementType != TensorElementType::Float32 &&
+        tensor.elementType != TensorElementType::Float16) {
       throw std::invalid_argument(
-        "tensor sum requires float32 contributions: " + tensor.name);
+        "tensor sum requires float32 or float16 contributions: " + tensor.name);
     }
     validateNamedTensorView(tensor);
   }
@@ -1211,6 +1272,9 @@ sumTensorBundleViews(const std::string& outputScope,
         throw std::invalid_argument(
           "tensor sum contributions disagree on " + first[member].name);
       }
+      if (tensor.elementType == TensorElementType::Float16) {
+        continue;
+      }
       // Float32 values must be read at four-byte alignment. A view borrows whatever storage its
       // producer owns, and that storage is only byte-aligned in general: an encoded bundle's
       // payload is a vector of bytes, and a tensor inside it starts at a framing offset. Casting
@@ -1228,6 +1292,22 @@ sumTensorBundleViews(const std::string& outputScope,
         sum += addend;
         std::memcpy(into + value * sizeof(float), &sum, sizeof(float));
       }
+    }
+  }
+  // The validation above proved every contribution for this output has the same type,
+  // shape and byte count. Accumulate one element at a time in sealed contribution order.
+  // No intermediate half rounding or extra tensor-sized backing is required.
+  for (std::size_t member = 0; member < first.size() && contributions.size() > 1; ++member) {
+    auto& total = totals[member];
+    if (total.elementType != TensorElementType::Float16) continue;
+    constexpr auto width = sizeof(std::uint16_t);
+    for (std::size_t offset = 0; offset < total.payload.size(); offset += width) {
+      float sum = readBinary16(first[member].payload.data() + offset);
+      for (std::size_t index = 1; index < contributions.size(); ++index) {
+        sum += readBinary16(contributions[index][member].payload.data() + offset);
+      }
+      const auto narrowed = encodeBinary16(sum);
+      std::memcpy(total.payload.data() + offset, &narrowed, width);
     }
   }
   // The result owns its bytes, and the views point into that owner through a

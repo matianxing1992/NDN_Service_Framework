@@ -152,6 +152,13 @@ void ExecutionEvidence::validate() const
                             attemptEpoch == 0 || exactForwardCacheHit)) {
     throw std::invalid_argument("completed execution evidence lacks a fresh request observation");
   }
+  std::set<std::string> entries, paths;
+  for (const auto& profile : entryProfiles) {
+    if (runnerKind != RunnerKind::OnnxRuntimeCuda || profile.entryId.empty() ||
+        profile.path.empty() || profile.requestId.empty() || profile.attemptEpoch == 0 ||
+        !entries.insert(profile.entryId).second || !paths.insert(profile.path).second)
+      throw std::invalid_argument("invalid per-entry CUDA profile evidence");
+  }
 }
 
 const ExecutionEvidence::NodeProviderAssignments&
@@ -266,6 +273,18 @@ std::string executionEvidenceToJson(const ExecutionEvidence& evidence)
   root.put("exactForwardCacheHit", evidence.exactForwardCacheHit);
   root.put("profileRequestId", evidence.profileRequestId);
   root.put("profileAttemptEpoch", evidence.profileAttemptEpoch);
+  if (!evidence.entryProfiles.empty()) {
+    ptree profiles;
+    for (const auto& profile : evidence.entryProfiles) {
+      ptree item;
+      item.put("entryId", profile.entryId);
+      item.put("path", profile.path);
+      item.put("requestId", profile.requestId);
+      item.put("attemptEpoch", profile.attemptEpoch);
+      profiles.push_back({"", item});
+    }
+    root.add_child("entryProfiles", profiles);
+  }
   return writeJson(root);
 }
 
@@ -325,6 +344,17 @@ ExecutionEvidence executionEvidenceFromJson(const std::string& json)
   evidence.exactForwardCacheHit = root.get<bool>("exactForwardCacheHit", false);
   evidence.profileRequestId = root.get<std::string>("profileRequestId", "");
   evidence.profileAttemptEpoch = root.get<std::uint64_t>("profileAttemptEpoch", 0);
+  if (const auto profiles = root.get_child_optional("entryProfiles")) {
+    for (const auto& item : *profiles) {
+      if (!item.first.empty())
+        throw std::invalid_argument("entryProfiles must be an array");
+      rejectSecretFields(item.second);
+      evidence.entryProfiles.push_back({
+        item.second.get<std::string>("entryId"), item.second.get<std::string>("path"),
+        item.second.get<std::string>("requestId"), item.second.get<std::uint64_t>("attemptEpoch")
+      });
+    }
+  }
   evidence.validate();
   return evidence;
 }

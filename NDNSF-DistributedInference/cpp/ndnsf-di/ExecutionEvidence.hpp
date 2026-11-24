@@ -88,6 +88,21 @@ struct ExecutionEvidence
   std::string profileRequestId;
   std::uint64_t profileAttemptEpoch = 0;
 
+  struct EntryProfile
+  {
+    std::string entryId;
+    std::string path;
+    std::string requestId;
+    std::uint64_t attemptEpoch = 0;
+
+    bool operator==(const EntryProfile& other) const
+    {
+      return entryId == other.entryId && path == other.path &&
+             requestId == other.requestId && attemptEpoch == other.attemptEpoch;
+    }
+  };
+  std::vector<EntryProfile> entryProfiles;
+
   void validate() const;
 
   /**

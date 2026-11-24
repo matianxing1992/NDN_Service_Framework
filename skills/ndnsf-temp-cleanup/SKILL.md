@@ -6,8 +6,8 @@ description: Audit and reclaim NDNSF temporary disk space, disposable experiment
 # NDNSF temporary-space cleanup
 
 Deliver measured free space and a reviewable record of what was removed, archived or retained.
-Use the current checkout's rules and actual references. This skill never makes an old path list
-or a past cleanup authorization valid for a new run.
+Use current ownership, authorization and task inputs to decide what to retain.
+Historical paths and approvals provide context for the case in which they were recorded.
 
 ## Scope and inventory
 
@@ -17,8 +17,8 @@ or a past cleanup authorization valid for a new run.
   process currently has them open. Uncertain candidates stay outside the deletion allowlist;
   proceed with independent candidates already established as safe.
 - Resolve the repository root and inspect worktree/index state. Read the active feature pointer
-  and relevant task/deployment references to identify current work; no new Spec is required for
-  housekeeping. Do not build, launch experiments or stop applications merely to clean space.
+  and inspect the current task/deployment inputs as available to identify active work. For
+  housekeeping, avoid new Specs, builds, experiments or application restarts.
 - Capture `df -B1`, `statvfs` available bytes and same-filesystem `du -x -B1`. Inspect both `/tmp`
   and `/var/tmp`. Use privileged read-only inventory when permissions hide root-owned data;
   do not infer absence or zero size from permission errors. Check deleted-open files with
@@ -102,6 +102,8 @@ Use CodeGraph for code references only when an index exists, then confirm agains
   evidence as identity history. `df` free space is not the user/project quota; use the actual
   write failure (`EDQUOT`/`Disk quota exceeded`) plus directory occupancy to locate the
   boundary, and run a bounded write probe after reclaiming.
+- On Tiger, apply the [quota and cache recovery procedure](references/tiger-quota-recovery.md)
+  for shared publish failures, slow quota refresh and abandoned transfer partials.
 - Treat `docs/`, `specs/`, existing archives and Codex sessions/databases/backups as durable
   history. Never infer permission to prune them from a general temporary-space request.
   Trash may contain unique source, reports or failure traces; inspect original paths and

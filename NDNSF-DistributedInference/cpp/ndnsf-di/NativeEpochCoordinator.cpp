@@ -1712,14 +1712,16 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         config.resultObserver(executable, roleResult);
       }
       throwIfStopped(config);
-      if (roleResult.runtimeMetrics) {
-        // The per-step and per-publish ledgers travel with the observation: C9 needs each entry and
-        // each send, and neither survives if only the snapshot's single `lastBackendExecution` is
-        // forwarded.
+      const auto recordRuntimeMetrics = [&] {
+        if (!roleResult.runtimeMetrics) return;
         result.runtimeMetrics.push_back(
           NativeEpochCoordinatorResult::RuntimeMetricsObservation{
             executable.role, epoch, *roleResult.runtimeMetrics,
             roleResult.stepBackendTimings, roleResult.outputTimings});
+      };
+      // In the checkpoint pass the coordinator publishes deferred outputs after commit.
+      if (!checkpointFinalization) {
+        recordRuntimeMetrics();
       }
       result.cacheObservations.push_back(cacheObservation);
       ++result.epochsExecuted;
@@ -1772,6 +1774,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         if (config.resultObserver) {
           config.resultObserver(executable, roleResult);
         }
+        recordRuntimeMetrics();
         result.finalExecutionEvidence = std::move(roleResult.executionEvidence);
         return result;
       }
@@ -1823,6 +1826,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           if (config.resultObserver) {
             config.resultObserver(executable, roleResult);
           }
+          recordRuntimeMetrics();
           if (executable.candidateDecodeStateIdentity) stateRelease.retain();
           // A committed state-only finalization is successful completion,
           // not an upstream STOP. The ordinary terminal-control branches

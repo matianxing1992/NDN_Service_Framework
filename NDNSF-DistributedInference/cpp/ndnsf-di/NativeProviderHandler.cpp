@@ -3685,6 +3685,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           failInvocation("PROVIDER_CONVERSATION_STATE_MISSING");
           return;
         }
+        const auto& selected = selectionProjection->selectedRoleContract();
+        if (selected.backend == "onnxruntime-cuda" && selected.roleKind == "PIPELINE_RANGE") {
+          const auto runner = state->runtime.committedConversationRunner(*resolved, lookupNowMs);
+          const auto evidence = runner ? runner->executionEvidenceSnapshot() : std::nullopt;
+          if (!evidence || selected.deviceSet.size() != 1 ||
+              validateExpectedRuntimeReadiness(*evidence, false, selected.selectedRole,
+                selected.backend, selected.deviceSet.front(), selected.artifactDigest)) {
+            completeExecutionLease();
+            failInvocation("PROVIDER_CONVERSATION_CUDA_RUNNER_MISMATCH");
+            return;
+          }
+        }
         roleSpec.conversationStateBinding = std::move(*resolved);
         roleSpec.conversationStateLookupNowMs = lookupNowMs;
 
@@ -4347,11 +4359,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           requestStatistics->admittedModelDigest = admitted.modelManifestDigest.empty()
             ? selectionProjection->planDigest : admitted.modelManifestDigest;
           requestStatistics->admittedArtifactDigest = admitted.artifactDigest;
+          if (roleSpec.steps) {
+            std::set<std::string> entries;
+            for (const auto& step : *roleSpec.steps) {
+              if (step.unitId == roleSpec.role && step.operation == "CALL_SUBGRAPH")
+                entries.insert(step.artifactEntry);
+            }
+            requestStatistics->sealedComputeEntries.assign(entries.begin(), entries.end());
+          }
         }
         catch (...) {
           // Missing measurements must not replace native execution/admission.
           requestStatistics->admittedModelDigest.clear();
           requestStatistics->admittedArtifactDigest.clear();
+          requestStatistics->sealedComputeEntries.clear();
         }
       }
       std::optional<bool> sealedTerminalOwner;
@@ -4916,7 +4937,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             config.conversationStateKeyScope,
             controlTopic,
             [] (const ndn_service_framework::ServiceProvider::CollaborationData&) {});
-          const auto receiptJson = receipt.toJson();
+          const auto receiptPayload = nativeEncodeProviderConversationReceipt(receipt);
           ndn::Name receiptTopic("/ndnsf-di/conversation/receipt");
           receiptTopic.append(ndn::Name(finalized.role));
           NativeWorkScope publishSubmit(workStatistics,
@@ -4924,7 +4945,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ctx.publish(
             config.conversationStateKeyScope,
             std::move(receiptTopic),
-            ndn::Buffer(receiptJson.begin(), receiptJson.end()),
+            ndn::Buffer(receiptPayload.begin(), receiptPayload.end()),
             detail::makeCollaborationWorkObserver(workStatistics));
           publishSubmit.finish();
           std::ostringstream record;

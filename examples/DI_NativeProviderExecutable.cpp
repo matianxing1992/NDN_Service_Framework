@@ -15,6 +15,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-cancellation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
@@ -1415,6 +1416,8 @@ main(int argc, char** argv)
         config.capabilities.emplace_back(NATIVE_ONNX_ENTRY_CAPABILITY_V1);
       if (options.exactPacketDiskMiB != 0)
         config.capabilities.emplace_back(ndnsf::di::detail::NATIVE_EXACT_RETENTION_SCOPE);
+      if (options.offerBackend == "onnxruntime-cuda" && options.offerDevices.size() == 1)
+        config.capabilities.push_back(NATIVE_RESIDENT_CONVERSATION_CUDA_V1);
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
       {

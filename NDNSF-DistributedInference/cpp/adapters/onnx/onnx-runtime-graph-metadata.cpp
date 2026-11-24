@@ -242,6 +242,12 @@ isSmallLiteral(const onnx::TensorProto& tensor)
 }
 
 bool
+isStandardOperator(const onnx::NodeProto& node)
+{
+  return node.domain().empty() || node.domain() == "ai.onnx";
+}
+
+bool
 isStructuralInput(const std::string& op, int index)
 {
   if (op == "Reshape" || op == "Expand" || op == "Tile" || op == "Squeeze" ||
@@ -291,6 +297,12 @@ OnnxRuntimeGraphMetadata
 classify(onnx::ModelProto& model)
 {
   auto& graph = *model.mutable_graph();
+  const auto microsoftOpsetCount = std::count_if(
+    model.opset_import().begin(), model.opset_import().end(),
+    [] (const auto& entry) { return entry.domain() == "com.microsoft"; });
+  const bool hasOrtContribOpset = microsoftOpsetCount == 1 && std::any_of(
+    model.opset_import().begin(), model.opset_import().end(),
+    [] (const auto& entry) { return entry.domain() == "com.microsoft" && entry.version() == 1; });
   std::set<std::string> nodeNames;
   std::set<std::string> definitions;
   std::map<std::string, int> types;
@@ -308,8 +320,9 @@ classify(onnx::ModelProto& model)
   }
   for (const auto& node : graph.node()) {
     require(!node.name().empty() && nodeNames.insert(node.name()).second);
-    require(node.domain().empty() || node.domain() == "ai.onnx");
-    require(node.output_size() != 0);
+    require(isStandardOperator(node) || (hasOrtContribOpset && node.domain() == "com.microsoft"));
+    require(std::any_of(node.output().begin(), node.output().end(),
+                        [] (const auto& name) { return !name.empty(); }));
     for (const auto& input : node.input()) {
       require(input.empty() || definitions.count(input) != 0);
     }
@@ -318,7 +331,7 @@ classify(onnx::ModelProto& model)
               attribute.type() != onnx::AttributeProto::GRAPHS);
     }
     for (const auto& output : node.output()) {
-      require(!output.empty() && definitions.insert(output).second);
+      if (!output.empty()) require(definitions.insert(output).second);
     }
   }
   onnx::shape_inference::InferShapes(model);
@@ -349,6 +362,9 @@ classify(onnx::ModelProto& model)
     for (int i = 0; i < node.input_size(); ++i) {
       if (!node.input(i).empty()) consumers[node.input(i)].emplace_back(node.name(), i);
     }
+    // ORT contrib operators remain opaque model kernels. Only standard ONNX
+    // operators can establish shape provenance or have a removable identity.
+    if (!isStandardOperator(node)) continue;
     bool geometry = false;
     bool shapeDerived = false;
     if (node.op_type() == "Constant") {
@@ -370,15 +386,19 @@ classify(onnx::ModelProto& model)
       });
     }
     for (const auto& output : node.output()) {
+      if (output.empty()) continue;
       const auto type = types.find(output);
       geometry = geometry && type != types.end() && isIntegral(type->second);
     }
     if (geometry) {
       candidates.insert(node.name());
-      knownGeometry.insert(node.output().begin(), node.output().end());
       if (shapeDerived) {
         shapeDerivedNodes.insert(node.name());
-        shapeDerivedValues.insert(node.output().begin(), node.output().end());
+      }
+      for (const auto& output : node.output()) {
+        if (output.empty()) continue;
+        knownGeometry.insert(output);
+        if (shapeDerived) shapeDerivedValues.insert(output);
       }
     }
     if (node.op_type() == "Identity" && node.input_size() == 1 && node.output_size() == 1)
@@ -401,11 +421,13 @@ classify(onnx::ModelProto& model)
     if (!candidates.count(node.name())) continue;
     bool structuralOnly = true;
     for (const auto& output : node.output()) {
+      if (output.empty()) continue;
       if (graphOutputs.count(output)) structuralOnly = false;
       for (const auto& use : consumers[output]) {
         const auto& consumer = *nodes.at(use.first);
         if (!shapeDerivedNodes.count(node.name()) && !candidates.count(use.first) &&
-            !isStructuralInput(consumer.op_type(), use.second)) structuralOnly = false;
+            !(isStandardOperator(consumer) &&
+              isStructuralInput(consumer.op_type(), use.second))) structuralOnly = false;
       }
     }
     if (!structuralOnly) candidates.erase(node.name());
@@ -414,7 +436,7 @@ classify(onnx::ModelProto& model)
   OnnxRuntimeGraphMetadata result;
   for (const auto& node : graph.node()) {
     if (candidates.count(node.name())) result.hostMetadataNodes[node.name()] = node.op_type();
-    else if (node.op_type() != "Constant") {
+    else if (!isStandardOperator(node) || node.op_type() != "Constant") {
       auto& inventory = noOpNodes.count(node.name()) ? result.optionalModelNodes :
                                                      result.modelNodes;
       inventory[node.name()] = node.op_type();
@@ -431,7 +453,8 @@ classify(onnx::ModelProto& model)
     if (node.op_type() == "Cast" && node.input_size() == 1 &&
         result.optionalModelNodes.count(node.name())) {
       const auto parent = producers.find(node.input(0));
-      if (parent != producers.end() && parent->second->op_type() == "Cast" &&
+      if (parent != producers.end() && isStandardOperator(*parent->second) &&
+          parent->second->op_type() == "Cast" &&
           castParameters(*parent->second) == castParameters(node)) {
         const auto& parentName = parent->second->name();
         if (result.modelNodes.count(parentName)) result.modelNodeAliases[node.name()] = parentName;
@@ -441,7 +464,9 @@ classify(onnx::ModelProto& model)
         }
       }
     }
-    for (const auto& output : node.output()) producers[output] = &node;
+    for (const auto& output : node.output()) {
+      if (!output.empty()) producers[output] = &node;
+    }
   }
   return result;
 }

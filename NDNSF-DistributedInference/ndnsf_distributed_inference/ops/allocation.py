@@ -348,7 +348,6 @@ def _bound_arguments(args, timeout):
 
 def _stop_role_owners(config, args, state, children):
     """Drain entered owners in reverse startup order before terminating srun."""
-    deadline = time.monotonic() + _ROLE_STOP_GRACE_SECONDS
     errors = []
     requests = state.setdefault('role_stop_requests', [])
     for role in reversed(state['roles']):
@@ -368,8 +367,8 @@ def _stop_role_owners(config, args, state, children):
             row = dict(role_id=role['id'], status='REQUESTED')
             requests.append(row)
             write_json(root / 'cancel.json', {'boot_id': args.boot_id})
-            # This cleanup deadline is independent of the expired execution
-            # deadline and does not stop dependencies while a child drains.
+            # Each owner gets its grace after receiving the stop request.
+            deadline = time.monotonic() + _ROLE_STOP_GRACE_SECONDS
             while child.poll() is None and time.monotonic() < deadline:
                 time.sleep(min(0.05, max(0.001, deadline - time.monotonic())))
             if child.poll() is None:
@@ -556,8 +555,9 @@ def run_allocation(args, config):
                     raise cluster.ClusterError('ALLOCATION_HOST_AUDIT_PROOF_MISSING:' + role_id)
             elif value.get('processes') != [] or value.get('errors') != []:
                 raise cluster.ClusterError('ALLOCATION_HOST_AUDIT_ZERO_NOT_PROVEN:' + node_id)
-            elif not isinstance(value.get('cs'), dict) or value['cs'].get('capacity') != 0 or \
-                    value['cs'].get('nEntries') != 0:
+            elif config.get('operation') == 'repo-benchmark' and (
+                    not isinstance(value.get('cs'), dict) or value['cs'].get('capacity') != 0 or
+                    value['cs'].get('nEntries') != 0):
                 raise cluster.ClusterError('ALLOCATION_HOST_AUDIT_CS_NOT_ZERO:' + node_id)
             state['host_audits'].append(str(target))
 

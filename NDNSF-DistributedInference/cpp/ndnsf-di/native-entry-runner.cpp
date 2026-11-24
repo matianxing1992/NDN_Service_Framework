@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
@@ -254,7 +255,15 @@ NativeEntryRunner::NativeEntryRunner(
   // Prepare every entry once. A failure here happens before the first step, so a
   // partially assembled unit can never reach the reuse cache.
   for (const auto& entry : m_entries) {
-    m_children.emplace(entry.entryId, childFactory(specFactory(entry)));
+    auto spec = specFactory(entry);
+    // ORT profiles share the same parent prefix. Entry slots disambiguate them
+    // even if multiple sessions start in the same clock tick.
+    for (const auto* key : {"providerProfilePrefix", "provider_profile_prefix"}) {
+      const auto profile = spec.metadata.find(key);
+      if (profile != spec.metadata.end() && !profile->second.empty())
+        profile->second += "-entry-" + nativePlanningDigest(entry.entryId).substr(7);
+    }
+    m_children.emplace(entry.entryId, childFactory(spec));
   }
 }
 
@@ -388,6 +397,7 @@ NativeEntryRunner::executionEvidenceSnapshot() const
 {
   std::optional<ExecutionEvidence> unit;
   std::string artifactDigest;
+  std::vector<ExecutionEvidence> cudaChildren;
   for (const auto& entry : m_entries) {
     const auto child = m_children.find(entry.entryId);
     if (child == m_children.end() || !child->second) return std::nullopt;
@@ -401,13 +411,22 @@ NativeEntryRunner::executionEvidenceSnapshot() const
     const auto artifact = evidence->artifactDigests.find(entry.entryId);
     if (artifact == evidence->artifactDigests.end() || artifact->second.empty())
       return std::nullopt;
+    if (evidence->runnerKind == RunnerKind::OnnxRuntimeCuda) {
+      if (cudaChildren.empty()) cudaChildren.reserve(m_entries.size());
+      cudaChildren.push_back(*evidence);
+    }
     if (!unit) {
       unit = *evidence;
       artifactDigest = artifact->second;
       continue;
     }
     if (unit->runnerKind != evidence->runnerKind || unit->deviceKind != evidence->deviceKind ||
-        unit->deviceId != evidence->deviceId || artifactDigest != artifact->second)
+        unit->deviceId != evidence->deviceId || unit->gpuUuid != evidence->gpuUuid ||
+        unit->runtimeVersion != evidence->runtimeVersion ||
+        unit->providerName != evidence->providerName ||
+        unit->providerBootId != evidence->providerBootId ||
+        unit->planDigest != evidence->planDigest || unit->modelDigest != evidence->modelDigest ||
+        artifactDigest != artifact->second)
       return std::nullopt;
     unit->warmupCompleted = unit->warmupCompleted && evidence->warmupCompleted;
     unit->warmupSkippedUnrankedInput =
@@ -416,6 +435,40 @@ NativeEntryRunner::executionEvidenceSnapshot() const
       unit->warmupDeferredDependencyInput || evidence->warmupDeferredDependencyInput;
   }
   if (!unit) return std::nullopt;
+  if (!cudaChildren.empty()) {
+    std::vector<ExecutionEvidence::EntryProfile> profiles;
+    std::vector<std::reference_wrapper<const ExecutionEvidence::NodeProviderAssignments>> groups;
+    std::set<std::string> paths;
+    for (std::size_t i = 0; i < cudaChildren.size(); ++i) {
+      const auto& child = cudaChildren[i];
+      const auto& entryId = m_entries[i].entryId;
+      const auto& assignments = child.getNodeProviderAssignments();
+      if (child.gpuUuid.empty() || child.providerProfilePath.empty() ||
+          child.profileRequestId.empty() || child.profileAttemptEpoch == 0 ||
+          !paths.insert(child.providerProfilePath).second || assignments.empty() ||
+          std::any_of(assignments.begin(), assignments.end(), [&] (const auto& node) {
+            return node.role != entryId || (node.modelNode &&
+                   (node.nodeName.empty() || node.provider != "CUDAExecutionProvider"));
+          }) || std::none_of(assignments.begin(), assignments.end(),
+                              [] (const auto& node) { return node.modelNode; }))
+        break;
+      profiles.push_back({entryId, child.providerProfilePath, child.profileRequestId,
+                          child.profileAttemptEpoch});
+      groups.emplace_back(assignments);
+    }
+    if (profiles.size() == m_entries.size()) {
+      unit->entryProfiles = std::move(profiles);
+      unit->concatenateNodeProviderAssignments(groups);
+    }
+    else {
+      // Readiness can precede profiling, but partial coverage must never qualify a rank.
+      unit->entryProfiles.clear();
+      unit->setNodeProviderAssignments({});
+      unit->providerProfilePath.clear();
+      unit->profileRequestId.clear();
+      unit->profileAttemptEpoch = 0;
+    }
+  }
   // The Provider assigned a unit role, not an entry id, so the aggregate answers under the
   // unit's name with the artifact this rank was assembled from.
   unit->roles = {m_entries.front().unitId};

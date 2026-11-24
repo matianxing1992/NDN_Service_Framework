@@ -6,6 +6,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
@@ -562,6 +563,7 @@ BOOST_AUTO_TEST_CASE(ProductionGpuOfferFeedsAdmissionAndMemoryConstrainedPlaceme
   config.acceptedRoles = {input.roles.front().role};
   config.backends = {"onnxruntime-cuda"};
   config.devices = {"cuda:0"};
+  config.capabilities = {NATIVE_RESIDENT_CONVERSATION_CUDA_V1};
   config.signDigest = [] (const std::string&) { return "fixture-signature-pending"; };
   const auto request = nativeCanonicalJson(NativeJson{
     {"schema", "ndnsf-di-request-envelope-v2"}, {"placementProfile", "DI_PLACEMENT_V3"},
@@ -603,6 +605,26 @@ BOOST_AUTO_TEST_CASE(ProductionGpuOfferFeedsAdmissionAndMemoryConstrainedPlaceme
     else {
       BOOST_CHECK_THROW(NativePreSplitFirstPlacement().proposeRoles(
         input.context, input.ackDigest, input.roles, offers, 200), NativeNoFeasiblePlacement);
+      const auto& role = input.roles.front();
+      const NativeFixedProviderPlacement fixed(
+        std::map<std::string, std::string>{{role.role, config.provider}});
+      const ExtensionControl control{
+        std::chrono::steady_clock::now() + std::chrono::seconds(5), [] { return false; }};
+      BOOST_CHECK_THROW(fixed.proposeRoles(
+        input.context, input.ackDigest, input.roles, offers, 200, control), NativeNoFeasiblePlacement);
+      auto pinned = input.context;
+      pinned.preferredProvidersByRole.emplace(role.role, config.provider);
+      pinned.pinnedConversationDeviceBudget.emplace(role.role, std::make_pair("cuda:0", freeMemory));
+      const auto proposal = fixed.proposeRoles(pinned, input.ackDigest, input.roles, offers, 200, control);
+      BOOST_CHECK_EQUAL(proposal.roles.front().requiredDeviceMemoryMb, role.requiredDeviceMemoryMb);
+      BOOST_CHECK_NO_THROW(validateNativeRolePlacement(proposal, input.roles, offers, 200));
+      pinned.pinnedConversationDeviceBudget.at(role.role).second = freeMemory + 1;
+      BOOST_CHECK_THROW(fixed.proposeRoles(
+        pinned, input.ackDigest, input.roles, offers, 200, control), NativeNoFeasiblePlacement);
+      pinned.pinnedConversationDeviceBudget.at(role.role).second = freeMemory;
+      pinned.preferredProvidersByRole.at(role.role) = "/provider/other";
+      BOOST_CHECK_THROW(fixed.proposeRoles(
+        pinned, input.ackDigest, input.roles, offers, 200, control), NativeNoFeasiblePlacement);
     }
   }
 }
@@ -2985,9 +3007,15 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
       {"segment_payload_bytes", std::uint64_t{7000}}}));
     ack.ack.setProviderCapabilityOffer(fields);
   }
+  // A long cold turn can outlive the requester-wide placement cache while
+  // the authenticated conversation lease still owns the exact placement.
+  runtime.fixedRoleAssignments->clear();
+  BOOST_REQUIRE(!runtime.fixedRoleAssignments->placementCore(
+    runtime.requesterIdentity, runtime.contract.serviceName));
   const auto reused = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
     probe, preparation, admission, closure, control, input.context.deadlineMs, cancelled, &pinned);
   BOOST_CHECK(reused.sealed.core.assignment.providerByRole == pinned.providersByRole);
+  BOOST_CHECK_EQUAL(reused.sealed.core.fixedCoreOwner.get(), leaseFirst.sealed.core.fixedCoreOwner.get());
   BOOST_REQUIRE(reused.grantLease.has_value());
   BOOST_CHECK(reused.grantLease->fixedContext == pinned.grantLease->fixedContext);
   BOOST_CHECK(reused.grantLease->projectionLayout == pinned.grantLease->projectionLayout);
@@ -4688,7 +4716,24 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
       receipt.stateSchemaDigest = nativePlanningDigest("state-schema");
       receipt.stateComponentDigests = {nativePlanningDigest("state-component")};
       receipt.expiresAtMs = 2'000'000'060'000ULL;
+      BOOST_CHECK_EQUAL(nativeEncodeProviderConversationReceipt(receipt), receipt.toJson());
+      BOOST_CHECK_EQUAL(nativeDecodeProviderConversationReceipt(receipt.toJson()).toJson(),
+                        receipt.toJson());
+      for (std::size_t index = 1; index < 96; ++index) {
+        receipt.stateComponentDigests.push_back(
+          nativePlanningDigest("state-component-" + std::to_string(index)));
+      }
       const auto receiptJson = receipt.toJson();
+      const auto receiptWire = nativeEncodeProviderConversationReceipt(receipt);
+      BOOST_CHECK_GT(receiptJson.size(), 8192U);
+      BOOST_CHECK_LT(receiptWire.size(), 7000U);
+      BOOST_CHECK_EQUAL(nativeDecodeProviderConversationReceipt(receiptWire).toJson(), receiptJson);
+      auto tampered = nativeParseJson(receiptWire);
+      auto& packed = tampered.at("stateComponentDigests").get_ref<std::string&>();
+      BOOST_REQUIRE(!packed.empty());
+      packed.front() = packed.front() == 'A' ? 'B' : 'A';
+      BOOST_CHECK_THROW(nativeDecodeProviderConversationReceipt(nativeCanonicalJson(tampered)),
+                        std::invalid_argument);
       const auto seedRecord = [&] (const ndn::Name& topic, const ndn::Buffer& payload) {
         VerifiedCollaborationData value;
         value.dataName = ndn::Name("/provider/a/NDNSF/DI/conversation").append(topic);
@@ -4701,7 +4746,7 @@ void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
         value.payload = payload;
         user->seedConversationData(std::move(value));
       };
-      const ndn::Buffer receiptPayload(receiptJson.begin(), receiptJson.end());
+      const ndn::Buffer receiptPayload(receiptWire.begin(), receiptWire.end());
       user->seedConversationScope(id, "ndnsf-di-conversation-state-v1", ndn::Buffer(32, 0x5a));
       seedRecord(ndn::Name("/ndnsf-di/conversation/receipt").append(role), receiptPayload);
 

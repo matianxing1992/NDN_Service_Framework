@@ -154,21 +154,28 @@ main(int argc, char** argv)
     }
     ndnsf::di::NativeCanonicalSource source;
     source.modelBytes = bytes;
-    const auto rangeControl = ndnsf::di::NativeAssemblyControl{
+    auto rangeControl = ndnsf::di::NativeAssemblyControl{
       std::chrono::steady_clock::now() + std::chrono::seconds(180), [] {}, 2ULL << 30, 2ULL << 30};
+    std::string preflightCatalog;
+    if (preflightMode || preflightTensorLayout) {
+      std::ifstream catalogStream(argv[2]);
+      if (!catalogStream) throw std::runtime_error("cannot open preflight catalog");
+      preflightCatalog.assign(std::istreambuf_iterator<char>(catalogStream), {});
+      const auto catalogJson = ndnsf::di::nativeParseJson(preflightCatalog);
+      const auto& limits = catalogJson.at("recipe");
+      rangeControl.maxSourceBytes = limits.at("max_source_bytes").get<std::uint64_t>();
+      rangeControl.maxAssembledBytes = limits.at("max_assembled_bytes").get<std::uint64_t>();
+    }
     if (argc == 6) {
       source.initializerRangeSource = ndnsf::di::openNativeCanonicalInitializerFile(
         argv[4], std::filesystem::file_size(argv[4]), argv[5], rangeControl);
     }
     if (preflightMode || preflightTensorLayout) {
       using namespace ndnsf::di;
-      std::ifstream catalogStream(argv[2]);
-      if (!catalogStream) throw std::runtime_error("cannot open preflight catalog");
-      const std::string wire{std::istreambuf_iterator<char>(catalogStream), {}};
       if (preflightTensorLayout) {
         std::vector<NativeOnnxNodeLayout> layouts;
         const auto catalog = NativeRequestCatalog::loadWithTensorLayouts(
-          wire, std::move(source), rangeControl, layouts);
+          preflightCatalog, std::move(source), rangeControl, layouts);
         const auto& graph = catalog.model.graph;
         if (layouts.size() != graph.nodes.size())
           throw std::runtime_error("catalog tensor layout does not cover the source graph");
@@ -186,14 +193,12 @@ main(int argc, char** argv)
           {"planning_graph_digest", graph.graphDigest}, {"nodes", std::move(nodes)}}) << std::endl;
         return 0;
       }
-      const auto catalog = NativeRequestCatalog::load(wire, std::move(source), rangeControl);
-      const auto candidates = catalog.splitter->enumerate(catalog.model.descriptor,
-                                                          catalog.model.graph, {});
-      if (candidates.size() != 1)
+      const auto catalog = NativeRequestCatalog::load(
+        preflightCatalog, std::move(source), rangeControl);
+      if (!catalog.planningCache || catalog.planningCache->candidates.size() != 1)
         throw std::invalid_argument("source preflight requires one exact catalog candidate");
-      const auto& candidate = candidates.front();
-      const NativeRequestControl request{"/fixture/preflight", 1, rangeControl.deadline, {}};
-      const auto roles = catalog.preparation->prepareRoles(catalog.model, candidate, request);
+      // Use the same candidate whose state contracts were bound by the Requester catalog.
+      const auto& [candidate, roles] = catalog.planningCache->candidates.front();
       auto facts = NativeJson::array();
       for (const auto& role : roles) {
         auto& record = facts.emplace_back(NativeJson{
