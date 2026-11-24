@@ -10,7 +10,7 @@ from ndnsf_distributed_inference.core import AssignmentContext
 from ndnsf_distributed_inference.planner.fixed_policy import FixedProviderAssignmentPolicy
 from ndnsf_distributed_inference.planner.defaults import DefaultOptimizationSuite
 from ndnsf_distributed_inference.sdk.suite import OptimizationSuite
-from support.spec111_policy import request
+from support.policy import request
 
 
 ROOT = Path(__file__).resolve().parents[2]

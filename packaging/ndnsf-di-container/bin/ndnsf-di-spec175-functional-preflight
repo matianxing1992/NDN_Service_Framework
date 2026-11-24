@@ -843,7 +843,6 @@ def validate_bundle(bundle_path: Path, expected_gate: str) -> dict[str, Any]:
             "--selection-signing-key-file",
             "--selection-residency-json",
             "--selection-model-cache-dir",
-            "--repo-client-state-root",
             "--selection-repo-registration",
         ):
             if required not in command_values:

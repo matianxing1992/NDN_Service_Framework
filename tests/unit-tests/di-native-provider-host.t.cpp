@@ -234,7 +234,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationCloseBeforeAckFinish)
         return decision;
       }),
     makeCountingRequestHandler(requestHandlerCalls),
-    ServiceProvider::ServiceMode::Normal);
+    ServiceProvider::ServiceInvocationMode::NormalOnly);
 
   const auto requestWire = makeRequestWire("payload-before-close");
   injectRequest(provider, requesterName, serviceName, requestId, requestWire);
@@ -590,7 +590,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationOldSelectionAfterReregister)
     serviceName,
     makeAcceptingAckHandler(),
     makeCountingRequestHandler(executionsGen1),
-    ServiceProvider::ServiceMode::Normal);
+    ServiceProvider::ServiceInvocationMode::NormalOnly);
 
   // 真实 accept R1：先种已知 provider token（accept commit 复用它），再
   // 投递 wire。worker 面 decode 跑在 handler pool，decode 完成后 commit
@@ -614,7 +614,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationOldSelectionAfterReregister)
     serviceName,
     makeAcceptingAckHandler(),
     makeCountingRequestHandler(executionsGen2),
-    ServiceProvider::ServiceMode::Normal);
+    ServiceProvider::ServiceInvocationMode::NormalOnly);
   BOOST_CHECK(handle2.valid());
   BOOST_CHECK(!handle2.closed());
 
@@ -671,7 +671,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationInlineDispatchFence)
     serviceName,
     makeAcceptingAckHandler(),
     makeCountingRequestHandler(executionsGen1),
-    ServiceProvider::ServiceMode::Normal);
+    ServiceProvider::ServiceInvocationMode::NormalOnly);
 
   // Wait for the posted ACK commit before replacing the registration. Give R2 a distinct
   // user token so the request replay filter does not reject the independent acceptance.
@@ -690,7 +690,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationInlineDispatchFence)
     serviceName,
     makeAcceptingAckHandler(),
     makeCountingRequestHandler(executionsGen2),
-    ServiceProvider::ServiceMode::Normal);
+    ServiceProvider::ServiceInvocationMode::NormalOnly);
 
   // 旧 selection 在 inline 面被同一 fence 拒（inline 不能绕过代次绑定）。
   const auto oldSelection = makeSelectionBuffer(oldRequestId, "provider-token-old");
@@ -828,7 +828,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationCloseAfterProviderDestruction)
       serviceName,
       makeAcceptingAckHandler(),
       makeCountingRequestHandler(executions),
-      ServiceProvider::ServiceMode::Normal);
+      ServiceProvider::ServiceInvocationMode::NormalOnly);
     BOOST_CHECK(handle.valid());
     BOOST_CHECK(!handle.closed());
     provider.reset(); // Provider 先析构：关闭所有 owned registrations。
@@ -880,7 +880,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationCleanupDoesNotEraseSuccessor)
     serviceName,
     makeAcceptingAckHandler(),
     makeCountingRequestHandler(executions),
-    ServiceProvider::ServiceMode::Normal);
+    ServiceProvider::ServiceInvocationMode::NormalOnly);
 
   // R1 与 R2 先后真实 accept（R2 用独立 user token 的 wire，防 request
   // replay hash 误伤）：两个 pendingKey 各自的绑定都已写入。

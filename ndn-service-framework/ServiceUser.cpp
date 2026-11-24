@@ -18839,7 +18839,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                     std::bind(&ServiceUser::onStreamEvent, this, _1),
                                     true, true);
         const std::string collaborationRegex =
-            "^(<>*)<NDNSF><COLLAB>(<>*)$";
+            "^(<>*)" + NameToRegexString(ndn::Name("/NDNSF/COLLAB")) + "(<>*)$";
         m_svsps->subscribeWithRegex(
             ndn::Regex(collaborationRegex),
             std::bind(&ServiceUser::OnCollaborationData, this, _1),

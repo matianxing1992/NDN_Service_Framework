@@ -216,7 +216,7 @@ other component budgets remain operator assertions for the configured workload,
 not validated context-dependent memory estimates. Rank-sharded and native
 postprocessing roles do not use this unsharded initializer check.
 
-## Preferred user API (Spec 116)
+## Signed deployment and preplanned requests (Spec 116)
 
 Native warm invocations retain their authenticated fixed-role reference.
 Invocation transport V3 retains base endpoints and a signed generation range,
@@ -228,9 +228,10 @@ Small transient Core control publications retain their bounded private files
 and original signed packets instead of adding a copy to the model Repo store.
 Durable publication and model-sized transient publication keep their Repo paths.
 
-New applications import only `ndnsf_distributed_inference.api`. The primary
-workflow is a request against signed Application intent; a separate deployment
-call is optional prewarming, not a correctness prerequisite.
+The public native `Runtime` owns normal inference requests. The signed-deployment
+interface below serves existing deployment and journal workflows. Import it from
+`ndnsf_distributed_inference.api` and use `request_preplanned` explicitly;
+`InferenceApplication.request` and its positional compatibility shim have retired.
 
 ```python
 from datetime import timedelta
@@ -242,7 +243,7 @@ application = InferenceApplication.from_config(
     envelope_key_file="/run/secrets/ndnsf-di-envelope-key",
 )
 definition = application.define(...)  # typed intent, signed by the Application
-request = application.request(
+request = application.request_preplanned(
     definition, input={"prompt": "Hello"}, timeout=timedelta(minutes=5))
 print(request.deployment_status())
 result = request.result()
@@ -261,20 +262,33 @@ compatibility surfaces and emit migration guidance where adapted.
 
 | Maintained legacy call | Canonical owner/call |
 |---|---|
-| `APPClient.submit(...)` / `distributed_inference(...)` | `InferenceClient.request(deployment, ...)` |
-| `APPClient.infer(...)` | `InferenceClient.run(deployment, ...)` |
+| `APPClient.submit(...)` | `InferenceClient.request_preplanned(deployment, ...)` |
+| `APPClient.distributed_inference(...)` / `APPClient.infer(...)` | `InferenceClient.run(deployment, ...)` |
 | `APPProvider.serve_service(...)` | `InferenceProvider.serve(...)` |
 | Provider `stage/activate/drain/delete` | separately credentialed `ProviderAdminPort` |
 | raw deployment discovery dictionaries | `client.deployments.discover(...)` typed summaries |
 
-`InferenceApplication.request` and `InferenceClient.request` have the same
-signature and return the same durable handle. For a local creator it projects
-validated Provider-signed snapshots. For a remote caller, the bound
+`InferenceApplication.request_preplanned` delegates to
+`InferenceClient.request_preplanned`. The durable request handle projects
+validated Provider-signed snapshots for a local creator. For a remote caller, the bound
 deployment-owner coordinator projects the same aggregate through signed
 Collaboration status while its inner request still verifies every Provider.
 A generic `DONE` status without the exact revision, adapter, artifacts, and all
 required roles remains `PREPARING`. Definitions signed by an unknown
 Application key are rejected even when their self-signature is valid.
+
+Preplanned deployment requests retain their ordinary network/coordinator and
+journal paths. Native inference uses the public `Runtime` SDK. The former APP
+native-requester configuration bridge has retired; signed deployment intent
+alone does not establish native backend support.
+
+Historical APP journals remain readable with the original envelope key. Completed
+requests retain their results, and reopening an active record still checks its
+requester and attempt. An active record bound to the retired APP R0 activation
+path cannot resume remote execution or cancellation: control and new results
+are rejected before journal writes. Submit a fresh request through the native
+path; the old record is not evidence that its remote work has stopped. Core and
+embedded C++ SDK activation protocols retain their separate contracts.
 
 Remote discovery is record-based rather than metadata-based. The Application
 publishes an exact, signed definition Data packet; the lifecycle owner may
@@ -299,37 +313,16 @@ lifecycle state machines. Existing signed `SELECTION-STATUS` snapshots expose
 coordinator progress to the remote request handle; no DI-specific status wire
 protocol is added.
 
-NDNSF-DistributedInference is an application-layer distributed inference
-runtime built on NDNSF. The current user-facing API and examples are still
-Python-first, but the performance direction is C++-first: hot-path scheduling,
-dependency dataflow, prefetch, worker dispatch, and future ONNX Runtime
-execution should run in native C++ and call NDNSF Core directly. Python should
-remain a thin API, deployment, GUI, and experiment layer.
-
-For model/task-first streamed requests, `APPClient.request_streaming(...)`
-returns one `AutomaticStreamingHandle`. Its `timing_summary` is a
-metadata-only view of the real monotonic event and terminal callbacks: it
-reports TTFT, each inter-token interval, terminal/error time, and bounded
-attempt/replacement counts without exposing prompt, token, logits, or state
-payloads. Per-role lifecycle attribution still belongs to the Spec175 evidence
-recorder and qualification gates; do not infer it from this aggregate view.
-
-The repository therefore contains two layers today:
-
-```text
-Stable APP-facing layer
-  Python InferenceApplication / InferenceClient / InferenceProvider
-  policy generation, MiniNDN experiments, GUI, and example scripts
-
-Native hot-path migration layer
-  C++ async dataflow runtime under NDNSF-DistributedInference/cpp/
-  multi-worker role scheduling, planned dependency edges, fan-in/fan-out
-  execution, and timing hooks for future C++ ONNX/NDNSF integration
-```
-
-The long-term goal is not to wrap a Python executor around NDNSF forever.
-Instead, Python should describe the service and submit inference jobs, while
-the providers execute dependency-driven inference through native C++ workers.
+NDNSF-DistributedInference runs planning, preparation, dependency execution,
+streaming and conversation state in C++. Python provides thin SDK calls,
+deployment orchestration, offline model preparation, GUI and experiment tools.
+Normal inference uses the public `Runtime`, `User`, `PreparedModel` and
+`RequestHandle` API. A reliable `EventReader` exposes native stream events;
+result, cancellation, close and drain remain native-owned. The maintained
+[YOLO requester](../examples/python/NDNSF-DistributedInference/yolo_2x2/user.py)
+shows input publication, request options and bounded cleanup on that path.
+Existing `InferenceApplication`/`InferenceClient` deployment and journal
+operations retain their explicit `request_preplanned` entry point.
 
 For the installed `ndnsf-di cluster` path, size the preparation budget separately
 from inference. `requester.limits.bootstrap_ms` bounds native preparation
@@ -818,6 +811,26 @@ stage and explicit merge/fan-in edges. For network regression, the generated
 policy creates enough compute provider identities for the generated roles while
 keeping the repo provider separate.
 
+Both GUI controls for **YOLO 2x2** use the installed native Requester and
+Providers. In **YOLO candidate arguments**, enter the prepared Spec 201
+candidate JSON path, its expected SHA-256 and the matching model path. If the
+candidate uses a separate install prefix, also enter its native binary, Python
+package and library arguments as accepted by the smoke launcher. When opening
+the installed GUI from outside the checkout, set `NDNSF_REPO_ROOT` to the
+matching checkout so the GUI can locate the experiment launcher. The same
+candidate arguments work on the command line:
+
+```sh
+python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
+  --native-requester --native-providers --parallel-detect-scale-shards \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" \
+  --model "$model"
+```
+
+The smoke launcher prepares the assets and starts the roles. The native
+Requester uses the `ONNX_SOURCE` hybrid catalog and emits the run evidence
+path with `YOLO_2X2_NATIVE_REQUESTER_MININDN_OK`.
+
 The `yolo_2x2` splitter now exposes two experimental parallel modes. The older
 `--parallel-output-shards` mode is a small correctness scaffold: same-stage
 roles run independently and a `/Merge` role concatenates output slices, but
@@ -956,28 +969,19 @@ The easiest way to exercise the whole network path is MiniNDN:
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_YoloSplit_Minindn.py
-sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
 sudo -E python3 Experiments/NDNSF_DI_PyTorch2x2_Minindn.py
 ```
 
-The YOLO layout smoke can replace the Python compute providers with the native
-C++ provider executable for the parallel-detect layout:
+For the native YOLO 2x2 network smoke, supply the frozen Spec 201 candidate, its SHA-256 and the matching model.
 
 ```bash
-sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
-  --layout 2x2 \
-  --parallel-detect-scale-shards \
-  --native-providers \
-  --cold-requests 1 \
-  --warm-requests 1
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case yolo-2x2 --spec201-candidate "$candidate" \
+  --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 ```
 
-Expected success markers include:
-
 ```text
-YOLO_SPLIT_RESULT ... ok=true
-YOLO_2X2_RESULT ... ok=true
-PYTORCH_2X2_RESULT ... ok=true
+YOLO_2X2_NATIVE_REQUESTER_MININDN_OK ...
 ```
 
 The unified runner can also launch selected cases. The `yolo-layout` case is
@@ -986,19 +990,19 @@ fast non-MiniNDN layout/policy smoke:
 
 ```bash
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case runtime-compat
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
-Current validated YOLO layout coverage:
+Historical YOLO layout results (not current candidate qualification):
 
 ```text
 2x2  default historical network regression
 2x3  MiniNDN network regression with one provider per generated role
 3x2  MiniNDN network regression with one provider per generated role
 1x3  local export/policy/ONNX correctness smoke
-3x3  local export/policy/ONNX correctness smoke; run yolo-layout before using it as a release baseline
+3x3  local export/policy/ONNX correctness smoke; historical offline result only, not a current release baseline
 2x2 parallel-detect-scale  local ONNX correctness smoke with /Backbone, /Head/*, /Merge
 2x3 parallel-detect-scale  local policy/ONNX smoke; MiniNDN smoke is the network baseline
 ```
@@ -1400,33 +1404,7 @@ Model shards, runtime bundles, and intermediate data should not be pushed to
 arbitrary nodes. NDNSF-DI can carry artifact references generated from
 NDNSF-DistributedRepo object manifests:
 
-```python
-from ndnsf_distributed_inference import (
-    LocalDistributedRepo,
-    PlacementPolicy,
-    StorageCapability,
-)
-
-repo = LocalDistributedRepo([
-    StorageCapability("/repo/A", free_bytes=4_000_000_000,
-                      recent_load=0.1, failure_domain="rack-a"),
-    StorageCapability("/repo/B", free_bytes=4_000_000_000,
-                      recent_load=0.2, failure_domain="rack-b"),
-])
-
-manifest = repo.put(
-    object_name=(
-        "/NDNSF-DistributeInference/example/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/"
-        "NDNSF-DI/ARTIFACT/AI/YOLO/2x2/Stage/0/Shard/0/model"
-    ),
-    payload=model_bytes,
-    object_type="onnx-model",
-    policy=PlacementPolicy(replication_factor=2),
-    policy_epoch="/Policy/yolo-2x2/v1",
-)
-
-payload = repo.fetch_object(manifest.object_name, manifest)
-```
+See the [native Repo Python API](../NDNSF-DistributedRepo/pythonWrapper/README.md) for artifact publication and retrieval.
 
 The manifest records the object hash, size, replication factor, selected repo
 nodes, and the signed Data names that hold the object segments. Object names
@@ -1453,10 +1431,8 @@ terms of object references and manifests, not repo segment names.
 User side:
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceClient,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.client import DistributedInferenceClient
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 from ndnsf import CollaborationRole
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
@@ -1503,10 +1479,8 @@ payload/reference plus the normal NDNSF collaboration request.
 Provider side:
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceProvider,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.provider import DistributedInferenceProvider
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
 inference = DistributedInferenceProvider.create(
@@ -1523,10 +1497,8 @@ inference.run()
 Controller side:
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceController,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.app_sdk.controller import DistributedInferenceController
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
 controller = DistributedInferenceController.create(
@@ -1743,7 +1715,7 @@ splitter may all use different logic. NDNSF-DistributedInference only requires
 that the splitter emits a standard `SplitterOutput`:
 
 ```python
-from ndnsf_distributed_inference import InferenceDependency
+from ndnsf_distributed_inference.plan import InferenceDependency
 from ndnsf_distributed_inference.splitter import (
     SplitArtifact,
     SplitServiceSpec,
@@ -2106,7 +2078,7 @@ The LLM example deliberately reuses the same DI deployment machinery as the
 YOLO examples. Artifact deployment, asynchronous readiness, repo-backed
 materialization, native-plan generation, and dependency references remain
 framework mechanisms. LLM-specific code is limited to planner/runtime adapters:
-for the current Qwen example, `ndnsf_distributed_inference.llm_runtime` provides
+for the current Qwen example, `ndnsf_distributed_inference.adapters.llama.runtime` provides
 an OpenAI-compatible inference-payload adapter, repo-materialized llama-server
 process management, and GGUF/runtime artifact materialization helpers. This
 keeps `llama-server` from becoming a second, parallel deployment system.
@@ -2607,70 +2579,11 @@ Stage 1: hidden-state npz -> layers 8-16 -> hidden-state npz
 Stage 2: hidden-state npz -> layers 16-24 -> logits/top token
 ```
 
-The MiniNDN script supports this runtime with `--runtime qwen-onnx`:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --warmup-requests 3 \
-  --measured-duration-s 60 \
-  --request-interval-ms 200
-```
-
-To force the full-context input through the standard large-data/reference path:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 1 \
-  --publish-input-reference
-```
-
-To validate append-only context-delta handling while preserving the expected
-top token:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 2 \
-  --context-input-mode append-empty-delta-after-first \
-  --publish-input-reference
-```
-
-To validate real append-delta correctness, append one or more token IDs and
-compare the distributed result with a locally recomputed full-context ONNX
-pipeline result:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 2 \
-  --context-input-mode append-token-delta-after-first \
-  --delta-token-ids 2 \
-  --publish-input-reference
-```
-
-The same regression is wired into the DI regression suite and the optional
-MiniNDN quick-suite case:
-
-```bash
-python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
-  --case llm-pipeline-qwen-onnx-delta-minindn
-
-python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py \
-  --case di-llm-qwen-onnx-delta-minindn
-```
+The former Python MiniNDN execution harness has retired. Maintained network
+execution uses `Experiments/native_deployment_entrypoint.py` with an explicit
+native deployment configuration and installed C++ actors. The offline export
+and independent reference helpers above remain available. The measurements
+below describe the historical Python pipeline and do not qualify native delivery.
 
 Recorded 60-second result on `AI_Lab.conf`:
 
@@ -2758,7 +2671,7 @@ After installation, application code can import the distributed inference layer
 from any working directory:
 
 ```python
-from ndnsf_distributed_inference import DistributedInferenceClient
+from ndnsf_distributed_inference.client import DistributedInferenceClient
 ```
 
 Run one role per shell or MiniNDN node:
@@ -2969,45 +2882,9 @@ The smoke succeeds only when it prints:
 ONNX_EXECUTOR_FANIN_FANOUT_OK
 ```
 
-```bash
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
-  --model yolo26n.pt \
-  --input-size 32 \
-  --layout 3x2 \
-  --auto-split \
-  --out-dir /tmp/ndnsf-yolo-3x2 \
-  --policy /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id A --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id B --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id C --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id D --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/user.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
-```
+See the [native YOLO 2x2 smoke](#7-run-the-full-minindn-smoke-tests) for the maintained network entry point.
 
-With `--auto-split`, the splitter uses the ONNX planner recommendation as a
-pipeline-boundary hint; the requested layout determines how many chunks are
-exported. Without it, the example keeps the previous YOLO-specific split hint
-as a stable fallback.
-
-For MiniNDN, run:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
-```
-
-Expected output includes:
-
-```text
-YOLO_2X2_RESULT ... ok=true
-YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK ...
-```
-
-The same script also writes regression statistics under
+Historical Python-provider layout runs wrote regression statistics under
 `results/yolo_<layout>_minindn_quick/`:
 
 ```text
@@ -3400,24 +3277,9 @@ lifecycle logs. The script now defaults `--ndn-packet-trace-window` to `warm` so
 the pcap stays focused on the measured inference window; use `all` only when
 debugging keychain, artifact deployment, repo, or startup synchronization.
 
-For the older 2x3 Python-provider parallel-detect-scale baseline, use a
-60-second warm window and explicit Python worker knobs:
-
-```bash
-PYTHONPATH=NDNSF-DistributedInference:$PYTHONPATH \
-python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
-  --case yolo-layout \
-  --layout 2x3 \
-  --parallel-detect-scale-shards \
-  --cold-requests 1 \
-  --warm-requests 1 \
-  --warm-duration-s 60 \
-  --warm-interval-ms 1000 \
-  --ack-timeout-ms 1500 \
-  --timeout-ms 60000 \
-  --provider-handler-workers 4 \
-  --user-async-workers 4
-```
+The Python-provider `yolo-layout` network entry point is retired. Use the
+`yolo-2x2` native candidate workflow above. The historical measurements below
+do not qualify the current candidate.
 
 A representative native-provider MiniNDN diagnostic on the current AI_Lab
 topology is preserved at
@@ -3564,18 +3426,14 @@ To run the APP API smoke, the local ONNX executor smoke, and both stable
 MiniNDN split smokes through one entry point:
 
 ```bash
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
-`yolo-layout` validates custom YOLO layout export, repo-backed artifact
-deployment, dependency prefetch, activation exchange, and final result delivery
-through MiniNDN. `yolo-layout-local` remains available when only the generated
-chunk graph and local ONNX correctness need to be checked quickly.
-The currently validated network-level custom layouts are `2x3` and `3x2`.
-`1x3` and `3x3` are useful as fast local export smokes, while `3x3` should be
-run through `yolo-layout` before it is treated as a deployment baseline.
+`yolo-layout-local` retains offline export and numerical checks. The old
+`yolo-layout` network mode is retired; its historical custom-layout results
+do not qualify the current native candidate.
 
 The policy/repo inspection helper is still available:
 
@@ -3694,7 +3552,10 @@ Install only required distributions under `packaging/python/`. External
 optimizers implement the ten public SDK protocols; omitted hooks resolve to
 named defaults. `RunnerAdapterRegistry` remains independent. `APPDeployment`
 uses external `ArtifactReference` values and `APPClient` provides durable
-submit/reopen/wait/cancel/stream/result handles. The aggregate is compatibility-only.
+submit/reopen/wait/cancel/stream/result handles. The aggregate provides the shared namespace and owner-package dependencies.
+Writing and reopening encrypted APP request records requires the matching
+installed `ndnsf` binding. The native codec seals each request envelope and
+authenticates its request ID and expiry on read.
 
 For host-only `ndnsf-di cluster` management, install `ndnsf-di-ops`; its normal
 dependency resolver installs the Name codec without App, native bindings or
@@ -3784,36 +3645,16 @@ newer than the cursor. Polling has bounded adaptive intervals and stops on a
 terminal state. These rules contain no UAV, codec, model-family or workload
 special case.
 
-## Spec 163 deferred collaboration planning
+## Native requests and offline planning
 
-The canonical application path is now model/task/input first. It does not
-require an application-authored deployment, provider list, role list, or
-pre-split model:
+Normal inference uses `ndnsf_distributed_inference.api.Runtime` and its
+`User.prepare` / `User.request` methods. The configured C++ owner admits signed
+Provider evidence, prepares model artifacts, commits the selected plan and
+executes authenticated dependencies. Python automatic-planning and model/task
+request conveniences have retired. Generic Core `DEFERRED` collaboration and
+explicit preplanned deployment operations retain their own supported contracts.
 
-```python
-model = ModelRef(
-    model_name="Qwen/Qwen3-0.6B",
-    content_digest="sha256:<exact frozen file-manifest digest>",
-    semantics_digest="sha256:<adapter and inference-semantics digest>",
-)
-handle = client.request(
-    model=model,
-    task=task,
-    input=validated_input,
-    timeout_ms=30_000,
-)
-```
-
-NDNSF-DI starts the generic NDNSF Collaboration API in `DEFERRED` mode,
-collects one immutable `ACK_CLOSED` snapshot, derives graph-valid split
-candidates through the selected digest-pinned `ModelFamilyAdapter`, and passes
-sanitized signed Provider offers to the configured `ModelPlacementStrategy`.
-After independent decision validation and any required trusted
-materialization/DistributedRepo publication, it commits the plan on the same
-invocation. The existing roles/dependencies-before-Request API remains the
-explicit `PREPLANNED` compatibility path.
-
-`PreSplitFirstStrategy` first considers an exact active pre-split manifest,
+For offline plan comparisons, `PreSplitFirstStrategy` first considers an exact active pre-split manifest,
 then ranks fresh signed residency evidence in this order: pinned GPU,
 reload-safe GPU, host RAM, disk, repository, and finally a newly generated
 graph-valid split. Residency is evidence rather than authority. Selection
@@ -3852,3 +3693,5 @@ This host has no CUDA, so GPU load and exact warm-GPU-reuse criteria remain
 explicitly `DEFERRED`. The run is not distributed-Qwen, TigerCluster,
 large-model, malicious-computation, distributed-atomicity, deadlock-freedom,
 or universal-optimizer evidence.
+
+Root symbol compatibility exports, Legacy adapters and legacy import modules have retired. Import `ndnsf_distributed_inference.api` or the canonical owner modules shown above. The aggregate distribution remains the shared namespace owner.

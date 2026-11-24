@@ -36,6 +36,42 @@ def shell(code, *args, env=None):
         )
 
 
+def test_minindn_registration_precedes_older_global_packages(tmp_path):
+    managed = tmp_path / "managed 'mini' site"
+    older = tmp_path / "older-site"
+    system_site = tmp_path / "system-site"
+    system_site.mkdir()
+    for directory in (managed, older):
+        for name in ("minindn", "mininet"):
+            package = directory / name
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("")
+    registration = system_site / "ndnsf-minindn.pth"
+    result = shell(
+        DEFINITIONS + "\nwrite_minindn_site_registration "
+        + shlex.quote(str(managed)) + " " + shlex.quote(str(registration)),
+        "--deps-only", "--no-system-packages", "--no-dependencies")
+    assert result.returncode == 0, result.stderr
+    probe = """
+import importlib
+from pathlib import Path
+import site
+import sys
+
+sys.path.insert(0, sys.argv[1])
+site.addsitedir(sys.argv[2])
+for name in ("minindn", "mininet"):
+    module = importlib.import_module(name)
+    expected = Path(sys.argv[3]) / name / "__init__.py"
+    assert Path(module.__file__).resolve() == expected.resolve(), module.__file__
+"""
+    checked = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", probe,
+         str(older), str(system_site), str(managed)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=10)
+    assert checked.returncode == 0, checked.stderr
+
+
 def test_yolo_launcher_preflights_its_prefix_outside_checkout(tmp_path):
     prefix = tmp_path / "prefix"
     bin_dir = prefix / "bin"
@@ -165,30 +201,8 @@ def test_jobs_environment_and_override():
     assert shell(DEFINITIONS + '\nprintf "%s" "$JOBS"', "--jobs", "1", env=env).stdout == "1"
 
 
-def test_person_runtime_plan_does_not_create_environment(tmp_path):
-    destination = tmp_path / "person-cpu"
-    result = shell(SCRIPT.read_text(), "--person-runtime", str(destination), "--plan")
-    assert result.returncode == 0, result.stderr
-    assert "Person CPU runtime:" in result.stdout
-    assert not destination.exists()
 
 
-def test_person_runtime_requires_verified_wheel_before_creating_environment(tmp_path):
-    python = shutil.which("python3.10")
-    if python is None:
-        pytest.skip("CPython 3.10 is not installed")
-    destination = tmp_path / "person-cpu"
-    wheels = tmp_path / "wheels"
-    wheels.mkdir()
-    (wheels / "torchreid-1.4.0-py3-none-any.whl").write_bytes(b"untrusted wheel")
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts/install-person-runtime.sh"), str(destination)],
-        env=dict(os.environ, NDNSF_PERSON_PYTHON=python, NDNSF_PERSON_WHEELS=str(wheels)),
-        text=True, capture_output=True, timeout=10,
-    )
-    assert result.returncode != 0
-    assert "Missing hash-verified Torchreid" in result.stderr
-    assert not destination.exists()
 
 
 def test_installer_defaults_to_host_memory_policy():
@@ -207,21 +221,6 @@ def test_installer_defaults_to_host_memory_policy():
     assert result.stdout == expected
 
 
-def test_person_runtime_rejects_disposable_parent_environment(tmp_path):
-    python = shutil.which("python3.10")
-    if python is None:
-        pytest.skip("CPython 3.10 is not installed")
-    parent = tmp_path / "parent"
-    subprocess.run([python, "-m", "venv", "--without-pip", str(parent)], check=True)
-    destination = tmp_path / "person-cpu"
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts/install-person-runtime.sh"), str(destination)],
-        env=dict(os.environ, NDNSF_PERSON_PYTHON=str(parent / "bin/python")),
-        text=True, capture_output=True, timeout=10,
-    )
-    assert result.returncode != 0
-    assert "stable base interpreter" in result.stderr
-    assert not destination.exists()
 
 
 @pytest.mark.parametrize("version", ["1.71.0", "1.85.0", "1.90.0"])
@@ -363,7 +362,7 @@ printf 'SELECTED=%s,%s,%s\\n' "$NDNSF_INSTALL_DI" "$NDNSF_INSTALL_REPO" "$NDNSF_
 refresh_global_pkg_config_path() { :; }
 run_bounded() { printf '%s\\n' "$@"; }
 run_waf_clean configure
-''', "--components", profile)
+''', "--components", profile, "--configure")
     assert result.returncode == 0, result.stderr
     assert f"SELECTED={di},{repo},{uav}" in result.stdout
     assert "--components=" + profile in result.stdout.splitlines()
@@ -667,7 +666,7 @@ def test_python_wheel_staging_excludes_runtime_and_build_artifacts(tmp_path):
         "NDNSF-DistributedRepo/src/repo.cpp",
         "NDNSF-DistributedInference/cpp/probe.cpp",
         "NDNSF-DistributedInference/ndnsf_di_launcher.py",
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/manifest.json",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
         "packaging/ndnsf-di-container/lib/allocation_topology.py",
         "packaging/ndnsf-di-container/lib/adapters/__init__.py",
         "packaging/ndnsf-di-container/lib/adapters/base.py",

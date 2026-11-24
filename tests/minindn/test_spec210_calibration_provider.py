@@ -13,7 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = Path(os.environ.get(
     "NDNSF_UAV_DEMO_ASSET_DIR", "/home/tianxing/.cache/ndnsf/spec191-assets")).expanduser()
-MODEL = Path(os.environ.get("NDNSF_UAV_DEMO_MODEL", str(ASSETS / "3UAVs.pt"))).expanduser()
+MODEL = Path(os.environ.get("NDNSF_UAV_DEMO_MODEL", str(ASSETS / "3UAVs_YOLOv8n.onnx"))).expanduser()
 TRUST_SCHEMA_VALUE = os.environ.get("NDNSF_UAV_DEMO_TEST_TRUST_SCHEMA", "")
 TRUST_SCHEMA = Path(TRUST_SCHEMA_VALUE).expanduser() if TRUST_SCHEMA_VALUE else None
 PROVIDER_HELPER_VALUE = os.environ.get("NDNSF_SPEC210_CALIBRATION_PROVIDER_HELPER", "")
@@ -89,8 +89,8 @@ def test_minindn_selected_provider_rejects_authorized_camera_calibration():
             f"ground station:\n{ground_station_log[-4000:]}")
         assert provider_log.count("SPEC210_EXTERNAL_CALIBRATION_ROLE_COMPLETE invocation=") >= 1
         assert "CALIBRATION reference is not owned by the selected Calibration-Provider" in compute_log
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-0" in compute_log
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-1" not in compute_log
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-0" in compute_log
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-1" not in compute_log
         assert ("SPEC191_TRACKING_SELECTED role=Calibration-Provider "
                 "provider=/example/uav/calibration-provider") in ground_station_log
         assert "SPEC191_TRACKING_WINDOW_RESULT window=0 status=success" in ground_station_log

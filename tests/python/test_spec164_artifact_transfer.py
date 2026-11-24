@@ -4,35 +4,16 @@
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
 
 import ndnsf
 from py_repoclient import (
     AdaptiveArtifactTransfer,
     AdaptiveTransferOptions,
-    ArtifactReference,
     ArtifactSegmentDisposition,
     ReplicaLeaseControlFlow,
-    ReplicaLeaseCollaborationClient,
     ReplicaLeaseControlState,
-    artifact_reference_from_dict,
     artifact_upload_lease_from_dict,
-    decode_upload_lease_assignment,
-    encode_upload_lease_ack,
 )
-
-
-def make_reference() -> ArtifactReference:
-    return artifact_reference_from_dict({
-        "logicalName": "/artifact/spec164/t007",
-        "digestAlgorithm": "sha256",
-        "contentDigest": "ab" * 32,
-        "sizeBytes": 8192,
-        "formatVersion": "artifact-manifest-v2",
-        "rootManifestName": "/publisher/manifests/spec164/t007",
-        "publisherIdentity": "/publisher",
-        "policyEpoch": "policy-epoch-1",
-    })
 
 
 def make_lease(provider: str, suffix: str):
@@ -134,25 +115,6 @@ class ArtifactTransferTests(unittest.TestCase):
                 lambda _packet: None,
                 initial_window=0,
             )
-
-    def test_retired_collaboration_adapter_cannot_start_a_request(self):
-        from py_repoclient import RepoCompatibilityError
-
-        class User:
-            def __init__(self):
-                self.requests = []
-
-            def begin_collaboration(self, *args, **kwargs):
-                self.requests.append((args, kwargs))
-                raise AssertionError("retired adapter emitted a collaboration")
-
-        user = User()
-        with self.assertRaises(RepoCompatibilityError) as error:
-            ReplicaLeaseCollaborationClient(user, "/Repo/Artifact/Publish")
-        self.assertEqual(error.exception.code, "SPEC192_COMPATIBILITY_V1")
-        self.assertEqual(error.exception.operation, "ReplicaLeaseCollaborationClient")
-        self.assertEqual(error.exception.replacement, "use ArtifactRepositoryApi.make_persistent")
-        self.assertEqual(user.requests, [])
 
 if __name__ == "__main__":
     unittest.main()

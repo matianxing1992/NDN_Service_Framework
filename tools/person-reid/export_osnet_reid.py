@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the torchreid OSNet x1.0 Market1501 checkpoint to ONNX.
+"""Export a torchreid OSNet x1.0 Market1501 or MSMT17 checkpoint to ONNX.
 
 Offline preparation only: production tracking consumes the resulting ONNX and
 its receipt.  The preprocessing contract matches the maintained person profile
@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from importlib.metadata import version
 import json
 from pathlib import Path
 
 import numpy as np
-import onnx
-import onnxruntime as ort
 import torch
 from torch import nn
-from torchreid.reid.models import build_model
+try:
+    from torchreid.models import build_model
+except ModuleNotFoundError as exc:
+    if exc.name != "torchreid.models":
+        raise
+    from torchreid.reid.models import build_model
 
 
 def sha256(path: Path) -> str:
@@ -53,7 +57,12 @@ def main() -> int:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--receipt", required=True)
+    parser.add_argument("--dataset", choices=("market1501", "msmt17"), default="market1501",
+                        help="training dataset of the supplied checkpoint")
     args = parser.parse_args()
+
+    import onnx
+    import onnxruntime as ort
 
     checkpoint = Path(args.checkpoint).resolve(strict=True)
     output = Path(args.output).resolve()
@@ -98,14 +107,14 @@ def main() -> int:
     receipt = {
         "schema": "ndnsf-person-reid-export-v1",
         "architecture": "osnet_x1_0",
-        "dataset": "market1501",
+        "dataset": args.dataset,
         "preprocessId": "osnet-rgb-256x128-imagenet-l2-v1",
         "input": {"name": "images", "shape": ["batch", 3, 256, 128], "dtype": "float32"},
         "output": {"name": "embedding", "shape": ["batch", 512], "dtype": "float32"},
         "normalization": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
         "checkpoint": {"path": str(checkpoint), "sha256": sha256(checkpoint)},
         "onnx": {"path": str(output), "sha256": sha256(output), "opset": 17},
-        "versions": {"torch": torch.__version__, "torchreid": "0.2.5",
+        "versions": {"torch": torch.__version__, "torchreid": version("torchreid"),
                      "onnx": onnx.__version__, "onnxruntime": ort.__version__},
         "maxAbsTorchOnnx": max_abs,
     }

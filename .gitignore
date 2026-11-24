@@ -44,6 +44,7 @@ RELEASE/*
 !RELEASE/*.closure.gz
 *.pt
 *.onnx
+!tests/fixtures/spec175/tiny-causal-lm-v1/standalone/four-role/source.onnx
 examples/python/NDNSF-DistributedInference/native_di_tracer/artifacts/qwen-native-tracer-*.onnx.sha256
 examples/python/NDNSF-DistributedInference/native_di_tracer/artifacts/qwen-native-tracer-artifacts-summary.json
 

@@ -10,6 +10,7 @@ all token decisions are produced by ONNX Runtime from these generated graphs.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -193,6 +194,87 @@ def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _write_four_role_source(output: Path) -> None:
+    """Compose the frozen four-stage oracle into one native preparation input.
+
+    State belongs to each original stage. Namespacing those ports preserves
+    that ownership when the native preparer extracts the same four regions.
+    The original four files remain the independent numerical reference.
+    """
+    nodes, initializers, inputs, outputs, boundaries = [], [], [], [], []
+    mapping = {"embedding": [], **{f"layer-{i:02d}": [] for i in range(4)},
+               "final-norm-head": []}
+    state_inputs, state_outputs, references = {}, {}, {}
+    families = ("attention_kv", "recurrent_state", "convolution_state")
+    for index in range(len(PARTITIONS["four-role"])):
+        original = onnx.load(output / "four-role" / f"role-{index}.onnx")
+
+        def renamed(name: str) -> str:
+            if name == "input_ids" or name == "logits":
+                return name
+            if name == "hidden_in":
+                return f"hidden-layer-{index - 1}-to-{index}"
+            if name == "hidden_out":
+                return f"hidden-layer-{index}-to-{index + 1}"
+            return f"stage{index}_{name}"
+
+        for original_node in original.graph.node:
+            node = copy.deepcopy(original_node)
+            node.name = renamed(node.name)
+            node.input[:] = [renamed(name) for name in node.input]
+            node.output[:] = [renamed(name) for name in node.output]
+            region = f"layer-{index:02d}"
+            if index == 0 and (original_node.name.startswith("embed_") or
+                               original_node.name == "token_embedding"):
+                region = "embedding"
+            elif index == 3 and original_node.name.startswith("head_"):
+                region = "final-norm-head"
+            mapping[region].append(len(nodes))
+            nodes.append(node)
+        for original_tensor in original.graph.initializer:
+            tensor = copy.deepcopy(original_tensor)
+            tensor.name = renamed(tensor.name)
+            initializers.append(tensor)
+        for original_value in original.graph.input:
+            if original_value.name == "hidden_in":
+                continue
+            value = copy.deepcopy(original_value)
+            value.name = renamed(value.name)
+            inputs.append(value)
+        for original_value in original.graph.output:
+            value = copy.deepcopy(original_value)
+            value.name = renamed(value.name)
+            (boundaries if original_value.name == "hidden_out" else outputs).append(value)
+        role = f"/LLM/Pipeline/Stage/{index}"
+        state_inputs[role] = {f"{family}_in": [renamed(f"{family}_in")]
+                              for family in families}
+        state_outputs[role] = {f"{family}_out": [renamed(f"{family}_out")]
+                               for family in families}
+        references[f"four-role/role-{index}.onnx"] = _sha256(
+            output / "four-role" / f"role-{index}.onnx")
+
+    graph = helper.make_graph(nodes, "spec175-canonical-four-role", inputs, outputs,
+                              initializer=initializers, value_info=boundaries)
+    model = helper.make_model(graph, producer_name="ndnsf-spec175-fixture",
+                              producer_version="1", domain="ndnsf.org/spec175",
+                              model_version=1,
+                              opset_imports=[helper.make_operatorsetid("", OPSET)])
+    model.ir_version = 9
+    onnx.checker.check_model(model, full_check=True)
+    directory = output / "standalone" / "four-role"
+    directory.mkdir()
+    source = directory / "source.onnx"
+    source.write_bytes(model.SerializeToString(deterministic=True))
+    (directory / "source.json").write_text(json.dumps({
+        "schema": "spec175-native-four-role-source-v1",
+        "source": {"path": "standalone/four-role/source.onnx", "digest": _sha256(source)},
+        "reference_digests": references,
+        "node_mapping": mapping,
+        "state_inputs": state_inputs,
+        "state_outputs": state_outputs,
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _write_standalone_tokenizers(output: Path) -> None:
     """Write the native tokenizer fixtures used by the C++ generation oracle.
 
@@ -307,6 +389,8 @@ def build(output: Path) -> None:
                 "path": f"{partition}/{file_name}",
             })
         partition_rows[partition] = roles
+
+    _write_four_role_source(output)
 
     content = {
         str(path.relative_to(output)): _sha256(path)

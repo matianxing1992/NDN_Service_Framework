@@ -91,7 +91,8 @@ parseUavPersonTrackingProfile(const std::string& wire)
       "detectorDigest", "reidDigest", "architecture", "featureDimension", "preprocessId",
       "requestedDevice", "limits", "detectorPreprocessId"});
     const auto detectorMode = requireString(object, "detectorPreprocessId");
-    if (detectorMode != "yolo-letterbox1280-raw-box-v1" &&
+    if (detectorMode != "yolo-default640-stock-box-v1" &&
+        detectorMode != "yolo-letterbox1280-raw-box-v1" &&
         detectorMode != "yolo-letterbox1280-raw-box-nms50-v1") {
       throw std::invalid_argument("unsupported person detector preprocessing");
     }

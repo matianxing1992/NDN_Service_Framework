@@ -15,7 +15,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_SCRIPT = ROOT / "scripts/spec180_inventory.py"
 RUNNER_SCRIPT = ROOT / "scripts/run_spec180_local_gate.py"
-QWEN_WRAPPER = ROOT / "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py"
 
 
 def _load(path: Path, name: str):
@@ -382,27 +381,6 @@ def test_cli_rejects_non_string_environment_values(tmp_path: Path):
         "--output-root", str(tmp_path / "evidence"),
         "--environment-json", str(environment_path),
     ]) == 78
-
-
-@pytest.mark.parametrize("explicit", [False, True])
-def test_qwen_wrapper_accepts_runner_owned_output_directory(monkeypatch,
-                                                             tmp_path: Path, explicit):
-    wrapper = _load(QWEN_WRAPPER, "spec180_qwen_wrapper")
-    monkeypatch.setenv("SPEC180_CASE_OUTPUT_DIR", str(tmp_path / "q-c"))
-    argv = ["--case", "M01", "--seed", "1750001"]
-    if explicit:
-        argv += ["--output-dir", str(tmp_path / "explicit")]
-    args = wrapper.build_parser().parse_args(argv)
-    assert args.output_dir == str(tmp_path / ("explicit" if explicit else "q-c"))
-
-
-def test_qwen_wrapper_rejects_missing_output_before_child_start(monkeypatch):
-    wrapper = _load(QWEN_WRAPPER, "spec180_qwen_wrapper")
-    monkeypatch.delenv("SPEC180_CASE_OUTPUT_DIR", raising=False)
-    monkeypatch.setattr(sys, "argv", [str(QWEN_WRAPPER), "--case", "M01", "--seed", "1750001"])
-    monkeypatch.setattr(wrapper.subprocess, "run", lambda *a, **kw: pytest.fail("child started"))
-    with pytest.raises(SystemExit, match="--output-dir or SPEC180_CASE_OUTPUT_DIR is required"):
-        wrapper.main()
 
 
 @pytest.mark.parametrize("mutation,reason", [

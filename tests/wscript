@@ -305,7 +305,9 @@ def build(bld):
                     use='ndnsf-uav-tracking ndn-service-framework '
                         'NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL ONNXRUNTIME',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
-                    defines=['HAVE_TESTS'], rpath=tracking_rpath, install_path=None)
+                    defines=['HAVE_TESTS'] + (['NDNSF_UAV_TEST_HAS_OPENCV']
+                                              if bld.env.HAVE_UAV_OPENCV else []),
+                    rpath=tracking_rpath, install_path=None)
         bld.program(target='../uav-tracking-job-flow-tests',
                     name='uav-tracking-job-flow-tests',
                     source=[bld.path.find_node('main.cpp'),
@@ -1548,8 +1550,8 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    # Spec185 B3 prepared-request projection selector.  Keep the public
-    # PreparedModel request path in its own C++ binary so package reuse,
+    # Spec185 B3 prepared-request projection selector. Keep the public User
+    # request path for a prepared model in its own C++ binary so package reuse,
     # request identity allocation, input/reference validation, and native
     # cancellation are observed independently of the larger Core flow.
     bld.program(target='../di-prepared-request',
@@ -1982,7 +1984,6 @@ def build(bld):
                             'NDNSF-UAV-APP/shared/uav-person-tracking.cpp',
                             'NDNSF-UAV-APP/shared/uav-byte-track-state.cpp',
                             'NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp',
-                            'NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp',
                             'NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp',
                             'NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp',
                             'NDNSF-UAV-APP/tracking/UavTrackingSession.cpp',
@@ -1996,6 +1997,7 @@ def build(bld):
                             # contains sources this list already names and the link would then see
                             # every one of them twice.
                             'NDNSF-UAV-APP/tracking/uav-tracking-provider.cpp',
+                            'NDNSF-UAV-APP/tracking/uav-vehicle-model-backend.cpp',
                             'NDNSF-UAV-APP/tracking/uav-vehicle-tracking-engine.cpp',
                             'NDNSF-UAV-APP/shared/uav-person-window-admission.cpp',
                             'NDNSF-UAV-APP/shared/UavWindowBinding.cpp',
@@ -2042,7 +2044,8 @@ def build(bld):
                           '../NDNSF-UAV-APP/shared'],
                 use=('NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB ONNXRUNTIME '
                      'GSTREAMER GMODULE FFI PCRE DL TOKENIZER_BRIDGE sqlite3'
-                     + (' gtkmm' if 'uav' in bld.env.NDNSF_COMPONENTS else '')),
+                     + (' gtkmm' if 'uav' in bld.env.NDNSF_COMPONENTS else '')
+                     + (' UAV_OPENCV' if bld.env.HAVE_UAV_OPENCV else '')),
                 lib=['jpeg'] if 'uav' in bld.env.NDNSF_COMPONENTS else [],
                 # NAC-ABE exposes its test-only authority state under
                 # HAVE_TESTS.  The framework's generated config header does
@@ -2119,7 +2122,6 @@ def build(bld):
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-byte-track-state.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-window-admission.cpp'),
-                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
@@ -2272,7 +2274,7 @@ def build(bld):
                             'NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp')],
                 includes=['..'], use='NDN_CXX BOOST', install_path=None)
 
-    # Exercise native results, child-to-transaction integration and the legacy schema boundary.
+    # Exercise native results, transaction integration and the historical schema boundary.
     bld.program(target='../uav-person-result-tests', name='uav-person-result-tests',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/uav-person-result.t.cpp'),
@@ -2286,7 +2288,6 @@ def build(bld):
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-byte-track-state.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-window-admission.cpp'),
-                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp'),
                         bld.path.find_node('integration-tests/uav-tracking-flow.t.cpp'),
                         bld.path.find_node('integration-tests/uav-observation-flow.t.cpp'),
                         bld.path.find_node('integration-tests/uav-collaboration-flow.t.cpp'),
@@ -2318,20 +2319,10 @@ def build(bld):
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-computation.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-byte-track-state.cpp'),
-                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp'),
-                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp')],
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
-
-    # Actual owned worker process and native cancellation/output/reaping oracles.
-    bld.program(target='../uav-tracking-worker-process-tests',
-                name='uav-tracking-worker-process-tests',
-                source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/uav-tracking-worker-process.t.cpp'),
-                        bld.path.parent.find_node(
-                            'NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp')],
-                includes=['..'], use='NDN_CXX BOOST', install_path=None)
 
     # Native frozen computation inventory and maintained signed request bindings.
     bld.program(target='../uav-person-computation-tests', name='uav-person-computation-tests',
@@ -2430,7 +2421,6 @@ def build(bld):
     tests_share = '${PREFIX}/share/ndnsf/tests'
     bld.install_files(tests_share, 'run-checks.py', chmod=0o755)
     driver_names = (['run-spec182-native-grant-process.py',
-                     'run-spec182-native-unary-process.py',
                      'run-spec182-native-stream-process.py',
                      'run-spec261-source-full-process.py',
                      'run-spec261-source-component-process.py',
@@ -2446,6 +2436,8 @@ def build(bld):
     if driver_names:
         bld.install_files(tests_share + '/standalone',
                           [bld.path.find_node('standalone/' + name) for name in driver_names])
+        bld.install_files(tests_share + '/installed-api',
+                          'installed-api/native-host-stream.py')
     # The contract names `PREFIX/bin/ndnsf-checks` as the canonical entry point; the runner above is
     # its implementation, so an operator path and a source path cannot diverge.
     bld.install_files('${PREFIX}/bin', 'ndnsf-checks', chmod=0o755)

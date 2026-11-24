@@ -1013,9 +1013,10 @@ makeNativeProviderObservationAckHandlerV4(
       phaseStarted = detail::nativePhaseStarted();
       const auto wirePayload = request.getPayload();
       const std::vector<std::uint8_t> payload(wirePayload.begin(), wirePayload.end());
-      const auto envelope = nativeParseJson(
+      const auto parsed = parseNativeRequestOffer(
         std::string(payload.begin(), payload.end()));
       detail::logNativeWorkPhase(context.requestId, "ack_envelope_decode", phaseStarted);
+      const auto& envelope = parsed.value();
       if (!envelope.is_object() ||
           envelope.value("service", std::string{}) != context.serviceName.toUri() ||
           envelope.value("request_id", std::string{}) != context.requestId.toUri() ||

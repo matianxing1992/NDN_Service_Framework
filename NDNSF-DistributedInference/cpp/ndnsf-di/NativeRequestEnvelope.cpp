@@ -19,6 +19,15 @@ namespace {
 // YOLO [1,3,640,640] float32 input is 4,915,200 bytes before the envelope;
 // keep the native inline request bound large enough for that production path.
 constexpr std::size_t MAX_WIRE = 16 * 1024 * 1024;
+constexpr std::size_t MAX_DISCOVERY_ROSTER = 16;
+constexpr std::size_t MAX_DISCOVERY_PAIRS = 16;
+constexpr auto COMPACT_DISCOVERY_SCHEMA = "ndnsf-di-request-discovery-v2";
+constexpr auto DISCOVERY_KEYS = {
+  "request_id", "attempt", "service", "model_identity_hash", "plan_deadline_ms"};
+constexpr auto PLACEMENT_DISCOVERY_KEYS = {
+  "graph_digest", "candidate_providers", "candidate_set_digest", "candidate_artifacts",
+  "candidate_artifact_set_digest", "rtt_pairs", "goodput_edges", "probe_scope_digest",
+  "requester_identity"};
 bool digest(const std::string& s)
 {
   return s.size() == 71 && s.compare(0, 7, "sha256:") == 0 &&
@@ -48,18 +57,70 @@ automaticDiscoverySummary(const NativeJson& envelope, const std::string& request
     {"request_contract_digest", requestDigest},
     {"automatic_contract_digest", envelope.at("automatic_shape_seed").at("contractDigest")},
     {"graphDigest", envelope.at("graph_digest")}};
-  for (const auto* key : {"request_id", "attempt", "service", "model_identity_hash",
-                          "plan_deadline_ms"})
+  for (const auto* key : DISCOVERY_KEYS)
     summary[key] = envelope.at(key);
   summary["task"] = {{"adapter", "automatic-onnx"},
     {"placement_profile", envelope.at("task").at("placement_profile")}};
   if (envelope.at("task").at("placement_profile") == "DI_PLACEMENT_V4") {
-    for (const auto* key : {"graph_digest", "candidate_providers", "candidate_set_digest",
-                            "candidate_artifacts", "candidate_artifact_set_digest", "rtt_pairs",
-                            "goodput_edges", "probe_scope_digest", "requester_identity"})
+    for (const auto* key : PLACEMENT_DISCOVERY_KEYS)
       summary[key] = envelope.at(key);
   }
   return summary;
+}
+
+NativeJson
+compactPlacementDiscovery(const NativeJson& envelope, const std::string& requestDigest)
+{
+  NativeJson summary{{"schema", COMPACT_DISCOVERY_SCHEMA}, {"schema_version", 2},
+    {"request_contract_digest", requestDigest}};
+  for (const auto* key : DISCOVERY_KEYS)
+    summary[key] = envelope.at(key);
+  for (const auto* key : PLACEMENT_DISCOVERY_KEYS)
+    summary[key] = envelope.at(key);
+  summary["task"] = {{"adapter", envelope.at("task").at("adapter")},
+                     {"placement_profile", "DI_PLACEMENT_V4"}};
+  const auto& roster = summary.at("candidate_providers");
+  for (const auto* key : {"rtt_pairs", "goodput_edges"}) {
+    auto indices = NativeJson::array();
+    for (const auto& edge : summary.at(key)) {
+      const auto from = std::find(roster.begin(), roster.end(), edge.at("src_provider"));
+      const auto to = std::find(roster.begin(), roster.end(), edge.at("dst_provider"));
+      indices.push_back(NativeJson::array({from - roster.begin(), to - roster.begin()}));
+    }
+    summary[key] = std::move(indices);
+  }
+  return summary;
+}
+
+void
+expandPlacementDiscoveryPairs(NativeJson& discovery)
+{
+  const auto roster = discovery.at("candidate_providers").get<std::vector<std::string>>();
+  if (roster.empty() || roster.size() > MAX_DISCOVERY_ROSTER ||
+      !std::is_sorted(roster.begin(), roster.end()) ||
+      std::adjacent_find(roster.begin(), roster.end()) != roster.end())
+    throw std::invalid_argument("invalid compact discovery roster");
+  for (const auto* key : {"rtt_pairs", "goodput_edges"}) {
+    const auto& indices = discovery.at(key);
+    if (!indices.is_array() || indices.size() > MAX_DISCOVERY_PAIRS)
+      throw std::invalid_argument("invalid compact discovery pair count");
+    auto pairs = NativeJson::array();
+    std::optional<std::pair<std::uint64_t, std::uint64_t>> previous;
+    for (const auto& pair : indices) {
+      if (!pair.is_array() || pair.size() != 2 ||
+          !pair[0].is_number_unsigned() || !pair[1].is_number_unsigned())
+        throw std::invalid_argument("invalid compact discovery pair");
+      const auto edge = std::make_pair(pair[0].get<std::uint64_t>(),
+                                       pair[1].get<std::uint64_t>());
+      if (edge.first >= roster.size() || edge.second >= roster.size() ||
+          edge.first == edge.second || (previous && edge <= *previous))
+        throw std::invalid_argument("invalid compact discovery pair order or index");
+      previous = edge;
+      pairs.push_back({{"src_provider", roster[edge.first]},
+                       {"dst_provider", roster[edge.second]}});
+    }
+    discovery[key] = std::move(pairs);
+  }
 }
 }
 
@@ -154,29 +215,38 @@ parseNativeRequestOffer(const std::string& wire)
       value.at("schema").get_ref<const std::string&>().rfind("ndnsf-di-request-discovery-", 0) != 0)
     return std::nullopt;
   using ndn_service_framework::RequestMessage;
+  const bool compact = value.at("schema") == COMPACT_DISCOVERY_SCHEMA;
   if (wire.size() > RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE ||
-      value.at("schema") != "ndnsf-di-request-discovery-v1" ||
+      (!compact && value.at("schema") != "ndnsf-di-request-discovery-v1") ||
       !value.contains("schema_version") || !value.at("schema_version").is_number_integer() ||
-      value.at("schema_version") != 1 || !value.contains("task") ||
+      value.at("schema_version") != (compact ? 2 : 1) || !value.contains("task") ||
       !value.at("task").is_object() || value.at("task").size() != 2 ||
-      value.at("task").value("adapter", NativeJson{}) != "automatic-onnx")
+      !value.at("task").contains("adapter") || !value.at("task").at("adapter").is_string() ||
+      value.at("task").at("adapter").get_ref<const std::string&>().empty() ||
+      (!compact && value.at("task").at("adapter") != "automatic-onnx") ||
+      (compact && value.at("task").at("adapter") == "automatic-onnx"))
     throw std::invalid_argument("invalid native request discovery version or adapter");
   const auto profile = value.at("task").value("placement_profile", NativeJson{});
   const bool v4 = profile == "DI_PLACEMENT_V4";
-  if ((!v4 && profile != "DI_PLACEMENT_V3") || value.size() != (v4 ? 20U : 11U))
+  if ((!v4 && (compact || profile != "DI_PLACEMENT_V3")) ||
+      value.size() != (compact ? 18U : v4 ? 20U : 11U))
     throw std::invalid_argument("invalid native discovery field cover");
   std::set<std::string> keys{"schema", "schema_version", "request_contract_digest",
-    "automatic_contract_digest", "graphDigest", "request_id", "attempt", "service",
-    "model_identity_hash", "plan_deadline_ms", "task"};
-  if (v4) for (const auto* key : {"graph_digest", "candidate_providers", "candidate_set_digest",
-                                 "candidate_artifacts", "candidate_artifact_set_digest",
-                                 "rtt_pairs", "goodput_edges", "probe_scope_digest",
-                                 "requester_identity"}) keys.emplace(key);
+    "request_id", "attempt", "service", "model_identity_hash", "plan_deadline_ms", "task"};
+  if (!compact) {
+    keys.emplace("automatic_contract_digest");
+    keys.emplace("graphDigest");
+  }
+  if (v4) {
+    for (const auto* key : PLACEMENT_DISCOVERY_KEYS)
+      keys.emplace(key);
+  }
   for (const auto& key : keys) {
     if (!value.contains(key)) throw std::invalid_argument("native discovery omits a field");
   }
   for (const auto* key : {"request_contract_digest", "automatic_contract_digest",
-                          "graphDigest", "model_identity_hash"}) {
+                          "graphDigest", "model_identity_hash", "graph_digest"}) {
+    if (keys.count(key) == 0) continue;
     if (!value.at(key).is_string() || !digest(value.at(key).get<std::string>()))
       throw std::invalid_argument("native discovery digest is invalid");
   }
@@ -190,8 +260,10 @@ parseNativeRequestOffer(const std::string& wire)
         value.at(key).get<std::uint64_t>() == 0)
       throw std::invalid_argument("native discovery request scope is invalid");
   }
-  if (v4 && value.at("graph_digest") != value.at("graphDigest"))
+  if (v4 && !compact && value.at("graph_digest") != value.at("graphDigest"))
     throw std::invalid_argument("native discovery graph identities disagree");
+  if (compact)
+    expandPlacementDiscoveryPairs(value);
   return value;
 }
 
@@ -735,6 +807,10 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
   if (automaticShapeSeed || prepareLegacyDiscovery) {
     using ndn_service_framework::RequestMessage;
     auto discovery = encodeDiscovery(wire);
+    if (!automaticShapeSeed && discovery.size() > RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE &&
+        envelope.at("task").at("placement_profile") == "DI_PLACEMENT_V4") {
+      discovery = nativeCanonicalJson(compactPlacementDiscovery(envelope, nativePlanningDigest(wire)));
+    }
     if (discovery.size() > RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE &&
         envelope.at("task").at("placement_profile") == "DI_PLACEMENT_V4") {
       // Keep the optional V4 scope whole or use the existing V3 profile.

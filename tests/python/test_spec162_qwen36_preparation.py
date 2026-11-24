@@ -21,9 +21,6 @@ GENERATION_RANK = JOBS / "generation-rank.sh.txt"
 GENERATION_RANK_INNER = FIXTURES / "legacy-tiger-three-node/generation-rank-inner.sh.txt"
 SMOKE_ANALYZER = JOBS / "analyze-generation-smoke.py.txt"
 FORMAL_ANALYZER = JOBS / "analyze-generation-formal.py.txt"
-QWEN_USER = (
-    ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
-)
 QWEN_PIPELINE = (
     ROOT
     / "examples/python/NDNSF-DistributedInference/llm_pipeline/llm_pipeline_lib.py"
@@ -77,13 +74,7 @@ class Qwen36PreparationContractTest(unittest.TestCase):
         self.assertIn('"inputIds": [validation_ids]', source)
         self.assertIn('key=lambda item: int(item["inputTokenCount"])', source)
         self.assertIn('"inputTokenCount": validation_input_token_count', source)
-        user_source = QWEN_USER.read_text(encoding="utf-8")
         pipeline_source = QWEN_PIPELINE.read_text(encoding="utf-8")
-        self.assertIn(
-            'require_eos = generation.get("requireEos", True)',
-            user_source,
-        )
-        self.assertIn("require_eos=require_eos", user_source)
         self.assertIn('stop_reason = "MAX_NEW_TOKENS"', pipeline_source)
 
     def test_reference_requires_three_visible_rtx5000_gpus(self) -> None:

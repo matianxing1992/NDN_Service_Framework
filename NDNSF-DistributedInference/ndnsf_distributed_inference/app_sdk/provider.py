@@ -489,8 +489,6 @@ class APPProvider:
             raise RuntimeError("network Provider is not configured")
         return self._network_provider.serve_service(**kwargs)
 
-    serve = serve_service
-
     def run(self):
         if self._network_provider is None:
             raise RuntimeError("network Provider is not configured")
@@ -508,22 +506,10 @@ class APPProvider:
         self.drain()
         return 0
 
-    def set_stream_publication_interceptor_for_test(self, callback) -> None:
+    def _stream_fault_test_access(self):
         if self._network_provider is None:
             raise RuntimeError("network Provider is not configured")
-        self._network_provider.set_stream_publication_interceptor_for_test(
-            callback)
-
-    def set_stream_retention_interceptor_for_test(self, callback) -> None:
-        if self._network_provider is None:
-            raise RuntimeError("network Provider is not configured")
-        self._network_provider.set_stream_retention_interceptor_for_test(
-            callback)
-
-    def publish_stream_packet_for_test(self, wire: bytes) -> None:
-        if self._network_provider is None:
-            raise RuntimeError("network Provider is not configured")
-        self._network_provider.publish_stream_packet_for_test(wire)
+        return self._network_provider._stream_fault_test_access()
 
     def register_agent(self, *, boot_epoch: str, capabilities=(),
                        capacity_by_role=None, permission_ready: bool = True):
@@ -740,13 +726,6 @@ class InferenceProvider:
         )
         self._registrations[service] = registration
         return registration
-
-    def serve_service(self, *args, **kwargs):
-        import warnings
-        warnings.warn(
-            "serve_service() is deprecated; use serve()",
-            DeprecationWarning, stacklevel=2)
-        return self.serve(*args, **kwargs)
 
     def run(self):
         return self._network_provider.run()

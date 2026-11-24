@@ -23,6 +23,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/private-buffer-wiper.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/OperationRuntime.hpp"
+#include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/common.hpp"
 #include "ndn-service-framework/controller-certificate.hpp"
@@ -1690,6 +1691,93 @@ void User::requirePreparedModel(const PreparedModel& model, const char* boundary
       model.m_package->runtimeBinding != m_state->runtimeBinding)
     throw DiError("MODEL_RUNTIME_MISMATCH", "local", boundary,
                   "prepared model belongs to a different Runtime");
+}
+
+DataRef
+User::publishInput(const PreparedModel& model, const std::vector<std::uint8_t>& payload,
+                   Milliseconds timeout) const
+{
+  requirePreparedModel(model, "input-publication");
+  if (timeout <= Milliseconds::zero() || timeout > std::chrono::hours(24))
+    throw DiError("INVALID_INPUT_PUBLICATION_BUDGET", "local", "input-publication",
+                  "input publication timeout must be within 24 hours");
+  if (payload.empty() || payload.size() >
+      model.m_package->catalog.preparation->maxPayloadBytesFor(
+        model.m_package->catalog.model.descriptor))
+    throw DiError("INVALID_INPUT", "local", "input-publication",
+                  "input payload is empty or exceeds the verified adapter bound");
+  const auto service = ndn::Name(nativeParseJson(
+    model.m_package->registration->configurationJson).at("request").at("service")
+      .get<std::string>());
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::shared_ptr<detail::CoreRuntimeOwner> owner;
+  detail::PreparationTicket ticket(m_state);
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    owner = m_state->coreOwner;
+    if (m_state->phase != detail::RuntimeState::Phase::Open || !owner)
+      throw DiError("RUNTIME_CLOSED", "local", "input-publication", "Runtime is closed");
+    if ((owner->serviceUser && owner->serviceUser->isOnIoThread()) ||
+        (owner->operationRuntime && owner->operationRuntime->isWorkerThread()))
+      throw DiError("WOULD_DEADLOCK", "local", "input-publication",
+                    "blocking input publication cannot run on a Core executor");
+    ++m_state->inFlight;
+    m_state->preparationInFlight.fetch_add(1, std::memory_order_acq_rel);
+    ticket.armed = true;
+  }
+  const auto current = [state = m_state, owner, deadline] {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->phase != detail::RuntimeState::Phase::Open || state->coreOwner != owner ||
+        owner->closed.load(std::memory_order_acquire) ||
+        owner->ioFailed.load(std::memory_order_acquire) ||
+        std::chrono::steady_clock::now() >= deadline)
+      throw DiError("INPUT_PUBLICATION_CANCELLED", "local", "input-publication",
+                    "Runtime owner closed, Core failed, or publication deadline expired");
+  };
+  current();
+  ensureRuntimeCoreTransport(m_state);
+  std::shared_ptr<ndn_service_framework::ServiceUser> coreUser;
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    coreUser = m_state->coreUser;
+  }
+  current();
+  ndn_service_framework::PublishedContentName content;
+  content.kind = ndn_service_framework::ContentDataKind::Input;
+  content.label = "input";
+  content.inputKind = "application";
+  ndn_service_framework::LargeDataPublishOptions publicationOptions;
+  publicationOptions.contentName = std::move(content);
+  const auto published = coreUser->publishEncryptedLargeDataFromWorker(
+    coreUser->prepareServiceRequest(service.toUri()), payload, "input",
+    ndn::time::milliseconds(60000), publicationOptions, current);
+  current();
+  const auto producer = coreUser->getName();
+  if (!published.success || !published.encrypted || !published.servingLease ||
+      published.plaintextSize != payload.size() || published.objectId.empty() ||
+      published.contentDigest != nativePlanningDigest(payload.data(), payload.size()) ||
+      published.authorizationScope !=
+        ndn_service_framework::makeAbeServiceAttribute(service, "SERVICE") ||
+      published.encryptedDataName != published.dataPrefix ||
+      ndn_service_framework::ProtectedBlobManifest::inferProducer(published.manifestName) !=
+        std::optional<ndn::Name>(producer) ||
+      ndn_service_framework::ProtectedBlobManifest::inferDataProducer(published.dataPrefix) !=
+        std::optional<ndn::Name>(producer))
+    throw DiError("INPUT_PUBLICATION_FAILED", "local", "input-publication",
+                  published.errorMessage.empty() ? "invalid Core publication result"
+                                                 : published.errorMessage);
+  auto reference = DataRef::fromPublishedMetadata(nativeCanonicalJson(NativeJson{
+    {"source", "repo-manifest"}, {"dataName", published.manifestName.toUri()},
+    {"manifestDigest", published.manifestDigest},
+    {"plaintextSize", static_cast<std::uint64_t>(published.plaintextSize)},
+    {"ciphertextDigest", published.contentDigest},
+    {"authorizationScope", published.authorizationScope},
+    {"protectionEpoch", published.protectionEpoch}, {"encrypted", true},
+    {"objectType", ""}, {"objectId", published.objectId}}));
+  reference.m_servingLease = published.servingLease;
+  // Core owns rollback and bounded expiry. Dropping a pin must not abort an
+  // immutable publication that another request may already be serving.
+  return reference;
 }
 
 RequestHandle User::request(const PreparedModel& model, const Input& input,

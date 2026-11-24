@@ -4,19 +4,26 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import time
 
+from ndnsf import ServiceUser
 from py_repoclient import (
+    ArtifactCapabilityRequirements,
+    ArtifactHandle,
+    ArtifactReference,
     ArtifactRepositoryApi,
-    CollaborationArtifactApiBackend,
-    artifact_reference_from_dict,
+    PersistentRepoClientConfig,
+    RepoWriteConsistency,
+    SelectedRepoSet,
+    SelectedRepoTarget,
 )
-from py_repoclient.orchestration import encode_repo_request
-from py_repoclient.service_names import repo_service_for_operation
+
+REPO_POLICY_EPOCH = "repo-policy-v1"
 
 
 def sha256_file(path: Path) -> str:
@@ -35,14 +42,15 @@ def digest_hex(value: object) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("publish", "fetch"))
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--generated-policy-dir", required=True)
-    parser.add_argument("--state-root", required=True)
+    parser.add_argument("--group", required=True)
+    parser.add_argument("--controller", required=True)
+    parser.add_argument("--trust-schema", required=True)
+    parser.add_argument("--repo-provider", required=True)
+    parser.add_argument("--repo-node", required=True)
+    parser.add_argument("--repo-service-prefix", required=True)
     parser.add_argument("--user", required=True)
-    parser.add_argument("--bootstrap-token-file", required=True)
     parser.add_argument("--registration", required=True)
     parser.add_argument("--stage-manifest")
-    parser.add_argument("--object-prefix", default="/NDNSF/Spec175/TinyOnnx")
     parser.add_argument("--role")
     parser.add_argument("--destination")
     parser.add_argument("--timeout-ms", type=int, default=60_000)
@@ -60,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--publication-start-barrier-file",
         help=("Optional one-shot file barrier. The publisher initializes its "
               "NDNSF user first, then waits for the exact token before "
-              "publishing the first repository request."),
+              "publishing the first artifact."),
     )
     parser.add_argument(
         "--publication-start-barrier-token",
@@ -91,11 +99,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--probe-retry-backoff-ms", type=int, default=250,
         help="Bounded delay between fresh route-probe attempts",
     )
-    parser.add_argument(
-        "--test-only-allow-ephemeral-app-state", action="store_true",
-        help=("Allow the named volatile state root only for an explicit "
-              "real-MiniNDN test; production use must provide persistent state"),
-    )
     return parser
 
 
@@ -114,20 +117,7 @@ def wait_for_initial_sync(args: argparse.Namespace) -> None:
     )
 
 
-def _response_provider(response) -> str:
-    """Extract a provider identity without trusting peer-controlled payload."""
-    data_name = str(getattr(response, "data_name", "") or "")
-    if "/NDNSF/" in data_name:
-        # Response names begin with the provider identity and contain the
-        # protocol marker later in the name; rsplit avoids treating a
-        # provider whose identity itself contains an NDN namespace as empty.
-        prefix = data_name.rsplit("/NDNSF/", 1)[0].rstrip("/")
-        if prefix:
-            return prefix
-    return str(getattr(response, "signer_certificate", "") or "").strip()
-
-
-def _write_probe_report(path: Path, report: dict) -> None:
+def _write_json(path: Path, report: dict) -> None:
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(
@@ -137,121 +127,52 @@ def _write_probe_report(path: Path, report: dict) -> None:
     os.replace(temporary, path)
 
 
-def _run_live_service_probe_once(backend, args: argparse.Namespace) -> dict:
-    """Probe the exact Repo service using the publisher's initialized identity.
-
-    CAPABILITY is read-only.  The probe is deliberately sent through the same
-    native ``ServiceUser`` that will publish the stage objects, so a passing
-    result proves the route, identity, permission state, and provider response
-    before the one-shot publication barrier is released.
-    """
-    service = repo_service_for_operation("CAPABILITY", "/NDNSF/DistributedRepo")
-    probe_id = str(getattr(args, "_probe_id", "") or
-                   f"spec175-route-probe-{time.time_ns()}")
-    payload = encode_repo_request(
-        "CAPABILITY", probeId=probe_id, nonMutating=True,
-        publisherIdentity=str(args.user),
-    )
+def _run_live_service_probe_once(api, requirements, args: argparse.Namespace) -> dict:
     started_ms = time.time_ns() // 1_000_000
     report = {
-        "schema": "ndnsf-di-spec175-repo-route-probe-v1",
+        "schema": "ndnsf-di-spec175-repo-route-probe-v2",
         "status": "FAIL",
-        "probeId": probe_id,
-        "publisherIdentity": str(args.user),
-        "request": {
-            "operation": "CAPABILITY",
-            "service": service,
-            "nonMutating": True,
-            "payloadSha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
-            "payloadBytes": len(payload),
-        },
-        "route": {
-            "service": service,
-            "face": "native-ServiceUser-transport",
-        },
+        "publisherIdentity": args.user,
+        "route": {"service": args.repo_service_prefix.rstrip("/") + "/CAPABILITY"},
         "timing": {"sendAtMs": started_ms},
     }
     try:
-        service_user = getattr(getattr(backend, "control", None),
-                               "service_user", None)
-        if service_user is None:
-            raise RuntimeError("publisher ServiceUser is not initialized")
-        timeout_ms = int(
-            getattr(args, "probe_timeout_ms", None)
-            or max(int(getattr(args, "ack_timeout_ms", 5000)),
-                   int(getattr(args, "timeout_ms", 60000))))
-        response = service_user.request_service(
-            service,
-            payload,
-            ack_timeout_ms=int(getattr(args, "ack_timeout_ms", 5000)),
-            timeout_ms=timeout_ms,
-            strategy="first-responding",
-            request_id=probe_id,
-        )
-        finished_ms = time.time_ns() // 1_000_000
-        report["timing"]["responseAtMs"] = finished_ms
-        # ``ServiceUser.request_service`` deliberately exposes one synchronous
-        # terminal result rather than an ACK callback.  Preserve an explicit
-        # ACK observation timestamp at that API boundary instead of inventing
-        # sub-millisecond ACK timing that the wrapper cannot observe.
-        report["timing"]["ackAtMs"] = finished_ms
-        report["timing"]["ackTimestampSource"] = (
-            "ServiceUser.request_service completion (ACK/Response boundary)")
-        report["timing"]["elapsedMs"] = max(0, finished_ms - started_ms)
-        report["response"] = {
-            "status": bool(getattr(response, "status", False)),
-            "error": str(getattr(response, "error", "") or ""),
-            "dataName": str(getattr(response, "data_name", "") or ""),
-            "signerCertificate": str(
-                getattr(response, "signer_certificate", "") or ""),
-            "wireDigest": str(getattr(response, "wire_digest", "") or ""),
-        }
-        provider = _response_provider(response)
-        decoded = None
-        if bool(getattr(response, "status", False)):
-            try:
-                decoded = json.loads(bytes(response.payload).decode("utf-8"))
-            except (TypeError, ValueError, UnicodeDecodeError):
-                decoded = None
-        report["response"]["payloadSchema"] = (
-            decoded.get("schema") if isinstance(decoded, dict) else "")
-        report["route"]["provider"] = provider
-        if not bool(getattr(response, "status", False)):
-            report["failureReason"] = "REPO_SERVICE_ROUTE_NOT_READY"
-        elif not isinstance(decoded, dict) or not provider:
-            report["failureReason"] = "REPO_SERVICE_ROUTE_INVALID_RESPONSE"
-        else:
-            report["status"] = "PASS"
-            report["capability"] = {
-                "repoNode": str(decoded.get("repoNode", "")),
-                "repoMode": str(decoded.get("repoMode", "")),
-                "availabilityScore": decoded.get("availabilityScore"),
-            }
-            if not report["capability"]["repoNode"]:
-                report["status"] = "FAIL"
-                report["failureReason"] = "REPO_SERVICE_ROUTE_INVALID_RESPONSE"
-    except Exception as exc:  # noqa: BLE001 - convert to stable evidence
-        report["timing"]["responseAtMs"] = time.time_ns() // 1_000_000
-        report["timing"]["ackAtMs"] = None
-        report["timing"]["ackTimestampSource"] = "not-observed"
-        report["timing"]["elapsedMs"] = max(
-            0, report["timing"]["responseAtMs"] - started_ms)
+        candidates = api.discover_repo_candidates(requirements, args.probe_timeout_ms)
+        report["probeId"] = candidates.request_id
+        report["observedCandidates"] = [
+            {"repoNode": candidate.repo_node, "provider": candidate.provider_identity,
+             "servicePrefix": candidate.service_prefix}
+            for candidate in candidates.candidates
+        ]
+        matches = [candidate for candidate in candidates.candidates
+                   if candidate.provider_identity == args.repo_provider
+                   and candidate.repo_node == args.repo_node
+                   and candidate.service_prefix == args.repo_service_prefix]
+        if len(matches) != 1:
+            raise RuntimeError("expected authenticated Repo capability was not discovered")
+        candidate = matches[0]
+        report["status"] = "PASS"
+        report["route"].update(provider=candidate.provider_identity,
+                               servicePrefix=candidate.service_prefix)
+        report["capability"] = {"repoNode": candidate.repo_node}
+        report["ack"] = {"wireDigest": candidate.ack_wire_digest,
+                         "signerKeyLocator": candidate.signer_key_locator}
+        report["timing"]["ackClosureAtMs"] = candidate.observed_at_ms
+    except Exception as error:  # Convert bounded native failures to the probe record.
         report["failureReason"] = "REPO_SERVICE_ROUTE_NOT_READY"
-        report["error"] = f"{type(exc).__name__}: {exc}"
-    output = getattr(args, "probe_output", None)
-    if output:
-        _write_probe_report(Path(output), report)
+        report["error"] = f"{type(error).__name__}: {error}"
+    report["timing"]["elapsedMs"] = max(0, time.time_ns() // 1_000_000 - started_ms)
     return report
 
 
-def run_live_service_probe(backend, args: argparse.Namespace) -> dict:
+def run_live_service_probe(api, requirements, args: argparse.Namespace) -> dict:
     """Run a bounded sequence of fresh, non-mutating route probes.
 
     A single missing ACK can occur while a MiniNDN provider is finishing its
     native startup.  Retry with a fresh request ID, while preserving every
     attempt in the final evidence.  This does not turn a marker or a sleep
-    into readiness: the publisher is released only after an actual validated
-    ACK/Response succeeds.
+    into readiness: the publisher is released only after an actual native
+    authenticated ACK closure succeeds.
     """
     retries = int(getattr(args, "probe_retries", 2))
     if retries < 0 or retries > 5:
@@ -278,12 +199,8 @@ def run_live_service_probe(backend, args: argparse.Namespace) -> dict:
         if remaining_ms <= 0:
             break
         attempt_args = argparse.Namespace(**vars(args))
-        attempt_args._probe_id = (
-            f"spec175-route-probe-{attempt_index + 1}-{time.time_ns()}"
-        )
         attempt_args.probe_timeout_ms = min(attempt_timeout_ms, remaining_ms)
-        attempt_args.probe_output = None
-        attempt = _run_live_service_probe_once(backend, attempt_args)
+        attempt = _run_live_service_probe_once(api, requirements, attempt_args)
         attempts.append(attempt)
         if attempt.get("status") == "PASS":
             break
@@ -297,7 +214,7 @@ def run_live_service_probe(backend, args: argparse.Namespace) -> dict:
         report = dict(attempts[-1])
     else:
         report = {
-            "schema": "ndnsf-di-spec175-repo-route-probe-v1",
+            "schema": "ndnsf-di-spec175-repo-route-probe-v2",
             "status": "FAIL",
             "failureReason": "REPO_SERVICE_ROUTE_NOT_READY",
             "error": "probe deadline expired before an attempt",
@@ -308,44 +225,43 @@ def run_live_service_probe(backend, args: argparse.Namespace) -> dict:
     report["attempts"] = attempts
     output = getattr(args, "probe_output", None)
     if output:
-        _write_probe_report(Path(output), report)
+        _write_json(Path(output), report)
     return report
 
 
-def make_backend(args: argparse.Namespace, *, receipts=()):
-    token = Path(args.bootstrap_token_file).read_text(encoding="utf-8").strip()
-    if not token:
-        raise RuntimeError("Spec175 Repo bootstrap token is empty")
-    ack_timeout_ms = int(getattr(args, "ack_timeout_ms", 5_000))
-    if ack_timeout_ms <= 0:
-        raise ValueError("Spec175 Repo ACK timeout must be positive")
-    return CollaborationArtifactApiBackend.from_config(
-        args.config,
-        generated_policy_dir=args.generated_policy_dir,
-        state_root=args.state_root,
-        user=args.user,
-        bootstrap_token=token,
-        committed_receipts=tuple(dict(item) for item in receipts),
-        ack_timeout_ms=ack_timeout_ms,
-        packet_payload_bytes=7600,
-        chunk_bytes=1024 * 1024,
-        test_only_allow_ephemeral_state_root=bool(
-            getattr(args, "test_only_allow_ephemeral_app_state", False)),
+@contextmanager
+def open_repo_api(args: argparse.Namespace):
+    # The MiniNDN launcher installs the exact signed identity certificate
+    # and its owned key into each node's private PIB/TPM before startup.
+    user = ServiceUser(
+        group=args.group, controller=args.controller, user=args.user,
+        trust_schema=args.trust_schema, permission_wait_ms=20000,
     )
+    config = PersistentRepoClientConfig()
+    config.provider_scope = [args.repo_provider]
+    config.service_prefix = args.repo_service_prefix
+    config.ack_collection_time_ms = args.ack_timeout_ms
+    config.request_timeout_ms = args.timeout_ms
+    config.operation_wait_timeout_ms = args.timeout_ms
+    try:
+        user.start()
+        yield ArtifactRepositoryApi.make_persistent(user, config)
+    finally:
+        user.stop()
 
 
-def receipts_for_publish_result(backend, result) -> list[dict]:
-    """Return only receipts committed by one publish operation."""
-    committed_ids = {
-        str(replica.receipt_id)
-        for replica in result.replicas
-        if str(replica.state) == "COMMITTED" and str(replica.receipt_id)
-    }
-    return [
-        dict(value) for value in backend.last_receipts
-        if str(dict(value.get("receipt", {})).get("receiptId", ""))
-        in committed_ids
-    ]
+def stage_reference(args, manifest, stage, path, *, format_version="artifact-manifest-v2"):
+    digest = digest_hex(stage["sha256"])
+    model_digest = digest_hex(manifest["modelDigest"])
+    name = (f"{args.user.rstrip('/')}/NDNSF/Spec175/TinyOnnx/"
+            f"{model_digest}/stage-{int(stage['stageIndex'])}/{digest}")
+    root_manifest_name = "" if format_version == "raw-file-v1" else name + "/root"
+    reference = ArtifactReference(
+        name, digest, path.stat().st_size, root_manifest_name,
+        args.user, REPO_POLICY_EPOCH, format_version=format_version,
+    )
+    reference.validate_producer_ownership()
+    return reference
 
 
 def wait_for_publication_start(args: argparse.Namespace) -> None:
@@ -391,104 +307,89 @@ def publish(args: argparse.Namespace) -> int:
     manifest_path = Path(args.stage_manifest)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     stages = list(manifest.get("stages", ()))
-    if len(stages) != 4:
-        raise RuntimeError("Spec175 Repo bootstrap requires exactly four stages")
-    backend = make_backend(args)
-    try:
-        # ``make_backend`` creates and joins the publisher ServiceUser.  Its
-        # first Request can reach the already-running Repo Provider before the
-        # new User has learned enough provider state to receive the ACK.  Keep
-        # this cold-start barrier after ServiceUser construction, not before
-        # process launch or Provider readiness.
+    if [(int(stage["stageIndex"]), stage["role"]) for stage in stages] != [
+        (index, f"/LLM/Pipeline/Stage/{index}") for index in range(4)
+    ]:
+        raise RuntimeError("Spec175 Repo bootstrap requires the four ordered stage roles")
+    for stage in stages:
+        path = Path(stage["path"])
+        if not path.is_file() or sha256_file(path) != digest_hex(stage["sha256"]):
+            raise RuntimeError(f"Spec175 Repo source digest mismatch: {path}")
+
+    with open_repo_api(args) as api:
         wait_for_initial_sync(args)
-        api = ArtifactRepositoryApi(
-            backend, publisher_identity=args.user,
-            default_timeout_ms=args.timeout_ms)
-        probe_output = getattr(args, "probe_output", None)
-        if not probe_output:
-            probe_output = str(registration_path.with_name(
-                "spec175-repo-route-probe.json"))
-        args.probe_output = probe_output
-        probe = run_live_service_probe(backend, args)
-        if probe.get("status") != "PASS":
-            print(
-                "REPO_SERVICE_ROUTE_NOT_READY",
-                f"probe={probe_output}",
-                f"reason={probe.get('failureReason', 'unknown')}",
-                flush=True,
-            )
-            raise RuntimeError(
-                "Spec175 Repo service route probe failed; "
-                f"evidence={probe_output}")
-        print(
-            "NDNSF_DI_SPEC175_REPO_ROUTE_PROBE_PASS",
-            f"probe={probe_output}",
-            f"service={probe['route']['service']}",
-            f"provider={probe['route'].get('provider', '')}",
-            flush=True,
-        )
-        # Creating the backend starts the native ServiceUser and completes its
-        # permission bootstrap.  Wait only after that initialization so the
-        # User and Repo Provider can acquire controller state concurrently,
-        # while the first SVS publication is held until the Repo handler is
-        # actually ready.
+        requirements = ArtifactCapabilityRequirements()
+        requirements.artifact = stage_reference(
+            args, manifest, stages[0], Path(stages[0]["path"]), format_version="raw-file-v1")
+        if not args.probe_output:
+            args.probe_output = str(registration_path.with_name("spec175-repo-route-probe.json"))
+
+        # The launcher waits for the publisher to join before opening its
+        # publication barrier. Complete authenticated discovery first.
+        probe = run_live_service_probe(api, requirements, args)
+        if probe["status"] != "PASS":
+            raise RuntimeError(f"Spec175 Repo service route probe failed: {args.probe_output}")
+        print("NDNSF_DI_SPEC175_REPO_ROUTE_PROBE_PASS",
+              f"probe={args.probe_output}", f"service={probe['route']['service']}",
+              f"provider={probe['route']['provider']}", flush=True)
+
         wait_for_publication_start(args)
+        target = SelectedRepoTarget()
+        target.repo_node = probe["capability"]["repoNode"]
+        target.provider_identity = probe["route"]["provider"]
+        target.service_prefix = probe["route"]["servicePrefix"]
+        selected = SelectedRepoSet()
+        selected.targets = [target]
+        selected.seed_repo_id = target.repo_node
+        selected.consistency = RepoWriteConsistency.ALL
+
         artifacts = []
         for stage in stages:
-            path = Path(str(stage["path"]))
-            digest = digest_hex(stage["sha256"])
-            if not path.is_file() or sha256_file(path) != digest:
-                raise RuntimeError(f"Spec175 Repo source digest mismatch: {path}")
-            object_name = (
-                f"{args.object_prefix.rstrip('/')}/stage-{int(stage['stageIndex'])}-{digest}")
+            path = Path(stage["path"])
+            reference = stage_reference(args, manifest, stage, path)
             started = time.perf_counter()
-            result = api.publish_file(
-                path,
-                name=object_name,
-                expected_sha256=digest,
-                replicas=1,
-                policy_epoch=str(manifest["modelDigest"]),
-                idempotency_key=(
-                    f"spec175:{manifest['modelDigest']}:{stage['stageIndex']}:{digest}"),
-                timeout_ms=args.timeout_ms,
-            )
-            receipts = receipts_for_publish_result(backend, result)
-            if result.achieved_replicas != 1 or len(receipts) != 1:
-                raise RuntimeError("Spec175 Repo publication lacks one committed receipt")
+            result = api.publish_file(path, reference, selected, args.timeout_ms)
+            if (result.achieved_replicas != 1 or result.handle is None or
+                    result.receipt is None):
+                state = result.operation_status.state if result.operation_status else "unknown"
+                raise RuntimeError(
+                    f"Spec175 Repo publication for {stage['role']} did not commit: "
+                    f"operation={result.operation_id} state={state} "
+                    f"replicas={result.achieved_replicas}/{result.requested_replicas}")
+            committed = [item.receipt_id for item in result.receipt.replica_commits
+                         if item.state == "COMMITTED"]
+            if len(committed) != 1 or list(result.handle.commit_receipt_ids) != [
+                result.receipt.receipt_id, *committed
+            ]:
+                raise RuntimeError("Spec175 Repo handle and receipt do not match")
+            receipt = api.get_receipt(result.receipt.receipt_id, result.handle, args.timeout_ms)
+            if receipt.to_json() != result.receipt.to_json():
+                raise RuntimeError("Spec175 Repo commit receipt changed")
             artifacts.append({
                 "role": str(stage["role"]),
                 "stageIndex": int(stage["stageIndex"]),
-                "fileSha256": "sha256:" + digest,
-                "fileBytes": path.stat().st_size,
-                "objectName": str(receipts[0].get("dataName", "")),
-                "artifactReference": result.reference.to_dict(),
+                "fileSha256": "sha256:" + reference.content_digest,
+                "fileBytes": reference.size_bytes,
+                "objectName": result.handle.reference.root_manifest_name,
+                "artifactHandle": json.loads(result.handle.to_json()),
+                "receipt": json.loads(receipt.to_json()),
                 "operationId": result.operation_id,
-                "receipts": receipts,
                 "publishMs": (time.perf_counter() - started) * 1000.0,
             })
-            if not artifacts[-1]["objectName"]:
-                raise RuntimeError("Spec175 Repo receipt omits committed Data name")
-            print(
-                "NDNSF_DI_SPEC175_REPO_STAGE_PUBLISHED",
-                f"role={stage['role']}", f"sha256={digest}", flush=True)
-        record = {
-            "schema": "ndnsf-di-spec175-repo-registration-v1",
+            print("NDNSF_DI_SPEC175_REPO_STAGE_PUBLISHED",
+                  f"role={stage['role']}", f"sha256={reference.content_digest}", flush=True)
+        _write_json(registration_path, {
+            "schema": "ndnsf-di-spec175-repo-registration-v2",
             "modelDigest": manifest["modelDigest"],
             "revision": manifest["revision"],
-            "publisher": args.user,
+            "publisher": reference.canonicalized().publisher_identity,
             "artifactCount": len(artifacts),
             "artifacts": artifacts,
-        }
-        registration_path.parent.mkdir(parents=True, exist_ok=True)
-        registration_path.write_text(
-            json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        backend.close()
-        print(
-            "NDNSF_DI_SPEC175_REPO_PUBLISH_PASS",
-            f"registration={registration_path}", flush=True)
-        return 0
-    finally:
-        backend.close()
+        })
+
+    print("NDNSF_DI_SPEC175_REPO_PUBLISH_PASS",
+          f"registration={registration_path}", flush=True)
+    return 0
 
 
 def fetch(args: argparse.Namespace) -> int:
@@ -496,7 +397,7 @@ def fetch(args: argparse.Namespace) -> int:
         raise RuntimeError("fetch requires --role and --destination")
     registration = json.loads(
         Path(args.registration).read_text(encoding="utf-8"))
-    if registration.get("schema") != "ndnsf-di-spec175-repo-registration-v1":
+    if registration.get("schema") != "ndnsf-di-spec175-repo-registration-v2":
         raise RuntimeError("unsupported Spec175 Repo registration")
     matches = [
         dict(item) for item in registration.get("artifacts", ())
@@ -505,34 +406,28 @@ def fetch(args: argparse.Namespace) -> int:
     if len(matches) != 1:
         raise RuntimeError(f"Spec175 Repo role registration is not unique: {args.role}")
     item = matches[0]
-    receipts = tuple(
-        dict(receipt)
-        for artifact in registration.get("artifacts", ())
-        for receipt in artifact.get("receipts", ())
-    )
-    backend = make_backend(args, receipts=receipts)
-    try:
-        api = ArtifactRepositoryApi(
-            backend, publisher_identity=args.user,
-            default_timeout_ms=args.timeout_ms)
+    handle = ArtifactHandle.from_json(json.dumps(item["artifactHandle"]))
+    reference = handle.reference
+    expected = digest_hex(item["fileSha256"])
+    if (reference.publisher_identity != registration["publisher"] or
+            reference.content_digest != expected or reference.size_bytes != int(item["fileBytes"])):
+        raise RuntimeError("Spec175 Repo artifact handle does not match the registered role")
+    with open_repo_api(args) as api:
         destination = Path(args.destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        reference = artifact_reference_from_dict(dict(item["artifactReference"]))
-        result = api.fetch_file(
-            reference, destination, replace=False, timeout_ms=args.timeout_ms)
-        expected = digest_hex(item["fileSha256"])
-        if (not destination.is_file()
-                or destination.stat().st_size != int(item["fileBytes"])
+        # The publisher owns the aggregate operation receipt. Readers use
+        # the replica bindings and the native authenticated fetch path.
+        fetched = api.fetch_file(handle, destination, args.timeout_ms)
+        if (fetched.repo_node != args.repo_node or
+                fetched.provider_identity != args.repo_provider or
+                fetched.bytes_verified != reference.size_bytes):
+            raise RuntimeError("Spec175 Repo fetch does not bind the expected replica and size")
+        if (not destination.is_file() or destination.stat().st_size != reference.size_bytes
                 or sha256_file(destination) != expected):
             raise RuntimeError("Spec175 Repo fetch did not reproduce exact artifact")
-        backend.close()
-        print(
-            "NDNSF_DI_SPEC175_REPO_FETCH_PASS",
-            f"role={args.role}", f"destination={destination}",
-            f"sha256={expected}", flush=True)
-        return 0
-    finally:
-        backend.close()
+    print("NDNSF_DI_SPEC175_REPO_FETCH_PASS",
+          f"role={args.role}", f"destination={destination}", f"sha256={expected}", flush=True)
+    return 0
 
 
 def main() -> int:

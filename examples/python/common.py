@@ -43,11 +43,15 @@ def add_runtime_arguments(parser) -> None:
                         help="Working directory for launched C++ applications")
 
 
-def add_process_arguments(parser) -> None:
+def add_native_actor_arguments(parser) -> None:
     parser.add_argument("--log-dir", default="")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--start-local-nfd", action="store_true",
                         help="Start nfd if needed; stop only the instance started here")
+
+
+def add_process_arguments(parser) -> None:
+    add_native_actor_arguments(parser)
     parser.add_argument("--binary-dir", default="",
                         help="Directory containing installed NDNSF C++ binaries")
     parser.add_argument("--library-dir", action="append", default=[],

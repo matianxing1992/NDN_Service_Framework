@@ -20,63 +20,6 @@ using byte_track::Detection;
 using byte_track::Track;
 using person_json::Json;
 
-struct RgbImage
-{
-  uint32_t width = 0;
-  uint32_t height = 0;
-  std::vector<uint8_t> rgb;
-};
-
-RgbImage
-toRgb(const UavRgbImage& image)
-{
-  return {image.width, image.height, image.rgb};
-}
-
-/** Bilinear crop/resize to the frozen 128x256 ReID input. */
-std::vector<float>
-reidCrop(const RgbImage& image, const std::array<double, 4>& box)
-{
-  constexpr int width = 128;
-  constexpr int height = 256;
-  const double x1 = std::clamp(box[0], 0.0, static_cast<double>(image.width));
-  const double y1 = std::clamp(box[1], 0.0, static_cast<double>(image.height));
-  const double x2 = std::clamp(box[2], 0.0, static_cast<double>(image.width));
-  const double y2 = std::clamp(box[3], 0.0, static_cast<double>(image.height));
-  if (x2 - x1 < 1 || y2 - y1 < 1) {
-    throw std::invalid_argument("ReID crop is empty");
-  }
-  std::vector<float> result(3 * width * height);
-  const double scaleX = (x2 - x1) / width;
-  const double scaleY = (y2 - y1) / height;
-  constexpr float mean[3] = {0.485F, 0.456F, 0.406F};
-  constexpr float stdv[3] = {0.229F, 0.224F, 0.225F};
-  for (int dy = 0; dy < height; ++dy) {
-    const double sy = y1 + (dy + 0.5) * scaleY - 0.5;
-    const int y0 = static_cast<int>(std::clamp(std::floor(sy), y1, y2 - 1));
-    const int y3 = std::min<int>(y0 + 1, static_cast<int>(y2) - 1);
-    const double wy = std::clamp(sy - y0, 0.0, 1.0);
-    for (int dx = 0; dx < width; ++dx) {
-      const double sx = x1 + (dx + 0.5) * scaleX - 0.5;
-      const int x0 = static_cast<int>(std::clamp(std::floor(sx), x1, x2 - 1));
-      const int x3 = std::min<int>(x0 + 1, static_cast<int>(x2) - 1);
-      const double wx = std::clamp(sx - x0, 0.0, 1.0);
-      for (int channel = 0; channel < 3; ++channel) {
-        const auto at = [&] (int x, int y) {
-          return static_cast<double>(image.rgb[(static_cast<size_t>(y) * image.width + x) * 3 +
-                                             channel]) / 255.0;
-        };
-        const double top = at(x0, y0) * (1 - wx) + at(x3, y0) * wx;
-        const double bottom = at(x0, y3) * (1 - wx) + at(x3, y3) * wx;
-        const double value = (top * (1 - wy) + bottom * wy - mean[channel]) / stdv[channel];
-        result[static_cast<size_t>(channel) * width * height +
-               static_cast<size_t>(dy) * width + dx] = static_cast<float>(value);
-      }
-    }
-  }
-  return result;
-}
-
 Json
 detectionJson(const std::array<int, 4>& box, double confidence, const Json& id,
               const Json& embedding)
@@ -84,17 +27,6 @@ detectionJson(const std::array<int, 4>& box, double confidence, const Json& id,
   return Json{{"class", "person"}, {"byteTrackId", id}, {"box", box},
               {"confidence", confidence}, {"active", !id.is_null()},
               {"embedding", embedding}};
-}
-
-std::array<int, 4>
-intBox(const std::array<double, 4>& box, uint32_t width, uint32_t height)
-{
-  std::array<int, 4> result{};
-  result[0] = std::clamp(static_cast<int>(std::lround(box[0])), 0, static_cast<int>(width));
-  result[1] = std::clamp(static_cast<int>(std::lround(box[1])), 0, static_cast<int>(height));
-  result[2] = std::clamp(static_cast<int>(std::lround(box[2])), 0, static_cast<int>(width));
-  result[3] = std::clamp(static_cast<int>(std::lround(box[3])), 0, static_cast<int>(height));
-  return result;
 }
 
 } // namespace
@@ -108,31 +40,43 @@ struct UavPersonModelBackend::Impl
   Impl(const UavPersonTrackingProfile& profileValue,
        const std::filesystem::path& detectorModel,
        const std::filesystem::path& reidModel,
-       size_t batch)
+       size_t batch, UavPersonDetectorSession::ModelFormat detectorFormat)
     : profile(profileValue)
     , reid(reidModel, static_cast<size_t>(std::min<uint64_t>(batch, 32)))
     , detector(detectorModel, 0.1F, 0.7F,
-               static_cast<size_t>(profileValue.limits.at("maxPersonsPerFrame") + 1))
+               static_cast<size_t>(profileValue.limits.at("maxPersonsPerFrame") + 1),
+               detectorFormat)
   {
-    if (profile.requestedDevice != "cpu") {
-      throw std::invalid_argument("native person backend currently supports CPU only");
-    }
-    if (profile.reidPreprocessId != "osnet-rgb-256x128-imagenet-l2-v1") {
-      throw std::invalid_argument("native person backend supports the GAP ReID preprocess only");
-    }
   }
 };
+
+void
+UavPersonModelBackend::validateProfile(const UavPersonTrackingProfile& profile)
+{
+  if (profile.requestedDevice != "cpu") {
+    throw std::invalid_argument("native person backend currently supports CPU only");
+  }
+  if (profile.reidPreprocessId != "osnet-rgb-256x128-imagenet-l2-v1") {
+    throw std::invalid_argument("native person backend supports the GAP ReID preprocess only");
+  }
+  if (profile.detectorPreprocessId != "yolo-default640-stock-box-v1" &&
+      profile.detectorPreprocessId != "yolo-letterbox640-raw-box-v1") {
+    throw std::invalid_argument("unsupported native person detector preprocessing");
+  }
+}
 
 UavPersonModelBackend::UavPersonModelBackend(const UavPersonTrackingProfile& profile,
                                              const std::filesystem::path& detectorModel,
                                              const std::filesystem::path& reidModel,
                                              size_t reidBatchSize)
 {
-  if (profile.detectorPreprocessId != "yolo-letterbox640-raw-box-v1") {
-    throw std::invalid_argument(
-      "native person backend supports the 640 letterbox detector preprocess only");
+  validateProfile(profile);
+  using Format = UavPersonDetectorSession::ModelFormat;
+  auto detectorFormat = Format::PERSON_RAW;
+  if (profile.detectorPreprocessId == "yolo-default640-stock-box-v1") {
+    detectorFormat = Format::PERSON_STOCK;
   }
-  m_impl = std::make_unique<Impl>(profile, detectorModel, reidModel, reidBatchSize);
+  m_impl = std::make_unique<Impl>(profile, detectorModel, reidModel, reidBatchSize, detectorFormat);
 }
 
 UavPersonModelBackend::~UavPersonModelBackend() = default;
@@ -172,6 +116,7 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
   Json frames = Json::array();
   Json cameras = Json::object();
   uint64_t reidBatches = 0;
+  const bool rectangular = profile.detectorPreprocessId == "yolo-default640-stock-box-v1";
   for (size_t index = 0; index < 3; ++index) {
     if (stillAuthorized && !stillAuthorized()) {
       throw std::runtime_error("person backend cancelled between cameras");
@@ -182,8 +127,11 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
         rgb.height != static_cast<uint32_t>(expected.height)) {
       throw std::invalid_argument("admitted JPEG dimensions disagree with the window context");
     }
-    const auto letterboxed = letterboxPersonImage(rgb);
-    const auto candidates = m_impl->detector.detect(letterboxed.tensor, stillAuthorized);
+    constexpr auto size = static_cast<int>(UavPersonDetectorSession::INPUT_SIZE);
+    const auto detectorInput = rectangular ? letterboxRectangularImage(rgb) :
+      UavRectLetterboxedImage{letterboxPersonImage(rgb), size, size};
+    const auto& letterboxed = detectorInput.image;
+    const auto candidates = m_impl->detector.detect(detectorInput, stillAuthorized);
     if (candidates.size() > profile.limits.at("maxPersonsPerFrame")) {
       throw std::invalid_argument("person backend exceeded maxPersonsPerFrame");
     }
@@ -220,6 +168,11 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
       tracker.restoreState(previous.at("tracker").dump());
     }
     tracker.update(detections);
+    const auto trackerState = person_json::parseBounded(
+      tracker.stateJson(), profile.limits.at("maxSnapshotBytes"));
+    byte_track::checkTracker(trackerState,
+      profile.limits.at("maxBackendTracksPerCamera"),
+      byte_track::BackendStateFormat::COMPACT_CURRENT);
     // v3 state carries every current local track, including a newly born,
     // not-yet-activated track.  Emit the same owner set so engine admission
     // does not reject the window for a missing active stock detection.
@@ -230,11 +183,14 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
 
     // ReID only for detections owned by an active local track.
     std::vector<size_t> activeIndices;
-    std::vector<std::array<double, 4>> activeBoxes;
+    std::vector<std::array<int, 4>> activeBoxes;
     for (const auto& [rawIndex, track] : active) {
-      activeIndices.push_back(rawIndex);
       const auto box = track->tlwh();
-      activeBoxes.push_back({box[0], box[1], box[0] + box[2], box[1] + box[3]});
+      const auto cropBox = integerPersonBox(
+        {box[0], box[1], box[0] + box[2], box[1] + box[3]}, rgb.width, rgb.height);
+      if (cropBox[2] - cropBox[0] < 16 || cropBox[3] - cropBox[1] < 32) continue;
+      activeIndices.push_back(rawIndex);
+      activeBoxes.push_back(cropBox);
     }
     std::vector<std::vector<float>> features(activeIndices.size());
     const size_t batch = static_cast<size_t>(profile.limits.at("reidBatchSize"));
@@ -246,7 +202,7 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
       std::vector<float> input;
       input.reserve(count * 3 * 256 * 128);
       for (size_t item = 0; item < count; ++item) {
-        const auto crop = reidCrop(toRgb(rgb), activeBoxes[offset + item]);
+        const auto crop = reidPersonCrop(rgb, activeBoxes[offset + item]);
         input.insert(input.end(), crop.begin(), crop.end());
       }
       const auto embedded = m_impl->reid.embed(input, count, stillAuthorized);
@@ -263,8 +219,9 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
     for (size_t raw = 0; raw < rawBoxes.size(); ++raw) {
       const auto owner = active.find(raw);
       if (owner == active.end()) {
-        outputDetections.push_back(detectionJson(intBox(rawBoxes[raw], rgb.width, rgb.height),
-                                                 rawScores[raw], nullptr, nullptr));
+        outputDetections.push_back(detectionJson(
+          integerPersonBox(rawBoxes[raw], rgb.width, rgb.height),
+          rawScores[raw], nullptr, nullptr));
         continue;
       }
       const auto box = owner->second->tlwh();
@@ -274,10 +231,9 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
       if (feature != featureIndex.end()) {
         for (const float value : features[feature->second]) embedding.push_back(value);
       }
-      outputDetections.push_back(detectionJson(intBox(xyxy, rgb.width, rgb.height),
-                                               owner->second->score,
-                                               owner->second->trackId,
-                                               embedding.empty() ? Json(nullptr) : embedding));
+      outputDetections.push_back(detectionJson(
+        integerPersonBox(xyxy, rgb.width, rgb.height), owner->second->score,
+        owner->second->trackId, embedding.empty() ? Json(nullptr) : embedding));
     }
     Json lost = Json::array();
     for (const auto& track : tracker.lost()) lost.push_back(track.trackId);
@@ -289,7 +245,7 @@ UavPersonModelBackend::processWindow(const UavPersonWindowContext& context,
       {"lostByteTrackIds", std::move(lost)}});
     cameras[expected.cameraId] = Json{{"sourceId", expected.sourceId},
       {"sourceEpoch", expected.sourceEpoch}, {"trackerGeneration", expected.trackerGeneration},
-      {"tracker", person_json::parseBounded(tracker.stateJson(), profile.limits.at("maxSnapshotBytes"))}};
+      {"tracker", trackerState}};
   }
 
   const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(

@@ -129,14 +129,14 @@ class UserJourneyTest(unittest.TestCase):
             signer = ApplicationDefinitionSigner.generate("/app/creator")
             value = definition(signer)
             with self.assertRaises(ValueError):
-                client.request(value, input=b"x")
+                client.request_preplanned(value, input=b"x")
             with self.assertRaises(ValueError):
-                client.request(value, input=b"x", timeout=timedelta(seconds=1),
-                               deadline=__import__("datetime").datetime.now(
-                                   __import__("datetime").timezone.utc) +
-                               timedelta(seconds=1))
+                client.request_preplanned(
+                    value, input=b"x", timeout=timedelta(seconds=1),
+                    deadline=__import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc) + timedelta(seconds=1))
             with self.assertRaises(ValueError):
-                client.request(
+                client.request_preplanned(
                     __import__("dataclasses").replace(value, signature=""),
                     input=b"x", timeout=timedelta(seconds=1))
 
@@ -179,6 +179,11 @@ class UserJourneyTest(unittest.TestCase):
                     provider, value.service, request.ref.request_id,
                     f"selection-{role}", "Completed",
                     member_statuses=(member,))
+
+            core.collaboration_status = lambda *args, **kwargs: (
+                snapshot("prefill", "/provider/a"),
+                snapshot("decode", "/provider/a"))
+            self.assertEqual(request.deployment_status().state, "PREPARING")
 
             core.collaboration_status = lambda *args, **kwargs: (
                 snapshot("prefill", "/provider/a"),

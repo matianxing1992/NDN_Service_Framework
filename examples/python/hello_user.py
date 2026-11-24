@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from common import add_process_arguments, optional_local_nfd, print_commands, session_kwargs  # noqa: E402
+from common import add_native_actor_arguments, optional_local_nfd, print_commands  # noqa: E402
 
 from ndnsf import ServiceUser  # noqa: E402
 
@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="fetch permissions and print services this user is allowed to call",
     )
-    add_process_arguments(parser)
+    add_native_actor_arguments(parser)
     return parser
 
 
@@ -43,7 +43,6 @@ def main() -> int:
             group="/example/hello/group",
             controller="/example/hello/controller",
             user="/example/hello/user",
-            **session_kwargs(args),
         )
         if args.list_services:
             services = user.get_allowed_services()

@@ -73,10 +73,10 @@ class CandidateClosureTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        self.binary = self.root / "spec201-candidate-closure"
+        self.binary = self.root / "naming-candidate-closure"
         self.binary.write_bytes(b"native oracle")
         self.binary.chmod(0o700)
-        self.repo_binary = self.root / "spec201-transparent-repo"
+        self.repo_binary = self.root / "naming-transparent-repo"
         self.repo_binary.write_bytes(b"repo oracle")
         self.repo_binary.chmod(0o700)
         self.asset = self.root / "frozen-source"
@@ -366,16 +366,26 @@ class CandidateClosureTest(unittest.TestCase):
                              if isinstance(node, ast.Assign) and any(
                                  isinstance(target, ast.Name) and target.id == "naming_candidate"
                                  for target in node.targets))
-                nodes = main.body[index:index + 2]
+                validation = next(
+                    offset for offset, node in enumerate(main.body[index:], index)
+                    if isinstance(node, ast.If) and any(
+                        isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                        and call.func.id == "validate_spec201_candidate"
+                        for call in ast.walk(node)))
+                nodes = main.body[index:validation + 1]
                 staging = next(node for node in ast.walk(main) if isinstance(node, ast.Call)
                                and isinstance(node.func, ast.Attribute) and node.func.attr == "mkdir")
                 self.assertLess(nodes[-1].end_lineno, staging.lineno)
+                cache = next(node for node in ast.walk(main) if isinstance(node, ast.Call)
+                             and isinstance(node.func, ast.Name)
+                             and node.func.id == "resolve_artifact_cache_root")
+                self.assertLess(nodes[-1].end_lineno, cache.lineno)
             else:
                 index = next(index for index, node in enumerate(main.body)
                              if isinstance(node, ast.Assign) and any(
-                                 isinstance(target, ast.Name) and target.id == "args"
+                                 isinstance(target, ast.Name) and target.id == "naming_candidate"
                                  for target in node.targets))
-                nodes = main.body[index + 1:index + 3]
+                nodes = main.body[index:index + 1]
                 guarded = next(node for node in ast.walk(main) if isinstance(node, ast.Call)
                                and isinstance(node.func, ast.Name) and node.func.id == "prepare_fixed_workspace")
                 self.assertLess(nodes[-1].end_lineno, guarded.lineno)
@@ -395,6 +405,26 @@ class CandidateClosureTest(unittest.TestCase):
 
 
 class RealPublicationInventoryTest(unittest.TestCase):
+    def test_native_inventory_targets_are_registered_with_waf(self):
+        from spec201_naming_inventory import naming_inventory
+        wscript = ast.parse((ROOT / "tests/wscript").read_text())
+        registered = set()
+        for call in ast.walk(wscript):
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+                continue
+            if call.func.attr != "program":
+                continue
+            for keyword in call.keywords:
+                if keyword.arg != "name":
+                    continue
+                name = keyword.value
+                if isinstance(name, ast.BinOp) and isinstance(name.op, ast.Add):
+                    name = name.left
+                if isinstance(name, ast.Constant) and isinstance(name.value, str):
+                    registered.add(name.value)
+        required = {row["target"] for rows in naming_inventory(ROOT).values() for row in rows}
+        self.assertLessEqual(required, registered)
+
     def test_maintained_page_and_revocation_writers_have_real_source_anchors(self):
         from spec201_naming_inventory import naming_inventory
         inventory = naming_inventory(ROOT)

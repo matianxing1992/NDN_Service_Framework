@@ -10,6 +10,9 @@ pkg_root="$output_dir/installed"
 mkdir -p "$pkg_root"
 fixture_dir="$pkg_root/fixture"
 mkdir -p "$fixture_dir"
+export NDN_CLIENT_PIB="pib-sqlite3:$fixture_dir/pib"
+export NDN_CLIENT_TPM="tpm-file:$fixture_dir/tpm"
+ndnsec key-gen -t r /core > "$fixture_dir/root.cert"
 
 export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig:$prefix/lib64/pkgconfig"
 unset PKG_CONFIG_PATH
@@ -66,7 +69,8 @@ rule
 }
 trust-anchor
 {
-  type any
+  type file
+  file-name "root.cert"
 }
 EOF
 cat > "$fixture_dir/requester.json" <<EOF

@@ -16,8 +16,28 @@ MANIFEST = json.loads((
 
 
 class PublicApiContractTest(unittest.TestCase):
+    def test_namespace_has_no_retired_symbol_exports(self):
+        import importlib.util
+        import ndnsf_distributed_inference as namespace
+        from ndnsf_distributed_inference import api, sdk
+
+        historical = json.loads((ROOT / "tests/fixtures/ndnsf-di-core-app-separation/"
+                                 "compatibility-surface-ca1d6b2a.json").read_text())
+        names = [entry["surfaceId"].split(":", 1)[1]
+                 for entry in historical["entries"]
+                 if entry["surfaceKind"] == "python-export"]
+        self.assertTrue(names)
+        for name in names:
+            self.assertFalse(hasattr(namespace, name), name)
+        self.assertIsNotNone(api.Runtime)
+        self.assertIsNotNone(sdk.ModelPlacementStrategy)
+        for name in ("app", "controller", "gui", "onnx_graph", "onnx_executor",
+                     "qwen_pilot", "llm_runtime", "planner_registry", "split_planner"):
+            self.assertIsNone(importlib.util.find_spec(
+                "ndnsf_distributed_inference." + name), name)
+
     def test_preferred_namespace_matches_allowlist_and_owner_manifest(self):
-        from ndnsf_distributed_inference import api
+        from ndnsf_distributed_inference import api, app_sdk, provider_api
         from ndnsf import _ndnsf
 
         self.assertEqual(set(api.__all__), set(MANIFEST["apiExports"]))
@@ -26,34 +46,14 @@ class PublicApiContractTest(unittest.TestCase):
         self.assertIs(api.Runtime, _ndnsf.Runtime)
         self.assertIs(api.PreparedModel, _ndnsf.PreparedModel)
         self.assertIs(api.ProviderConfig, _ndnsf.NativeProviderConfig)
+        self.assertIs(provider_api.ProviderConfig, api.ProviderConfig)
+        self.assertFalse(hasattr(api, "NativeProviderConfig"))
+        self.assertFalse(hasattr(provider_api, "NativeProviderConfig"))
+        self.assertFalse(hasattr(app_sdk.APPProvider, "serve"))
+        self.assertFalse({"Enum", "dataclass", "hashlib"} & set(app_sdk.__all__))
         self.assertNotIn("__getattr__", api.__dict__)
 
-    def test_application_and_client_expose_model_first_and_explicit_preplanned(self):
-        from ndnsf_distributed_inference.api import (
-            InferenceApplication, InferenceClient,
-        )
 
-        app = inspect.signature(InferenceApplication.request)
-        client = inspect.signature(InferenceClient.request_model)
-        for name in ("model", "input", "generation", "strategy", "request_id"):
-            self.assertIn(name, app.parameters)
-            self.assertIn(name, client.parameters)
-        self.assertIn("legacy_deployment", app.parameters)
-        self.assertTrue(hasattr(InferenceApplication, "request_preplanned"))
-        self.assertTrue(hasattr(InferenceClient, "request_preplanned"))
-
-    def test_preferred_request_has_no_numeric_or_empty_sentinel_mode(self):
-        from ndnsf_distributed_inference.api import InferenceApplication
-
-        signature = inspect.signature(InferenceApplication.request)
-        self.assertIn("generation", signature.parameters)
-        # Generic tasks now accept an explicit budget; None leaves generation
-        # options in charge and does not choose a request mode by a number.
-        self.assertIsNone(signature.parameters["timeout_ms"].default)
-        self.assertEqual(signature.parameters["timeout_ms"].kind,
-                         inspect.Parameter.KEYWORD_ONLY)
-        self.assertNotIn("deployment_revision", signature.parameters)
-        self.assertNotIn("service", signature.parameters)
 
     def test_application_forwards_optimizer_and_does_not_own_runner_registry(self):
         from ndnsf_distributed_inference.app_sdk.application import InferenceApplication
@@ -81,41 +81,6 @@ class PublicApiContractTest(unittest.TestCase):
         self.assertIs(factory.call_args.kwargs["optimization"], suite)
         self.assertEqual(len(authorized), 1)
 
-    def test_application_uses_presplit_first_as_the_unmodified_v3_default(self):
-        from ndnsf_distributed_inference.app_sdk.application import (
-            InferenceApplication,
-        )
-        from ndnsf_distributed_inference.planner.presplit_first import (
-            PreSplitFirstStrategy,
-        )
-
-        configured = {}
-        core = SimpleNamespace(
-            requester_identity="/app/creator",
-            configure_automatic_planning=lambda **kwargs: configured.update(kwargs),
-        )
-        client = SimpleNamespace(
-            _core=core,
-            deployments=SimpleNamespace(authorize_application=lambda *_: None),
-        )
-        runtime = {
-            "application": {"identity": "/app/creator"},
-            "controller": "/controller", "service": "/Inference/Generate",
-            "group": "/test/group",
-        }
-        with tempfile.TemporaryDirectory() as root, patch(
-                "ndnsf_distributed_inference.policy.load_config",
-                return_value=runtime), patch(
-                "ndnsf_distributed_inference.app_sdk.client.InferenceClient.from_application_config",
-                return_value=client):
-            InferenceApplication.from_config(
-                "app.yaml", state_root=root, adapters=(object(),),
-                verify_offer_signature=lambda _offer: True,
-            )
-
-        self.assertIs(type(configured["strategy"]), PreSplitFirstStrategy)
-        self.assertEqual(configured["strategy"].placement_profile,
-                         "DI_PLACEMENT_V3")
 
 
 if __name__ == "__main__":

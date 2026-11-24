@@ -43,7 +43,7 @@ from Experiments.UAV.tracking_artifacts import validate_video_reference_assets
 
 ASSETS = Path(os.environ.get(
     "NDNSF_UAV_DEMO_ASSET_DIR", str(Path.home() / ".cache/ndnsf/spec191-assets")))
-MODEL = Path(os.environ.get("NDNSF_UAV_DEMO_MODEL", str(ASSETS / "3UAVs.pt")))
+MODEL = Path(os.environ.get("NDNSF_UAV_DEMO_MODEL", str(ASSETS / "3UAVs_YOLOv8n.onnx")))
 
 
 class TrackingRunnerTest(unittest.TestCase):
@@ -105,7 +105,7 @@ class TrackingRunnerTest(unittest.TestCase):
     def _compatibility_plan(self, root: Path, *, legacy=True, trust_schema=None):
         source = root / "source"
         source.mkdir(exist_ok=True)
-        model = root / "model.pt"
+        model = root / "model.onnx"
         model.write_bytes(b"wiring-only-model-placeholder")
         passport = {"videos": [{"path": str(source / "uav1_1min.mp4")}],
                     "scientificAccuracyClaimAllowed": False}
@@ -273,7 +273,7 @@ class TrackingRunnerTest(unittest.TestCase):
         original = json.loads((ROOT / "NDNSF-UAV-APP/configs/uav_observation_demo.json").read_text())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"test-model")
             profile = root / "profile.json"
             for field, value in (("frameCount", True), ("frameCount", 1.5),
@@ -289,7 +289,7 @@ class TrackingRunnerTest(unittest.TestCase):
     def test_same_output_new_plans_have_distinct_source_epoch_scopes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"test-model")
             source = root / "source"
             source.mkdir()
@@ -309,7 +309,7 @@ class TrackingRunnerTest(unittest.TestCase):
         effective_profiles = []
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"test-model")
             source = root / "source"
             source.mkdir()
@@ -383,7 +383,7 @@ class TrackingRunnerTest(unittest.TestCase):
             root = Path(temporary)
             source = root / "source"
             source.mkdir()
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"model-checkpoint-placeholder")
             output = root / "output"
             with patch("Experiments.UAV.run_multicamera_tracking_demo.validate_real_assets",
@@ -407,9 +407,9 @@ class TrackingRunnerTest(unittest.TestCase):
         self.assertIn("--observation-profile", display["command"])
         self.assertIn("--source-generations", display["command"])
         compute = next(item for item in plan["processes"] if item["name"] == "compute")
-        self.assertIn("--worker-python", compute["command"])
-        self.assertEqual(compute["command"][compute["command"].index("--worker-python") + 1],
-                         sys.executable)
+        self.assertNotIn("--worker-python", compute["command"])
+        self.assertNotIn("--worker-script", compute["command"])
+        self.assertEqual(compute["command"][compute["command"].index("--model") + 1], str(model))
         for camera in ("UAV1", "UAV2", "UAV3"):
             process = next(item for item in plan["processes"]
                            if item["name"] == f"uav{camera[-1]}-camera")
@@ -423,7 +423,7 @@ class TrackingRunnerTest(unittest.TestCase):
             root = Path(temporary)
             source = root / "source"
             source.mkdir()
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"model-checkpoint-placeholder")
             trust_schema = root / "deployment-trust.conf"
             # Pinning/forwarding only; native loading and certificate chains are separate checks.
@@ -454,7 +454,7 @@ class TrackingRunnerTest(unittest.TestCase):
             root = Path(temporary)
             source = root / "source"
             source.mkdir()
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"model-checkpoint-placeholder")
             video_passport = {
                 "mode": "video-reference-simulated",
@@ -526,7 +526,7 @@ class TrackingRunnerTest(unittest.TestCase):
             root = Path(temporary)
             source = root / "source"
             source.mkdir()
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"model-checkpoint-placeholder")
             output = root / "legacy-no-motion"
             with patch("Experiments.UAV.run_multicamera_tracking_demo.validate_real_assets",
@@ -560,7 +560,7 @@ class TrackingRunnerTest(unittest.TestCase):
     def test_spec210_source_switch_is_a_single_run_schedule_bound_to_all_roles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"model-checkpoint-placeholder")
             with patch("Experiments.UAV.run_multicamera_tracking_demo.validate_video_reference_assets",
                        return_value={"testAssets": True}):
@@ -600,7 +600,7 @@ class TrackingRunnerTest(unittest.TestCase):
     def test_spec210_measured_external_source_uses_live_pipe_without_video_assets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"model-checkpoint-placeholder")
             profile = json.loads((ROOT / "NDNSF-UAV-APP/configs/uav_observation_demo.json")
                                  .read_text(encoding="utf-8"))
@@ -647,7 +647,7 @@ class TrackingRunnerTest(unittest.TestCase):
     def test_spec210_external_source_adapter_is_started_as_fifo_writer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"model-checkpoint-placeholder")
             adapter = root / "source-adapter"
             adapter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -690,7 +690,7 @@ class TrackingRunnerTest(unittest.TestCase):
             source.mkdir()
             for name in ("uav1_1min.mp4", "uav2_1min.mp4", "uav3_1min.mp4"):
                 (source / name).write_bytes(name.encode())
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"model-checkpoint-placeholder")
             with patch("Experiments.UAV.tracking_artifacts._run_ffprobe",
                        return_value={"width": 640, "height": 480}):
@@ -759,7 +759,7 @@ class TrackingRunnerTest(unittest.TestCase):
     def test_reference_digest_fault_targets_the_distributed_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            model = root / "model.pt"
+            model = root / "model.onnx"
             model.write_bytes(b"model-checkpoint-placeholder")
             with patch(
                     "Experiments.UAV.run_multicamera_tracking_demo.validate_video_reference_assets",
@@ -787,6 +787,21 @@ class TrackingRunnerTest(unittest.TestCase):
                 report = preflight(plan, run=True, headless=True)
         self.assertFalse(report["ok"])
         self.assertIn("MiniNDN run requires root privileges", report["errors"])
+
+    def test_native_vehicle_preflight_does_not_require_person_worker(self) -> None:
+        plan = {
+            "topology": {"nodes": ["gs", "compute", "uav1", "uav2", "uav3"]},
+            "processes": [],
+            "settings": {"globalDeadlineMs": 60000, "trackingHostRequestTimeoutMs": 60000,
+                         "nfdCsMaxPackets": 4096},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            scripts = Path(temporary)
+            with patch("Experiments.UAV.run_multicamera_tracking_demo.DEFAULT_TRACKING_LIBEXEC",
+                       scripts):
+                errors = preflight(plan, run=True, headless=True)["errors"]
+        self.assertIn(f"missing installed tracking script: {scripts / 'observation_source.py'}",
+                      errors)
 
     def test_supervisor_rejects_missing_executable_before_child_start(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

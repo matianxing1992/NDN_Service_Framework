@@ -15,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Iterable, Protocol
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from ..core.contracts import (
     LifecycleEventV1,
@@ -199,6 +198,7 @@ class RuntimeJournal:
             raise ValueError("invalid journal identity namespace")
         root = Path(state_root)
         self.identity = identity
+        self._append_poisoned = False
         if (_is_volatile_state_root(root) and
                 not test_only_allow_ephemeral_state_root):
             raise RuntimeJournalUnsafeRootError(
@@ -248,10 +248,11 @@ class RuntimeJournal:
             raise RuntimeJournalUnsafeRootError(
                 "runtime journal state root is not safely writable") from exc
         self._usage_bytes = self._scan_usage_bytes()
-        self._journal_size = self.path.stat().st_size
-        self._records_cache = self._load_records(tolerate_torn_tail=True)
+        (self._records_cache, self._journal_size,
+         self._journal_valid_size, self._journal_needs_newline,
+         self._journal_identity) = self._load_records()
         self._journal_envelopes: dict[str, dict[str, Any]] = {}
-        self._rebuild_envelope_index()
+        self._rebuild_indexes()
 
     @classmethod
     def for_test(
@@ -317,68 +318,79 @@ class RuntimeJournal:
         return self.append_many(((kind, payload),))[0]
 
     def append_many(
-        self, entries: Iterable[tuple[str, dict[str, Any]]]
+        self, entries: Iterable[tuple[str, dict[str, Any]]], *,
+        _request_fence: tuple[str, int, tuple[int, str] | None] | None = None,
     ) -> tuple[dict[str, Any], ...]:
         """Append an ordered state transition batch with one durable flush."""
         entries = tuple(entries)
-        if not entries:
+        if not entries and _request_fence is None:
             return ()
         with self._exclusive_lock():
             self._refresh_records_if_changed()
+            if _request_fence is not None:
+                request_id, sequence, identity = _request_fence
+                committed_sequence = self._request_event_sequences.get(request_id, 0)
+                committed_identity = self._request_identities.get(request_id)
+                if identity is None and (committed_sequence or committed_identity is not None):
+                    raise ValueError(f"request_id already exists: {request_id}")
+                if (sequence, identity) != (committed_sequence, committed_identity):
+                    raise RuntimeJournalError("REQUEST_STATE_CHANGED: reopen the journal")
             return self._append_many_locked(entries)
 
     def _append_many_locked(
         self, entries: Iterable[tuple[str, dict[str, Any]]]
     ) -> tuple[dict[str, Any], ...]:
         """Append entries while the caller owns the journal lock."""
-        envelopes = []
-        wires = []
-        for kind, payload in entries:
-            record = {
+        from ndnsf import _ndnsf
+
+        if self._append_poisoned:
+            raise OSError("runtime journal unavailable after failed rollback")
+        envelopes = [
+            {
                 "schema": self.SCHEMA,
                 "kind": kind,
                 "timestampMs": int(time.time() * 1000),
                 "payload": payload,
             }
-            body = json.dumps(record, sort_keys=True, separators=(",", ":"))
-            envelope = {
-                **record,
-                "checksum": hashlib.sha256(body.encode()).hexdigest(),
-            }
-            envelopes.append(envelope)
-            wires.append((json.dumps(
-                envelope, sort_keys=True, separators=(",", ":")) + "\n").encode())
+            for kind, payload in entries
+        ]
         if not envelopes:
             return ()
-        if len(envelopes) == 1:
-            wire = wires[0]
-        else:
-            batch = {
-                "schema": self.SCHEMA,
-                "kind": "journal-transaction",
-                "timestampMs": int(time.time() * 1000),
-                "payload": {"records": envelopes},
-            }
-            batch_body = json.dumps(
-                batch, sort_keys=True, separators=(",", ":"))
-            batch_envelope = {
-                **batch,
-                "checksum": hashlib.sha256(batch_body.encode()).hexdigest(),
-            }
-            wire = (json.dumps(
-                batch_envelope, sort_keys=True, separators=(",", ":")) +
-                "\n").encode()
-        with self.path.open("ab") as output:
-            if self._usage_bytes + len(wire) > self.quota_bytes:
-                raise RuntimeJournalQuotaError("journal quota exceeded")
-            output.write(wire)
-            output.flush()
-            os.fsync(output.fileno())
-            self._records_cache = (*self._records_cache, *envelopes)
-            for envelope in envelopes:
-                self._index_envelope_record(envelope)
-            self._journal_size += len(wire)
-            self._usage_bytes += len(wire)
+        wire, checksums = _ndnsf._frame_di_journal_records(
+            [(json.dumps(record["kind"]), json.dumps(record["payload"], sort_keys=True,
+                                        separators=(",", ":")), record["timestampMs"])
+             for record in envelopes],
+            int(time.time() * 1000),
+        )
+        for record, checksum in zip(envelopes, checksums):
+            record["checksum"] = checksum
+        tail_size = self._journal_size - self._journal_valid_size
+        if self._journal_needs_newline:
+            wire = b"\n" + wire
+        if self._usage_bytes - tail_size + len(wire) > self.quota_bytes:
+            raise RuntimeJournalQuotaError("journal quota exceeded")
+        fd = os.open(self.path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            if tail_size:
+                if self._file_identity(os.fstat(fd)) != self._journal_identity:
+                    raise OSError("runtime journal changed before tail repair")
+                _ndnsf._truncate_di_journal_tail(fd, self._journal_size, self._journal_valid_size)
+                self._journal_size = self._journal_valid_size
+                self._usage_bytes -= tail_size
+            _ndnsf._append_di_journal_wire(fd, self._journal_size, wire)
+            self._journal_identity = self._file_identity(os.fstat(fd))
+        except _ndnsf._JournalRollbackError:
+            self._append_poisoned = True
+            raise
+        finally:
+            os.close(fd)
+        self._records_cache = (*self._records_cache, *envelopes)
+        for envelope in envelopes:
+            self._index_record(envelope)
+        self._journal_size += len(wire)
+        self._journal_valid_size = self._journal_size
+        self._journal_needs_newline = False
+        self._usage_bytes += len(wire)
         return tuple(envelopes)
 
     def lifecycle_records(self) -> tuple[dict[str, Any], ...]:
@@ -495,96 +507,115 @@ class RuntimeJournal:
         self._refresh_records_if_changed(tolerate_torn_tail=tolerate_torn_tail)
         return self._records_cache
 
-    def _load_records(self, *, tolerate_torn_tail: bool = True) -> tuple[dict[str, Any], ...]:
+    @staticmethod
+    def _file_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+    def _load_records(
+        self, *, tolerate_torn_tail: bool = True,
+    ) -> tuple[tuple[dict[str, Any], ...], int, int, bool, tuple[int, int, int, int, int]]:
+        from ndnsf import _ndnsf
+
+        def verify_record(record, scope):
+            unsigned = dict(record)
+            checksum = unsigned.pop("checksum", "")
+            fingerprint = checksum if isinstance(checksum, str) and checksum.isascii() else ""
+            reason = _ndnsf._validate_di_journal_record(
+                json.dumps(unsigned, sort_keys=True, separators=(",", ":")),
+                fingerprint,
+                json.dumps(unsigned.get("schema")),
+            )
+            if reason == "checksum":
+                raise ValueError(f"{scope} checksum mismatch")
+            if reason == "schema":
+                raise RuntimeJournalVersionError(f"unsupported {scope} schema")
+
         records = []
-        lines = self.path.read_bytes().splitlines()
+        with self.path.open("rb") as source:
+            identity = self._file_identity(os.fstat(source.fileno()))
+            wire = source.read()
+        lines = wire.splitlines(keepends=True)
+        valid_size = 0
         for index, line in enumerate(lines):
-            try: item = json.loads(line)
-            except Exception:
-                if tolerate_torn_tail and index == len(lines)-1: break
-                raise ValueError("corrupt runtime journal")
-            checksum = item.pop("checksum", "")
-            body = json.dumps(item, sort_keys=True, separators=(",", ":"))
-            if not hmac.compare_digest(checksum, hashlib.sha256(body.encode()).hexdigest()):
-                raise ValueError("runtime journal checksum mismatch")
-            if item.get("schema") != self.SCHEMA:
-                raise RuntimeJournalVersionError(
-                    "unsupported runtime journal schema")
-            verified = {**item, "checksum": checksum}
+            try:
+                item = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                if tolerate_torn_tail and index == len(lines) - 1 and not line.endswith(b"\n"):
+                    break
+                raise ValueError("corrupt runtime journal") from exc
+            if not isinstance(item, dict):
+                raise ValueError("runtime journal record must be an object")
+            valid_size += len(line)
+            verify_record(item, "runtime journal")
             if item.get("kind") != "journal-transaction":
-                records.append(verified)
+                records.append(item)
                 continue
-            nested = item.get("payload", {}).get("records", ())
+            payload = item.get("payload")
+            nested = payload.get("records") if isinstance(payload, dict) else None
             if not isinstance(nested, list):
                 raise ValueError("runtime journal transaction payload mismatch")
             for logical in nested:
                 if not isinstance(logical, dict):
                     raise ValueError("runtime journal transaction record mismatch")
-                logical = dict(logical)
-                logical_checksum = logical.pop("checksum", "")
-                logical_body = json.dumps(
-                    logical, sort_keys=True, separators=(",", ":"))
-                if not hmac.compare_digest(
-                        logical_checksum,
-                        hashlib.sha256(logical_body.encode()).hexdigest()):
-                    raise ValueError("runtime journal transaction checksum mismatch")
-                if logical.get("schema") != self.SCHEMA:
-                    raise RuntimeJournalVersionError(
-                        "unsupported runtime journal transaction schema")
-                records.append({**logical, "checksum": logical_checksum})
-        return tuple(records)
+                verify_record(logical, "runtime journal transaction")
+                if logical.get("kind") == "journal-transaction":
+                    raise ValueError("nested runtime journal transaction")
+            records.extend(nested)
+        needs_newline = valid_size > 0 and wire[valid_size - 1] != ord("\n")
+        return tuple(records), len(wire), valid_size, needs_newline, identity
 
     def _refresh_records_if_changed(self, *, tolerate_torn_tail: bool = True) -> None:
-        observed_size = self.path.stat().st_size
-        if observed_size == self._journal_size:
+        if self._file_identity(self.path.stat()) == self._journal_identity:
+            if not tolerate_torn_tail and self._journal_valid_size != self._journal_size:
+                raise ValueError("corrupt runtime journal")
             return
         previous_size = self._journal_size
-        self._records_cache = self._load_records(
-            tolerate_torn_tail=tolerate_torn_tail)
-        self._rebuild_envelope_index()
-        self._journal_size = observed_size
-        self._usage_bytes += observed_size - previous_size
+        (self._records_cache, self._journal_size,
+         self._journal_valid_size, self._journal_needs_newline,
+         self._journal_identity) = self._load_records(
+             tolerate_torn_tail=tolerate_torn_tail)
+        self._rebuild_indexes()
+        self._usage_bytes += self._journal_size - previous_size
 
-    def _index_envelope_record(self, record: dict[str, Any]) -> None:
+    def _index_record(self, record: dict[str, Any]) -> None:
         payload = record.get("payload", {})
         request_id = str(payload.get("request_id", ""))
-        if record.get("kind") == "protected-envelope" and request_id:
+        kind = record["kind"]
+        if kind == "protected-envelope" and request_id:
             self._journal_envelopes[request_id] = payload
-        elif record.get("kind") == "protected-envelope-tombstone" and request_id:
+        elif kind == "protected-envelope-tombstone" and request_id:
             self._journal_envelopes.pop(request_id, None)
+        elif request_id and kind in ("request-handle", "request-handle-update"):
+            self._request_identities[request_id] = (
+                payload.get("attempt_epoch", 1), payload.get("envelope_digest"))
+        elif kind == "request-event" and "requestId" in payload:
+            self._request_event_sequences[str(payload["requestId"])] = payload.get("sequence")
 
-    def _rebuild_envelope_index(self) -> None:
+    def _rebuild_indexes(self) -> None:
         self._journal_envelopes = {}
+        self._request_identities = {}
+        self._request_event_sequences = {}
         for record in self._records_cache:
-            self._index_envelope_record(record)
+            self._index_record(record)
 
     def prepare_envelope(
         self, request_id: str, payload: bytes, *, expires_at_ms: int,
     ) -> PreparedEnvelope:
         """Encrypt without persistence so metadata can bind the exact digest."""
+        from ndnsf import _ndnsf
+
         if not request_id or "/" in request_id or request_id in {".", ".."}:
             raise ValueError("invalid request spool identity")
+        expiry = int(expires_at_ms)
+        if expiry <= 0:
+            raise ValueError("invalid prepared request envelope")
         active_key = self._required_key_ring().active
-        nonce = secrets.token_bytes(12)
-        metadata = {
-            "schema": "ndnsf-di-protected-request-v3",
-            "requestId": request_id,
-            "expiresAtMs": int(expires_at_ms),
-            "keyId": active_key.key_id,
-        }
-        aad = json.dumps(
-            metadata, sort_keys=True, separators=(",", ":")).encode()
-        ciphertext = AESGCM(active_key.key_bytes).encrypt(
-            nonce, bytes(payload), aad)
-        body = {
-            **metadata,
-            "nonce": base64.b64encode(nonce).decode(),
-            "ciphertext": base64.b64encode(ciphertext).decode(),
-        }
-        encoded = json.dumps(body, sort_keys=True).encode("utf-8")
+        encoded = _ndnsf._seal_di_journal_envelope(
+            bytes(payload), request_id, expiry, active_key.key_id,
+            bytes(active_key.key_bytes))
         return PreparedEnvelope(
             request_id=request_id,
-            expires_at_ms=int(expires_at_ms),
+            expires_at_ms=expiry,
             encoded=encoded,
             wire_digest="sha256:" + hashlib.sha256(encoded).hexdigest(),
         )
@@ -593,6 +624,8 @@ class RuntimeJournal:
         self,
         prepared: PreparedEnvelope,
         entries: Iterable[tuple[str, dict[str, Any]]],
+        *,
+        _request_fence: tuple[str, int, tuple[int, str] | None] | None = None,
     ) -> tuple[dict[str, Any], ...]:
         """Atomically commit encrypted bytes and their logical references.
 
@@ -612,7 +645,7 @@ class RuntimeJournal:
                 "encoded": base64.b64encode(prepared.encoded).decode("ascii"),
             }),
             *tuple(entries),
-        ))
+        ), _request_fence=_request_fence)
         return records
 
     def _materialize_envelope_mirror(self, prepared: PreparedEnvelope) -> None:
@@ -696,49 +729,22 @@ class RuntimeJournal:
         return encoded
 
     def read_envelope(self, request_id: str, *, at_ms: int | None = None) -> bytes:
+        from ndnsf import _ndnsf
+
+        if not request_id or "/" in request_id or request_id in {".", ".."}:
+            raise ValueError("invalid request spool identity")
         try:
-            body = json.loads(self._encoded_envelope(request_id))
+            encoded = self._encoded_envelope(request_id)
         except KeyError:
             raise
         except Exception as exc:
             raise ValueError("request envelope integrity failure") from exc
-        if int(body["expiresAtMs"]) <= int(at_ms or time.time()*1000):
-            raise ValueError("request envelope expired")
-        key_ring = self._required_key_ring()
-        if body.get("schema") == "ndnsf-di-protected-request-v1":
-            mac = body.pop("mac", "")
-            wire = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
-            for item in key_ring.keys:
-                if hmac.compare_digest(
-                        mac,
-                        hmac.new(item.key_bytes, wire, hashlib.sha256).hexdigest()):
-                    return base64.b64decode(body["payload"])
-            raise ValueError("request envelope integrity failure")
-        if body.get("schema") not in {
-                "ndnsf-di-protected-request-v2",
-                "ndnsf-di-protected-request-v3"}:
-            raise ValueError("request envelope schema mismatch")
-        metadata = {
-            "schema": body["schema"],
-            "requestId": body["requestId"],
-            "expiresAtMs": int(body["expiresAtMs"]),
-        }
-        if body["schema"] == "ndnsf-di-protected-request-v3":
-            metadata["keyId"] = str(body["keyId"])
-            candidate_keys = (key_ring.find(str(body["keyId"])),)
-        else:
-            candidate_keys = key_ring.keys
-        aad = json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()
-        for item in candidate_keys:
-            try:
-                return AESGCM(item.key_bytes).decrypt(
-                    base64.b64decode(body["nonce"]),
-                    base64.b64decode(body["ciphertext"]),
-                    aad,
-                )
-            except Exception:
-                continue
-        raise ValueError("request envelope integrity failure")
+        keys = {item.key_id: bytes(item.key_bytes) for item in self._required_key_ring().keys}
+        try:
+            return _ndnsf._read_di_journal_envelope(
+                encoded, request_id, keys, max(0, int(at_ms or time.time() * 1000)))
+        except _ndnsf._JournalEnvelopeKeyUnavailable as exc:
+            raise RuntimeJournalKeyError(str(exc)) from exc
 
     def envelope_digest(self, request_id: str) -> str:
         encoded = self._encoded_envelope(request_id)
@@ -838,8 +844,11 @@ class RuntimeJournal:
                 finally:
                     os.close(directory_fd)
                 self._records_cache = tuple(retained)
-                self._rebuild_envelope_index()
+                self._rebuild_indexes()
                 self._journal_size = len(wire)
+                self._journal_valid_size = self._journal_size
+                self._journal_needs_newline = False
+                self._journal_identity = self._file_identity(self.path.stat())
                 self._usage_bytes += len(wire) - previous_size
             except Exception:
                 temp.unlink(missing_ok=True)

@@ -1894,8 +1894,8 @@ BOOST_AUTO_TEST_CASE(NativeTensorC04WireGoldensBindCompleteEndpointAndSignedStri
   const auto raw = [](const std::string& text) {
     return ndn::name::Component(ndn::tlv::GenericNameComponent, text.begin(), text.end());
   };
-  // Independently assembled paper components and externally calculated C01
-  // uint16/tag + uint8/kind + uint64/length transcript golden.
+  // Independently assembled components and C01 transcript digests for both
+  // abbreviated labels and the tensor representation, including its framing.
   ndn::Name expected("/provider/0/NDNSF-DI/tensor/REQUEST");
   expected.append(raw("name=/8=request/54=%00/50=%01%00"));
   expected.append("ATTEMPT").append("1").append("ROUND").append("2");

@@ -18,7 +18,6 @@ HOST_PREFLIGHT = ROOT / "packaging/ndnsf-di-container/bin/spec175-host-substrate
 WORKLOAD = ROOT / "packaging/ndnsf-di-container/jobs/spec175/workload.json"
 EXAMPLES_WSCRIPT = ROOT / "examples/wscript"
 SPEC175_JOBS = ROOT / "packaging/ndnsf-di-container/jobs/spec175"
-REPLAY_DRIVER = SPEC175_JOBS / "replay-exact-sif.py"
 PLANNING_BUILDER = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts"
                     / "build-qwen-planning-manifest.py")
 CHECKLIST_VALIDATOR = ROOT / "packaging/ndnsf-di-container/bin/ndnsf-di-pre-tiger-checklist"
@@ -69,16 +68,6 @@ def load_candidate_closure_module():
 def load_planning_builder_module():
     loader = importlib.machinery.SourceFileLoader(
         "spec175_planning_builder", str(PLANNING_BUILDER))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    execute_isolated(loader, module)
-    return module
-
-
-def load_replay_driver_module():
-    loader = importlib.machinery.SourceFileLoader(
-        "spec175_replay_driver", str(REPLAY_DRIVER))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
@@ -442,7 +431,6 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn('"packaging/ndnsf-di-container/"', builder)
         self.assertIn('"scripts/"', builder)
         self.assertIn("runtime_archive_paths", builder)
-        self.assertIn("replay-exact-sif.py", builder)
         self.assertIn("workload.json", builder)
         self.assertIn("scripts/build_spec175_workload.py", builder)
         self.assertIn("scripts/run_spec180_case.py", builder)
@@ -579,78 +567,9 @@ class Spec175SifPreflightTests(unittest.TestCase):
         text = HOST_PREFLIGHT.read_text(encoding="utf-8")
         self.assertIn("host-substrate", text)
         self.assertIn("HOST_NAMESPACE_PRIVILEGE_MISSING", text)
-        self.assertIn("SPEC175_RUNTIME_SIF", text)
-        self.assertIn("NDNSF_DI_LlmPipeline_Minindn.py", text)
-        self.assertIn("SPEC175_SIF_HOST_PROCESS_FALLBACK", text)
+        self.assertIn("HOST_APPTAINER_VERSION_MISMATCH", text)
+        self.assertIn("HOST_TOPOLOGY_MISSING", text)
 
-    def test_host_replay_driver_matches_minindn_python38_boundary(self):
-        text = REPLAY_DRIVER.read_text(encoding="utf-8")
-        self.assertIn("WORKLOAD_SEED = 1750001", text)
-        self.assertIn("FAULT_SEED = 1750002", text)
-        self.assertIn("FAULT_CASES", text)
-        self.assertIn("case_seed", text)
-        self.assertIn('host_entries = host["entries"]', text)
-        self.assertIn("for index, registered in enumerate(host_entries)", text)
-        self.assertNotIn("EXPECTED_ENTRIES", text)
-        self.assertIn('"repetition": repetition', text)
-        self.assertIn('parser.add_argument("--source-seal", required=True', text)
-        self.assertIn("complete candidate source seal", text)
-        self.assertIn("PRODUCTION_RUNNER", text)
-        self.assertIn("SPEC175_SIF_HOST_PROCESS_FALLBACK", text)
-        self.assertIn("without_sha256_prefix", text)
-        self.assertNotIn("removeprefix(", text)
-
-    def test_exact_replay_uses_registered_seed_for_fault_cases(self):
-        module = load_replay_driver_module()
-        self.assertEqual(module.case_seed("M01", 1750001), 1750001)
-        self.assertEqual(module.case_seed("M14", 1750001), 1750001)
-        for case in ("M05", "M06", "M07", "M08", "M09"):
-            self.assertEqual(module.case_seed(case, 1750001), 1750002)
-
-    def test_exact_replay_resolves_case_output_for_sif_bind_mount(self):
-        module = load_replay_driver_module()
-        aggregate = module.resolve_replay_output(
-            Path("results/spec175/g4/current/replay.json"))
-        self.assertTrue(aggregate.is_absolute())
-        self.assertEqual(
-            aggregate.parent / "M01-r1",
-            Path("results/spec175/g4/current/M01-r1").resolve(),
-        )
-
-    def test_host_replay_driver_rejects_stale_run_evidence(self):
-        module = load_replay_driver_module()
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            empty = root / "empty-run"
-            empty.mkdir()
-            module.ensure_fresh_run_output(empty, "M01-r1")
-            (empty / "spec175-case-result.json").write_text("{}")
-            with self.assertRaisesRegex(SystemExit, "RUN_OUTPUT_NOT_EMPTY:M01-r1"):
-                module.ensure_fresh_run_output(empty, "M01-r1")
-            (root / "not-a-directory").write_text("stale")
-            with self.assertRaisesRegex(SystemExit, "RUN_OUTPUT_NOT_DIRECTORY:M02-r1"):
-                module.ensure_fresh_run_output(root / "not-a-directory", "M02-r1")
-            with self.assertRaisesRegex(SystemExit, "RUN_OUTPUT_NOT_DIRECTORY:M03-r1"):
-                module.ensure_fresh_run_output(root / "not-a-directory", "M03-r1")
-
-    def test_sif_launcher_uses_apptainer_home_mapping(self):
-        text = (ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py").read_text(
-            encoding="utf-8")
-        self.assertIn('"--home"', text)
-        # The launcher maps the container HOME through Apptainer's --home onto the run's own MININDN_ROOT
-        # rather than a fixed /tmp path, so the mapping follows the node's workspace.
-        self.assertIn('--home "${HOME:-$MININDN_ROOT}:${HOME:-$MININDN_ROOT}"', text)
-        self.assertNotIn('"--env", perf.shell_quote(f"HOME=', text)
-        self.assertNotIn("--env 'HOME=${HOME:-/tmp/minindn}'", text)
-
-    def test_sif_launcher_forwards_node_scoped_controller_certificate(self):
-        text = (ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py").read_text(
-            encoding="utf-8")
-        self.assertIn(
-            'NDNSF_CONTROLLER_CERT_FILE="${NDNSF_CONTROLLER_CERT_FILE:-}"',
-            text,
-        )
-        self.assertIn("node_env[REPOSITORY_NODE]", text)
 
     def test_workload_mutation_is_rejected(self):
         module = load_module()
@@ -764,7 +683,7 @@ if __name__ == "__main__":
 def test_cli_loaders_preserve_import_paths():
     before = sys.path[:]
     for load in (load_module, load_host_gate_module, load_candidate_closure_module,
-                 load_planning_builder_module, load_replay_driver_module):
+                 load_planning_builder_module):
         load()
         assert sys.path == before
     import cProfile

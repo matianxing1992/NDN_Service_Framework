@@ -22,6 +22,14 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--build', type=Path, default=Path(os.environ.get("SPEC185_BUILD_DIR", ROOT / "build")))
 parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
+parser.add_argument('--four-stage', action='store_true',
+                    help='prepare the canonical four-stage source on four CPU Providers')
+parser.add_argument('--repository-input', action='store_true',
+                    help='publish application input through the native Runtime User')
+parser.add_argument('--host-requester', action='store_true',
+                    help='use the installed Python facade with the four native Providers')
+parser.add_argument('--host-cancel-after-event', type=int, choices=(0, 3), default=0,
+                    help='cancel the installed host request after its third event')
 parser.add_argument('--conversation', action='store_true',
                     help='run two persisted native conversation turns and a wrong-parent negative')
 parser.add_argument('--recovery', action='store_true',
@@ -35,6 +43,13 @@ parser.add_argument('--stored-model-reuse', action='store_true',
 parser.add_argument('--request-time-model-preparation', action='store_true',
                     help='use native source preparation/open before the stored reuse case')
 args=parser.parse_args()
+if args.host_requester and not args.four_stage:
+ parser.error('--host-requester requires --four-stage')
+if args.host_cancel_after_event and not args.host_requester:
+ parser.error('--host-cancel-after-event requires --host-requester')
+if args.four_stage and (args.conversation or args.recovery or args.replacement or
+                       args.stored_model_reuse or args.request_time_model_preparation):
+ parser.error('--four-stage runs the four-Provider stream qualification only')
 if args.request_time_model_preparation and not args.stored_model_reuse:
  parser.error('--request-time-model-preparation requires --stored-model-reuse')
 driver_started=time.monotonic()
@@ -68,6 +83,8 @@ CONTROLLER=b.native_program(BUILD, 'App_ServiceController'); AUTHORITY=b.native_
 provider_a='/example/hello/provider-a' if args.replacement else '/example/hello/provider'
 provider_b='/example/hello/provider-b'
 provider_names=[provider_a]
+if args.four_stage:
+ provider_names += ['/example/hello/provider-'+str(index) for index in range(1,4)]
 repo_provider='/example/hello/repo-provider'
 repo_node='/example/hello/repo-node'
 repo_service='/Repo/Spec222'
@@ -104,10 +121,51 @@ manifest={"services":[{"name":"/Inference/NativeStream","model":"/Model/QwenFixt
 catalog['splitter']['resources_by_role']={stream_role:{
  'backends':['onnxruntime'],'weight_bytes':1 << 20,'workspace_bytes':0,'kv_bytes':0,
  'activation_bytes':0,'transient_bytes':0,'safety_margin':1.0}}
+stream_roles=[stream_role]
+source_identity=None
+if args.four_stage:
+ binding=json.loads(fixture_path('spec175/tiny-causal-lm-v1/standalone/four-role/source.json').read_text())
+ source_path=fixture_path('spec175/tiny-causal-lm-v1/'+binding['source']['path'])
+ src=source_path.read_bytes(); src_digest='sha256:'+hashlib.sha256(src).hexdigest()
+ if src_digest != binding['source']['digest']:
+  raise RuntimeError('four-stage canonical source digest mismatch')
+ for relative,expected in binding['reference_digests'].items():
+  if 'sha256:'+hashlib.sha256(fixture_path('spec175/tiny-causal-lm-v1/'+relative).read_bytes()).hexdigest()!=expected:
+   raise RuntimeError('four-stage independent reference digest mismatch: '+relative)
+ inspector=b.native_program(BUILD,'native-source-inspect',source_subdir='',installed_subdir='libexec/ndnsf-tests')
+ source_identity=json.loads(subprocess.run([str(inspector),str(source_path)],check=True,
+                                         capture_output=True,text=True,timeout=30).stdout)
+ stream_roles=['/LLM/Pipeline/Stage/'+str(index) for index in range(4)]
+ layer_ranges=[[index,index+1] for index in range(4)]
+ graph_nodes=['embedding']+['layer-%02d'%index for index in range(4)]+['final-norm-head']
+ graph_edges=['hidden-embedding-to-layer-00']+['hidden-layer-%d-to-%d'%(i,i+1) for i in range(3)]+['hidden-layer-3-to-final']
+ model['graph_digest']=digest({'model':model['model_name'],'revision':model['source_revision'],
+  'precision':model['precision'],'decode_mode':'single-token-autoregressive','modality':'text-only',
+  'mtp_enabled':False,'thinking_mode':'disabled','layer_ranges':layer_ranges,
+  'nodes':graph_nodes,'edges':graph_edges,'legal_cuts':graph_edges})
+ model['content_digest']=src_digest
+ model['semantics_digest']=digest(binding['reference_digests'])
+ package=digest({'source':src_digest,'reference_digests':binding['reference_digests']})
+ catalog['model']=json.loads(canonical_bytes(model).decode())
+ catalog['source'].update(digest=src_digest,model_manifest_digest=package,
+                          canonical_graph_digest=source_identity['canonical_graph_digest'])
+ catalog['publication']['package_manifest_digest']=package
+ catalog['recipe']['max_nodes']=128
+ # Four-stage material receipts need 8*manifest + 16*receipt parser workspace;
+ # the frozen 82-node source needs about 1.18 MB, above the one-stage budget.
+ catalog['recipe']['max_assembled_bytes']=2 << 20
+ catalog['node_mapping']=binding['node_mapping']
+ catalog['state_inputs']=binding['state_inputs']; catalog['state_outputs']=binding['state_outputs']
+ resource=dict(catalog['splitter']['resources_by_role'][stream_role],workspace_bytes=2 << 20)
+ artifacts={role:digest({'source':src_digest,'role':role,'profile':profile}) for role in stream_roles}
+ catalog['splitter'].update(layer_ranges=layer_ranges,roles=stream_roles,tensor_degrees=[1]*4,
+  artifact_digests_by_role=artifacts,weight_bytes_by_role={role:len(src) for role in stream_roles},
+  resources_by_role={role:dict(resource) for role in stream_roles},result_egress_role=stream_roles[-1])
+ plan['services'][0]['roles']=stream_roles
 # provider plan and manifest files generated later
 
 def policy_text():
- providers=''.join(' provider-policy\n {\n  for %s\n  allow { /Inference/NativeStream\n  /Inference/NativeStream/ROLE/LLM/Pipeline/Stage/0 }\n }\n' % name for name in provider_names)
+ providers=''.join(' provider-policy\n {\n  for '+name+'\n  allow { /Inference/NativeStream\n  /Inference/NativeStream/ROLE'+(stream_roles[index] if args.four_stage else stream_role)+' }\n }\n' for index,name in enumerate(provider_names))
  users=' user-policy\n {\n  for /example/hello/user\n  allow { /Inference/NativeStream\n  /HELLO }\n }\n'
  if args.stored_model_reuse:
   services='\n'.join(repo_service+'/'+suffix for suffix in repo_suffixes)
@@ -125,6 +183,8 @@ else:
  run_root.mkdir(parents=True, exist_ok=True)
 run_root.chmod(0o700)
 provider_dirs=[('provider', provider_a)]
+if args.four_stage:
+ provider_dirs += [('provider-'+str(index),name) for index,name in enumerate(provider_names[1:],1)]
 if args.replacement and not args.replacement_no_backup: provider_dirs.append(('provider-b', provider_b))
 extra_dirs=['repo']+list(consumer_ids) if args.stored_model_reuse else []
 for n in ['shared','bootstrap-store','authority','requester']+[d for d,_ in provider_dirs]+extra_dirs:(run_root/n).mkdir(mode=0o700)
@@ -141,6 +201,8 @@ for directory in ['authority','requester']+[name for name,_ in provider_dirs]:
  (run_root/directory/'root.cert').write_bytes(root_certificate)
 store_dirs=[('controller-store',['/example/hello/controller']),('authority-store',['/example/hello/authority']),('provider-store',[provider_a]),('requester-store',['/example/hello/user'])]
 if args.replacement and not args.replacement_no_backup: store_dirs.insert(3,('provider-b-store',[provider_b]))
+if args.four_stage:
+ store_dirs.extend((directory+'-store',[name]) for directory,name in provider_dirs[1:])
 if args.stored_model_reuse:
  store_dirs.extend([('repo-store',[repo_provider])]+[(name+'-store',[identity])
                    for name,identity in consumer_ids.items()])
@@ -195,7 +257,7 @@ for index,name in enumerate(provider_names):
  cert=b.certificate_name(bootenv,name)
  keyprefix=b.certificate_key_name(cert)
  offer_public=data['offer_public']; offer_key_id='sha256:'+hashlib.sha256(load_pem_public_key(offer_public.read_bytes(), backend=default_backend()).public_bytes(Encoding.Raw,PublicFormat.Raw)).hexdigest()
- offer_file='offer-public.pem' if len(provider_names)==1 else 'offer-%s-public.pem' % ('a' if index==0 else 'b')
+ offer_file='offer-public.pem' if len(provider_names)==1 else 'offer-%s-public.pem' % chr(ord('a')+index)
  shutil.copy2(offer_public,run_root/'requester'/offer_file)
  public_key_files[offer_key_id]=offer_file
  offer_entries.append({"provider":name,"service":"/Inference/NativeStream","keyLocatorPrefix":keyprefix,"signerKeyId":offer_key_id,"certificateName":cert})
@@ -203,10 +265,44 @@ for index,name in enumerate(provider_names):
 op={"schema":"spec180-provider-offer-trust-v1","candidateId":"b2","candidateDigest":offer_policy,"trustSchema":"/example/hello/trust","entries":offer_entries}
 # requester config
 rc={"schema":"ndnsf-di-native-requester-v1","catalog":dict(catalog,source=dict(catalog['source'],file='model.onnx')),"core":{"requester_identity":"/example/hello/user","authority_identity":"/example/hello/controller","group":"/example/hello/group","trust_schema_file":"trust-schema.conf"},"grant":{"authority_identity":"/example/hello/authority","authority_service":"/HELLO","authority_public_key_file":"authority-public.pem","requester_private_key_file":"requester-private.pem","protection_epoch":"epoch-1"},"offer_admission":{"policy":op,"public_key_files":public_key_files,"candidate_digest":offer_policy},"limits":{"bootstrap_ms":30000,"max_source_bytes":1000000,"max_assembled_bytes":1000000},"request":{"service":"/Inference/NativeStream","task":"task","adapter_composition_digest":adapter_digest,"task_descriptor_digest":dg('task'),"generation_mode":"TOKEN_STREAMING","tokenizer_digest":"sha256:bf0f0fa65dc5aafe690ee497b4c8e2abe408fb4788c5ef035964dc94f15ca5a6","input_layout_digest":dg('input-layout'),"security_policy_digest":dg('security'),"max_candidates":1,"max_policy_ms":1000,"provider_names":provider_names,"max_reentries":1,"no_progress_ms":5000,"timeout_ms":30000,"ack_timeout_ms":5000}}
+if args.four_stage:
+ rc['limits']['max_assembled_bytes']=2 << 20
 if args.replacement:
  rc['request']['allow_replacement']=True; rc['request']['max_replacements']=1
 options={"useCache":True,"outputMode":"TOKEN_STREAMING","generationId":"0123456789abcdef0123456789abcdef","maxNewTokens":8,"tokenizerDigest":"sha256:bf0f0fa65dc5aafe690ee497b4c8e2abe408fb4788c5ef035964dc94f15ca5a6","eosTokenIds":[2],"sampling":{"mode":"Greedy","temperature":0.0,"topK":1,"topP":1.0,"repetitionPenalty":1.0,"seed":1750001},"stopStrings":[],"tokenInputName":"input_ids","stateInputNames":["attention_kv_in","recurrent_state_in","convolution_state_in"],"stateOutputNames":["attention_kv_out","recurrent_state_out","convolution_state_out"]}
+if args.four_stage:
+ options['stateInputNames']=[value for role in stream_roles for values in
+  catalog['state_inputs'][role].values() for value in values]
+ options['stateOutputNames']=[value for role in stream_roles for values in
+  catalog['state_outputs'][role].values() for value in values]
+ options['stateSuccessorMap']=','.join(
+  catalog['state_inputs'][role][family+'_in'][0]+'='+catalog['state_outputs'][role][family+'_out'][0]
+  for role in stream_roles for family in ('attention_kv','recurrent_state','convolution_state'))
+ prepared=subprocess.run([str(inspector),'--preflight',str(run_root/'requester/catalog.json'),
+                          str(run_root/'requester/model.onnx')],check=True,
+                         capture_output=True,text=True,timeout=30)
+ (run_root/'source-identity.json').write_text(json.dumps(source_identity,indent=2)+'\n')
+ (run_root/'source-preflight.json').write_text(prepared.stdout)
+ prepared_roles={row['role']:row for row in json.loads(prepared.stdout)['roles']}
+ if set(prepared_roles)!=set(stream_roles):
+  raise RuntimeError('native source preparation omitted a four-stage role')
+ artifact_template=manifest['services'][0]['artifacts'][0]
+ role_artifacts=[]
+ for index,role in enumerate(stream_roles):
+  artifact_row=copy.deepcopy(artifact_template)
+  artifact_row.update(artifact='/Artifact/Qwen/Stage/'+str(index),role=role)
+  metadata=artifact_row['metadata']; facts=prepared_roles[role]
+  inputs=[value for values in catalog['state_inputs'][role].values() for value in values]
+  outputs=[value for values in catalog['state_outputs'][role].values() for value in values]
+  if not set(inputs).issubset(facts['input_names']) or not set(outputs).issubset(facts['output_names']):
+   raise RuntimeError('native prepared state ports differ from the frozen source')
+  metadata.update(inputNames=','.join(facts['input_names']),outputNames=','.join(facts['output_names']),
+   stateInputNames=','.join(inputs),stateOutputNames=','.join(outputs),fragmentDigest=artifacts[role])
+  role_artifacts.append(artifact_row)
+ manifest['services'][0].update(roles=stream_roles,artifacts=role_artifacts)
 (run_root/'requester/options.json').write_text(json.dumps(options)); rc['request']['options_file']='options.json'; rc['stream_oracle']={'token_ids':[4,5,6,7,8,9,10,2]}
+if args.repository_input:
+ rc['request']['input_transport']='REPO_REF'
 if args.conversation or args.stored_model_reuse:
  conversation_key_dir=run_root/'requester/keys'; conversation_key_dir.mkdir(mode=0o700)
  conversation_key=(conversation_key_dir/'conversation.key'); conversation_key.write_bytes(os.urandom(32)); conversation_key.chmod(0o600)
@@ -266,7 +362,7 @@ if args.stored_model_reuse:
 base=os.environ.copy(); base.update({'NDN_CLIENT_TRANSPORT':'unix://'+str(nfd_socket),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin','NDNSF_CONTROLLER_GENERATION_STATE':str(run_root/'shared/controller-generation.state'),'NDN_LOG':'ndn_service_framework.*=TRACE:ndnsf.di.NativeRequester=WARN','NDNSF_DI_RUNTIME_TIMING':'1'})
 # Qualification oracles consume the native evidence component explicitly;
 # ordinary runtime logging remains controlled by its application configuration.
-base['NDN_LOG']+=':ndnsf.di.RuntimeEvidence=WARN'
+base['NDN_LOG']+=':ndnsf.di.RuntimeEvidence='+('TRACE' if args.four_stage else 'WARN')
 if args.stored_model_reuse:
  base['NDN_LOG']=base['NDN_LOG'].replace('ndn_service_framework.*=TRACE',
                                       'ndn_service_framework.*=WARN')
@@ -279,6 +375,8 @@ starts={}
 measurements={'scope':'native tiny causal-LM stored-model process qualification',
               'source_bytes':len(src),'phases':[],'first_failure':None,'forced_cleanup':[],
               'cleanup_errors':[],'live_processes':[]}
+if args.four_stage:
+ measurements['scope']='native canonical four-stage CPU process qualification'
 def wait_phase(process,timeout=60):
  name,started=starts[process.pid]
  try:
@@ -307,7 +405,8 @@ try:
  def penv(store):
   return b.actor_environment(base,store)
  ensure_identities=','.join(['/example/hello/authority']+provider_names+['/example/hello/user']+extra_identities)
- c=launch([str(CONTROLLER),'--controller-prefix','/example/hello/controller','--policy-file',str(policy),'--trust-schema',str(run_root/'shared/trust-schema.conf'),'--ensure-identities',ensure_identities,'--no-serve-certificates','--run-for-ms','180000' if args.stored_model_reuse else '120000'],penv(run_root/'controller-store'),'controller');children.append(c); wait_ready(c,run_root/'controller.log','ServiceController started...',30)
+ controller_env=b.controller_environment(base,run_root/'controller-store')
+ c=launch([str(CONTROLLER),'--controller-prefix','/example/hello/controller','--policy-file',str(policy),'--trust-schema',str(run_root/'shared/trust-schema.conf'),'--ensure-identities',ensure_identities,'--no-serve-certificates','--run-for-ms','180000' if args.stored_model_reuse else '120000'],controller_env,'controller');children.append(c); wait_ready(c,run_root/'controller.log','NDNSF_CONTROLLER_READY',30)
  if args.stored_model_reuse:
   repo_env=penv(run_root/'repo-store')
   repo_env['NDNSF_DEPLOYMENT_BOOT_ID']='spec222-owned-repo'
@@ -376,8 +475,8 @@ try:
   run_command(['/usr/local/bin/nfdc','strategy','set','/example/hello/group',
                '/localhost/nfd/strategy/multicast'],env=base,check=True,
                stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-  c=launch(c.args,penv(run_root/'controller-store'),'controller-restart');children.append(c)
-  wait_ready(c,run_root/'controller-restart.log','ServiceController started...',30)
+  c=launch(c.args,controller_env,'controller-restart');children.append(c)
+  wait_ready(c,run_root/'controller-restart.log','NDNSF_CONTROLLER_READY',30)
   repo=launch(repo.args,repo_env,'repo-restart');children.append(repo)
   wait_ready(repo,run_root/'repo-restart.log','NDNSF_REPO_READY',60)
   measurements['infrastructure_restart']['wall_seconds']=time.monotonic()-restart_started
@@ -393,13 +492,14 @@ try:
  def provider_command(name):
   data=provider_keys[name]; provider_dir=run_root/data['dir']
   shutil.copy2(data['offer_private'],provider_dir/'offer-private.pem')
-  return [str(PROVIDER),'--plan',str(provider_dir/'plan.json'),'--manifest',str(provider_dir/'manifest.json'),'--service','/Inference/NativeStream','--provider',name,'--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(provider_dir/'trust-schema.conf'),'--roles',stream_role,'--serve','--run-for-ms','60000','--artifact-cache-dir',str(provider_dir/'cache'),'--tokenizer-json',str(fixture_path('spec175/tiny-causal-lm-v1/standalone/tokenizer.json')),'--selection-offer-key-file',str(provider_dir/'offer-private.pem'),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
+  role=stream_roles[provider_names.index(name)] if args.four_stage else stream_role
+  return [str(PROVIDER),'--plan',str(provider_dir/'plan.json'),'--manifest',str(provider_dir/'manifest.json'),'--service','/Inference/NativeStream','--provider',name,'--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(provider_dir/'trust-schema.conf'),'--roles',role,'--serve','--run-for-ms','60000','--artifact-cache-dir',str(provider_dir/'cache'),'--tokenizer-json',str(fixture_path('spec175/tiny-causal-lm-v1/standalone/tokenizer.json')),'--selection-offer-key-file',str(provider_dir/'offer-private.pem'),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
  provider_processes={}
  provider_envs={}
  for index,name in enumerate(provider_names):
   data=provider_keys[name]; provider_dir=run_root/data['dir']; store=run_root/(data['dir']+'-store')
   pe=penv(store); pe['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY']=str(provider_dir/'authority-public.pem'); pe['SPEC181_PROVIDER_RECIPIENT_KEY_MAP']=str(provider_dir/'recipient-key-map.json'); pe['NDNSF_DI_WORKER_BINARY']=str(WORKER)
-  provider_log='provider' if index == 0 else 'provider-b'
+  provider_log=data['dir'] if args.four_stage else ('provider' if index == 0 else 'provider-b')
   command=provider_command(name)
   if args.stored_model_reuse:
    command[command.index('--run-for-ms')+1]='180000'
@@ -413,7 +513,28 @@ try:
  if args.stored_model_reuse:
   refresh_consumer_retention(requester_dir)
  re=penv(requester_store); re.update({'NDNSF_DI_WORKER_BINARY':str(WORKER)})
- rq=launch([str(REQUESTER),'--config',str(requester_dir/'config.json'),'--input',str(requester_dir/'input.bin'),'--output',str(requester_dir/'output.bin')],re,'requester');children.append(rq)
+ requester_command=[str(REQUESTER)]
+ if args.host_requester:
+  prefix=Path(os.environ['NDNSF_TEST_RUNTIME_PREFIX'])
+  site=Path(os.environ['NDNSF_TEST_PYTHON_SITE'])
+  if not prefix.is_absolute() or not (prefix/'lib').is_dir():
+   raise RuntimeError('installed host requester requires an absolute SDK prefix')
+  if not site.is_absolute() or not site.is_dir():
+   raise RuntimeError('installed host requester requires an absolute Python site')
+  re['LD_LIBRARY_PATH']=str(prefix/'lib')+':'+re.get('LD_LIBRARY_PATH','')
+  re['PYTHONPATH']=str(site)
+  re['PYTHONNOUSERSITE']='1'
+  requester_command=[os.environ.get('NDNSF_TEST_PYTHON','/usr/bin/python3'),
+                     str(ROOT/'tests/installed-api/native-host-stream.py'),
+                     '--cancel-after-event',str(args.host_cancel_after_event)]
+  if args.repository_input:
+   requester_command+=['--repository-input']
+ if args.repository_input:
+  # The caller's temporary DataRef is destroyed before ACK closes. Native
+  # request ownership must keep the original protected input available.
+  re['NDNSF_REQUEST_LARGE_DATA_RETENTION_MS']='50'
+ requester_command+=['--config',str(requester_dir/'config.json'),'--input',str(requester_dir/'input.bin'),'--output',str(requester_dir/'output.bin')]
+ rq=launch(requester_command,re,'requester');children.append(rq)
  stopped_provider_a=False
  if args.replacement:
   # Wait until the requester has received A's authenticated ACK.  Pausing A
@@ -421,7 +542,7 @@ try:
   # the first Selection/stream attempt time out; B must satisfy recovery.
   wait_ready(rq,run_root/'requester.log','providerName='+provider_a+' status=true',30)
   os.kill(p.pid,signal.SIGSTOP); stopped_provider_a=True
- if args.stored_model_reuse:
+ if args.stored_model_reuse or args.four_stage:
   wait_phase(rq)
  else:
   rq.wait()
@@ -474,24 +595,35 @@ finally:
  if 'stopped_provider_a' in locals() and stopped_provider_a and p.poll() is None:
   os.kill(p.pid,signal.SIGCONT)
  active_failure=sys.exc_info()[0] is not None
+ strict_cleanup=args.stored_model_reuse or args.four_stage
  for p in reversed(children):
   try:
    b.stop(p)
   except Exception as error:
-   if not args.stored_model_reuse:
+   if not strict_cleanup:
     raise
    measurements['cleanup_errors'].append(starts[p.pid][0]+': '+str(error))
-  finally:
+  try:
    p._ndnsf_log_handle.close()
-  if args.stored_model_reuse and p.poll() == -signal.SIGKILL:
+  except Exception as error:
+   if not strict_cleanup:
+    raise
+   measurements['cleanup_errors'].append(starts[p.pid][0]+' log: '+str(error))
+  if strict_cleanup and p.poll() == -signal.SIGKILL:
    measurements['forced_cleanup'].append(starts[p.pid][0])
- if args.stored_model_reuse:
+ if strict_cleanup:
+  measurements['actor_exit_codes']={starts[p.pid][0]:p.poll() for p in children}
+  if args.four_stage:
+   for name,code in measurements['actor_exit_codes'].items():
+    if code != 0:
+     measurements['cleanup_errors'].append(name+' exited '+str(code))
   measurements['live_processes']=[p.pid for p in children if p.poll() is None]
   measurements['total_wall_seconds']=time.monotonic()-driver_started
   cleanup_failed=(measurements['forced_cleanup'] or measurements['cleanup_errors']
                   or measurements['live_processes'])
   if cleanup_failed and measurements['first_failure'] is None:
    measurements['first_failure']='owned process cleanup failed'
-  (run_root/'stored-process-measurements.json').write_text(json.dumps(measurements,indent=2)+'\n')
+  receipt='four-stage-process-measurements.json' if args.four_stage else 'stored-process-measurements.json'
+  (run_root/receipt).write_text(json.dumps(measurements,indent=2)+'\n')
   if not active_failure and cleanup_failed:
-   raise RuntimeError('stored process cleanup was not clean; see measurements')
+   raise RuntimeError('owned process cleanup was not clean; see '+receipt)

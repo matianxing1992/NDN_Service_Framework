@@ -28,6 +28,7 @@ from native_install_candidate import (  # noqa: E402
     build_yolo_native_candidate,
     file_identity,
     resolve_installed_python_package,
+    resolve_yolo_extension_pair,
     sha256_file,
     validate_spec201_candidate,
     write_candidate,
@@ -101,8 +102,15 @@ def with_runtime_evidence_filter(environment: dict[str, str]) -> dict[str, str]:
     return result
 
 
-def requester_environment(environment, state_root, publication_directory=None):
-    result = {**environment, "NDNSF_DI_STATE_ROOT": str(state_root)}
+def requester_environment(environment, state_root, publication_directory=None, *,
+                          node_home: Path, controller_certificate: Path):
+    # Bind the public Runtime to the node's initialized identity material.
+    # Keep ndnsec's literal TPM locator: changing it resets the default PIB.
+    result = {**environment, "HOME": str(node_home),
+              "NDNSF_DI_STATE_ROOT": str(state_root),
+              "NDN_CLIENT_PIB": "pib-sqlite3:",
+              "NDN_CLIENT_TPM": "tpm-file:",
+              "NDNSF_CONTROLLER_CERT_FILE": str(controller_certificate)}
     if publication_directory is not None:
         result["NDNSF_REQUEST_LARGE_DATA_DIR"] = str(
             publication_directory.expanduser().resolve())
@@ -5753,6 +5761,8 @@ def initialize_di_keychains(ndn,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--topology-file", type=Path, default=TOPO,
+                        help="MiniNDN topology used by the frozen candidate")
     # Benchmark recipe note:
     #   sudo mn -c >/tmp/ndnsf_mn_cleanup.log 2>&1 || true; sleep 3
     #   sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=0 \
@@ -5886,6 +5896,8 @@ def main() -> None:
                         default="warm",
                         help="capture only the warm inference window by default; use all only for startup/repo/keychain diagnostics")
     args_cli = parser.parse_args()
+    if not args_cli.native_providers or not args_cli.native_requester:
+        parser.error("YOLO execution requires --native-providers and --native-requester")
     selected_parallel_modes = sum([
         bool(args_cli.parallel_output_shards),
         bool(args_cli.parallel_detect_scale_shards),
@@ -5964,10 +5976,11 @@ def main() -> None:
     CONFIG = OUT / "yolo_policy.yaml"
     GEN_POLICY = str(OUT / "generated-policy")
     ARTIFACT_REFERENCES = OUT / "artifact-references.json"
-    ARTIFACT_CACHE_ROOT = resolve_artifact_cache_root(
-        Path(args_cli.artifact_cache_root), OUT)
-
     naming_candidate = None
+    source_inspector = None
+    if args_cli.native_requester:
+        requester_prefix = Path(args_cli.native_requester_binary).resolve().parent.parent
+        source_inspector = requester_prefix / "libexec/ndnsf-tests/native-source-inspect"
     if args_cli.native_providers:
         native_library_path = str(Path(args_cli.native_library_path).expanduser().resolve(strict=True)) \
             if args_cli.native_library_path else ""
@@ -5981,7 +5994,8 @@ def main() -> None:
             [Path(args_cli.native_provider_binary),
              Path(args_cli.native_assembly_worker_binary),
              Path(args_cli.native_repo_binary)] +
-            ([Path(args_cli.native_requester_binary), Path(args_cli.native_authority_binary)]
+            ([Path(args_cli.native_requester_binary), Path(args_cli.native_authority_binary),
+              source_inspector]
              if args_cli.native_requester else []),
             selected_profile=("yolo", vars(args_cli)))
         credentials = naming_candidate["credentialBundles"]["yolo"]
@@ -6001,7 +6015,9 @@ def main() -> None:
             model_path = REPO / model_path
         validate_spec201_candidate(args_cli.spec201_candidate,
                                   args_cli.spec201_candidate_sha256, [],
-                                  [TOPO, PY_DIR / "yolo_policy.yaml", model_path])
+                                  [args_cli.topology_file, PY_DIR / "yolo_policy.yaml", model_path])
+    ARTIFACT_CACHE_ROOT = resolve_artifact_cache_root(
+        Path(args_cli.artifact_cache_root), OUT)
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
     log(f"artifact cache root={ARTIFACT_CACHE_ROOT}")
@@ -6038,7 +6054,7 @@ def main() -> None:
     ]
     if args_cli.native_providers:
         assert installed_package is not None
-        py_path_parts.insert(1, str(installed_package.parent))
+        py_path_parts.insert(0, str(installed_package.parent))
     py_path = ":".join(py_path_parts)
     if args_cli.native_providers:
         input_model = Path(args_cli.model).expanduser()
@@ -6120,6 +6136,7 @@ def main() -> None:
                 timeout_ms=timeout_ms,
                 ack_timeout_ms=ack_timeout_ms,
                 cache_root=ARTIFACT_CACHE_ROOT / "native-requester-packages",
+                source_inspector=source_inspector,
             )
             from native_probe_validation_links import render_anchored_probe_validation_schema
             anchored_schema = render_anchored_probe_validation_schema(
@@ -6132,11 +6149,10 @@ def main() -> None:
                     Path(native_assets["requester_config"]).parent / "trust-schema.conf",
                     Path(native_assets["authority_binary_config"]).parent / "trust-schema.conf"):
                 schema_path.write_text(anchored_schema, encoding="utf-8")
+            from ndnsf_distributed_inference.policy import load_or_generate_deployment
+            native_deployment = load_or_generate_deployment(CONFIG, GEN_POLICY)
         source_package = REPO / "pythonWrapper/ndnsf"
-        extension_candidates = sorted(source_package.glob("_ndnsf*.so"))
-        installed_extensions = sorted(installed_package.glob("_ndnsf*.so"))
-        if len(extension_candidates) != 1 or len(installed_extensions) != 1:
-            raise RuntimeError("SPEC196_CANDIDATE_PYTHON_EXTENSION_MISSING_OR_AMBIGUOUS")
+        extension = resolve_yolo_extension_pair(installed_package, source_package, naming_candidate)
         candidate_components = {
             "requester": (
                 Path(args_cli.native_requester_binary),
@@ -6155,20 +6171,29 @@ def main() -> None:
                           Path(__file__), PY_DIR / "user.py",
                           REPO / "Experiments/native_yolo_requester.py"]
         if native_assets is not None:
+            candidate_components["controller"] = (
+                Path(args_cli.native_authority_binary).with_name("App_ServiceController"),
+                REPO / "build/examples/App_ServiceController")
+            candidate_components["sourceInspector"] = (
+                source_inspector, REPO / "build/native-source-inspect")
             candidate_components["authority"] = (
                 Path(args_cli.native_authority_binary),
                 REPO / "build/examples/DI_NativeArtifactAuthority")
             runtime_inputs.extend([*native_assets["runtime_inputs"],
+                                   Path(native_deployment.policy_file),
+                                   Path(native_deployment.trust_schema),
+                                   Path(native_deployment.native_execution_plan_file),
+                                   Path(native_deployment.service_manifest_file),
                                    REPO / "Experiments/native_placement_evidence.py"])
         native_candidate = build_yolo_native_candidate(
             run_id=native_run_id,
             components=candidate_components,
-            extension=(installed_extensions[0], extension_candidates[0]),
+            extension=extension,
             source_package=source_package,
             installed_package=installed_package,
             source_app_package=(REPO / "NDNSF-DistributedInference" /
                                 "ndnsf_distributed_inference"),
-            topology=TOPO,
+            topology=args_cli.topology_file,
             policy=CONFIG,
             model_directory=OUT / "model",
             model_input=args_cli.model,
@@ -6190,6 +6215,7 @@ def main() -> None:
                 "modelSource": model_source,
                 "arguments": {
                     **vars(args_cli),
+                    "topology_file": str(args_cli.topology_file.resolve()),
                     "spec201_candidate": (
                         str(args_cli.spec201_candidate.expanduser().resolve())
                         if args_cli.spec201_candidate is not None else None),
@@ -6215,7 +6241,7 @@ def main() -> None:
                                    for row in native_candidate["components"].values()])
     Minindn.cleanUp()
     Minindn.verifyDependencies()
-    ndn = Minindn(topoFile=str(TOPO))
+    ndn = Minindn(topoFile=str(args_cli.topology_file), workDir=str(OUT / "nodes"), controller=None)
     procs = []
     control_detail_trace = args_cli.control_trace
     args = Args(
@@ -6323,6 +6349,10 @@ def main() -> None:
                                 repo_identity=native_authority_identity,
                                 credential_bundle=(naming_candidate["credentialBundles"]["yolo"]
                                                    if naming_candidate is not None else None))
+        controller_certificate = (
+            Path(naming_candidate["credentialBundles"]["yolo"]["keys"]
+                 [CONTROLLER_IDENTITY]["rsa"]).with_suffix(".cert")
+            if naming_candidate is not None else OUT / "security/di-identity-0-rsa.cert")
         subprocess.run(["rm", "-rf", str(OUT / "artifact-cache")], check=False)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)
@@ -6434,13 +6464,13 @@ def main() -> None:
         ]
         if args_cli.native_providers:
             assert installed_package is not None
-            python_path_parts.insert(1, str(installed_package.parent))
+            python_path_parts.insert(0, str(installed_package.parent))
         env["PYTHONPATH"] = ":".join(python_path_parts)
         env["PYTHONNOUSERSITE"] = "1"
         print(
             "YOLO_LAYOUT_RUN_CONFIG "
             f"layout={layout} model={args_cli.model} input_size={args_cli.input_size} "
-            f"topology={TOPO} native_providers={str(args_cli.native_providers).lower()} "
+            f"topology={args_cli.topology_file} native_providers={str(args_cli.native_providers).lower()} "
             f"parallel_detect_scale_shards={str(args_cli.parallel_detect_scale_shards).lower()} "
             f"parallel_detect_replicated_backbone_shards={str(args_cli.parallel_detect_replicated_backbone_shards).lower()} "
             f"auto_parallel_detect_plan={str(args_cli.auto_parallel_detect_plan).lower()} "
@@ -6471,11 +6501,22 @@ def main() -> None:
         write_ndnping_rtt_summary(ndn, providers, env, procs)
 
         common = ["--config", str(CONFIG), "--generated-policy-dir", GEN_POLICY]
+        controller_command = python_cmd("controller.py", common)
+        controller_ready = "ServiceController listening"
+        if native_assets is not None:
+            # The native role owns signal delivery and runtime error propagation.
+            controller_command = "exec " + " ".join(perf.shell_quote(str(value)) for value in [
+                Path(args_cli.native_authority_binary).with_name("App_ServiceController"),
+                "--controller-prefix", CONTROLLER_IDENTITY,
+                "--policy-file", native_deployment.policy_file,
+                "--trust-schema", native_deployment.trust_schema,
+            ])
+            controller_ready = "NDNSF_CONTROLLER_READY identity=" + CONTROLLER_IDENTITY
         _, controller_log = start(
             ndn.net[AI_LAB_CONTROLLER_NODE], "controller",
-            python_cmd("controller.py", common), bootstrap_env, procs,
+            controller_command, bootstrap_env, procs,
             signing_identity=CONTROLLER_IDENTITY)
-        if not wait_log(controller_log, "ServiceController listening", 20):
+        if not wait_log(controller_log, controller_ready, 20):
             raise RuntimeError(f"controller did not become ready; see {controller_log}")
         time.sleep(4)
         if native_assets is not None:
@@ -6527,79 +6568,67 @@ def main() -> None:
         )
         if not wait_log(repo_log, "Installed provider permission", 60):
             raise RuntimeError(f"repo did not install permissions; see {repo_log}")
-        deployer_proc, deployer_log = start(ndn.net[AI_LAB_CONTROLLER_NODE], "controller-deployer",
-                                            python_cmd("controller.py", common + [
-                                                "--deploy-only",
-                                                "--deploy-artifact-references",
-                                                str(ARTIFACT_REFERENCES),
-                                                "--replication-factor",
-                                                "1",
-                                            ]),
-                                            {**env, "NDNSF_DI_STATE_ROOT": str(
-                                                runtime_state_dir / "controller-deployer")},
-                                            procs,
-                                            signing_identity=CONTROLLER_IDENTITY)
-        if not wait_log(deployer_log, "YOLO_2X2_CONTROLLER_REPO_DEPLOYED", 360,
-                        proc=deployer_proc):
-            deployer_rc = deployer_proc.poll()
-            deployer_tail = deployer_log.read_text(errors="replace")[-2000:] if deployer_log.exists() else ""
-            raise RuntimeError(
-                "controller did not deploy repo artifacts; "
-                f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
-        validate_di_repo_bindings(ARTIFACT_REFERENCES)
+        # The native requester prepares and publishes its own canonical model.
+        if native_assets is None:
+            deployer_proc, deployer_log = start(ndn.net[AI_LAB_CONTROLLER_NODE], "controller-deployer",
+                                                python_cmd("controller.py", common + [
+                                                    "--deploy-only",
+                                                    "--deploy-artifact-references",
+                                                    str(ARTIFACT_REFERENCES),
+                                                    "--replication-factor",
+                                                    "1",
+                                                ]),
+                                                {**env, "NDNSF_DI_STATE_ROOT": str(
+                                                    runtime_state_dir / "controller-deployer")},
+                                                procs,
+                                                signing_identity=CONTROLLER_IDENTITY)
+            if not wait_log(deployer_log, "YOLO_2X2_CONTROLLER_REPO_DEPLOYED", 360,
+                            proc=deployer_proc):
+                deployer_rc = deployer_proc.poll()
+                deployer_tail = deployer_log.read_text(errors="replace")[-2000:] if deployer_log.exists() else ""
+                raise RuntimeError(
+                    "controller did not deploy repo artifacts; "
+                    f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
+            validate_di_repo_bindings(ARTIFACT_REFERENCES)
 
         def start_compute_providers(phase_suffix: str,
                                     provider_env: dict[str, str]
                                     ) -> list[tuple[object, object, Path]]:
             provider_procs: list[tuple[object, object, Path]] = []
-            serving_manifest_path = (
-                make_native_provider_serving_manifest(service_name)
-                if args_cli.native_providers else None)
+            serving_manifest_path = make_native_provider_serving_manifest(service_name)
             for node_name, name, argv in providers:
-                if args_cli.native_providers:
-                    assert serving_manifest_path is not None
-                    native_provider_env = with_runtime_evidence_filter(provider_env)
-                    provider_name = provider_identity(
-                        argv[argv.index("--provider-id") + 1])
-                    provider_material = (
-                        native_assets["provider_material"].get(provider_name)
-                        if native_assets is not None else None)
-                    if provider_material is not None:
-                        native_provider_env.update({
-                            "SPEC181_GRANT_AUTHORITY_PUBLIC_KEY":
-                                provider_material["authority_public_key"],
-                            "SPEC181_PROVIDER_RECIPIENT_KEY_MAP":
-                                provider_material["recipient_key_map"],
-                        })
-                    cmd = native_provider_cmd(
-                        argv,
-                        service_name=service_name,
-                        workers=provider_handler_workers,
-                        handler_threads=int(env["NDNSF_HANDLER_THREADS"]),
-                        ack_threads=int(env["NDNSF_ACK_THREADS"]),
-                        provider_binary=Path(
-                            native_candidate["components"]["provider"]["installed"]["path"]),
-                        manifest_path=serving_manifest_path,
-                        artifact_cache_root=ARTIFACT_CACHE_ROOT,
-                        offer_private_key=(Path(provider_material["offer_private_key"])
-                                           if provider_material is not None else None),
-                        trust_schema=(Path(native_assets["requester_config"]).parent / "trust-schema.conf"
-                                      if native_assets is not None else None))
-                    ready = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
-                    ready_timeout = 120
-                else:
-                    cmd = python_cmd("provider.py", common + argv + [
-                        "--dynamic-provisioning",
-                        "--temp-dir",
-                        f"/tmp/{name}",
-                        "--handler-workers",
-                        str(provider_handler_workers),
-                    ])
-                    ready = "Installed provider permission"
-                    ready_timeout = 30
+                native_provider_env = with_runtime_evidence_filter(provider_env)
+                provider_name = provider_identity(
+                    argv[argv.index("--provider-id") + 1])
+                provider_material = (
+                    native_assets["provider_material"].get(provider_name)
+                    if native_assets is not None else None)
+                if provider_material is not None:
+                    native_provider_env.update({
+                        "SPEC181_GRANT_AUTHORITY_PUBLIC_KEY":
+                            provider_material["authority_public_key"],
+                        "SPEC181_PROVIDER_RECIPIENT_KEY_MAP":
+                            provider_material["recipient_key_map"],
+                    })
+                cmd = native_provider_cmd(
+                    argv,
+                    service_name=service_name,
+                    workers=provider_handler_workers,
+                    handler_threads=int(env["NDNSF_HANDLER_THREADS"]),
+                    ack_threads=int(env["NDNSF_ACK_THREADS"]),
+                    provider_binary=Path(
+                        native_candidate["components"]["provider"]["installed"]["path"]),
+                    manifest_path=serving_manifest_path,
+                    artifact_cache_root=ARTIFACT_CACHE_ROOT,
+                    offer_private_key=(Path(provider_material["offer_private_key"])
+                                       if provider_material is not None else None),
+                    trust_schema=(Path(native_assets["requester_config"]).parent / "trust-schema.conf"
+                                  if native_assets is not None else None))
+                ready = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
+                ready_timeout = 120
                 log_name = f"{name}{phase_suffix}"
                 process, lp = start(ndn.net[node_name], log_name, cmd,
-                              native_provider_env if args_cli.native_providers else provider_env,
+                              native_provider_env,
                               procs,
                               signing_identity=provider_identity(
                                   argv[argv.index("--provider-id") + 1]))
@@ -6644,11 +6673,7 @@ def main() -> None:
             return phase_env
 
         def build_warm_user_args() -> list[str]:
-            warm_user_args = common + [
-                "--envelope-key-file", str(envelope_key_file),
-                "--artifact-references-file",
-                str(ARTIFACT_REFERENCES),
-                "--model", args_cli.model,
+            warm_user_args = [
                 "--input-size", str(args_cli.input_size),
                 "--ack-timeout-ms", str(ack_timeout_ms),
                 "--timeout-ms", str(timeout_ms),
@@ -6656,8 +6681,6 @@ def main() -> None:
             ]
             if preflight_requests > 0:
                 warm_user_args.extend(["--preflight-requests", str(preflight_requests)])
-            if args_cli.native_providers:
-                warm_user_args.append("--native-tensor-input")
             if native_assets is not None:
                 warm_user_args.extend([
                     "--native-requester-config", str(native_assets["requester_config"]),
@@ -6695,7 +6718,9 @@ def main() -> None:
                 workload_env,
                 runtime_state_dir / "user" if native_assets is not None else
                 OUT / "user-state",
-                args_cli.requester_publication_dir)
+                args_cli.requester_publication_dir,
+                node_home=Path(ndn.net[AI_LAB_USER_NODE].params["params"]["homeDir"]),
+                controller_certificate=controller_certificate)
             if native_assets is not None:
                 user_env = with_runtime_evidence_filter(user_env)
             proc, log_path = start(
@@ -6736,21 +6761,14 @@ def main() -> None:
             return log_path, latencies, measured_count
 
         time.sleep(2)
-        envelope_key_file = ensure_request_envelope_key(OUT)
         native_request_count = cold_requests + warm_requests if native_assets is not None else cold_requests
-        user_common = common + [
-            "--envelope-key-file", str(envelope_key_file),
-            "--artifact-references-file",
-            str(ARTIFACT_REFERENCES),
-            "--model", args_cli.model,
+        user_common = [
             "--input-size", str(args_cli.input_size),
             "--ack-timeout-ms", str(ack_timeout_ms),
             "--timeout-ms", str(timeout_ms),
             "--async-requests", str(user_async_workers),
             "--sequential-requests", str(native_request_count),
         ]
-        if args_cli.native_providers:
-            user_common.append("--native-tensor-input")
         if native_assets is not None:
             user_common.extend([
                 "--native-requester-config", str(native_assets["requester_config"]),
@@ -6847,7 +6865,9 @@ def main() -> None:
                 env,
                 runtime_state_dir / "user" if native_assets is not None else
                 OUT / "user-state",
-                args_cli.requester_publication_dir)
+                args_cli.requester_publication_dir,
+                node_home=Path(ndn.net[AI_LAB_USER_NODE].params["params"]["homeDir"]),
+                controller_certificate=controller_certificate)
             if native_assets is not None:
                 user_env = with_runtime_evidence_filter(user_env)
             user_proc, user_log = start(

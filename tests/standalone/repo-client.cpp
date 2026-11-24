@@ -687,7 +687,8 @@ probeObjectCapability(PersistentContext& context, const ndn::Name& provider,
             candidate.authenticationEvidence.trustSchemaValidated;
           record.wireDigest = candidate.authenticationEvidence.wireDigest;
           record.capabilityRepoNode = capabilityRepoNode;
-          record.service = serviceName.toUri();
+          record.requestId = candidate.requestId.toUri();
+          record.service = candidate.serviceName.toUri();
           record.signerKeyLocator = candidate.authenticationEvidence.signerKeyLocator;
           if (record.trustSchemaValidated) {
             evidence.admittedAcks.push_back(std::move(record));
@@ -723,18 +724,13 @@ probeObjectCapability(PersistentContext& context, const ndn::Name& provider,
   if (requestId.empty()) {
     throw std::runtime_error("object CAPABILITY request was not admitted");
   }
-  evidence.requestId = requestId.toUri();
-  // The request id is only known after RequestService returns, so stamp it onto the records here rather
-  // than inside the ACK callback.
-  for (auto& admitted : evidence.admittedAcks) {
-    admitted.requestId = evidence.requestId;
-  }
   {
     std::unique_lock<std::mutex> guard(mutex);
     if (!condition.wait_for(guard, std::chrono::seconds(130),
                             [&] { return done; })) {
       throw std::runtime_error("object CAPABILITY callback did not complete");
     }
+    evidence.requestId = requestId.toUri();
   }
   if (!error.empty()) {
     throw std::runtime_error(error);

@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from ndn.encoding import InterestParam, MetaInfo, Name, make_data, make_interest
 from ndn.security.signer import Sha256WithRsaSigner
 
-from spec193_packet_oracle import (_mapping_entries, _sync_interest_mappings, _sync_publications,
+from packet_oracle import (_mapping_entries, _sync_interest_mappings, _sync_publications,
                                   _tlv, verify_a21_sync_attempts, verify_metadata_denial)
 
 
@@ -120,20 +120,20 @@ class SyncMappingOracleTests(unittest.TestCase):
 
     def test_retransmission_dedup_and_conflicting_signed_mapping(self):
         wire = self.interest()
-        with patch("spec193_packet_oracle.subprocess.check_output",
+        with patch("packet_oracle.subprocess.check_output",
                    return_value=self.capture_output([(1, wire), (11, wire)])):
             result = _sync_publications(Path("unused"), self.certificate, self.key, self.user, self.group)
             self.assertEqual(len(result), 1)
             self.assertEqual(next(iter(result.values()))["first_frame"], 1)
         conflict = self.interest(content=self.mapping(application="/different/request"))
-        with patch("spec193_packet_oracle.subprocess.check_output",
+        with patch("packet_oracle.subprocess.check_output",
                    return_value=self.capture_output([(1, wire), (2, conflict)])):
             with self.assertRaisesRegex(RuntimeError, "Conflicting"):
                 _sync_publications(Path("unused"), self.certificate, self.key, self.user, self.group)
 
     def test_incomplete_lp_fragment_is_not_publication_evidence(self):
         incomplete = tlv(100, tlv(80, self.interest()[:30]))
-        with patch("spec193_packet_oracle.subprocess.check_output",
+        with patch("packet_oracle.subprocess.check_output",
                    return_value=self.capture_output([(1, incomplete)])):
             self.assertEqual(_sync_publications(Path("unused"), self.certificate,
                                                self.key, self.user, self.group), {})
@@ -161,10 +161,10 @@ class SyncMappingOracleTests(unittest.TestCase):
     def verify(self, directory, packets, providers=None, controller_packets=None):
         native = ["SPEC193_A21_SECOND_ATTEMPT provider=" + p +
                   " outcome=FAILED failureClass=timeout" for p in (providers or ["C", "B", "A"])]
-        with patch("spec193_packet_oracle.subprocess.check_output",
+        with patch("packet_oracle.subprocess.check_output",
                    side_effect=[self.capture_output(packets), self.capture_output(
                        packets if controller_packets is None else controller_packets)]), \
-                patch("spec193_packet_oracle._first_frame_at_or_after", return_value=10):
+                patch("packet_oracle._first_frame_at_or_after", return_value=10):
             return verify_a21_sync_attempts(directory, "/Repo", self.user, self.group,
                                            {"arizona": 0, "memphis": 0}, native, ["C", "B", "A"])
 
@@ -212,8 +212,8 @@ class SyncMappingOracleTests(unittest.TestCase):
                 return "".join(str(i) + "\t" + wire.hex() + "\t\t0\t0\t\t\n"
                                for i, wire in enumerate(values, 1)).encode()
             def verify(captures, transport_outputs=None):
-                with patch("spec193_packet_oracle._first_frame_at_or_after", return_value=1), \
-                        patch("spec193_packet_oracle.subprocess.check_output",
+                with patch("packet_oracle._first_frame_at_or_after", return_value=1), \
+                        patch("packet_oracle.subprocess.check_output",
                               side_effect=transport_outputs or [dump(values) for values in captures]):
                     return verify_metadata_denial(directory, "/Repo", self.user, data_name, providers)
             self.assertEqual(verify([packets] * 3)["ack_or_response_count"], 0)

@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 
-from common import add_process_arguments, optional_local_nfd, print_commands, session_kwargs  # noqa: E402
+from common import add_native_actor_arguments, optional_local_nfd, print_commands  # noqa: E402
 
 from ndnsf import ServiceResponse, ServiceUser  # noqa: E402
 
@@ -145,7 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-ms", type=int, default=5000)
     parser.add_argument("--strategy", default="first-responding")
     parser.add_argument("--csv", default="")
-    add_process_arguments(parser)
+    add_native_actor_arguments(parser)
     return parser
 
 
@@ -168,7 +168,6 @@ def main() -> int:
             group="/example/hello/group",
             controller="/example/hello/controller",
             user="/example/hello/user",
-            **session_kwargs(args),
         )
         user.start()
         try:

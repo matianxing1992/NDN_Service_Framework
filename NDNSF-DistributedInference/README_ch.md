@@ -9,10 +9,11 @@ Application runtime 配置和生成的 policy bundle 也必须显式提供 `grou
 GUI 的 Actor 字段初始为空，应加载明确配置或输入部署身份。LLM policy 输出 helper
 要求显式传入既有 controller/group/user/provider-prefix 参数；示例由调用方明确提供身份。
 
-## 推荐用户 API（Spec 116）
+## 签名部署与显式预规划请求（Spec 116）
 
-新应用只从 `ndnsf_distributed_inference.api` 导入。主流程是直接对
-Application 签名的意图发出请求；单独调用部署只是可选预热，不是正确性前提。
+正常推理由公开原生 `Runtime` 负责。以下签名部署接口服务于现有部署和日志工作流，
+从 `ndnsf_distributed_inference.api` 导入，并显式使用 `request_preplanned`。
+`InferenceApplication.request` 及其位置参数兼容分支已退役。
 
 ```python
 from datetime import timedelta
@@ -24,7 +25,7 @@ application = InferenceApplication.from_config(
     envelope_key_file="/run/secrets/ndnsf-di-envelope-key",
 )
 definition = application.define(...)  # 类型化意图，由 Application 签名
-request = application.request(
+request = application.request_preplanned(
     definition, input={"prompt": "Hello"}, timeout=timedelta(minutes=5))
 print(request.deployment_status())
 result = request.result()
@@ -41,19 +42,28 @@ ensure 操作，只改变延迟。下文旧的 `APPClient`/`APPProvider`/`APPDep
 
 | 保留的旧调用 | 规范所有者/调用 |
 |---|---|
-| `APPClient.submit(...)` / `distributed_inference(...)` | `InferenceClient.request(deployment, ...)` |
-| `APPClient.infer(...)` | `InferenceClient.run(deployment, ...)` |
+| `APPClient.submit(...)` | `InferenceClient.request_preplanned(deployment, ...)` |
+| `APPClient.distributed_inference(...)` / `APPClient.infer(...)` | `InferenceClient.run(deployment, ...)` |
 | `APPProvider.serve_service(...)` | `InferenceProvider.serve(...)` |
 | Provider 的 `stage/activate/drain/delete` | 使用独立凭据的 `ProviderAdminPort` |
 | 原始部署发现字典 | `client.deployments.discover(...)` 类型化摘要 |
 
-`InferenceApplication.request` 与 `InferenceClient.request` 的签名和耐久句柄
-完全相同。创建者本地调用时，`request.deployment_status()` 投影已验证的 Provider
+`InferenceApplication.request_preplanned` 调用 `InferenceClient.request_preplanned`。
+创建者本地调用时，耐久句柄的 `request.deployment_status()` 投影已验证的 Provider
 签名快照；远程调用时，绑定的 deployment-owner coordinator 通过签名的
 Collaboration 状态投影同一聚合结果，而其内部请求仍逐一验证 Provider。如果通用
 `DONE` 缺少精确 revision、adapter、artifact 或任一必需角色，状态仍保持
 `PREPARING`。即使自签名在密码学上有效，未知 Application 密钥签出的 definition
 也会被拒绝。
+
+预规划部署请求保留原有网络／coordinator 和日志路径。原生推理使用公开 `Runtime`
+SDK；旧 APP 原生 requester 配置桥已退役。签名部署意图本身不能证明原生后端支持。
+
+历史 APP 日志仍可用原信封密钥读取，已完成请求保留原结果，活动记录重开仍核对
+requester 和 attempt。绑定已退役 APP R0 激活路径的活动记录不能恢复远端执行或
+取消；控制和新结果会在日志写入前明确拒绝。需要继续运行时，请经原生路径提交
+新请求。旧记录不能作为远端工作已停止的证据。Core 与嵌入 C++ SDK 的激活协议
+保留各自不同的契约。
 
 远程发现以记录而不是元数据为权威。Application 发布精确名称、带签名的 definition
 Data；生命周期所有者可以发布精确名称、带签名的 activation 或 revocation Data。
@@ -649,28 +659,19 @@ result = client.distributed_inference(service, image_tensor)
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_YoloSplit_Minindn.py
-sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
 sudo -E python3 Experiments/NDNSF_DI_PyTorch2x2_Minindn.py
 ```
 
-YOLO layout smoke 也可以在 parallel-detect layout 下用 native C++ provider
-executable 替换 Python compute providers：
+原生 YOLO 2x2 网络验收使用冻结的 Spec 201 候选、候选 SHA-256 和匹配的模型文件。
 
 ```bash
-sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
-  --layout 2x2 \
-  --parallel-detect-scale-shards \
-  --native-providers \
-  --cold-requests 1 \
-  --warm-requests 1
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case yolo-2x2 --spec201-candidate "$candidate" \
+  --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 ```
 
-成功输出应包含：
-
 ```text
-YOLO_SPLIT_RESULT ... ok=true
-YOLO_2X2_RESULT ... ok=true
-PYTORCH_2X2_RESULT ... ok=true
+YOLO_2X2_NATIVE_REQUESTER_MININDN_OK ...
 ```
 
 统一 runner 也可以运行指定 cases。`yolo-layout` 是 MiniNDN 网络级
@@ -679,19 +680,19 @@ smoke：
 
 ```bash
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case runtime-compat
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
-当前已经验证的 YOLO layout 覆盖范围：
+历史 YOLO layout 覆盖记录（非当前候选资格）：
 
 ```text
 2x2  历史默认网络级回归
 2x3  MiniNDN 网络级回归，每个生成 role 一个 provider
 3x2  MiniNDN 网络级回归，每个生成 role 一个 provider
 1x3  本地 export/policy/ONNX correctness smoke
-3x3  本地 export/policy/ONNX correctness smoke；作为 release baseline 前应先跑 yolo-layout
+3x3  本地 export/policy/ONNX correctness smoke；仅作历史离线结果，不能作为当前 release baseline
 2x2 parallel-detect-scale  本地 ONNX correctness smoke，角色为 /Backbone、/Head/*、/Merge
 2x3 parallel-detect-scale  本地 policy/ONNX smoke；MiniNDN smoke 是网络级 baseline
 ```
@@ -1037,33 +1038,7 @@ order。
 
 Model shard、runtime bundle 和 intermediate data 不应随意 push 到任意节点。NDNSF-DI 可以携带从 NDNSF-DistributedRepo object manifests 生成的 artifact references：
 
-```python
-from ndnsf_distributed_inference import (
-    LocalDistributedRepo,
-    PlacementPolicy,
-    StorageCapability,
-)
-
-repo = LocalDistributedRepo([
-    StorageCapability("/repo/A", free_bytes=4_000_000_000,
-                      recent_load=0.1, failure_domain="rack-a"),
-    StorageCapability("/repo/B", free_bytes=4_000_000_000,
-                      recent_load=0.2, failure_domain="rack-b"),
-])
-
-manifest = repo.put(
-    object_name=(
-        "/NDNSF-DistributeInference/example/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/"
-        "NDNSF-DI/ARTIFACT/AI/YOLO/2x2/Stage/0/Shard/0/model"
-    ),
-    payload=model_bytes,
-    object_type="onnx-model",
-    policy=PlacementPolicy(replication_factor=2),
-    policy_epoch="/Policy/yolo-2x2/v1",
-)
-
-payload = repo.fetch_object(manifest.object_name, manifest)
-```
+制品发布与读取请使用[原生 Repo Python API](../NDNSF-DistributedRepo/pythonWrapper/README.md)。
 
 Manifest 记录 object hash、size、replication factor、selected repo nodes，以及保存 object segments 的 signed Data names。Object name 仍然按发布者命名空间组织：controller 发布的 artifacts 使用 controller object namespace，user 发布的 inputs/intermediates 使用 user namespace，provider 输出使用 provider namespace。实际服务 stored segments 的 Data name 可以是 repo-owned prefix，例如 `/repo-node/NDNSF-DISTRIBUTED-REPO/DATA/<object-hash>`，这样 fetcher 可以直接路由到被选中的 repo node。当前 networked path 中，controller-side deployer 会在推理前把 model/runtime artifacts 存入 repo node。User request 只携带 execution specs 和 artifact references。每个 reference 同时包含 `largeDataReference` 和用于 manifest-aware fetch 的 `repoManifest`；被选中的 providers 自己从 repo 获取被分配 artifacts，并在本地缓存。
 
@@ -1074,10 +1049,8 @@ DI 代码读取 model artifacts、runtime bundles、images 或 activation object
 User 侧：
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceClient,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.client import DistributedInferenceClient
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 from ndnsf import CollaborationRole
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
@@ -1124,10 +1097,8 @@ payload/reference，以及正常 NDNSF collaboration request。
 Provider 侧：
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceProvider,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.provider import DistributedInferenceProvider
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
 inference = DistributedInferenceProvider.create(
@@ -1144,10 +1115,8 @@ inference.run()
 Controller 侧：
 
 ```python
-from ndnsf_distributed_inference import (
-    DistributedInferenceController,
-    load_or_generate_deployment,
-)
+from ndnsf_distributed_inference.app_sdk.controller import DistributedInferenceController
+from ndnsf_distributed_inference.policy import load_or_generate_deployment
 
 deployment = load_or_generate_deployment("yolo_policy.yaml", "/tmp/yolo-policy")
 controller = DistributedInferenceController.create(
@@ -1335,7 +1304,7 @@ NDNSF-DistributedRepo manifest。压缩或降低精度可以作为应用层模�
 真实 dependency graph 应来自 model splitter。Splitter 通常是 model-family 或 backend specific：YOLO ONNX splitter、transformer pipeline splitter、tensor-parallel LLM splitter 或 container-bundle splitter 可能都有不同逻辑。NDNSF-DistributedInference 只要求 splitter 输出标准 `SplitterOutput`：
 
 ```python
-from ndnsf_distributed_inference import InferenceDependency
+from ndnsf_distributed_inference.plan import InferenceDependency
 from ndnsf_distributed_inference.splitter import (
     SplitArtifact,
     SplitServiceSpec,
@@ -1655,7 +1624,7 @@ model format/backend 组合，policy generation 也会校验 service metadata �
 LLM 示例会刻意复用 YOLO 示例已经在用的 DI 部署机制。Artifact deployment、
 异步 readiness、repo-backed materialization、native-plan generation 和 dependency
 reference 都仍然是框架机制。LLM 特有代码只保留在 planner/runtime adapter 里：当前
-Qwen 示例通过 `ndnsf_distributed_inference.llm_runtime` 提供 OpenAI-compatible
+Qwen 示例通过 `ndnsf_distributed_inference.adapters.llama.runtime` 提供 OpenAI-compatible
 inference-payload adapter、repo materialized llama-server 进程管理，以及 GGUF/runtime
 artifact materialization helper。这样 `llama-server` 不会变成第二套平行部署系统。
 
@@ -2103,67 +2072,10 @@ Stage 1: hidden-state npz -> layers 8-16 -> hidden-state npz
 Stage 2: hidden-state npz -> layers 16-24 -> logits/top token
 ```
 
-MiniNDN 脚本可以用 `--runtime qwen-onnx` 运行这个 runtime：
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --warmup-requests 3 \
-  --measured-duration-s 60 \
-  --request-interval-ms 200
-```
-
-如果要强制完整 context 输入走标准 large-data/reference 路径：
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 1 \
-  --publish-input-reference
-```
-
-如果要验证 append-only context-delta 处理，同时保持 expected top token 不变：
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 2 \
-  --context-input-mode append-empty-delta-after-first \
-  --publish-input-reference
-```
-
-如果要验证真正的非空 append-delta correctness，可以追加一个或多个 token IDs，并将
-分布式结果和本地重新计算的 full-context ONNX pipeline 结果对比：
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
-  --runtime qwen-onnx \
-  --reuse-existing-policy \
-  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
-  --topology-file Experiments/Topology/AI_Lab.conf \
-  --measured-requests 2 \
-  --context-input-mode append-token-delta-after-first \
-  --delta-token-ids 2 \
-  --publish-input-reference
-```
-
-同一个回归已经接入 DI regression suite 和可选 MiniNDN quick-suite case：
-
-```bash
-python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
-  --case llm-pipeline-qwen-onnx-delta-minindn
-
-python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py \
-  --case di-llm-qwen-onnx-delta-minindn
-```
+旧 Python MiniNDN 执行入口已退役。现行网络执行使用
+`Experiments/native_deployment_entrypoint.py`、显式原生部署配置和已安装 C++ 角色。
+上述离线导出及独立参考 helper 保留。下列测量属于历史 Python pipeline，
+不能用于证明当前原生交付资格。
 
 在 `AI_Lab.conf` 上记录的 60 秒结果：
 
@@ -2242,7 +2154,7 @@ YOLO-specific split，方便重复实验。两条路径最终都输出同一种
 安装后，应用代码可以从任意工作目录导入 distributed inference 层：
 
 ```python
-from ndnsf_distributed_inference import DistributedInferenceClient
+from ndnsf_distributed_inference.client import DistributedInferenceClient
 ```
 
 每个 shell 或 MiniNDN node 运行一个 role：
@@ -2423,44 +2335,9 @@ PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
 ONNX_EXECUTOR_FANIN_FANOUT_OK
 ```
 
-```bash
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
-  --model yolo26n.pt \
-  --input-size 32 \
-  --layout 3x2 \
-  --auto-split \
-  --out-dir /tmp/ndnsf-yolo-3x2 \
-  --policy /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id A --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id B --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id C --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id D --roles all
-python3 examples/python/NDNSF-DistributedInference/yolo_2x2/user.py \
-  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
-```
+维护中的网络入口见 [原生 YOLO 2x2 验收](#7-运行完整-minindn-smoke-tests)。
 
-使用 `--auto-split` 时，splitter 会用 ONNX planner recommendation
-选择 pipeline boundary hint；layout 参数决定最终导出的 chunk 数量。不加这个
-参数时，示例保留原来的 YOLO-specific split hint 作为稳定 fallback。
-
-MiniNDN 中运行：
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
-```
-
-期望输出包含：
-
-```text
-YOLO_2X2_RESULT ... ok=true
-YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK ...
-```
-
-同一个脚本还会在 `results/yolo_<layout>_minindn_quick/` 下写入回归统计：
+历史 Python Provider 布局实验曾在 `results/yolo_<layout>_minindn_quick/` 下写入回归统计：
 
 ```text
 inference-latency-stats.json
@@ -2814,24 +2691,8 @@ Request/ACK/Selection/Response 语义消息。因此应把它和
 window；只有在调试 keychain、artifact deployment、repo 或 startup synchronization
 时，才建议显式改用 `all`。
 
-较旧的 2x3 Python-provider parallel-detect-scale baseline 建议用 60 秒 warm window
-和显式 Python worker 参数运行：
-
-```bash
-PYTHONPATH=NDNSF-DistributedInference:$PYTHONPATH \
-python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
-  --case yolo-layout \
-  --layout 2x3 \
-  --parallel-detect-scale-shards \
-  --cold-requests 1 \
-  --warm-requests 1 \
-  --warm-duration-s 60 \
-  --warm-interval-ms 1000 \
-  --ack-timeout-ms 1500 \
-  --timeout-ms 60000 \
-  --provider-handler-workers 4 \
-  --user-async-workers 4
-```
+旧 Python-provider `yolo-layout` 网络入口已退役。当前网络执行使用上文的
+`yolo-2x2` native candidate 流程；以下保留的历史测量不代表当前候选资格。
 
 当前代表性 native-provider MiniNDN 诊断保存在
 `results/yolo_2x2_ailab_dependency_control_60s_latest`。它使用 generated native
@@ -2961,18 +2822,13 @@ readiness contract：先注册服务，artifact 异步安装期间 ACK 保持 ne
 MiniNDN split smokes：
 
 ```bash
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all \
+  --spec201-candidate "$candidate" --spec201-candidate-sha256 "$candidate_sha256" --model "$model"
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
-`yolo-layout` 验证自定义 YOLO layout 导出、repo-backed artifact 部署、
-dependency prefetch、activation exchange 和 MiniNDN 中的最终结果返回。
-`yolo-layout-local` 仍可用于快速检查生成的 chunk graph 和本地 ONNX
-正确性。
-当前已经通过网络级回归验证的 custom layouts 是 `2x3` 和 `3x2`。`1x3`
-和 `3x3` 适合作为快速本地 export smoke；`3x3` 在作为部署 baseline 前应先
-通过 `yolo-layout` 跑一轮。
+`yolo-layout-local` 保留本地导出与数值检查。原 `yolo-layout` 网络模式已退役，
+其历史 custom-layout 结果不作为当前 native candidate 的验收。
 
 policy/repo inspection helper 仍然保留：
 
@@ -3133,33 +2989,16 @@ exponential backoff。attempt 数量和总 deadline 都有限。该机制只提�
 cursor 的 sequence。轮询使用有界自适应间隔，并在 terminal state 停止。上述逻辑
 不包含 UAV、codec、model-family 或 workload 特判。
 
-## Spec 163 延迟协作规划
+## 原生请求与离线规划
 
-规范应用入口现在只需要模型、任务和输入，不要求应用提前编写 deployment、
-Provider 列表、角色列表或预分割模型：
+正常推理使用 `ndnsf_distributed_inference.api.Runtime` 及其 `User.prepare` /
+`User.request`。配置中的 C++ owner 负责准入 Provider 签名证据、准备模型工件、
+提交所选计划并执行经过认证的依赖。旧 Python 自动规划及 model/task 请求便利入口
+已退役。Core 通用 `DEFERRED` 协作和显式预规划部署保留各自的受支持契约。
+[YOLO requester](../examples/python/NDNSF-DistributedInference/yolo_2x2/user.py)
+展示了公开原生 SDK 的输入发布、请求参数以及有限的 close/drain 收尾。
 
-```python
-model = ModelRef(
-    model_name="Qwen/Qwen3-0.6B",
-    content_digest="sha256:<精确冻结文件清单摘要>",
-    semantics_digest="sha256:<适配器与推理语义摘要>",
-)
-handle = client.request(
-    model=model,
-    task=task,
-    input=validated_input,
-    timeout_ms=30_000,
-)
-```
-
-NDNSF-DI 以 `DEFERRED` 模式启动基础 NDNSF 的通用 Collaboration API，收集一个
-不可变 `ACK_CLOSED` 快照，通过选定的摘要固定 `ModelFamilyAdapter` 产生图有效的
-分割候选，并把清洗后的 Provider 签名 offer 交给配置的
-`ModelPlacementStrategy`。决策经过独立验证，所需的可信物化和
-DistributedRepo 发布完成后，再在同一 invocation 上提交计划。现有
-Request 前传入 roles/dependencies 的接口作为显式 `PREPLANNED` 兼容路径保留。
-
-`PreSplitFirstStrategy` 先检查精确且处于 active 状态的预分割 manifest，然后按
+在离线计划比较中，`PreSplitFirstStrategy` 先检查精确且处于 active 状态的预分割 manifest，然后按
 固定 GPU、可安全 reload 的 GPU、主机 RAM、磁盘、仓库、最后新生成的图有效分割
 排序新鲜签名驻留证据。驻留信息只是证据，不是执行权威。Selection 会重新验证模型、
 语义、工件、Provider boot/cache epoch、容量、pin 或 reload 可行性，以及完整的
@@ -3193,3 +3032,5 @@ sudo -n env \
 完整生成，包括完整答案和逐 token 时延。本机没有 CUDA，因此 GPU 加载和精确
 warm-GPU 复用条件明确标记为 `DEFERRED`。该运行不构成分布式 Qwen、
 TigerCluster、大模型、恶意计算正确性、分布式原子性、无死锁或通用最优器证据。
+
+根命名空间的旧符号转发、Legacy Adapter 与旧 import 模块已退役。使用 `ndnsf_distributed_inference.api` 或上文的 canonical owner。aggregate 发行包继续提供共享 namespace。

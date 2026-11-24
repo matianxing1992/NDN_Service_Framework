@@ -21,7 +21,6 @@ BINDINGS = ROOT / "pythonWrapper/src/ndnsf/di_bindings.cpp"
 API = ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/api/__init__.py"
 ASYNC = ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/api/_async.py"
 PROVIDER_API = ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/provider_api.py"
-CLIENT = ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py"
 
 
 class _FakeSubscription:
@@ -99,7 +98,6 @@ class Spec185PreparedModelWrapperTests(unittest.TestCase):
         api = API.read_text(encoding="utf-8")
         async_api = ASYNC.read_text(encoding="utf-8")
         provider_api = PROVIDER_API.read_text(encoding="utf-8")
-        client = CLIENT.read_text(encoding="utf-8")
         for name in ("Runtime", "PreparedModel", "PreparationHandle", "RequestHandle",
                      "Conversation", "EventReader", "Subscription", "Input", "DiError"):
             self.assertIn(f'"{name}"', api)
@@ -114,7 +112,6 @@ class Spec185PreparedModelWrapperTests(unittest.TestCase):
         self.assertIn('attr("preparation_result")', BINDINGS.read_text(encoding="utf-8"))
         self.assertIn('attr("drain_result")', BINDINGS.read_text(encoding="utf-8"))
         self.assertIn('attr("_prepare_positional")', BINDINGS.read_text(encoding="utf-8"))
-        self.assertIn("refusing Python planner fallback", client)
         self.assertNotIn("asyncio.to_thread", async_api)
 
     def test_async_preparation_marshals_completion_and_preserves_seconds_argument(self):
@@ -202,23 +199,33 @@ class Spec185PreparedModelWrapperTests(unittest.TestCase):
         try:
             from ndnsf import _ndnsf
         except ModuleNotFoundError as exc:
+            if os.environ.get("NDNSF_TEST_RUNTIME_PREFIX"):
+                raise
             self.skipTest(f"native extension unavailable: {exc}")
         if not hasattr(_ndnsf, "Runtime"):
+            if os.environ.get("NDNSF_TEST_RUNTIME_PREFIX"):
+                self.fail("installed extension lacks the native Runtime")
             self.skipTest("current extension predates Spec185 direct bindings")
         for name in ("Runtime", "User", "PreparedModel", "PreparationHandle", "RequestHandle",
                      "Conversation", "EventReader", "Subscription"):
             self.assertTrue(hasattr(_ndnsf, name), name)
-        self.assertTrue(hasattr(_ndnsf.User, "request"))
-        self.assertTrue(hasattr(_ndnsf.User, "run"))
-        self.assertTrue(hasattr(_ndnsf.User, "open_conversation"))
+        for name in ("request", "run", "open_conversation"):
+            self.assertTrue(hasattr(_ndnsf.User, name), name)
+            self.assertFalse(hasattr(_ndnsf.PreparedModel, name), name)
 
     def test_native_error_translator_survives_module_teardown(self):
         try:
             from ndnsf import _ndnsf
         except ModuleNotFoundError as exc:
+            if os.environ.get("NDNSF_TEST_RUNTIME_PREFIX"):
+                raise
             self.skipTest(f"native extension unavailable: {exc}")
-        if not hasattr(_ndnsf, "NativeRequestCatalog"):
-            self.skipTest("current extension predates Spec185 catalog binding")
+        missing = [name for name in ("Runtime", "RuntimeConfig", "DiError")
+                   if not hasattr(_ndnsf, name)]
+        if missing:
+            if os.environ.get("NDNSF_TEST_RUNTIME_PREFIX"):
+                self.fail("installed extension lacks: " + ", ".join(missing))
+            self.skipTest("current extension lacks: " + ", ".join(missing))
         script = """
 from ndnsf import _ndnsf
 try:

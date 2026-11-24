@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import spec193_preflight as preflight
+import preflight
 
 
 ROOT = Path(__file__).resolve().parents[2]

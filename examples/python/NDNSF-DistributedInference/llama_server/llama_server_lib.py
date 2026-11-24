@@ -311,6 +311,7 @@ def _publish_repo_artifact(
     from py_repoclient import (
         ArtifactCapabilityRequirements,
         ArtifactReference,
+        ArtifactRepositoryApi,
         RepoWriteConsistency,
         SelectedRepoSet,
         SelectedRepoTarget,
@@ -330,28 +331,35 @@ def _publish_repo_artifact(
         publisher_identity=publisher_identity,
         policy_epoch="repo-policy-v1",
     )
-    api = repo_client.artifact_api
-    requirements = ArtifactCapabilityRequirements()
-    requirements.artifact = reference
-    candidates = api.discover_repo_candidates(requirements, 60000).candidates
-    if len(candidates) < replication_factor:
-        raise RuntimeError(
-            f"Repo discovery returned {len(candidates)} candidates; "
-            f"need {replication_factor}"
-        )
-    selected = SelectedRepoSet()
-    targets = []
-    for candidate in candidates[:replication_factor]:
-        target = SelectedRepoTarget()
-        target.repo_node = candidate.repo_node
-        target.provider_identity = candidate.provider_identity
-        target.service_prefix = candidate.service_prefix
-        targets.append(target)
-    selected.targets = targets
-    selected.seed_repo_id = targets[0].repo_node
-    selected.consistency = RepoWriteConsistency.ALL
-    result = repo_client.publish_file(path, reference, selected, timeout_ms=60000)
-    if result.handle is None or result.achieved_replicas != replication_factor:
+    if type(repo_client) is ArtifactRepositoryApi:
+        if replication_factor != 1:
+            raise ValueError("native in-app publication requires replication_factor=1")
+        result = repo_client.publish_file(path, reference)
+        committed = result.receipt is not None and result.receipt.state == "COMMITTED"
+    else:
+        api = repo_client.artifact_api
+        requirements = ArtifactCapabilityRequirements()
+        requirements.artifact = reference
+        candidates = api.discover_repo_candidates(requirements, 60000).candidates
+        if len(candidates) < replication_factor:
+            raise RuntimeError(
+                f"Repo discovery returned {len(candidates)} candidates; "
+                f"need {replication_factor}"
+            )
+        selected = SelectedRepoSet()
+        targets = []
+        for candidate in candidates[:replication_factor]:
+            target = SelectedRepoTarget()
+            target.repo_node = candidate.repo_node
+            target.provider_identity = candidate.provider_identity
+            target.service_prefix = candidate.service_prefix
+            targets.append(target)
+        selected.targets = targets
+        selected.seed_repo_id = targets[0].repo_node
+        selected.consistency = RepoWriteConsistency.ALL
+        result = repo_client.publish_file(path, reference, selected, timeout_ms=60000)
+        committed = result.achieved_replicas == replication_factor
+    if result.handle is None or not committed:
         raise RuntimeError(f"native Repo publish failed for {logical_name}")
     uri = "urn:ndnsf:repo-artifact:" + hashlib.sha256(
         result.handle.to_json().encode("utf-8")).hexdigest()

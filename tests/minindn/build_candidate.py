@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-import spec193_preflight as preflight
+import preflight
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,15 +26,17 @@ def hashes(paths):
 
 def sdk_inputs(source, build, ndn_cxx_source):
     private_headers = ndn_cxx_source / "ndn-cxx"
+    runtime = preflight.dependency_prefix("libonnxruntime.so")
     svs_headers = (source / "ndn-svs" if source else
                    preflight.dependency_prefix("libndn-svs.so") / "include/ndn-svs")
     paths = [build / "libndn-svs.so", preflight.DEPENDENCY_IDENTITY,
-             private_headers / "security/pib/impl/pib-sqlite3.hpp"]
+             private_headers / "security/pib/impl/pib-sqlite3.hpp",
+             runtime / "lib/libonnxruntime.so"]
     if source is not None:
         paths.append(source / "wscript")
         config = build / "config.hpp"
         paths.append(config if config.is_file() else svs_headers / "config.hpp")
-    for directory in (svs_headers, private_headers,
+    for directory in (svs_headers, private_headers, runtime / "include",
                       Path("/usr/local/include/ndn-cxx"),
                       preflight.dependency_prefix("libnac-abe.so") / "include/nac-abe",
                       Path("/usr/local/include/ndnsd"), Path("/usr/local/include/openabe")):
@@ -44,9 +46,9 @@ def sdk_inputs(source, build, ndn_cxx_source):
                      if path.is_file() and (path.suffix in (".h", ".hpp") or
                          (directory == svs_headers and path.suffix == ".cpp")))
     paths.extend(Path(tool).resolve() for tool in preflight.BUILD_TOOLS.values())
-    pkg_config_environment = dict(os.environ, PKG_CONFIG_PATH="/usr/local/lib/pkgconfig")
+    pkg_config_environment = dict(os.environ, PKG_CONFIG_PATH=preflight.pkg_config_path())
     pkg_config_environment.pop("PKG_CONFIG_LIBDIR", None)
-    for package in ("libndn-cxx", "libnac-abe", "ndnsd", "libndn-svs"):
+    for package in ("libndn-cxx", "libnac-abe", "ndnsd", "libndn-svs", "onnxruntime"):
         directory = subprocess.check_output(
             [preflight.BUILD_TOOLS["PKGCONFIG"], "--variable=pcfiledir", package],
             text=True, env=pkg_config_environment).strip()

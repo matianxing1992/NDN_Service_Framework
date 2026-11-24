@@ -323,11 +323,14 @@ std::string base64(const NativeJson& value)
   result.resize(static_cast<std::size_t>(size) - padding);
   return result;
 }
-} // namespace
 
-std::string nativeConversationBase64Encode(const std::string& bytes)
+// EVP_EncodeBlock returns the encoded length as an int.
+constexpr auto MAX_BASE64_INPUT = 3ull * (std::numeric_limits<int>::max() / 4);
+
+std::string
+encodeBase64(const std::string& bytes)
 {
-  require(bytes.size() <= 64 * 1024 * 1024, "conversation base64 exceeds bound");
+  require(bytes.size() <= MAX_BASE64_INPUT, "base64 exceeds encoder bound");
   if (bytes.empty()) return {};
   std::string encoded(4 * ((bytes.size() + 2) / 3) + 1, '\0');
   const auto size = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),
@@ -335,6 +338,13 @@ std::string nativeConversationBase64Encode(const std::string& bytes)
   require(size >= 0, "conversation base64 encoding failed");
   encoded.resize(static_cast<std::size_t>(size));
   return encoded;
+}
+} // namespace
+
+std::string nativeConversationBase64Encode(const std::string& bytes)
+{
+  require(bytes.size() <= 64 * 1024 * 1024, "conversation base64 exceeds bound");
+  return encodeBase64(bytes);
 }
 
 std::string nativeConversationBase64Decode(const std::string& encoded)
@@ -350,15 +360,26 @@ std::string nativeConversationCanonicalJson(const NativeJson& value)
   return result;
 }
 
-std::string nativeSealConversationEnvelope(
+std::string
+nativeSealConversationEnvelope(
   const std::string& plaintext, const std::string& envelopeId,
   std::uint64_t expiresAtMs, const NativeConversationJournalKey& key)
 {
-  require(plaintext.size() <= maxTranscriptBytes && !envelopeId.empty() &&
-          envelopeId.find_first_of("/\\") == std::string::npos &&
+  require(plaintext.size() <= maxTranscriptBytes &&
+          envelopeId.find('\\') == std::string::npos, "conversation envelope input invalid");
+  return nativeSealRequestJournalEnvelope(plaintext, envelopeId, expiresAtMs, key);
+}
+
+std::string
+nativeSealRequestJournalEnvelope(
+  const std::string& plaintext, const std::string& envelopeId,
+  std::uint64_t expiresAtMs, const NativeConversationJournalKey& key)
+{
+  require(plaintext.size() <= MAX_BASE64_INPUT - 16 && !envelopeId.empty() &&
+          envelopeId.find('/') == std::string::npos &&
           envelopeId != "." && envelopeId != ".." && expiresAtMs > 0 &&
           key.bytes.size() == 32 && !key.id.empty() &&
-          key.id.find_first_of("/\\") == std::string::npos, "conversation envelope input invalid");
+          key.id.find_first_of("/\\") == std::string::npos, "request envelope input invalid");
   NativeJson metadata{{"schema", "ndnsf-di-protected-request-v3"}, {"requestId", envelopeId},
                       {"expiresAtMs", expiresAtMs}, {"keyId", key.id}};
   const auto aad = metadata.dump(-1, ' ', true);
@@ -385,9 +406,12 @@ std::string nativeSealConversationEnvelope(
   if (EVP_CIPHER_CTX_ctrl(cipher.get(), EVP_CTRL_GCM_GET_TAG, 16,
       ciphertext.data() + written + count) != 1)
     throw std::runtime_error("conversation envelope tag failed");
-  metadata["nonce"] = nativeConversationBase64Encode(nonce);
-  metadata["ciphertext"] = nativeConversationBase64Encode(ciphertext);
-  return metadata.dump(-1, ' ', true);
+  metadata["nonce"] = encodeBase64(nonce);
+  metadata["ciphertext"] = encodeBase64(ciphertext);
+  auto encoded = metadata.dump(-1, ' ', true);
+  require(encoded.size() <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
+          "request envelope exceeds decoder bound");
+  return encoded;
 }
 
 std::vector<std::vector<std::uint8_t>> nativeConversationAuthenticationKeys(
@@ -417,19 +441,31 @@ std::vector<std::vector<std::uint8_t>> nativeConversationAuthenticationKeys(
   return result;
 }
 
-std::string nativeReadConversationEnvelope(
+std::string
+nativeReadConversationEnvelope(
   const std::string& encoded, const std::string& envelopeId,
   const std::vector<NativeConversationJournalKey>& keys, std::uint64_t nowMs)
 {
-  require(!keys.empty() && keys.size() <= 16 && nowMs > 0 && !envelopeId.empty() &&
-          encoded.size() <= 64 * 1024 * 1024, "conversation envelope input invalid");
+  require(keys.size() <= 16 && nowMs > 0 && encoded.size() <= 64 * 1024 * 1024,
+          "conversation envelope input invalid");
+  return nativeReadRequestJournalEnvelope(encoded, envelopeId, keys, nowMs);
+}
+
+std::string
+nativeReadRequestJournalEnvelope(
+  const std::string& encoded, const std::string& envelopeId,
+  const std::vector<NativeConversationJournalKey>& keys, std::uint64_t nowMs)
+{
+  require(!keys.empty() && !envelopeId.empty() &&
+          encoded.size() <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
+          "request envelope input invalid");
   std::set<std::string> ids;
   for (const auto& key : keys)
     require(key.bytes.size() == 32 && !key.id.empty() && ids.insert(key.id).second,
             "conversation journal key invalid");
   auto body = nativeParseJson(encoded);
-  require(string(body, "requestId") == envelopeId && integer(body, "expiresAtMs") > nowMs,
-          "conversation envelope identity or expiry mismatch");
+  require(string(body, "requestId") == envelopeId, "request envelope identity mismatch");
+  require(integer(body, "expiresAtMs") > nowMs, "request envelope expired");
   const auto schema = string(body, "schema");
   NativeJson metadata{{"schema", schema}, {"requestId", envelopeId},
                       {"expiresAtMs", integer(body, "expiresAtMs")}};
@@ -445,24 +481,27 @@ std::string nativeReadConversationEnvelope(
       verified |= mac.size() == expected.size() &&
                   CRYPTO_memcmp(mac.data(), expected.data(), expected.size()) == 0;
     }
-    require(verified, "conversation envelope authentication failed");
+    require(verified, "request envelope integrity failure");
     return base64(body.at("payload"));
   }
   require(schema == "ndnsf-di-protected-request-v2" || schema == "ndnsf-di-protected-request-v3",
           "conversation envelope schema mismatch");
   const bool keyed = schema == "ndnsf-di-protected-request-v3";
+  std::string keyId;
   if (keyed) {
     fields(body, {"schema", "requestId", "expiresAtMs", "keyId", "nonce", "ciphertext"});
-    metadata["keyId"] = string(body, "keyId");
+    keyId = string(body, "keyId");
+    metadata["keyId"] = keyId;
   }
   else fields(body, {"schema", "requestId", "expiresAtMs", "nonce", "ciphertext"});
   const auto aad = metadata.dump(-1, ' ', true);
   const auto nonce = base64(body.at("nonce"));
   const auto ciphertext = base64(body.at("ciphertext"));
-  require(nonce.size() == 12 && ciphertext.size() >= 16,
-          "conversation envelope nonce or tag invalid");
+  require(nonce.size() == 12 && ciphertext.size() >= 16, "request envelope integrity failure");
+  bool matchedKey = false;
   for (const auto& key : keys) {
-    if (keyed && key.id != string(body, "keyId")) continue;
+    if (keyed && key.id != keyId) continue;
+    matchedKey = true;
     std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> cipher(
       EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
     if (!cipher) throw std::runtime_error("conversation cipher allocation failed");
@@ -487,7 +526,10 @@ std::string nativeReadConversationEnvelope(
     }
     OPENSSL_cleanse(plaintext.data(), plaintext.size());
   }
-  throw std::invalid_argument("conversation envelope authentication failed");
+  if (!matchedKey) {
+    throw NativeJournalEnvelopeKeyUnavailable("request-envelope key is unavailable");
+  }
+  throw std::invalid_argument("request envelope integrity failure");
 }
 
 std::string nativeConversationPrefixDigest(const std::vector<std::int64_t>& tokens)

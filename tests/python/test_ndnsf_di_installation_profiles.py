@@ -97,6 +97,12 @@ class InstallationProfilesTest(unittest.TestCase):
                         self.assertNotIn('ndnsf_di_launcher.py', archive.namelist())
                     files={item for item in archive.namelist()
                            if item.startswith("ndnsf_distributed_inference/")}
+                    self.assertFalse(any("/compatibility/" in item for item in files))
+                    for retired in ("app", "controller", "gui", "onnx_graph", "onnx_executor",
+                                    "qwen_pilot", "llm_runtime", "planner_registry", "split_planner"):
+                        self.assertNotIn("ndnsf_distributed_inference/" + retired + ".py", files)
+                    if wheel.name.startswith("ndnsf_distributed_inference-"):
+                        self.assertEqual(files, {"ndnsf_distributed_inference/__init__.py"})
                     for item in archive.namelist():
                         if item.endswith(".dist-info/METADATA"):
                             metadata = BytesParser().parsebytes(archive.read(item))
@@ -143,7 +149,7 @@ class InstallationProfilesTest(unittest.TestCase):
             # Only management wheels are installed here. Third-party/native
             # dependencies come from the declared host runtime, never DI stubs.
             native_origin = subprocess.check_output(
-                [sys.executable, "-I", "-c", "import importlib.util; "
+                [sys.executable, "-c", "import importlib.util; "
                  "print(importlib.util.find_spec('ndnsf').origin)"], text=True).strip()
             native_init = Path(native_origin).resolve(strict=True)
             self.assertNotIn(ROOT, native_init.parents,

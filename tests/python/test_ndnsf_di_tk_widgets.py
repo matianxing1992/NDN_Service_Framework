@@ -184,7 +184,7 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
                 self.app,
                 lambda: tab.status_var.get().startswith("completed rc=0"),
                 timeout_s=4.0,
-            ))
+            ), msg=f"{tab.status_var.get()}\n{tab.log_pane.get()}")
             self.assertIn("NDNSF_DI_NATIVE_TRACER_MININDN_DRY_RUN", tab.log_pane.get())
             self.assertEqual(str(tab.run_button["state"]), "normal")
             self.assertEqual(str(tab.sweep_button["state"]), "normal")
@@ -203,7 +203,7 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
                 self.app,
                 lambda: tab.status_var.get().startswith("completed rc=0"),
                 timeout_s=8.0,
-            ))
+            ), msg=f"{tab.status_var.get()}\n{tab.log_pane.get()}")
             log_text = tab.log_pane.get()
             self.assertIn("=== Qwen MiniNDN rps=0.2 run=1 ===", log_text)
             self.assertIn("=== Qwen MiniNDN rps=0.4 run=1 ===", log_text)

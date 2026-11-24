@@ -6,15 +6,14 @@ import tempfile
 import unittest
 
 import ndnsf
-from ndnsf_distributed_inference import (
+from ndnsf_distributed_inference.artifact_deployment import (
     ExecutionArtifact,
     ExecutionArtifactSpec,
     prepare_execution,
     publish_execution_artifact_spec,
 )
 from ndnsf_distributed_inference.retry import RetryPolicy, retry_call
-from py_repoclient import RepoDataPlaneProducer
-from spec201_publication_fixture import publication_result
+from publication_fixture import publication_result
 
 
 class FakeUser:
@@ -76,7 +75,6 @@ class CoreBoundaryImportsTest(unittest.TestCase):
             "retry_call",
         ):
             self.assertFalse(hasattr(ndnsf, name), name)
-        self.assertTrue(RepoDataPlaneProducer.__module__.startswith("py_repoclient."))
         self.assertTrue(callable(retry_call))
         self.assertIsNotNone(RetryPolicy)
 

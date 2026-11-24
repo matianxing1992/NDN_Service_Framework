@@ -5,9 +5,6 @@ import unittest
 from unittest.mock import patch
 
 from ndnsf_distributed_inference.core.ports import CandidateBudget
-from ndnsf_distributed_inference.planner.compatibility import (
-    LegacyPlacementCompatibilityAdapter,
-)
 from ndnsf_distributed_inference.sdk.loader import (
     PlacementStrategyAllowlistEntry,
     discover_placement_strategies,
@@ -156,30 +153,7 @@ class ExternalPlacementStrategyTest(unittest.TestCase):
         with self.assertRaises((TypeError, ValueError)):
             evaluate_placement_strategy(_Malformed(), _request())
 
-    def test_legacy_ports_and_decide_are_hints_not_authority(self):
-        class _LegacyClient:
-            def __init__(self):
-                self.requests = None
-
-            def decide(self, requests):
-                self.requests = requests
-                return {
-                    "partition": "old-split-hint",
-                    "provider_assignment": "old-provider-hint",
-                }
-
-        client = _LegacyClient()
-        hints = LegacyPlacementCompatibilityAdapter(client).collect({
-            "partition": object(),
-            "provider_assignment": object(),
-            "deployment": object(),
-        })
-        self.assertEqual(
-            set(client.requests), {"partition", "provider_assignment"})
-        self.assertFalse(hints.authoritative)
-        with self.assertRaisesRegex(RuntimeError, "cannot authorize"):
-            hints.to_placement_decision()
-
+    def test_suite_preserves_external_strategy(self):
         suite = OptimizationSuite(
             {}, name="migration", version="1",
             state_digest="sha256:" + "1" * 64,

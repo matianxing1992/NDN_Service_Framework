@@ -1,7 +1,7 @@
 """DI-owned conversion between artifact metadata and public Repo references.
 
 This module contains no Repo server, placement, persistence, catalog, or repair
-policy. Operational Repo behavior belongs to ``py_repoclient.orchestration``.
+policy. The native Repo API owns artifact publication and retrieval.
 """
 
 from __future__ import annotations
@@ -31,17 +31,10 @@ def _publication_manifest_digest(*, data_name: str, object_id: str,
     Current publishers return the actual signed descriptor payload digest.
     Do not use this legacy transcript for a canonical publication.
     """
-    canonical = (
-        "version=1\n"
-        f"name={data_name}\n"
-        f"object_id={object_id}\n"
-        f"plaintext_size={int(plaintext_size)}\n"
-        f"content_digest={content_digest}\n"
-        f"authorization_scope={authorization_scope}\n"
-        f"protection_epoch={protection_epoch}\n"
-        "encrypted=1\n"
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+    from ndnsf import _ndnsf
+    return _ndnsf._legacy_publication_manifest_digest(
+        data_name, object_id, int(plaintext_size), content_digest,
+        authorization_scope, protection_epoch)
 
 
 @dataclass(frozen=True)
@@ -275,32 +268,7 @@ def _boolish(value: object, default: bool = False) -> bool:
     return default
 
 
-def _reject_repo_manifest_conversion(operation: str):
-    from .repo_artifact_resolver import reject_legacy_repo_manifest
-    reject_legacy_repo_manifest(operation)
-
-
-def large_data_reference_from_repo_manifest(manifest: Any, **_metadata) -> dict:
-    _reject_repo_manifest_conversion("large_data_reference_from_repo_manifest")
-
-
-def repo_artifact_reference(manifest: Any, **_metadata) -> dict:
-    _reject_repo_manifest_conversion("repo_artifact_reference")
-
-
-def repo_manifest_from_artifact_reference(entry: dict) -> dict:
-    _reject_repo_manifest_conversion("repo_manifest_from_artifact_reference")
-
-
-def repo_manifest_from_large_data_reference(entry: dict) -> dict:
-    _reject_repo_manifest_conversion("repo_manifest_from_large_data_reference")
-
-
 __all__ = [
     "LargeDataReference",
     "bind_published_large_data_reference",
-    "large_data_reference_from_repo_manifest",
-    "repo_artifact_reference",
-    "repo_manifest_from_artifact_reference",
-    "repo_manifest_from_large_data_reference",
 ]

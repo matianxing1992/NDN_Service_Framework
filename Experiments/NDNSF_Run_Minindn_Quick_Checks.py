@@ -64,7 +64,6 @@ def fidelity_declaration(check: QuickCheck) -> dict[str, object]:
         simulated = ["MiniNDN", "NDN transport", "model execution"]
     elif check.name in {
         "ndnsf-python-hello",
-        "repo-quick",
         "di-minindn-native",
         "di-llama-server-minindn",
     }:
@@ -101,12 +100,10 @@ def checks() -> dict[str, QuickCheck]:
                 "Experiments/NDNSF_DI_YoloSplit_Minindn.py "
                 "Experiments/NDNSF_DI_RuntimeCompatibility_Smoke.py "
                 "Experiments/NDNSF_DI_LlmPipeline_Smoke.py "
-                "Experiments/NDNSF_DI_LlmPipeline_Minindn.py "
                 "Experiments/NDNSF_DI_TransformersPipeline_LocalSmoke.py "
                 "Experiments/NDNSF_DI_QwenPipeline_LocalProof.py "
                 "Experiments/NDNSF_DI_LlamaServer_Smoke.py "
                 "Experiments/NDNSF_DI_LlamaServer_Minindn.py "
-                "Experiments/NDNSF_DistributedRepo_Generic_Minindn.py "
                 "Experiments/NDNSF_Python_Hello_Minindn.py "
                 "Experiments/NDNSF_Python_Minindn_Perf.py "
                 "Experiments/NDNSF_TextToImage_Status_Minindn.py "
@@ -146,20 +143,6 @@ def checks() -> dict[str, QuickCheck]:
             marker="PYTHON_HELLO_MININDN_OK",
             timeout_s=180,
             description="NDNSF Python HELLO MiniNDN smoke on AI_Lab.conf",
-            use_sudo=True,
-        ),
-        "repo-quick": QuickCheck(
-            name="repo-quick",
-            command=(
-                "python3", "Experiments/NDNSF_DistributedRepo_Generic_Minindn.py",
-                "--quick-smoke",
-                "--nlsr-wait-s", "5",
-                "--repo-start-wait-s", "8",
-                "--output-dir", "results/quick_checks/distributed_repo",
-            ),
-            marker="GENERIC_DISTRIBUTED_REPO_QUICK_MININDN_OK",
-            timeout_s=240,
-            description="DistributedRepo single-object quick MiniNDN smoke",
             use_sudo=True,
         ),
         "di-local": QuickCheck(
@@ -313,7 +296,6 @@ def selected_checks(selection: str, include_di_minindn: bool) -> list[QuickCheck
         "script-sanity",
         "script-quick-smokes",
         "ndnsf-python-hello",
-        "repo-quick",
         "di-runtime-compat",
         "di-llm-pipeline",
         "di-transformers-pipeline-local",
@@ -325,9 +307,6 @@ def selected_checks(selection: str, include_di_minindn: bool) -> list[QuickCheck
     if include_di_minindn:
         names.append("di-minindn-native")
         names.append("di-llama-server-minindn")
-        # The old LlmPipeline MiniNDN cases are retired: that pipeline published through
-        # CollaborationArtifactApiBackend, which now raises SPEC192_COMPATIBILITY_V1, and the
-        # Repo/Qwen rewrites replaced its staging path with the native actors.
     return [all_checks[name] for name in names]
 
 

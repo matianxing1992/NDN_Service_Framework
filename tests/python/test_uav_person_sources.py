@@ -80,6 +80,10 @@ class PersonSourceTest(unittest.TestCase):
         whole = _video_presentation_timestamps(reordered)
         self.assertEqual(whole, [index * 100000 for index in range(20)])
         self.assertEqual(_video_presentation_timestamps(reordered, end_time_us=1500000), whole[:15])
+        relative = _video_presentation_timestamps(reordered, sample_through_us=400000)
+        self.assertLess(len(relative), len(whole))
+        self.assertGreaterEqual(relative[-1] - relative[0], 400000)
+        self.assertEqual(relative, whole[:len(relative)])
         with patch('run_multicamera_tracking_demo.subprocess.run') as launch:
             for invalid in (0, -1, True, 1.5, '1500000', 2**63):
                 with self.subTest(invalid=invalid):
@@ -91,6 +95,12 @@ class PersonSourceTest(unittest.TestCase):
         with patch('run_multicamera_tracking_demo.subprocess.run', return_value=future_frame):
             with self.assertRaisesRegex(RunnerError, 'no decoded frames before'):
                 _video_presentation_timestamps(video, end_time_us=500000)
+        with patch('run_multicamera_tracking_demo.subprocess.run',
+                   side_effect=[future_frame, future_frame]) as launch:
+            self.assertEqual(_video_presentation_timestamps(video, sample_through_us=400000),
+                             [1000000])
+            self.assertIn('-read_intervals', launch.call_args_list[0].args[0])
+            self.assertNotIn('-read_intervals', launch.call_args_list[1].args[0])
 
     def test_dataset_origin_is_explicit_and_survives_preparation(self):
         legacy = load_person_source_manifest(self.path, self.profile.limits)
@@ -114,8 +124,8 @@ class PersonSourceTest(unittest.TestCase):
 
     def test_person_plan_keeps_prepared_identity_and_detects_input_tampering(self):
         # Weights and descriptor here test planning only; native inference is not exercised.
-        detector = self.root / 'detector.pt'
-        reid = self.root / 'reid.pth'
+        detector = self.root / 'detector.onnx'
+        reid = self.root / 'reid.onnx'
         detector.write_bytes(b'plan-detector-fixture')
         reid.write_bytes(b'plan-reid-fixture')
         profile = prepare_person_profile(ROOT / 'NDNSF-UAV-APP/configs/uav_person_tracking_demo.json',
@@ -124,7 +134,7 @@ class PersonSourceTest(unittest.TestCase):
         descriptor = self.output / 'private/config/person-computation.json'
         descriptor.write_text('{}')
         person = dict(profile=receipt['trackingProfile'], computationManifest=str(descriptor),
-                      reidModel=str(reid), workerPython=sys.executable)
+                      reidModel=str(reid))
         def installed_script(name):
             path = self.root / 'libexec' / name
             path.parent.mkdir(exist_ok=True)

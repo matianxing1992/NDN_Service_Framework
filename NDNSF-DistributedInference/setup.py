@@ -4,14 +4,10 @@ from setuptools import find_packages, setup
 setup(
     name="ndnsf-distributed-inference",
     version="0.111.0",
-    description="Bounded compatibility aggregate; install owner profiles for new deployments",
+    description="NDNSF-DI namespace aggregate; install owner profiles for focused deployments",
     packages=find_packages(include=[
         "ndnsf_distributed_inference",
-        "ndnsf_distributed_inference.compatibility*",
     ]),
-    package_data={
-        "ndnsf_distributed_inference.compatibility": ["manifest.json"],
-    },
     python_requires=">=3.8",
     install_requires=[
         "ndnsf-di-core==0.111.0", "ndnsf-di-sdk==0.111.0",

@@ -1,7 +1,7 @@
 """Reviewed NDNSF-DI user API.
 
 This namespace contains re-exports only.  Implementations remain in their
-single APP role owners so importing the API cannot create an alternate runtime
+native Runtime or signed-deployment owners so imports cannot create an alternate runtime
 or load optional model backends.
 """
 
@@ -18,8 +18,6 @@ from ..app_sdk.contracts import (
     DeploymentRef,
     DeploymentStatus,
     DeploymentSummary,
-    GenerationConfig,
-    GenerationInput,
     InferenceOptions,
     ModelIntent,
     OptimizationObjective,
@@ -29,7 +27,6 @@ from ..app_sdk.contracts import (
     RequestRef,
     RequestableDeployment,
 )
-from ..app_sdk.placement import ModelRef
 from ..app_sdk.deployment import DeploymentHandle
 from ..app_sdk.provider import InferenceProvider
 from ..client import InferenceResult
@@ -79,7 +76,6 @@ if _native is not None and hasattr(_native, "Runtime"):
     EventReader = _native.EventReader
     Subscription = _native.Subscription
     DiError = _native.DiError
-    NativeProviderConfig = _native.NativeProviderConfig
     ProviderConfig = _native.NativeProviderConfig
     ServiceDefinition = _native.ServiceDefinition
     ProviderCounters = _native.ProviderCounters
@@ -101,8 +97,6 @@ __all__ = [
     "DeploymentRef",
     "DeploymentStatus",
     "DeploymentSummary",
-    "GenerationConfig",
-    "GenerationInput",
     "InferenceApplication",
     "InferenceClient",
     "InferenceOptions",
@@ -110,7 +104,6 @@ __all__ = [
     "InferenceRequestHandle",
     "InferenceResult",
     "ModelIntent",
-    "ModelRef",
     "OptimizationObjective",
     "ProviderDeploymentOffer",
     "ProviderDeploymentOffers",
@@ -128,7 +121,7 @@ if _native is not None and hasattr(_native, "Runtime"):
         "ConversationCheckpoint", "ConversationOptions", "Runtime", "User", "PreparedModel",
         "PreparationHandle", "RequestHandle", "Conversation", "EventReader", "Subscription",
         "DiError",
-        "NativeProviderConfig", "ProviderConfig", "ServiceDefinition", "ProviderCounters",
+        "ProviderConfig", "ServiceDefinition", "ProviderCounters",
         "ProviderRegistration", "Provider", "NativeCallbackError", "drain_result",
         "events_async", "next_event", "preparation_result", "prepare", "request_result",
         "runtime_enter", "runtime_exit",

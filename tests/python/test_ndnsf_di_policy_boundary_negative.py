@@ -10,7 +10,7 @@ from ndnsf_distributed_inference.core.ports import (
 )
 from ndnsf_distributed_inference.planner.deployment_policy import LifecycleDeploymentPolicy
 from ndnsf_distributed_inference.app_sdk.contracts import ApplicationRuntimeConfig
-from support.spec111_policy import request
+from support.policy import request
 
 
 class PolicyBoundaryNegativeTest(unittest.TestCase):

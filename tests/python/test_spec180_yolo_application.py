@@ -7,120 +7,17 @@ import json
 from pathlib import Path
 import re
 
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
 from ndnsf_distributed_inference.app_sdk.application import ApplicationDefinitionSigner
 
 
 ROOT = Path(__file__).resolve().parents[2]
-USER = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/user.py"
-PROVIDER = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py"
 CONTROLLER = ROOT / "examples/python/NDNSF-DistributedInference/yolo_2x2/controller.py"
-
-
-def _source() -> str:
-    return USER.read_text(encoding="utf-8")
-
-
-def test_yolo_example_has_model_first_ack_driven_entrypoint():
-    source = _source()
-    tree = ast.parse(source)
-    names = {
-        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert "_load_yolo_ack_driven" in names
-    assert "--offline-oracle" in source
-    assert "client.request_task(" in source
-    assert "client.publish_application_input_reference(" in source
-    ack_helper = source.split("def _load_yolo_ack_driven", 1)[1].split(
-        "\ndef main", 1)[0]
-    assert "_prepare_yolo_input(args, package)" in ack_helper
-    assert "make_input(" not in ack_helper
-    assert "_record_yolo_numerical_result(" in ack_helper
-    assert "client.encode_input(" not in ack_helper
-    assert "--input-payload-file" in source
-    assert "ack_coverage_roles=()," in source
-    assert 'parser.add_argument("--ack-timeout-ms", type=int, default=1500)' in source
-    # The dependency fetch budget follows the request's deadline budget.
-    assert "data_v1_no_progress_ms=int(args.timeout_ms)," in ack_helper
-    assert "NetworkCatalogSnapshotResolver(" in source
-    assert "service_user.fetch_signed_app_data" in source
-    assert "LifecycleJournal" in source
-    assert "lifecycle_observer=_make_lifecycle_observer" in source
-    assert "journal.validate_complete()" in source
-    assert 'parser.add_argument("--envelope-key-file", required=True' in source
-    assert "envelope_key_file=args.envelope_key_file" in source
-
-
-def test_legacy_service_policy_calls_are_gated_by_explicit_offline_flag():
-    source = _source()
-    tree = ast.parse(source)
-    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
-    # The maintained main entrypoint may retain the compatibility implementation,
-    # but it must reach it only after the explicit offline-oracle branch.
-    branch_lines = [
-        node.lineno for node in ast.walk(main)
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.UnaryOp)
-        and isinstance(node.test.op, ast.Not)
-        and isinstance(node.test.operand, ast.Attribute)
-        and node.test.operand.attr == "offline_oracle"
-    ]
-    assert branch_lines, "main must gate the legacy path with --offline-oracle"
-    assert "if not args.offline_oracle:" in source
-
-
-def test_ack_driven_helper_does_not_accept_provider_or_role_authority():
-    source = _source()
-    helper = source.split("def _load_yolo_ack_driven", 1)[1].split("\ndef main", 1)[0]
-    assert "Provider list" in helper
-    assert "role map" in helper
-    assert "ack_coverage_roles=()," in helper
-    assert "client.request_task(" in helper
-    assert "client.publish_application_input_reference(" in helper
-    assert "input_reference_file" in helper
-    assert "_prepare_yolo_input(args, package)" in helper
-    assert "client.distributed_inference(" not in helper
-    assert "client.async_distributed_inference(" not in helper
-    assert "PreSplitCatalogSnapshot(" not in helper
-    assert "catalog_snapshot_file" not in helper
-
-
-def test_yolo_provider_uses_request_input_and_terminal_owner_apis():
-    """The maintained handler must cross the V3 ownership boundary."""
-    source = PROVIDER.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    handler = next(
-        node for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "handle_role")
-    calls = {
-        node.attr for node in ast.walk(handler)
-        if isinstance(node, ast.Attribute)
-    }
-    assert "_fetch_application_input" in {
-        node.func.id for node in ast.walk(handler)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-    }
-    assert "ctx.fetch_application_input(" in source
-    assert "ctx.publish_terminal_result(" in source
-    assert "fetch_encrypted_large_data" not in {
-        node.attr for node in ast.walk(handler)
-        if isinstance(node, ast.Attribute)
-    }
-    assert "_fetch_application_input" in source
 
 
 def test_native_provider_binds_application_input_only_to_selected_ingress():
     source = (ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di/"
               "NativeProviderHandler.cpp").read_text(encoding="utf-8")
-    placement_source = (ROOT / "NDNSF-DistributedInference/"
-                        "ndnsf_distributed_inference/app_sdk/placement.py")\
-        .read_text(encoding="utf-8")
     assert 'edge.operationKind == "APPLICATION_INPUT"' in source
-    assert 'if redistributions else "PIPELINE"' in placement_source
     assert "initialInputs[edge.scope]" in source
     assert "V3 input-ingress role is missing its application input" in source
     assert "DI_INPUT_FETCH_ROLE_MISMATCH" in source
@@ -133,49 +30,6 @@ def test_native_protected_binding_excludes_application_input_producer():
     assert 'endpoint.sourceKind == "APPLICATION_INPUT"' in source
     assert 'endpoint.operation == "APPLICATION_INPUT"' in source
     assert "empty producer binding" in source
-
-
-def test_yolo_provider_binds_candidate_offer_signing_and_local_onnx_inputs():
-    source = PROVIDER.read_text(encoding="utf-8")
-    assert "DIProviderOfferIssuerV3" in source
-    assert "--selection-offer-key-file" in source
-    assert "--local-model-path" in source
-    assert "selection_offer_issuer_v3=offer_issuer_v3" in source
-    assert "backends=[args.backend]" in source
-    assert 'choices=("onnxruntime-cpu", "onnxruntime-cuda")' in source
-    assert "dynamic_provisioning = False" in source
-    assert "devices=()," in source
-    assert 'devices=("cpu:0",)' not in source
-
-
-def test_yolo_provider_offer_key_loads_with_supported_cryptography_backend(tmp_path: Path):
-    source = PROVIDER.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    function = next(node for node in tree.body
-                    if isinstance(node, ast.FunctionDef)
-                    and node.name == "_load_v3_offer_signer")
-    namespace = {
-        "Path": Path,
-        "serialization": serialization,
-        "default_backend": default_backend,
-        "Ed25519PrivateKey": Ed25519PrivateKey,
-        "base64": base64,
-        "hashlib": hashlib,
-        "RuntimeError": RuntimeError,
-    }
-    exec(compile(ast.Module([function], type_ignores=[]), str(PROVIDER), "exec"),
-         namespace)
-    private = Ed25519PrivateKey.generate()
-    key_path = tmp_path / "offer.pem"
-    key_path.write_bytes(private.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ))
-    key_id, sign = namespace["_load_v3_offer_signer"](str(key_path))
-    assert key_id.startswith("sha256:")
-    private.public_key().verify(base64.b64decode(sign("sha256:test")),
-                                b"sha256:test")
 
 
 def test_application_definition_signing_key_can_be_reloaded(tmp_path: Path):
@@ -364,28 +218,6 @@ def test_spec180_v3_offer_issuer_disables_simple_service_mirror():
     assert captured["local_artifacts"]["FullModel"][
         "canonical_initializer_path"] == "/candidate/model.weights"
     assert captured["register_simple_service"] is False
-
-
-def test_spec180_provider_prepared_roles_omit_external_artifact_fetch():
-    """A preparation-accepted role must not carry an external fetch reference.
-
-    Regression: the sealed plan pointed the C++ collaboration layer at the
-    signed ARTIFACT APP Data metadata record as if it were an encrypted
-    large-data object.  The Provider holds the validated canonical artifact
-    locally, so the plan binds the canonical identity but leaves the fetch
-    reference empty; the C++ side then skips the external artifact fetch.
-    """
-    from ndnsf_distributed_inference.app_sdk import placement as placement_mod
-    source = Path(placement_mod.__file__).read_text(encoding="utf-8")
-    request_v3 = source.split("def _request_v3", 1)[1].split("\n    def ", 1)[0]
-    # The local-vs-fetch decision moved into `_v3_artifact_references`, which
-    # `_request_v3` calls per role; asserting the names inside `_request_v3`
-    # alone pinned their old placement rather than the behaviour.
-    references = source.split("def _v3_artifact_references", 1)[1].split("\n    def ", 1)[0]
-    assert "ExecutionDisposition.ACCEPT_IF_EXACT_REUSE" in references
-    assert "offer.preparation_accepted" in references
-    assert 'return artifact, ""' in references
-    assert "artifact_fetch_names[role] = fetch_name" in request_v3
 
 
 def test_spec180_controller_enters_publication_mode_without_repo_manifest():

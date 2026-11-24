@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
@@ -9,8 +10,9 @@ import unittest
 
 from ndnsf import SignedAppDataResult
 from ndnsf_distributed_inference.api import (
-    DeploymentDefinitionRef, DeploymentHandleRef, DeploymentProgress,
-    DeploymentRef, DeploymentStatus, InferenceOptions,
+    DeploymentConstraints, DeploymentDefinitionRef, DeploymentHandleRef, DeploymentProgress,
+    DeploymentRef, DeploymentStatus, InferenceOptions, ModelIntent, OptimizationObjective,
+    RequestContract,
 )
 from ndnsf_distributed_inference.app_sdk.application import ApplicationDefinitionSigner
 from ndnsf_distributed_inference.app_sdk.client import APPClient, InferenceClient
@@ -19,7 +21,7 @@ from ndnsf_distributed_inference.app_sdk.coordinator import (
     encode_coordinator_request, encode_coordinator_response,
 )
 from ndnsf_distributed_inference.client import InferenceResult
-from ndnsf_distributed_inference.app_sdk.contracts import DeploymentRevision
+from ndnsf_distributed_inference.app_sdk.contracts import DeploymentPlan
 from ndnsf_distributed_inference.app_sdk.deployment import (
     DeploymentCatalog, NetworkDeploymentCatalogTransport,
 )
@@ -68,18 +70,13 @@ class _CoordinatorLoopbackUser:
     def __init__(self):
         self.calls = []
 
-    def request_collaboration_async(self, service, payload, *, roles,
-                                    key_scopes, dependencies, on_response,
-                                    on_timeout, ack_timeout_ms, timeout_ms,
-                                    request_id):
-        del on_timeout, ack_timeout_ms, timeout_ms, key_scopes, dependencies
-        assert roles == [{
-            "role": "coordinator", "service": service,
-            "min_providers": 1, "max_providers": 1,
-        }]
+    def _request_di_coordinator_async(self, service, provider, request_id, payload,
+                                      ack_timeout_ms, timeout_ms, on_response, on_timeout):
+        del on_timeout, ack_timeout_ms, timeout_ms
         definition_ref, input_payload, _, _, outer_id = (
             decode_coordinator_request(payload))
         assert request_id == outer_id
+        assert provider == definition_ref.deployment_owner
         self.calls.append((service, definition_ref, input_payload, outer_id))
         result = InferenceResult(
             True, input_payload.upper(), "", "inner-request")
@@ -112,6 +109,34 @@ class _CoordinatorClient:
 
 
 class DeploymentCatalogTest(unittest.TestCase):
+    def test_local_preplanned_starts_with_the_public_network_facade_arguments(self):
+        with tempfile.TemporaryDirectory() as root:
+            signer = ApplicationDefinitionSigner.generate("/app/creator")
+            value = definition(signer)
+            calls = []
+
+            def submit(service, payload, *, deployment_revision, timeout_ms,
+                       request_id, on_result, on_error):
+                calls.append((service, deployment_revision, request_id))
+                result = InferenceResult(True, payload.upper(), "", request_id)
+                on_result(result)
+                future = Future()
+                future.set_result(result)
+                return future
+
+            network = SimpleNamespace(encode_input=lambda _, payload: bytes(payload),
+                                      async_distributed_inference=submit)
+            core = APPClient(RuntimeJournal.for_test(root, "local-requester"),
+                             network_client=network, requester_identity=signer.application_identity)
+            catalog = DeploymentCatalog(owner_identity=core.requester_identity, journal=core.journal)
+            catalog.authorize_application(
+                signer.application_identity, signer.key_id, signer.public_key)
+            client = InferenceClient(core, deployments=catalog)
+            request = client.request_preplanned(
+                catalog.publish_definition(value), input=b"hello", timeout=timedelta(seconds=2))
+            self.assertEqual(request.result().payload, b"HELLO")
+            self.assertEqual(calls, [(value.service, request.ref.revision, request.ref.request_id)])
+
     def test_on_demand_discovery_returns_typed_signed_reference(self):
         with tempfile.TemporaryDirectory() as root:
             journal = RuntimeJournal.for_test(root, "requester")
@@ -229,7 +254,7 @@ class DeploymentCatalogTest(unittest.TestCase):
             creator.authorize_application(
                 signer.application_identity, signer.key_id, signer.public_key)
             ref = creator.publish_definition(value)
-            revision = DeploymentRevision.resolve(value).revision
+            revision = DeploymentPlan.resolve(value).plan_digest
             owner_user = _SignedDataBusUser(value.deployment_owner, records)
             owner_transport = NetworkDeploymentCatalogTransport(owner_user)
             owner = DeploymentCatalog(
@@ -337,7 +362,7 @@ class DeploymentCatalogTest(unittest.TestCase):
             creator.authorize_application(
                 signer.application_identity, signer.key_id, signer.public_key)
             first_ref = creator.publish_definition(first)
-            first_revision = DeploymentRevision.resolve(first).revision
+            first_revision = DeploymentPlan.resolve(first).plan_digest
 
             second = signer.define(
                 deployment_id=first.deployment_id,
@@ -352,7 +377,7 @@ class DeploymentCatalogTest(unittest.TestCase):
                 metadata={"generation": 2},
                 previous_revision=first_revision)
             second_ref = creator.publish_definition(second)
-            second_revision = DeploymentRevision.resolve(second).revision
+            second_revision = DeploymentPlan.resolve(second).plan_digest
 
             owner_transport = NetworkDeploymentCatalogTransport(
                 _SignedDataBusUser(first.deployment_owner, records))
@@ -432,7 +457,7 @@ class DeploymentCatalogTest(unittest.TestCase):
                 signer.application_identity, signer.key_id, signer.public_key)
             ref = catalog.publish_definition(value)
             client = InferenceClient(core, deployments=catalog)
-            request = client.request(
+            request = client.request_preplanned(
                 ref, input=b"hello", timeout=timedelta(seconds=2))
             self.assertEqual(request.result().payload, b"HELLO")
             self.assertEqual(len(user.calls), 1)
@@ -463,6 +488,102 @@ class DeploymentCatalogTest(unittest.TestCase):
         self.assertEqual(client.calls[0][1]["coordinator_service"],
                          value.coordinator_service)
 
+    def test_signed_coordinator_uses_pinned_native_requester_and_journal(self):
+        signer = ApplicationDefinitionSigner.generate("/app/creator")
+        schema = "sha256:" + "d" * 64
+        value = signer.define(
+            deployment_id="native", deployment_owner="/app/owner",
+            service="/Native/Infer", model_intent=ModelIntent(("native-model",)),
+            request_contract=RequestContract(schema, "application/octet-stream"),
+            artifacts=(), objective=OptimizationObjective("latency"),
+            constraints=DeploymentConstraints(), optimization_profile="default")
+        with tempfile.TemporaryDirectory() as root:
+            journal = RuntimeJournal.for_test(root, "owner")
+            core = APPClient(journal, requester_identity="/app/owner",
+                             network_client=SimpleNamespace())
+            core._native_client = object()
+            core._native_runtime = SimpleNamespace(
+                contract=SimpleNamespace(service_name=value.service))
+            core._native_model = SimpleNamespace(
+                model_name="native-model", content_digest="sha256:" + "a" * 64,
+                adapter=SimpleNamespace(input_schema_digest=schema))
+            admitted = []
+
+            def native_submit(payload, *, options, request_id):
+                self.assertEqual(payload, b"payload")
+                self.assertGreater(options.timeout_ms, options.ack_timeout_ms)
+                handle = SimpleNamespace(
+                    request_id=f"/NDNSF/DI/REQUEST/{len(admitted)}",
+                    application_request_id=request_id,
+                    cancel=lambda: admitted[-1].cancelled.append(True),
+                    cancelled=[],
+                )
+
+                def subscribe(callback):
+                    handle.callback = callback
+                    return SimpleNamespace(cancel=lambda: None)
+
+                handle._on_completion = subscribe
+                admitted.append(handle)
+                return handle
+
+            core.request_native_payload = native_submit
+            catalog = DeploymentCatalog(
+                owner_identity="/app/owner", journal=journal,
+                trusted_application_keys={
+                    (signer.application_identity, signer.key_id): signer.public_key})
+            ref = catalog.publish_definition(value)
+            client = InferenceClient(core, deployments=catalog)
+
+            unsupported = signer.define(
+                deployment_id="unsupported-native-constraints",
+                deployment_owner=value.deployment_owner, service=value.service,
+                model_intent=value.model_intent, request_contract=value.request_contract,
+                artifacts=(), objective=value.objective,
+                constraints=DeploymentConstraints(minimum_providers=2),
+                optimization_profile="default")
+            cases = (
+                (catalog.publish_definition(unsupported), InferenceOptions(),
+                 "NATIVE_COORDINATOR_CONSTRAINTS_UNSUPPORTED"),
+                (ref, InferenceOptions(metadata={"label": "requires-support"}),
+                 "NATIVE_COORDINATOR_OPTIONS_UNSUPPORTED"),
+                (ref, InferenceOptions(output_encoding="text/plain"),
+                 "NATIVE_COORDINATOR_OPTIONS_UNSUPPORTED"),
+            )
+            for deployment, options, error in cases:
+                with self.subTest(error=error, options=options):
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        client._request_as_coordinator(
+                            deployment, input=b"payload",
+                            deadline=datetime.now(timezone.utc) + timedelta(seconds=5),
+                            options=options, coordinator_service=value.coordinator_service)
+            self.assertEqual(admitted, [])
+            self.assertFalse(any(record["kind"] == "request-handle"
+                                 for record in journal.records()))
+
+            def submit():
+                return client._request_as_coordinator(
+                    ref, input=b"payload", deadline=datetime.now(timezone.utc) + timedelta(seconds=5),
+                    options=InferenceOptions(), coordinator_service=value.coordinator_service)
+
+            request = submit()
+            self.assertEqual(len(admitted), 1, list(request.events()))
+            admitted[0].callback(None, SimpleNamespace(payload=b"native result"))
+            self.assertEqual(request.result().payload, b"native result")
+            binding, = (record["payload"] for record in journal.records()
+                        if record["kind"] == "request-wire-binding")
+            self.assertEqual(binding["requestId"], request.ref.request_id)
+            self.assertEqual(binding["nativeRequestId"], admitted[0].request_id)
+            pending = submit()
+            self.assertEqual(pending.cancel(), RequestState.CANCELLED)
+            self.assertEqual(admitted[1].cancelled, [True])
+            admitted[1].callback(None, SimpleNamespace(payload=b"late result"))
+            self.assertEqual(pending.status(), RequestState.CANCELLED)
+            core._native_model.model_name = "different-model"
+            with self.assertRaisesRegex(RuntimeError, "NATIVE_MODEL_IDENTITY_MISMATCH"):
+                submit()
+            self.assertEqual(len(admitted), 2)
+
     def test_coordinator_reports_signed_projection_before_final_response(self):
         signer = ApplicationDefinitionSigner.generate("/app/creator")
         value = definition(signer)
@@ -479,10 +600,23 @@ class DeploymentCatalogTest(unittest.TestCase):
             options=InferenceOptions(), outer_request_id="outer")
 
         class Context:
-            statuses = []
-            response = b""
+            def __init__(self):
+                self.statuses = []
+                self.response = b""
+
             role = "coordinator"
             local_provider = value.deployment_owner
+            session_id = "/outer"
+            assignment = SimpleNamespace(service=value.coordinator_service)
+
+            def _coordinator_work_budget_ms(self):
+                return 2000
+
+            def _arm_coordinator_cancellation(self, digest):
+                self.armed_digest = digest
+
+            def _coordinator_cancellation_received(self):
+                return False
 
             def report_operation_status(self, status):
                 self.statuses.append(status)
@@ -507,14 +641,54 @@ class DeploymentCatalogTest(unittest.TestCase):
         forged_context.local_provider = "/attacker"
         with self.assertRaises(PermissionError):
             coordinator.handle_collaboration(forged_context, wire)
+        wrong_session = Context()
+        wrong_session.session_id = "/another-request"
+        with self.assertRaises(PermissionError):
+            coordinator.handle_collaboration(wrong_session, wire)
+        wrong_service = Context()
+        wrong_service.assignment = SimpleNamespace(service="/wrong-service")
+        with self.assertRaises(PermissionError):
+            coordinator.handle_collaboration(wrong_service, wire)
         self.assertEqual(len(client.calls), 1)
+
+        cancelled = []
+        revoked_context = Context()
+        revoked_context.budget = 500
+        revoked_context._coordinator_work_budget_ms = lambda: revoked_context.budget
+        revoked_client = _CoordinatorClient()
+        start = revoked_client._request_as_coordinator
+
+        def start_revoked(*args, **kwargs):
+            request = start(*args, **kwargs)
+            request.status = lambda: RequestState.EXECUTING
+            request.cancel = cancelled.append
+            return request
+
+        def revoke_after_progress(status):
+            revoked_context.statuses.append(status)
+            revoked_context.budget = 0
+
+        revoked_client._request_as_coordinator = start_revoked
+        revoked_context.report_operation_status = revoke_after_progress
+        InferenceCoordinator(revoked_client, value.coordinator_service).handle_collaboration(
+            revoked_context, wire)
+        self.assertEqual(cancelled, ["COORDINATOR_WORK_ENDED"])
+        self.assertEqual(revoked_context.response, b"")
+        self.assertLess(revoked_client.calls[0][1]["deadline"], datetime.now(timezone.utc) +
+                        timedelta(milliseconds=550))
 
         registrations = []
         provider = SimpleNamespace(
+            provider_identity=value.deployment_owner,
             add_collaboration_handler=lambda *args, **kwargs: registrations.append(
                 (args, kwargs)))
         coordinator.register(provider)
         self.assertEqual(registrations[0][0][1], ["coordinator"])
+        from ndnsf import decode_provider_capability_ack
+        ack = decode_provider_capability_ack(
+            registrations[0][1]["ack_handler"](b"request").payload).hint
+        self.assertEqual(ack.service_payload["roles"], ["coordinator"])
+        self.assertEqual(ack.provider_name, value.deployment_owner)
 
 
 if __name__ == "__main__":

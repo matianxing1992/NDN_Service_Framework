@@ -46,7 +46,9 @@ def handle_role(ctx: ProviderRuntimeContext) -> None:
         if ref is None:
             ndnsf.fail("timed out waiting for stage0 activation reference")
             return
-        activation = ndnsf.fetch_large_reference(ref.payload, edge.key_scope, 10000)
+        activation = ndnsf.fetch_large_reference(
+            ref.payload, edge.key_scope, 10000, expected_producer=ref.producer
+        )
         if activation is None:
             ndnsf.fail("failed to fetch segmented stage0 activation")
             return
@@ -98,7 +100,7 @@ def main() -> int:
             ack_threads=2,
         )
         roles = [args.role] if args.role else args.roles
-        app_provider.serve(
+        app_provider.serve_service(
             service=SERVICE,
             roles=roles,
             handler=handle_role,

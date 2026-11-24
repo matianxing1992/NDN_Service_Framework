@@ -4,7 +4,7 @@
 Default behavior is intentionally interactive-friendly: verify that the GUI and
 policy tooling can be imported, then launch the GUI. Use --run-minindn when you
 want the script to run a distributed-inference regression before opening the
-GUI. The auto-split, yolo-2x2, and yolo-layout cases exercise MiniNDN.
+GUI. The auto-split and yolo-2x2 cases exercise MiniNDN.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def run_preflight(env: dict[str, str]) -> None:
 
 def run_regression(case: str, env: dict[str, str]) -> None:
     command = [sys.executable, str(REGRESSION_RUNNER), "--case", case]
-    if case in {"auto-split", "yolo-2x2", "yolo-layout", "all"} and os.geteuid() != 0:
+    if case in {"auto-split", "yolo-2x2", "all"} and os.geteuid() != 0:
         command = ["sudo", "-E", *command]
     print("$ " + " ".join(command))
     proc = subprocess.Popen(
@@ -94,10 +94,10 @@ def main() -> int:
         "--case",
         choices=[
             "app-api", "onnx-executor", "auto-split", "yolo-2x2",
-            "yolo-layout", "yolo-layout-local", "all",
+            "yolo-layout-local", "all",
         ],
         default="app-api",
-        help="Regression case used with --run-minindn. Default: app-api; use yolo-2x2 or yolo-layout for full MiniNDN.",
+        help="Regression case used with --run-minindn. Default: app-api; use yolo-2x2 for full MiniNDN.",
     )
     parser.add_argument("--run-minindn", action="store_true",
                         help="Run the selected regression before launching the GUI.")

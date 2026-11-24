@@ -238,11 +238,5 @@ def test_focused_y_n_e_probe_rejects_all_mutations():
     module._run_y_n_e_mutations()
 
 
-def test_focused_y_n_e_probe_cannot_return_registered_pass(tmp_path):
-    module = load_runner()
-    with pytest.raises(module.RunnerError, match="PRODUCTION_VERIFIER_REQUIRED"):
-        module._run_focused_y_n_negative("Y-N-E", tmp_path, {})
-
-
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

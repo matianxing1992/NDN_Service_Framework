@@ -5,7 +5,7 @@ import unittest
 from ndnsf_distributed_inference.core.decision_validation import validate_cache, validate_tuning
 from ndnsf_distributed_inference.core.ports import CacheAction, CacheProposal, TuningProposal
 from ndnsf_distributed_inference.planner.execution_tuning_policy import BoundedExecutionTuningPolicy
-from support.spec111_policy import request
+from support.policy import request
 
 
 class TuningCacheContractTest(unittest.TestCase):

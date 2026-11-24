@@ -247,6 +247,7 @@ def build(bld):
         bld.shlib(name='ndnsf-uav-tracking', target='ndnsf-uav-tracking',
                     source=[
                         '../NDNSF-UAV-APP/tracking/uav-tracking-provider.cpp',
+                        '../NDNSF-UAV-APP/tracking/uav-vehicle-model-backend.cpp',
                         '../NDNSF-UAV-APP/tracking/uav-vehicle-tracking-engine.cpp',
                         '../NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp',
                         '../NDNSF-UAV-APP/shared/UavObservationSource.cpp',
@@ -254,7 +255,6 @@ def build(bld):
                         '../NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp',
                         '../NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp',
                         '../NDNSF-UAV-APP/shared/uav-person-window-admission.cpp',
-                        '../NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp',
                         '../NDNSF-UAV-APP/tracking/uav-tracking-config.cpp',
                         '../NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
                         '../NDNSF-UAV-APP/shared/uav-person-published-frame.cpp',
@@ -273,7 +273,8 @@ def build(bld):
                         '../NDNSF-UAV-APP/tracking/uav-tracking-presentation.cpp',
                     ],
                     includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-UAV-APP/tracking'],
-                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL ONNXRUNTIME',
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL ONNXRUNTIME'
+                        + (' UAV_OPENCV' if bld.env.HAVE_UAV_OPENCV else ''),
                     lib=['jpeg'],
                     defines=['NDNSF_UAV_TRACKING_TEST_SEAM'] if bld.env.WITH_TESTS else [],
                     cxxflags=uav_cxxflags,
@@ -286,20 +287,15 @@ def build(bld):
                     rpath=[bld.env.LIBDIR],
                     linkflags=['-Wl,-rpath,$ORIGIN/..'], install_path='${BINDIR}')
 
-        # Spec191's Python worker and display runner are installed beside the
-        # native tracking applications.  MiniNDN must never import either one
+        # Host observation and display tools are installed beside the native
+        # tracking applications. MiniNDN must never import these tools
         # from this checkout or from the build tree.
         bld.install_files(
             '${LIBEXECDIR}/ndnsf-uav/tracking',
             [bld.path.parent.find_node(path) for path in [
                 'NDNSF-UAV-APP/tracking/observation_source.py',
                 'NDNSF-UAV-APP/tracking/person_profile.py',
-                'NDNSF-UAV-APP/tracking/person_reid.py',
-                'NDNSF-UAV-APP/tracking/person_runtime.py',
-                'NDNSF-UAV-APP/tracking/requirements-person.lock',
-                'NDNSF-UAV-APP/tracking/byte_track_state.py',
                 'NDNSF-UAV-APP/tracking/observation_schema.py',
-                'NDNSF-UAV-APP/tracking/tracking_worker.py',
                 'NDNSF-UAV-APP/tracking/tracking_display.py',
                 'NDNSF-UAV-APP/tracking/display_clock.py',
                 'NDNSF-UAV-APP/tracking/motion_estimator.py',
@@ -311,10 +307,7 @@ def build(bld):
             bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking-profile.hpp'),
             bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-computation.hpp'),
             bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking.hpp'),
-            bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-onnx.hpp'),
-            bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-byte-tracker.hpp'),
             bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavWindowBinding.hpp'),
-            bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-backend.hpp'),
             bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingResultVerifier.hpp'),
             bld.path.parent.find_node('NDNSF-UAV-APP/tracking/uav-tracking-config.hpp'),
             bld.path.parent.find_node('NDNSF-UAV-APP/tracking/uav-tracking-presentation.hpp'),
@@ -565,6 +558,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/native-app-request-events.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.cpp',
@@ -591,7 +585,6 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.cpp',
         'NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.cpp',
-        'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.cpp',
         'NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.cpp',

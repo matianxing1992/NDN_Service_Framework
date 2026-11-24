@@ -50,20 +50,7 @@ def dispatch_workload(gate: str) -> dict[str, object]:
             },
             "evidenceSchema": "spec180-result-v1",
         }
-    return {
-        "schema": "spec180-dispatch-workload-v1",
-        "gate": gate,
-        "case": "QWEN-F",
-        "entrypoint": "Experiments/NDNSF_DI_QwenAckDriven_Minindn.py",
-        "args": ["--case", "QWEN-F"],
-        "environment": {
-            "SPEC180_QWEN_MODEL": "Qwen/Qwen3.6-27B",
-            "SPEC180_QWEN_REVISION": "model-revision-1",
-            "SPEC180_QWEN_MODEL_IDENTITY_DIGEST": "sha256:" + "a" * 64,
-            "SPEC180_QWEN_PROMPT_DIGEST": "sha256:" + "b" * 64,
-        },
-        "evidenceSchema": "spec180-result-v1",
-    }
+    raise ValueError("unregistered dispatch gate: " + gate)
 
 
 def make_run(module, tmp_path: Path, *, gate: str = "yolo-functional"):
@@ -193,14 +180,6 @@ def test_profile_tamper_and_gate_mismatch_are_fail_closed(tmp_path: Path):
     run["profileSha256"] = "sha256:" + "b" * 64
     with pytest.raises(module.ReleaseError, match="PROFILE_DIGEST_MISMATCH"):
         module.render(profile, run, ROOT)
-    run = make_run(module, tmp_path, gate="qwen-functional")
-    run["model"]["root"] = "/tmp/qwen-models"
-    # The manifest is not a signed Spec180 Qwen3.6-27B identity.  Release
-    # must reject it before scheduler mutation, rather than allowing the
-    # dispatcher to route a tiny/placeholder runtime under the QWEN-F label.
-    with pytest.raises(module.ReleaseError, match="MODEL_MANIFEST_SCHEMA_UNSUPPORTED"):
-        module.render(profile, run, ROOT, check_files=True)
-
     tampered = json.loads(json.dumps(profile))
     tampered["gates"]["yolo-functional"]["time"] = "12:00:00"
     with pytest.raises(module.ReleaseError, match="GATE_FIXED_VALUE_MISMATCH"):

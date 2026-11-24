@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from pathlib import Path
 from typing import Mapping
-import warnings
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.backends import default_backend
@@ -19,7 +18,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 from .contracts import (
     ApplicationRuntimeConfig, ArtifactReference, DeploymentConstraints,
-    DeploymentDefinition, GenerationConfig, GenerationInput, InferenceOptions, ModelIntent,
+    DeploymentDefinition, InferenceOptions, ModelIntent,
     OptimizationObjective, RequestContract, RequestableDeployment,
 )
 
@@ -130,7 +129,6 @@ class InferenceApplication:
         self._signer = signer
         self._client = client
         self._deployment_manager = deployment_manager
-        self._preplanned_compatibility_uses = 0
         if client is not None:
             client.deployments.authorize_application(
                 signer.application_identity, signer.key_id, signer.public_key)
@@ -143,9 +141,7 @@ class InferenceApplication:
     def from_config(
         cls, config, *, state_root, envelope_key_file=None,
         envelope_key_provider=None, optimization=None,
-        deployment_manager=None, adapters=(), strategy=None,
-        catalog_snapshot_provider=None, verify_offer_signature=None,
-        split_materializer=None, artifact_publisher=None, budget=None,
+        deployment_manager=None,
         **network_options,
     ):
         from .client import InferenceClient
@@ -166,28 +162,6 @@ class InferenceApplication:
         signer = ApplicationDefinitionSigner.load_or_create(identity, root)
         application = cls(
             signer, client, deployment_manager=deployment_manager)
-        adapter_values = tuple(adapters)
-        if adapter_values:
-            if verify_offer_signature is None:
-                raise ValueError(
-                    "automatic planning requires Provider offer verification")
-            if strategy is None:
-                import time
-                from ..planner.presplit_first import PreSplitFirstStrategy
-                strategy = PreSplitFirstStrategy(
-                    at_ms=int(time.time() * 1000))
-            client._core.configure_automatic_planning(
-                service_name=runtime.service,
-                adapters=adapter_values,
-                strategy=strategy,
-                catalog_snapshot_provider=(
-                    catalog_snapshot_provider or (lambda: ())),
-                verify_offer_signature=verify_offer_signature,
-                split_materializer=split_materializer,
-                artifact_publisher=artifact_publisher,
-                budget=budget,
-                ack_timeout_ms=runtime.ack_timeout_ms,
-            )
         return application
 
     def define(self, **intent) -> DeploymentDefinition:
@@ -201,84 +175,13 @@ class InferenceApplication:
         self._signer.verify(definition)
         return self._client.deploy(definition)
 
-    def request(
-        self, *legacy_deployment,
-        model=None, input=None, generation: GenerationConfig | None = None,
-        strategy=None, request_id: str = "",
-        timeout=None, deadline=None, options: InferenceOptions | None = None,
-        task=None, task_options=None, timeout_ms: int | None = None,
-    ):
-        """Submit the request-first, post-ACK-planned public invocation.
-
-        A single positional deployment remains a counted migration shim.  It
-        never becomes the default path and keyword ``deployment=`` is rejected
-        by the Python signature.
-        """
-        if legacy_deployment:
-            if (len(legacy_deployment) != 1 or model is not None
-                    or generation is not None or strategy is not None):
-                raise TypeError("legacy request accepts one deployment only")
-            warnings.warn(
-                "positional InferenceApplication.request(deployment, ...) is "
-                "deprecated; use request_preplanned()",
-                DeprecationWarning, stacklevel=2)
-            self._preplanned_compatibility_uses += 1
-            return self.request_preplanned(
-                legacy_deployment[0], input=input, timeout=timeout,
-                deadline=deadline, options=options)
-        if model is None:
-            raise TypeError("request requires model")
-        if not str(getattr(model, "source_revision", "") or ""):
-            raise ValueError(
-                "public model requests require an immutable model revision")
-        # Generic model/task requests share the same coordinator owner as the
-        # Qwen convenience path.  The task and input are adapter-validated;
-        # Provider lists and role maps are intentionally not accepted here.
-        from ..adapters import ApplicationInput
-        if isinstance(input, ApplicationInput):
-            from .placement import InferenceTaskRef, TaskOptions
-            if not isinstance(task, InferenceTaskRef):
-                raise TypeError("generic request task must be InferenceTaskRef")
-            if task_options is not None and not isinstance(task_options, TaskOptions):
-                raise TypeError("generic request task_options must be TaskOptions")
-            if task is None:
-                raise TypeError("generic request requires an InferenceTaskRef")
-            if generation is not None or options is not None or deadline is not None:
-                raise TypeError(
-                    "generic request uses task_options and timeout_ms only")
-            effective_timeout_ms = timeout_ms if timeout_ms is not None else timeout
-            if effective_timeout_ms is None:
-                raise TypeError("generic request requires timeout_ms")
-            return self._client.request_task(
-                model=model, task=task, input=input,
-                timeout_ms=int(effective_timeout_ms), options=task_options,
-                strategy=strategy, request_id=request_id)
-        if not isinstance(input, GenerationInput):
-            raise TypeError("request requires GenerationInput or ApplicationInput")
-        effective_generation = generation or GenerationConfig()
-        if not isinstance(effective_generation, GenerationConfig):
-            raise TypeError("generation must be GenerationConfig")
-        if any(value is not None for value in (timeout, deadline, options)):
-            raise TypeError(
-                "model-first deadlines/options belong in GenerationConfig/app.yaml")
-        return self._client.request_model(
-            model=model, input=input, generation=effective_generation,
-            strategy=strategy, request_id=request_id)
-
     def request_preplanned(
         self, deployment: RequestableDeployment, *, input,
         timeout=None, deadline=None, options: InferenceOptions | None = None,
     ):
-        requester = getattr(self._client, "request_preplanned", None)
-        if requester is None:
-            requester = self._client.request
-        return requester(
+        return self._client.request_preplanned(
             deployment, input=input, timeout=timeout, deadline=deadline,
             options=options)
-
-    @property
-    def preplanned_compatibility_uses(self) -> int:
-        return self._preplanned_compatibility_uses
 
     @property
     def deployments(self):

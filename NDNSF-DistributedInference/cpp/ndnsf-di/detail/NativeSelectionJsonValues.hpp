@@ -35,6 +35,8 @@ std::string nativeRoleStepContractDigest(const NativeExecutionPlan& plan, std::s
 void validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpoint);
 /** Encode a complete step or port ID as a bounded public name component. */
 std::string nativeTensorNamingCoordinate(const std::string& id);
+// Decode a standalone SDK endpoint without the enclosing role's naming context.
+NativeTensorEndpointV3 decodeStandaloneTensorEndpoint(const std::string& wire);
 // Internal wire path. root must be the unchanged read_json result of this exact
 // wire, owned by the caller in the same callback-free scope. Strict wire/type
 // parsing and the complete public semantic decoder still run here.

@@ -287,6 +287,6 @@
   },
   "schema": "spec182-conversation-oracle-v1",
   "source": "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py",
-  "sourceSha256": "c1cd4808733295ade4c4b415248aaa066b86dab557b078c4ea3b0a9dac4aa014",
+  "sourceSha256": "130ccb5cc44594a3fea32dc0f52548d7813dd41075efb7c0eab815f6aed213d3",
   "testOnlyAuthenticationKeyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 }

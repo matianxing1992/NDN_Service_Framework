@@ -10,8 +10,7 @@ from ndnsf_distributed_inference.artifact_deployment import (
     ExecutionArtifactSpec, publish_execution_artifact_spec)
 from ndnsf_distributed_inference.client import DistributedInferenceClient, _artifact_fingerprint
 from ndnsf_distributed_inference.app_sdk.facades import APPClient, InferencePlanBuilder
-from ndnsf_distributed_inference.app_sdk.placement import AutomaticPlanningCoordinator
-from spec201_publication_fixture import publication_result
+from publication_fixture import publication_result
 from ndnsf_distributed_inference.naming import canonical_name_uri, parse_producer_data_name
 from ndnsf_distributed_inference.plan import ArtifactSpec
 from ndnsf_distributed_inference.app_sdk.client import APPClient as DurableAPPClient
@@ -206,7 +205,7 @@ class ManifestCallerTest(unittest.TestCase):
         for changes in ({"coordinate": "layers=2-3"}, {"profile_identity": "d" * 64}):
             second = ArtifactSpec("model", b"same", "model.bin", content_name={**layer, **changes})
             self.assertNotEqual(_artifact_fingerprint(first), _artifact_fingerprint(second))
-    def test_client_and_placement_scope_keys_use_exact_manifests(self):
+    def test_client_scope_keys_use_exact_manifests(self):
         user = User()
         client = DistributedInferenceClient.__new__(DistributedInferenceClient)
         client.user = user
@@ -215,10 +214,6 @@ class ManifestCallerTest(unittest.TestCase):
         plan = SimpleNamespace(service="/inference", key_scopes=lambda: ("two",))
         names = client.publish_scope_keys(plan)
         self.assertEqual(names["two"], user.calls[-1][1].manifest_name)
-        coordinator = SimpleNamespace(service_user=user, service_name="/inference")
-        names = AutomaticPlanningCoordinator._publish_scope_keys(
-            coordinator, {"three": ("worker",)}, deadline_ms=2**62)
-        self.assertEqual(names["three"], user.calls[-1][1].manifest_name)
 
     def test_client_plan_and_facade_input_use_exact_manifests(self):
         user = User()

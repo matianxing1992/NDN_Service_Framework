@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import spec193_preflight as preflight
+import preflight
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -90,8 +90,8 @@ class PreflightMutationTests(unittest.TestCase):
                          repo_users=USERS, repo_providers=PROVIDERS,
                          require_six=True, build_receipt=self.receipt)
         arguments.update(changes)
-        with mock.patch("spec202_build_candidate.sdk_inputs", return_value={str(sdk): sdk_digest}), \
-             mock.patch("spec202_build_candidate.compiler_dependencies",
+        with mock.patch("build_candidate.sdk_inputs", return_value={str(sdk): sdk_digest}), \
+             mock.patch("build_candidate.compiler_dependencies",
                         return_value={str(sdk): {"sha256": sdk_digest}}), \
              mock.patch.object(preflight, "resolved_libraries",
                                return_value={str(sdk): sdk_digest}):
@@ -152,11 +152,11 @@ class PreflightMutationTests(unittest.TestCase):
         self.assertNotEqual(before, after)
         self.assertFalse(self.output.exists())
 
-    def test_retired_cohort_inputs_cannot_change_or_disappear(self):
+    def test_repo_validation_inputs_cannot_change_or_disappear(self):
         before, names = preflight.source_candidate(ROOT)
         actual = preflight.sha256
-        for name in ("tests/python/test_spec164_migration_rollback.py",
-                     "tests/python/retired_repo_fixture.py",
+        for name in ("tests/python/test_spec192_repo_lifecycle.py",
+                     "tests/python/test_ndnsf_repo_unified_client_installed.py",
                      "tests/python/test_ndnsf_core_boundary_imports.py"):
             with self.subTest(name=name):
                 self.assertIn(name, names)
@@ -189,7 +189,7 @@ class PreflightMutationTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_svs_implementation_changes_invalidate_sdk_inventory(self):
-        from spec202_build_candidate import sdk_inputs
+        from build_candidate import sdk_inputs
         source, build, cxx = self.sdk_fixture()
         before = sdk_inputs(source, build, cxx)
         actual_hash = preflight.sha256
@@ -244,7 +244,7 @@ class PreflightMutationTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_compiler_header_content_changes_invalidate_dependencies(self):
-        from spec202_build_candidate import compiler_dependencies
+        from build_candidate import compiler_dependencies
         fresh = Path(self.temp.name) / "fresh"
         sdk = Path(self.temp.name) / "sdk"
         fresh.mkdir()
@@ -268,7 +268,7 @@ class PreflightMutationTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_repo_binding_parent_objects_keep_compiler_working_directory(self):
-        import spec202_build_candidate as builder
+        import build_candidate as builder
         root = Path(self.temp.name)
         fresh = root / "fresh"
         (fresh / "src").mkdir(parents=True)
@@ -290,7 +290,7 @@ class PreflightMutationTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_local_ndn_cxx_headers_are_bound_before_output(self):
-        from spec202_build_candidate import sdk_inputs
+        from build_candidate import sdk_inputs
         source, build, cxx = self.sdk_fixture(source_config=True)
         before = sdk_inputs(source, build, cxx)
         actual_hash = preflight.sha256
@@ -313,7 +313,7 @@ class PreflightMutationTests(unittest.TestCase):
                 self.assertFalse(self.output.exists())
 
     def test_actual_pinned_svs_config_path_is_in_sdk_inventory(self):
-        from spec202_build_candidate import sdk_inputs
+        from build_candidate import sdk_inputs
         source, build, cxx = self.sdk_fixture()
         inputs = sdk_inputs(source, build, cxx)
         self.assertIn(str(build / "config.hpp"), inputs)

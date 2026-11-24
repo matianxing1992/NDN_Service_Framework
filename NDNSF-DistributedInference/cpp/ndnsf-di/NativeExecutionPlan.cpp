@@ -448,6 +448,12 @@ operator<<(std::ostream& os, ExecutionAttemptAdmission admission)
 ExecutionAttemptAdmission
 ExecutionAttemptAuthority::admit(const ExecutionAttemptKey& key)
 {
+  return admit(key, {});
+}
+
+ExecutionAttemptAdmission
+ExecutionAttemptAuthority::admit(const ExecutionAttemptKey& key, std::string controlScope)
+{
   key.validate();
   std::lock_guard<std::mutex> lock(m_mutex);
   auto& state = m_states[key.requestId];
@@ -455,7 +461,7 @@ ExecutionAttemptAuthority::admit(const ExecutionAttemptKey& key)
     return ExecutionAttemptAdmission::Stale;
   }
   if (key.attemptEpoch > state.currentEpoch) {
-    state = State{key.attemptEpoch, false, false};
+    state = State{key.attemptEpoch, false, false, std::move(controlScope), {}};
     return ExecutionAttemptAdmission::Accepted;
   }
   if (state.terminal) {
@@ -463,6 +469,14 @@ ExecutionAttemptAuthority::admit(const ExecutionAttemptKey& key)
   }
   if (state.cancelled) {
     return ExecutionAttemptAdmission::Cancelled;
+  }
+  if (!controlScope.empty()) {
+    if (state.controlScope.empty()) {
+      state.controlScope = std::move(controlScope);
+    }
+    else if (state.controlScope != controlScope) {
+      return ExecutionAttemptAdmission::Stale;
+    }
   }
   return ExecutionAttemptAdmission::Accepted;
 }
@@ -478,6 +492,43 @@ ExecutionAttemptAuthority::cancel(const ExecutionAttemptKey& key)
     return false;
   }
   found->second.cancelled = true;
+  return true;
+}
+
+bool
+ExecutionAttemptAuthority::cancel(const ExecutionAttemptKey& key, const std::string& controlScope,
+                                  const std::string& controlDigest)
+{
+  key.validate();
+  std::lock_guard lock(m_mutex);
+  const auto found = m_states.find(key.requestId);
+  if (found == m_states.end() || found->second.currentEpoch != key.attemptEpoch ||
+      found->second.terminal || controlScope.empty() != controlDigest.empty() ||
+      found->second.controlScope != controlScope) {
+    return false;
+  }
+  auto& state = found->second;
+  if (state.cancelled) {
+    return !controlDigest.empty() && state.cancellationDigest == controlDigest;
+  }
+  state.cancellationDigest = controlDigest;
+  state.cancelled = true;
+  return true;
+}
+
+bool
+ExecutionAttemptAuthority::supersedeLegacy(const ExecutionAttemptKey& key,
+                                           std::uint64_t replacementEpoch)
+{
+  key.validate();
+  std::lock_guard lock(m_mutex);
+  const auto found = m_states.find(key.requestId);
+  if (found == m_states.end() || found->second.currentEpoch != key.attemptEpoch ||
+      !found->second.controlScope.empty() || found->second.terminal ||
+      replacementEpoch <= key.attemptEpoch) {
+    return false;
+  }
+  found->second = State{replacementEpoch, false, false, {}, {}};
   return true;
 }
 

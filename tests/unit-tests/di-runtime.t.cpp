@@ -257,9 +257,10 @@ public:
     catalog["input_format"] = "JSON";
     catalog["max_payload_bytes"] = 32;
     catalog["splitter"] = {
-      {"kind", "ONNX_SOURCE"}, {"mode", "full"}, {"roles", {"FullModel"}},
-      {"input_ingress_role", "FullModel"}, {"result_egress_role", "FullModel"},
-      {"postprocessing", ndnsf::di::NativeJson::object()}};
+      {"kind", "ONNX_SOURCE"}, {"selection_mode", "component"},
+      {"roles", {"Front", "Merge"}},
+      {"boundary_node", planning.graph.topologicalOrder.at(1)},
+      {"input_ingress_role", "Front"}, {"result_egress_role", "Merge"}};
 
     std::ifstream input(configPath);
     ndnsf::di::NativeJson runtime;

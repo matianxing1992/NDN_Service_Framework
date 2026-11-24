@@ -63,6 +63,36 @@ struct ServiceProviderTestAccess
     return {service.ackHandler, service.requestHandler};
   }
 
+  static void setStreamPublicationInterceptor(ServiceProvider& provider,
+    std::function<bool(const ndn::Data&)> interceptor)
+  {
+    provider.setStreamPublicationInterceptorForTest(std::move(interceptor));
+  }
+
+  static void setStreamRetentionInterceptor(ServiceProvider& provider,
+    std::function<bool(const ndn::Data&)> interceptor)
+  {
+    provider.setStreamRetentionInterceptorForTest(std::move(interceptor));
+  }
+
+  static void setCollaborationPublicationInterceptor(ServiceProvider& provider,
+    std::function<bool(const ndn::Name&)> interceptor)
+  {
+    provider.setCollaborationPublicationInterceptorForTest(std::move(interceptor));
+  }
+
+  static void setStreamRetentionExpiryObserver(ServiceProvider& provider,
+    std::function<void(const ndn::Name&)> observer)
+  {
+    provider.setStreamRetentionExpiryObserverForTest(std::move(observer));
+  }
+
+  static size_t streamPublisherHighWaterMark(ServiceProvider& provider,
+    const ndn::Name& requester, const ndn::Name& service, const ndn::Name& request)
+  {
+    return provider.streamPublisherHighWaterMarkForTest(requester, service, request);
+  }
+
   static void recordSelectionReceived(ServiceProvider& provider, const std::string& digest,
                                       const ndn::Name& service, const ndn::Name& request)
   {

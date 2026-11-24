@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -78,21 +77,6 @@ def test_source_census_accepts_canonical_streaming_fixture(tmp_path: Path) -> No
           MTP_ENABLED = False
           THINKING_MODE = "disabled"
         """,
-        "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py": """
-          def full_generation_call():
-              application_input = adapter.encode_input(payload, {
-                  "useCache": True,
-                  "outputMode": "TOKEN_STREAMING",
-              })
-              handle = coordinator.request_streaming(service_name, application_input)
-        """,
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py": """
-          GenerationExecutionContractV1()
-          TOKEN_FEEDBACK = "TOKEN_FEEDBACK"
-          streaming_operation_stride = 3
-          max_generated_tokens = 64
-          generation_contract=generation_contract
-        """,
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp": """
               generationConfigFromAuthenticatedRequest(request);
               projection->generationContract.enabled;
@@ -115,20 +99,18 @@ def test_source_census_accepts_canonical_streaming_fixture(tmp_path: Path) -> No
               "sampling_repetition_penalty" "sampling_seed" "sampling_digest"
             """,
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp": """
-              candidateText = textDelta = candidateText.substr requireTextOutput
-              candidateText.substr(generatedText.size())
+              candidateText = textDelta = stableCandidateText.substr requireTextOutput
+              stableCandidateText.substr(generatedText.size())
               textDelta
             """,
             "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp": """
               deviceStateBySession stateHandleBySession boundDeviceInputs
               streamingStateExecution stateDeviceToHostBytes
-              complete CUDA allocation must not cross supportsOpaqueStateHandles
+              if (residentState && effectiveContext.streamingStateExecution)
+          NativeOpaqueStateHandleV1 stateHandle;
+          "__ndnsf_provider_decode_state" supportsOpaqueStateHandles
               stateHandleSnapshot PROVIDER_OPAQUE_STATE_HANDLE_MISSING
               PROVIDER_OPAQUE_STATE_HANDLE_IDENTITY_MISMATCH
-            """,
-            "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py": """
-              def pause_to_host( def prefetch_to_gpu( copy_state transfer_bytes
-              ResidencyTier.HOST_RESIDENT ResidencyTier.GPU_RESIDENT
             """,
             "tests/integration-tests/ndnsf-di-core-flow.t.cpp": """
               ProductionIngressRunsNativePostSelectionAssignmentFetch
@@ -145,13 +127,13 @@ def test_source_census_accepts_canonical_streaming_fixture(tmp_path: Path) -> No
               \"textDelta\":\"🙂\"
               \"finishReason\":\"stop_sequence\"
             """,
-            "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py": """
-              "M01" "M02" "M03" "M04" "M05" "M06" "M07"
-              "M08" "M09" "M10" "M11" "M12" "M13" "M14"
-            """,
-            "examples/DI_NativeProviderExecutable.cpp": """
-              fields.find("executionPlanDigest");
-              capability.planDigest != authenticatedPlanDigest;
+            "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.cpp": """
+          installNativeProviderGroupCoordinatorFactory()
+          fields.find("executionPlanDigest")
+          capability.planDigest != authenticatedPlanDigest
+        """,
+        "examples/DI_NativeProviderExecutable.cpp": """
+              installNativeProviderGroupCoordinatorFactory();
               config.runnerPreparationFactory;
               config.allowPreassembledV3Compatibility = false;
               prepareNativeCanonicalOnnxRole;
@@ -192,41 +174,14 @@ def test_source_census_rejects_each_known_initial_drift(tmp_path: Path) -> None:
         'const char* role = "/LLM/Stage/0";\n',
         encoding="utf-8",
     )
-    user = tmp_path / "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
-    user.parent.mkdir(parents=True)
-    user.write_text(
-        "for token_index in range(max_new_tokens):\n"
-        "    result = client.distributed_inference(service, payload)\n",
-        encoding="utf-8",
-    )
-
     codes = {item["code"] for item in gate.check_source_contract(tmp_path)}
 
     assert {
         "MISSING_STREAMED_SYMBOL",
         "QWEN_MAX_TOKEN_BOUND_DRIFT",
         "LEGACY_QWEN_ROLE_NAME",
-        "PER_TOKEN_DISTRIBUTED_INFERENCE",
-        "QWEN_STREAMING_FULL_CONTEXT_OPTIONS",
-        "AUTOMATIC_STREAM_EPOCH_PLAN_MISSING",
         "NATIVE_STREAM_EPOCH_RUNTIME_DISABLED",
     } <= codes
-
-
-def test_minindn_selection_dataflow_preserves_onnx_runtime_identity() -> None:
-    """Selection offers must describe the backend that will actually execute."""
-    source = (REPO / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py").read_text(
-        encoding="utf-8")
-
-    assert '"qwen-onnx", "qwen-onnx-cpu-native"' in source
-    assert '"onnxruntime-cuda"' in source
-    assert '"onnxruntime-cpu"' in source
-    assert "requires a Qwen Transformers or ONNX runtime" in source
-    # A Transformers backend must remain limited to the Transformers runtime;
-    # otherwise a native ONNX campaign can publish a false capability offer.
-    transformers_block = source[source.index('if args.runtime == "qwen-transformers"'):]
-    assert 'backend = (\n            "transformers"' in transformers_block
-    assert 'elif args.runtime in {"qwen-onnx", "qwen-onnx-cpu-native"}' in transformers_block
 
 
 def test_native_provider_serving_path_is_selection_gated_and_source_bound() -> None:
@@ -242,7 +197,7 @@ def test_native_provider_serving_path_is_selection_gated_and_source_bound() -> N
     assert "serving rejects ready-made role artifact for" in source
     # Startup may keep metadata-only role declarations, but may not invoke the
     # legacy repository materializer in the serving installation block.
-    serving_block = install[:install.index("provider.fetchPermissionsFromController")]
+    serving_block = install[:install.index("provider->fetchPermissionsFromController")]
     assert "materializeManifestSpecs(" not in serving_block
 
     assembler = (REPO /
@@ -265,20 +220,17 @@ def test_spec175_production_path_mutations_fail_closed(tmp_path: Path) -> None:
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/placement.py",
         "tools/ndnsf-di/export_spec175_qwen36_stateful_onnx.py",
-        "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/placement.py",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
         "examples/DI_NativeProviderExecutable.cpp",
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp",
         "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp",
         "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp",
-        "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py",
         "pythonWrapper/ndnsf/service.py",
         "tests/integration-tests/ndnsf-di-core-flow.t.cpp",
-        "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py",
         "tests/python/test_spec175_native_oracle.py",
     )
 
@@ -293,6 +245,13 @@ def test_spec175_production_path_mutations_fail_closed(tmp_path: Path) -> None:
         return subject
 
     mutations = (
+        (
+            "capability-plan-binding",
+            "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.cpp",
+            "capability.planDigest != authenticatedPlanDigest",
+            "capability.planDigest == authenticatedPlanDigest",
+            "NATIVE_STREAM_EPOCH_RUNTIME_DISABLED",
+        ),
         (
             "compatibility",
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
@@ -331,37 +290,30 @@ def test_spec175_production_path_mutations_fail_closed(tmp_path: Path) -> None:
         (
             "text",
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp",
-            "textDelta = candidateText.substr",
+            "textDelta = stableCandidateText.substr",
             "textDelta = candidateText",
             "NATIVE_TEXT_DELTA_CONTRACT_MISSING",
         ),
         (
             "text-prefix",
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp",
-            "candidateText.substr(generatedText.size())",
-            "candidateText.substr(generatedText.capacity())",
+            "stableCandidateText.substr(generatedText.size())",
+            "stableCandidateText.substr(generatedText.capacity())",
             "NATIVE_TEXT_DELTA_SEMANTICS_MISSING",
         ),
         (
             "empty-delta",
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp",
-            "textDelta = candidateText.substr",
+            "textDelta = stableCandidateText.substr",
             "textDelta = \"\"",
             "NATIVE_TEXT_DELTA_CONTRACT_MISSING",
         ),
         (
             "device-state",
             "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp",
-            "complete CUDA allocation must not cross",
-            "complete CUDA allocation crosses",
+            "if (residentState && effectiveContext.streamingStateExecution)",
+            "if (residentState && !effectiveContext.streamingStateExecution)",
             "NATIVE_DEVICE_STATE_RESIDENCY_MISSING",
-        ),
-        (
-            "conversation-tier",
-            "NDNSF-DistributedInference/ndnsf_distributed_inference/conversation.py",
-            "def pause_to_host(",
-            "def paused_to_host(",
-            "CONVERSATION_TIER_TRANSFER_MISSING",
         ),
         (
             "case-coverage",
@@ -379,30 +331,14 @@ def test_spec175_production_path_mutations_fail_closed(tmp_path: Path) -> None:
         assert code in {item["code"] for item in gate.check_source_contract(subject)}
 
 
-def test_design_code_convergence_is_a_hard_gate_before_formal_tests() -> None:
-    """Formal tests must not be counted while design and production code diverge."""
-    convergence = (REPO / ".specify/memory/design-code-convergence.md").read_text(
-        encoding="utf-8")
-    spec = (FEATURE / "spec.md").read_text(encoding="utf-8")
-    tasks = (FEATURE / "tasks.md").read_text(encoding="utf-8")
-    audit = (FEATURE / "audit.md").read_text(encoding="utf-8")
-
-    assert "pre-qualification checklist" in convergence.lower()
-    assert "formal validation is unlocked only by a fresh `pass`" in convergence.lower()
-    assert "design-to-code convergence" in spec.lower()
-    assert "T020" in tasks
-    assert "corrected candidate" in audit.lower()
-    assert "complete suites and minindn" in audit.lower()
-    assert "separate downstream gates" in audit.lower()
-
-
 def test_current_svs_abi_surface_is_used_by_data_v1_fetcher() -> None:
     """Require the Experimental SVS catch-up API used by the production path."""
     provider = (REPO / "ndn-service-framework/ServiceProvider.cpp").read_text(
         encoding="utf-8")
     user = (REPO / "ndn-service-framework/ServiceUser.cpp").read_text(
         encoding="utf-8")
-    assert "m_svsps->subscribeToProducerWithCatchUp" in provider
+    assert "const auto pubSub = m_svsps;" in provider
+    assert "pubSub->subscribeToProducerWithCatchUp(" in provider
     assert "getMappingFetchStats" not in provider
     assert "getPublicationFetchStats" not in provider
     assert "getPiggybackStats" not in provider
@@ -414,7 +350,8 @@ def test_current_svs_abi_surface_is_used_by_data_v1_fetcher() -> None:
 
 def test_source_seal_scope_includes_host_runner_and_repository_probe() -> None:
     gate = _load_gate()
-    assert gate._is_source_subject_path("Experiments/NDNSF_DI_LlmPipeline_Minindn.py")
+    assert gate._is_source_subject_path(
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/ops/cluster.py")
     assert gate._is_source_subject_path("Experiments/spec175_repo_bootstrap.py")
     for path in (
             "scripts/analyze_spec175_conversation_residency.py",
@@ -431,24 +368,26 @@ def test_source_seal_scope_includes_host_runner_and_repository_probe() -> None:
         assert gate._is_source_subject_path(path), path
 
 
-def test_requirement_inventory_expands_ranges_and_covers_spec175() -> None:
+def test_requirement_inventory_expands_ranges_and_reports_missing_coverage(tmp_path: Path):
     gate = _load_gate()
-
-    inventory = gate.validate_requirement_coverage(FEATURE)
-    document_codes = {item["code"] for item in gate.check_documents(FEATURE)}
-
+    (tmp_path / "contracts").mkdir()
+    (tmp_path / "spec.md").write_text("FR-001..FR-003 SC-001..SC-002\n")
+    (tmp_path / "contracts/requirements-v1.md").write_text("FR-003 FR-030a\n")
+    complete = "FR-001..FR-003 FR-030a SC-001..SC-002\n"
+    (tmp_path / "tasks.md").write_text(complete)
+    (tmp_path / "traceability.md").write_text(complete)
     assert gate._expand_ids("FR-001..FR-003, FR-030a", "FR") == {
         "FR-001", "FR-002", "FR-003", "FR-030a",
     }
-    assert inventory["functionalRequirements"] == 10
-    assert inventory["successCriteria"] == 5
-    assert inventory["missingFromTasks"] == []
-    assert inventory["missingFromTraceability"] == []
-    assert "LEGACY_ROLE_IN_SPEC" not in document_codes
-    assert "QWEN_TEXT_ONLY_BOUNDARY" not in document_codes
-    assert "QWEN_SINGLE_TOKEN_DECODE_BOUNDARY" not in document_codes
-    assert "QWEN_MTP_DISABLED_BOUNDARY" not in document_codes
-    assert "QWEN_THINKING_DISABLED_BOUNDARY" not in document_codes
+    assert gate.validate_requirement_coverage(tmp_path) == {
+        "functionalRequirements": 4, "successCriteria": 2,
+        "missingFromTasks": [], "missingFromTraceability": [],
+    }
+    (tmp_path / "tasks.md").write_text("FR-001..FR-003 SC-001..SC-002\n")
+    (tmp_path / "traceability.md").write_text("FR-001..FR-003 FR-030a SC-001\n")
+    missing = gate.validate_requirement_coverage(tmp_path)
+    assert missing["missingFromTasks"] == ["FR-030a"]
+    assert missing["missingFromTraceability"] == ["SC-002"]
 
 
 def test_expected_negative_cli_refuses_an_unexpected_pass(

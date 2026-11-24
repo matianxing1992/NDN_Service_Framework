@@ -25,13 +25,7 @@ from spec107_fault_controller import (  # noqa: E402
     FaultControllerError,
     OwnedProcessRegistry,
 )
-from run_spec107_live_faults import (  # noqa: E402
-    FAULT_CELLS,
-    derive_fault_provider_control,
-    LiveFaultOrchestrationError,
-    LiveFaultOrchestrator,
-    validate_cell_claim,
-)
+
 from spec107_identity import build_candidate_identity, build_campaign_identity  # noqa: E402
 
 
@@ -92,19 +86,6 @@ def fault_payload() -> dict[str, object]:
 
 
 class Spec107FaultSchemaTest(unittest.TestCase):
-    def _orchestrator(self, root: Path) -> LiveFaultOrchestrator:
-        digests = {
-            "source": digest("1"), "profile": digest("2"), "model": digest("3"),
-            "plan": digest("4"), "artifact": digest("5"), "lineage": digest("6"),
-            "workload": digest("7"), "tokenizer": digest("8"),
-            "trustPolicy": digest("9"), "command": digest("a"),
-        }
-        candidate = build_candidate_identity(digests, created_at="2026-07-12T00:00:00Z")
-        campaign = build_campaign_identity(
-            candidate, kind="fault", ordinal=1, command_digest=digest("b"),
-            output_root="results/spec107-c1-fault-matrix-r1")
-        return LiveFaultOrchestrator(
-            candidate=candidate, campaign=campaign, repo_root=root)
 
     def test_owned_process_round_trip_requires_full_process_identity(self) -> None:
         process = OwnedProcessV1.from_dict(process_payload())
@@ -282,51 +263,6 @@ class Spec107FaultSchemaTest(unittest.TestCase):
             encoding="utf-8")
         self.assertNotIn("--fault-", source)
         self.assertNotIn("NDNSF_DI_EXPERIMENT_FAULT", source)
-
-    def test_live_matrix_is_fixed_exclusive_and_cleanup_stopped(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            orchestrator = self._orchestrator(root)
-            matrix = orchestrator.preregistration()
-            self.assertEqual(
-                [row["cellId"] for row in matrix["orderedCells"]], list(FAULT_CELLS))
-            lock = orchestrator.lock(
-                root / "specs/107-ndnsf-di-minindn-gate-recovery/evidence/fault.json")
-            self.assertTrue(lock.is_file())
-            with self.assertRaisesRegex(
-                LiveFaultOrchestrationError, "FAULT_MATRIX_ALREADY_LOCKED"):
-                orchestrator.lock(lock)
-            cell = orchestrator.claim_cell("positive-control")
-            with self.assertRaisesRegex(
-                LiveFaultOrchestrationError, "FAULT_CELL_ALREADY_CONSUMED"):
-                orchestrator.claim_cell("positive-control")
-            self.assertTrue(cell.with_name(cell.name + ".claim.json").is_file())
-            self.assertFalse(cell.exists())
-            claim = validate_cell_claim(
-                cell_id="positive-control",
-                candidate_id=orchestrator.candidate["candidateId"],
-                campaign_id=orchestrator.campaign["campaignId"],
-                output_root=cell)
-            self.assertEqual(claim["cellId"], "positive-control")
-            with self.assertRaisesRegex(
-                LiveFaultOrchestrationError, "FAULT_CELL_CLAIM_IDENTITY_MISMATCH"):
-                validate_cell_claim(
-                    cell_id="positive-control", candidate_id="spec107-c1-forged",
-                    campaign_id=orchestrator.campaign["campaignId"],
-                    output_root=cell)
-
-    def test_fault_control_requires_observed_provider_marker(self) -> None:
-        with self.assertRaisesRegex(
-            LiveFaultOrchestrationError, "FAULT_PROVIDER_MARKER_NOT_OBSERVED"):
-            derive_fault_provider_control(
-                cell_id="missing-segment", marker_observed=False)
-        applied = derive_fault_provider_control(
-            cell_id="missing-segment", marker_observed=True)
-        self.assertTrue(applied["injectionApplied"])
-        self.assertTrue(applied["networkInjection"])
-        control = derive_fault_provider_control(
-            cell_id="positive-control", marker_observed=False)
-        self.assertFalse(control["injectionApplied"])
 
 
 if __name__ == "__main__":

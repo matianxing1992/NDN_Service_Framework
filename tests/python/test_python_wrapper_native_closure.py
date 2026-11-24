@@ -65,7 +65,9 @@ def setup_path(request):
     return ROOT / request.param
 
 
-def test_declared_runtime_prefix_requires_matching_native_receipt(monkeypatch, tmp_path, setup_path):
+@pytest.mark.parametrize("with_tracking", [False, True])
+def test_declared_runtime_prefix_requires_matching_native_receipt(
+        monkeypatch, tmp_path, setup_path, with_tracking):
     prefix = tmp_path / "runtime"
     library = prefix / "lib"
     library.mkdir(parents=True)
@@ -77,11 +79,28 @@ def test_declared_runtime_prefix_requires_matching_native_receipt(monkeypatch, t
     monkeypatch.setenv("NDNSF_RUNTIME_PREFIX", str(prefix))
     monkeypatch.setenv("NDNSF_LIBRARY_DIR", str(library))
     monkeypatch.setenv("NDNSF_GLOBAL_NATIVE_DIGESTS", json.dumps(receipt))
+    tracking_metadata = str(library / "pkgconfig/ndnsf-uav-tracking.pc")
+    tracking_queries = []
+    if with_tracking:
+        (library / "libndnsf-uav-tracking.so").write_bytes(b"tracking")
+        query = subprocess.check_output
+
+        def config(command, **kwargs):
+            if tracking_metadata in command:
+                tracking_queries.append(command)
+                return f"-L{library} -lndnsf-uav-tracking"
+            return query(command, **kwargs)
+
+        monkeypatch.setattr(subprocess, "check_output", config)
     captured = {}
     monkeypatch.setattr(setuptools, "setup", lambda **kwargs: captured.update(kwargs))
     namespace = runpy.run_path(str(setup_path))
     extension, = captured["ext_modules"]
     assert str(library) in extension.library_dirs
+    tracking_enabled = with_tracking and setup_path == ROOT / "pythonWrapper/setup.py"
+    assert ("ndnsf-uav-tracking" in extension.libraries) == tracking_enabled
+    assert bool(tracking_queries) == tracking_enabled
+    assert extension.library_dirs[0] == str(library)
     assert "-Wl,-rpath," + str(library) in extension.extra_link_args
     reject = namespace["reject_non_global_dependency_paths"]
     reject([str(prefix / "include")], "runtime SDK")

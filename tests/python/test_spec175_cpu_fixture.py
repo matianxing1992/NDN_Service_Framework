@@ -64,7 +64,7 @@ def _step(
     sessions: list[ort.InferenceSession],
     states: list[dict[str, np.ndarray]],
     token: int,
-) -> tuple[int, list[dict[str, np.ndarray]]]:
+) -> tuple[int, list[dict[str, np.ndarray]], np.ndarray]:
     hidden = None
     logits = None
     next_states = []
@@ -85,7 +85,7 @@ def _step(
             if name.endswith("_out") and name != "hidden_out"
         })
     assert logits is not None
-    return int(np.argmax(logits[0, -1])), next_states
+    return int(np.argmax(logits[0, -1])), next_states, logits
 
 
 def _generate_tokens(partition: str, case: str) -> list[int]:
@@ -96,7 +96,7 @@ def _generate_tokens(partition: str, case: str) -> list[int]:
     token = int(prompt["inputIds"][-1])
     generated = []
     for _ in range(int(prompt["maxGeneratedTokens"])):
-        token, states = _step(sessions, states, token)
+        token, states, _ = _step(sessions, states, token)
         generated.append(token)
         if token == 2:
             break
@@ -158,14 +158,14 @@ def test_real_ort_prefill_and_incremental_decode_matches_oracle(
 def test_next_token_requires_both_decode_state_families() -> None:
     sessions = _sessions("one-role")
     states = _initial_states(sessions)
-    first, states = _step(sessions, states, 3)
+    first, states, _ = _step(sessions, states, 3)
     assert first == 4
 
-    correct, _ = _step(sessions, states, first)
+    correct, _, _ = _step(sessions, states, first)
     assert correct == 5
 
     missing_attention = [{**states[0], "attention_kv_in": np.zeros_like(states[0]["attention_kv_in"])}]
-    without_attention, _ = _step(sessions, missing_attention, first)
+    without_attention, _, _ = _step(sessions, missing_attention, first)
     assert without_attention != correct
 
     missing_linear = [{
@@ -173,7 +173,7 @@ def test_next_token_requires_both_decode_state_families() -> None:
         "recurrent_state_in": np.zeros_like(states[0]["recurrent_state_in"]),
         "convolution_state_in": np.zeros_like(states[0]["convolution_state_in"]),
     }]
-    without_linear, _ = _step(sessions, missing_linear, first)
+    without_linear, _, _ = _step(sessions, missing_linear, first)
     assert without_linear != correct
 
     incomplete_feed = dict(states[0])
@@ -181,3 +181,60 @@ def test_next_token_requires_both_decode_state_families() -> None:
     incomplete_feed["input_ids"] = np.asarray([[first]], dtype=np.int64)
     with pytest.raises(ValueError, match="attention_kv_in"):
         sessions[0].run(None, incomplete_feed)
+
+
+@pytest.mark.parametrize("case,corrupt_role,corrupt_family", [
+    ("normal", None, None), ("early-eos", None, None), ("max-eight", None, None),
+    *[("normal", role, family) for role in range(4)
+      for family in ("attention_kv", "recurrent_state", "convolution_state")],
+])
+def test_native_canonical_source_matches_four_reference_graphs_and_all_state(
+    case: str, corrupt_role: int | None, corrupt_family: str | None,
+) -> None:
+    directory = COMMITTED / "standalone/four-role"
+    source = directory / "source.onnx"
+    binding = json.loads((directory / "source.json").read_text())
+    assert binding["source"]["digest"] == "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    for relative, expected in binding["reference_digests"].items():
+        assert "sha256:" + hashlib.sha256((COMMITTED / relative).read_bytes()).hexdigest() == expected
+    model = onnx.load(source)
+    indices = [index for values in binding["node_mapping"].values() for index in values]
+    assert sorted(indices) == list(range(len(model.graph.node)))
+    assert all(binding["node_mapping"].values())
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = options.inter_op_num_threads = 1
+    canonical = ort.InferenceSession(str(source), sess_options=options,
+                                     providers=["CPUExecutionProvider"])
+    sessions = _sessions("four-role")
+    states = _initial_states(sessions)
+    canonical_states = {f"stage{role}_{name}": value.copy()
+                        for role, state in enumerate(states) for name, value in state.items()}
+    prompts = json.loads((COMMITTED / "prompts.json").read_text())
+    prompt = prompts["cases"][case]
+    token = prompt["inputIds"][-1]
+    generated = []
+    for epoch in range(prompt["maxGeneratedTokens"]):
+        if epoch == 2 and corrupt_role is not None:
+            name = f"{corrupt_family}_in"
+            states[corrupt_role][name] = np.zeros_like(states[corrupt_role][name])
+            canonical_states[f"stage{corrupt_role}_{name}"] = np.zeros_like(
+                canonical_states[f"stage{corrupt_role}_{name}"])
+        feed = {**canonical_states, "input_ids": np.asarray([[token]], dtype=np.int64)}
+        names = [value.name for value in canonical.get_outputs()]
+        actual = dict(zip(names, canonical.run(names, feed)))
+        reference_token, states, reference_logits = _step(sessions, states, token)
+        np.testing.assert_array_equal(actual["logits"], reference_logits)
+        token = int(np.argmax(actual["logits"][0, -1]))
+        assert token == reference_token
+        for role, state in enumerate(states):
+            for name, expected in state.items():
+                output_name = f"stage{role}_{name[:-3]}_out"
+                np.testing.assert_array_equal(actual[output_name], expected)
+                canonical_states[f"stage{role}_{name}"] = actual[output_name]
+        generated.append(token)
+        if token == 2:
+            break
+    if corrupt_role is None:
+        assert generated == prompts["expectedOutputs"][case]
+    else:
+        assert generated[2] != prompts["expectedOutputs"][case][2]

@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 from ndnsf_distributed_inference.app_sdk import (
-    DeploymentRevision, ProviderActionReceipt, ProviderEvidenceSigner,
+    DeploymentPlan, ProviderActionReceipt, ProviderEvidenceSigner,
     ProviderReadiness,
 )
 from ndnsf_distributed_inference.ops.cli import definition_from_json, main
@@ -52,12 +52,12 @@ main(['--help'])
         ):
             definition=Path(root)/"deployment.json"
             definition.write_text(json.dumps({"deploymentId":"d","modelId":"qwen","roles":["r"],"artifacts":[{"uri":"file:///m","digest":"sha256:"+"a"*64,"size_bytes":1}]}))
-            resolved = DeploymentRevision.resolve(definition_from_json(definition))
+            resolved = DeploymentPlan.resolve(definition_from_json(definition))
             signer = ProviderEvidenceSigner.generate()
             now_ms = int(time.time() * 1000)
             readiness = ProviderReadiness.issue(
                 signer=signer, provider="/provider", role="r",
-                revision=resolved.revision, boot_epoch="boot-1",
+                revision=resolved.plan_digest, boot_epoch="boot-1",
                 artifact_digests=("sha256:" + "a" * 64,),
                 adapter_name="runner", adapter_version="1", capacity=1,
                 permission_ready=True, observed_at_ms=now_ms,
@@ -65,7 +65,7 @@ main(['--help'])
                 signer_key_id=signer.key_id, reason="")
             activation = ProviderActionReceipt.issue(
                 signer=signer, provider="/provider", role="r",
-                revision=resolved.revision, boot_epoch="boot-1",
+                revision=resolved.plan_digest, boot_epoch="boot-1",
                 action="ACTIVATE", state="ACTIVE", observed_at_ms=now_ms,
                 expires_at_ms=now_ms + 30_000,
                 signer_key_id=signer.key_id, reason="")

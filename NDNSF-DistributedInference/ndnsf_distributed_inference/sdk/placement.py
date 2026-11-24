@@ -1063,15 +1063,9 @@ class TensorEndpoint:
 
     @property
     def execution_object_digest(self) -> str:
-        from ..naming import compute_naming_digest
-        return compute_naming_digest("ndnsf-naming/tensor-object", [
-            (1, 2, self.tensor_digest.encode("utf-8")),
-            (2, 2, self.layout_digest.encode("utf-8")),
-            (3, 2, self.target_layout_digest.encode("utf-8")),
-            (4, 2, self.manifest_digest.encode("utf-8")),
-            (5, 2, self.security_profile.encode("utf-8")),
-            (6, 5, canonical_bytes(self.bundle_tensor_names)),
-        ])
+        from ndnsf import _ndnsf
+
+        return _ndnsf._di_tensor_object_digest(canonical_bytes(self))
 
     @property
     def name_template(self) -> str:
@@ -1079,50 +1073,23 @@ class TensorEndpoint:
 
     @property
     def name_prefix(self) -> str:
-        """C04 exact object; complete signed endpoint binds every shortened label."""
-        from ndn.encoding import Component
-        from ..naming import (
-            canonical_name_uri, compute_naming_digest,
-            make_producer_data_prefix, make_naming_label_component,
-            make_naming_decimal_component, make_naming_digest_component,
-            check_naming_name_size,
-        )
-        key = compute_naming_digest("ndnsf-naming/tensor-key", [
-            (1, 4, bytes.fromhex(self.endpoint_digest[7:])),
-            (2, 4, bytes.fromhex(self.execution_object_digest)),
-        ])
-        is_input = self.source_kind is TensorEndpointSource.APPLICATION_INPUT
-        stride = self.naming_operation_stride
-        round_no = 0 if is_input or not stride else self.round // stride
-        index = 0 if is_input else self.round if not stride else self.round % stride
-        raw = lambda value: bytes(Component.from_bytes(value.encode("utf-8")))
-        name = make_producer_data_prefix(self.producer_namespace, "tensor", name_space="NDNSF-DI")
-        name += [raw("REQUEST"), make_naming_label_component(canonical_name_uri(self.request_id)),
-                 raw("ATTEMPT"), make_naming_decimal_component(self.attempt),
-                 raw("ROUND"), make_naming_decimal_component(round_no),
-                 raw("POSITION"), make_naming_label_component("model-input" if is_input else self.producer_role),
-                 raw("OP"), raw(self.operation), raw("INDEX"), make_naming_decimal_component(index),
-                 raw("RANK"), make_naming_decimal_component(self.producer_rank),
-                 raw("BATCH"), make_naming_decimal_component(self.microbatch),
-                 make_naming_label_component(self.tensor_id), make_naming_digest_component(key)]
-        check_naming_name_size(name)
-        return canonical_name_uri(name)
+        """Return the native exact-object prefix for this signed endpoint."""
+        from ndnsf import _ndnsf
+
+        return _ndnsf._di_tensor_name_prefix(canonical_bytes(self))
 
     @property
     def manifest_name(self) -> str:
-        from ..naming import check_naming_name_size
-        result = f"{self.name_prefix}/8=MANIFEST"
-        check_naming_name_size(result)
-        return result
+        from ndnsf import _ndnsf
+
+        return _ndnsf._di_tensor_manifest_name(canonical_bytes(self))
 
     def segment_name(self, segment: int) -> str:
         if type(segment) is not int or segment < 0 or segment >= self.segment_count:
             raise ValueError("tensor segment is outside the declared range")
-        from ndn.encoding import Component
-        from ..naming import _name, canonical_name_uri, check_naming_name_size
-        result = _name(self.name_prefix) + [Component.from_bytes(b"DATA"), Component.from_segment(segment)]
-        check_naming_name_size(result)
-        return canonical_name_uri(result)
+        from ndnsf import _ndnsf
+
+        return _ndnsf._di_tensor_segment_name(canonical_bytes(self), segment)
 
 
 @dataclass(frozen=True)

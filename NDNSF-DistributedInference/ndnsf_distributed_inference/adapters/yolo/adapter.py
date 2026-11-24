@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
 from ..base import (
     AdapterPortDescriptor, InferenceStateClass, InferenceStateContract,
@@ -14,15 +14,21 @@ from ..base import (
 )
 from ..builtin import GuardedRunnerAdapter, StaticStateAdapter
 from ...splitter import (
-    AdapterDescriptor, GraphNodeView, ModelDescriptor, ModelGraphSnapshot,
-    RoleDependency, RoleExecutionPlan, RoleResourceRequirement, SplitCandidate,
-    SplitSource, SplitterDescriptor, TensorContract, TensorEdgeView,
+    AdapterDescriptor,
+    ModelDescriptor,
+    ModelGraphSnapshot,
+    RoleDependency,
+    RoleExecutionPlan,
+    RoleResourceRequirement,
+    SplitCandidate,
+    SplitSource,
+    SplitterDescriptor,
     canonical_contract_digest,
 )
 from .candidates import (
     RegisteredYoloCandidate, verify_catalogue, verify_catalogue_signature,
 )
-from .graph import Yolo26GraphAdapter, load_yolo_graph
+from .graph import load_yolo_graph
 
 
 def _digest(value: Any) -> str:
@@ -258,229 +264,6 @@ class Yolo26Splitter:
                              graph: ModelGraphSnapshot) -> tuple[SplitCandidate, ...]:
         model.validate_graph(graph)
         return tuple(self._candidate(model, graph, item) for item in self.registered)
-
-
-class YoloCanonicalArtifactBinding:
-    """Describe/ensure port that certifies Provider-local YOLO recipes.
-
-    The local qualification slice binds every role to the same validated
-    canonical package.  ``describe()`` returns the digest facts the
-    coordinator seals into each ``RoleAssemblySpec`` recipe.  When a native
-    encrypted publisher is configured, ``ensure()`` publishes the canonical
-    graph, external initializer, and root in that order, then returns stable
-    ARTIFACT identities separately from their request-scoped transport names.
-    Every Provider assembles its certified subgraph from that root after
-    Selection.
-    """
-
-    ASSEMBLER_DESCRIPTOR_DIGEST = (
-        "sha256:" + hashlib.sha256(
-            b"ndnsf-di-certified-onnx-assembler-v1").hexdigest())
-    BACKEND_ABI = "onnxruntime-cpu-v1"
-
-    def __init__(
-        self,
-        *,
-        package_dir: str | Path,
-        adapter: ModelFamilyAdapter,
-        model: ModelDescriptor,
-        graph: ModelGraphSnapshot,
-        artifact_root: str,
-        publish_encrypted_artifact: Callable[..., Mapping[str, Any]] | None = None,
-    ) -> None:
-        package = Path(package_dir)
-        manifest_path = package / "manifest.json"
-        if not manifest_path.is_file():
-            raise ValueError("YOLO canonical manifest is missing")
-        manifest_payload = manifest_path.read_bytes()
-        manifest = json.loads(manifest_payload.decode("utf-8"))
-        if manifest.get("schema") != "spec180-yolo26n-canonical-v1":
-            raise ValueError("YOLO canonical manifest schema is unsupported")
-        graph_info = manifest.get("graph")
-        weights_info = manifest.get("weights")
-        if not isinstance(graph_info, Mapping) or not isinstance(
-                weights_info, Mapping):
-            raise ValueError("YOLO canonical manifest identity is incomplete")
-        if graph.graph_digest != model.graph_digest:
-            raise ValueError("YOLO graph identity does not match the model")
-        graph_path = package / "canonical" / "yolo26n.onnx"
-        if not graph_path.is_file():
-            raise ValueError("YOLO canonical graph file is missing")
-        from ...adapters.onnx.graph import canonical_onnx_identity
-        identity = canonical_onnx_identity(graph_path)
-        if not str(artifact_root).startswith("/"):
-            raise ValueError("YOLO artifact root must be an absolute NDN name")
-        self._adapter = adapter
-        self._graph = graph
-        self._model = model
-        self._artifact_root = str(artifact_root).rstrip("/")
-        self._manifest_payload = manifest_payload
-        self._graph_path = graph_path
-        self._publish_encrypted_artifact = publish_encrypted_artifact
-        self._published_root_fetch_name = ""
-        self._binding = {
-            "model_manifest_digest": "sha256:" + hashlib.sha256(
-                manifest_payload).hexdigest(),
-            "artifact_profile_digest": _digest({
-                "graph": str(graph_info.get("graphDigest", "")),
-                "weights": str(weights_info.get("digest", "")),
-                "graphRevision": str(manifest.get("graphRevision", "")),
-            }),
-            # Planning-space graph-port digest (satisfies the certification
-            # gate) vs the canonical ONNX identity the assembler verifies.
-            "graph_digest": graph.graph_digest,
-            "canonical_graph_digest": identity.graph_digest,
-            "canonical_initializer_digest": (
-                identity.normalized_initializer_content_digest),
-            "adapter_descriptor_digest": adapter.descriptor.descriptor_digest,
-            "assembler_descriptor_digest": self.ASSEMBLER_DESCRIPTOR_DIGEST,
-            "backend_abi": self.BACKEND_ABI,
-        }
-        weights_path = package / str(weights_info.get("path", ""))
-        if not weights_path.is_file():
-            raise ValueError("YOLO canonical initializer file is missing")
-        self._weights_path = weights_path
-        # The certified-assembly source limit applies independently to the
-        # canonical graph and separately addressed initializer object.  The
-        # planning-time binding does not expose the post-publication NDN
-        # initializer reference, so placement derives a separate finite
-        # assembled-output limit from this per-object source bound.
-        self._canonical_source_bytes = max(
-            graph_path.stat().st_size,
-            weights_path.stat().st_size if weights_path.is_file() else 0,
-        )
-        self._canonical_source_digest = "sha256:" + hashlib.sha256(
-            graph_path.read_bytes()).hexdigest()
-
-    @property
-    def model_manifest_digest(self) -> str:
-        """Read-only digest of the canonical model manifest this binding
-        certifies (used by the protected grant view before certification)."""
-        return str(self._binding.get("model_manifest_digest", ""))
-
-    def describe(self, candidate: SplitCandidate | None = None):
-        """Return the immutable digest facts for one candidate root."""
-        if candidate is not None and candidate.graph_digest != (
-                self._binding["graph_digest"]):
-            raise ValueError("YOLO candidate graph does not match the root")
-        from ...app_sdk.canonical_artifacts import CanonicalArtifactBinding
-        return CanonicalArtifactBinding(
-            model_manifest_digest=self._binding["model_manifest_digest"],
-            artifact_profile_digest=self._binding["artifact_profile_digest"],
-            graph_digest=self._binding["graph_digest"],
-            canonical_initializer_digest=(
-                self._binding["canonical_initializer_digest"]),
-            adapter_descriptor_digest=self._binding["adapter_descriptor_digest"],
-            assembler_descriptor_digest=self._binding["assembler_descriptor_digest"],
-            backend_abi=self._binding["backend_abi"],
-            canonical_source_bytes=self._canonical_source_bytes,
-            canonical_graph_digest=self._binding["canonical_graph_digest"],
-        )
-
-    def ensure(self, candidate, role_specs, *, deadline_ms: int):
-        """Confirm the expected per-role artifact digests against the ARTIFACT
-        identities published by the controller's runtime batch."""
-        from time import time
-        if int(time() * 1000) >= int(deadline_ms):
-            raise TimeoutError("YOLO canonical ensure deadline expired")
-        from ...app_sdk.placement import PublishedSplit
-        specs = tuple(role_specs)
-        if not specs:
-            raise ValueError("YOLO canonical ensure requires role specs")
-        digests: dict[str, str] = {}
-        names: dict[str, str] = {}
-        for spec in specs:
-            key = spec.role if sum(
-                other.role == spec.role for other in specs) == 1 else (
-                f"{spec.role}#{spec.rank}")
-            expected = candidate.fragments_by_role.get(spec.role, "")
-            if not expected or spec.artifact_digest != expected:
-                raise ValueError(
-                    f"YOLO role {spec.role} artifact digest is not certified")
-            if key in digests:
-                raise ValueError("YOLO canonical ensure role key is duplicated")
-            digests[key] = expected
-            names[key] = (
-                f"{self._artifact_root}/{candidate.candidate_digest[7:]}/"
-                f"{spec.role}")
-        if self._publish_encrypted_artifact is None:
-            return PublishedSplit(
-                candidate_digest=candidate.candidate_digest,
-                artifact_digests_by_role=digests,
-                artifact_data_names_by_role=names,
-            )
-
-        def publish(payload: bytes, *, label: str, object_type: str) -> Mapping[str, Any]:
-            if int(time() * 1000) >= int(deadline_ms):
-                raise TimeoutError("YOLO canonical publication deadline expired")
-            reference = self._publish_encrypted_artifact(
-                payload, object_label=label, object_type=object_type)
-            if not isinstance(reference, Mapping):
-                raise TypeError("YOLO canonical publisher returned an invalid reference")
-            data_name = str(reference.get("dataName", ""))
-            content_digest = str(reference.get(
-                "ciphertextDigest", reference.get("contentDigest", "")))
-            expected_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
-            if (not data_name.startswith("/")
-                    or int(reference.get("plaintextSize", 0)) != len(payload)
-                    or content_digest != expected_digest
-                    or reference.get("encrypted") is not True):
-                raise ValueError(
-                    "YOLO canonical encrypted publication is not source-bound")
-            return reference
-
-        if not self._published_root_fetch_name:
-            source_payload = self._graph_path.read_bytes()
-            initializer_payload = self._weights_path.read_bytes()
-            source = publish(
-                source_payload,
-                label="spec180-yolo-canonical-source",
-                object_type="application/onnx",
-            )
-            initializer = publish(
-                initializer_payload,
-                label="spec180-yolo-canonical-initializer",
-                object_type="application/octet-stream",
-            )
-            root = {
-                "artifactProfileDigest": self._binding["artifact_profile_digest"],
-                "metadata": {
-                    "canonicalInitializerBytes": len(initializer_payload),
-                    "canonicalInitializerDataName": str(initializer["dataName"]),
-                    "canonicalInitializerObjectDigest": (
-                        "sha256:" + hashlib.sha256(initializer_payload).hexdigest()),
-                    "canonicalSourceBytes": len(source_payload),
-                    "canonicalSourceDataName": str(source["dataName"]),
-                    "canonicalSourceDigest": (
-                        "sha256:" + hashlib.sha256(source_payload).hexdigest()),
-                    "packageManifestDigest": (
-                        "sha256:" + hashlib.sha256(
-                            self._manifest_payload).hexdigest()),
-                },
-                "modelIdentityDigest": self._model.model_digest,
-                "modelName": self._model.model_name,
-                "schema": "ndnsf-di-canonical-model-manifest-v1",
-                "state": "ACTIVE",
-            }
-            root_payload = json.dumps(
-                root, sort_keys=True, separators=(",", ":"),
-                ensure_ascii=False).encode("utf-8")
-            root_reference = publish(
-                root_payload,
-                label="spec180-yolo-canonical-root",
-                object_type="application/vnd.ndnsf.di.canonical-model-manifest-v1",
-            )
-            self._binding["model_manifest_digest"] = (
-                "sha256:" + hashlib.sha256(root_payload).hexdigest())
-            self._published_root_fetch_name = str(root_reference["dataName"])
-        return PublishedSplit(
-            candidate_digest=candidate.candidate_digest,
-            artifact_digests_by_role=digests,
-            artifact_data_names_by_role=names,
-            artifact_fetch_data_names_by_role={
-                key: self._published_root_fetch_name for key in digests
-            },
-        )
 
 
 def build_yolo26n_adapter(package_dir: str | Path, *, require_signature: bool = True,

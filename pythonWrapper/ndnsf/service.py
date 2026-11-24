@@ -12,7 +12,6 @@ import asyncio
 import base64
 from collections import deque
 from dataclasses import dataclass, field
-import hashlib
 import json
 import os
 import threading
@@ -149,8 +148,8 @@ class StreamedInvocationOptions:
     allow_replacement: bool = False
     max_replacements: int = 0
     # Coordinator-owned attempt identity. Applications normally leave these
-    # values unchanged; AutomaticPlanningCoordinator freezes them before the
-    # first Request and reuses generation_id for the one optional attempt 2.
+    # values unchanged; the invoking owner freezes them before the first
+    # Request and retains generation_id across a permitted replacement.
     attempt_epoch: int = 1
     generation_id: str = ""
     stream_epoch: int = 0
@@ -1256,6 +1255,15 @@ class CollaborationContext:
     def local_provider(self) -> str:
         return str(self._native.local_provider)
 
+    def _coordinator_work_budget_ms(self) -> int:
+        return int(self._native._coordinator_work_budget_ms())
+
+    def _arm_coordinator_cancellation(self, request_digest: str) -> None:
+        self._native._arm_coordinator_cancellation(request_digest)
+
+    def _coordinator_cancellation_received(self) -> bool:
+        return bool(self._native._coordinator_cancellation_received())
+
     @property
     def assignment(self) -> CollaborationAssignment:
         native = self._native.assignment
@@ -1417,39 +1425,10 @@ class CollaborationContext:
     ) -> str:
         """Publish a large collaboration object and advertise a standard reference."""
 
-        payload_bytes = bytes(payload)
-        data_name = (
-            self.publish_large_named(
-                key_scope,
-                data_name,
-                payload_bytes,
-                max_segment_size=max_segment_size,
-                freshness_ms=freshness_ms,
-            )
-            if data_name else
-            self.publish_large(
-                key_scope,
-                data_topic,
-                payload_bytes,
-                max_segment_size=max_segment_size,
-                freshness_ms=freshness_ms,
-            )
-        )
-        if not data_name:
-            raise RuntimeError(
-                "large collaboration object publication returned no Data name")
-        effective_digest = digest or ("sha256:" + hashlib.sha256(payload_bytes).hexdigest())
-        reference = encode_large_data_reference_payload(LargeDataReference(
-            data_name=data_name,
-            object_type=object_type,
-            object_id=object_id,
-            plaintext_size=len(payload_bytes),
-            encrypted=True,
-            digest=effective_digest,
+        return str(self._native.publish_large_reference(
+            key_scope, data_topic, ref_topic, bytes(payload),
+            object_type, object_id, digest, data_name, max_segment_size, freshness_ms,
         ))
-        self.publish(key_scope, ref_topic, reference)
-        return data_name
-
     def fetch_large(
         self,
         data_name: str,
@@ -1485,68 +1464,36 @@ class CollaborationContext:
         reference_payload: Union[bytes, Mapping[str, Any]],
         key_scope: str,
         timeout_ms: int = 5000,
+        *,
+        expected_producer: str = "",
     ) -> Optional[bytes]:
-        """Fetch and verify a large collaboration object reference.
-
-        The DI provider path passes the structured reference mapping directly
-        so that ``dataName``, size, content digest, encryption bit, and
-        authorization scope are checked before plaintext is returned. The
-        legacy wire-payload form remains supported for existing callers, but
-        it cannot supply the DI-only authorization-scope check.
-        """
-
-        structured = isinstance(reference_payload, Mapping)
-        reference = None
-        if structured:
+        """Resolve a collaboration reference under the current native dispatch."""
+        if isinstance(reference_payload, Mapping):
             value = dict(reference_payload)
             data_name = str(value.get("dataName", value.get("data_name", "")))
-            expected_size = int(value.get(
-                "plaintextSize", value.get("plaintext_size", 0)))
-            expected_digest = str(value.get(
-                "contentDigest", value.get(
-                    "digest", value.get("ciphertextDigest",
-                                        value.get("ciphertext_digest", "")))))
-            encrypted = value.get("encrypted") is True
-            reference_scope = str(value.get(
-                "authorizationScope", value.get("authorization_scope", "")))
-            protection_epoch = str(value.get(
-                "protectionEpoch", value.get("protection_epoch", "")))
-            if (not data_name.startswith("/") or expected_size <= 0
-                    or not expected_digest.startswith("sha256:")
-                    or len(expected_digest) != 71 or not encrypted
-                    or not reference_scope or reference_scope != str(key_scope)
-                    or not protection_epoch
-                    or protection_epoch == "plaintext-v1"):
-                raise ValueError("large reference metadata is not authenticated")
-            try:
-                int(expected_digest[7:], 16)
-            except ValueError as exc:
-                raise ValueError("large reference metadata digest is invalid") from exc
+            plaintext_size = int(value.get("plaintextSize", value.get("plaintext_size", 0)))
+            digest = str(value.get("contentDigest", value.get(
+                "digest", value.get("ciphertextDigest", value.get("ciphertext_digest", "")))))
+            reference_scope = str(value.get("authorizationScope", value.get(
+                "authorization_scope", "")))
+            protection_epoch = str(value.get("protectionEpoch", value.get("protection_epoch", "")))
+            wire = _ndnsf._encode_structured_large_reference(
+                data_name, plaintext_size, digest, value.get("encrypted") is True,
+                reference_scope, key_scope, protection_epoch)
         else:
-            reference = parse_large_data_reference_payload(bytes(reference_payload))
-            if reference is None:
-                data_name = bytes(reference_payload).decode()
-                expected_size = 0
-                expected_digest = ""
-            else:
-                data_name = reference.data_name
-                expected_size = reference.plaintext_size
-                expected_digest = reference.digest
-                if not reference.encrypted:
-                    raise ValueError("large reference is not encrypted")
-        payload = self.fetch_large(data_name, key_scope, timeout_ms)
-        if payload is None:
-            return None
-        if expected_size and len(payload) != expected_size:
-            raise ValueError(
-                f"large reference size mismatch: expected={expected_size} actual={len(payload)}")
-        if expected_digest:
-            digest = expected_digest
-            if digest.startswith("sha256:"):
-                digest = digest[len("sha256:"):]
-            if digest and hashlib.sha256(payload).hexdigest() != digest:
-                raise ValueError("large reference SHA-256 mismatch")
-        return payload
+            wire = bytes(reference_payload)
+        value = self._native.fetch_large_reference(wire, key_scope, timeout_ms, expected_producer)
+        return None if value is None else bytes(value)
+
+    def fetch_protected_request_input(
+        self, reference: Mapping[str, Any], timeout_ms: int
+    ) -> Optional[bytes]:
+        """Read this request's signed input descriptor under its dispatch authority."""
+        value = self._native.fetch_protected_request_input(
+            reference["dataName"], reference["plaintextSize"], reference["ciphertextDigest"],
+            reference["manifestDigest"], reference["protectionEpoch"],
+            reference["authorizationScope"], timeout_ms)
+        return None if value is None else bytes(value)
 
     def wait_one(
         self,
@@ -2106,16 +2053,7 @@ class ServiceProvider:
         ack_threads: int = 2,
         serve_certificates: bool = True,
         bootstrap_token: str = "",
-        binary: str = "",
-        binary_dir=None,
-        library_dirs=None,
-        cwd=None,
-        env=None,
     ) -> None:
-        # The last five parameters are accepted for source compatibility with
-        # the previous subprocess bridge. pybind11 uses the loaded extension
-        # module, not a separate host binary.
-        del binary, binary_dir, library_dirs, cwd, env
         self._native = _ndnsf.NativeServiceProvider(
             provider_id=provider_id,
             group=group,
@@ -2188,17 +2126,8 @@ class ServiceProvider:
         self._native.add_streaming_context_service(service, handler)
         self._streaming_services.add(service)
 
-    def set_stream_publication_interceptor_for_test(self, callback) -> None:
-        """Install a real-SVS publication interceptor for an integration test."""
-        self._native.set_stream_publication_interceptor_for_test(callback)
-
-    def set_stream_retention_interceptor_for_test(self, callback) -> None:
-        """Install a real-SVS retention interceptor for an integration test."""
-        self._native.set_stream_retention_interceptor_for_test(callback)
-
-    def publish_stream_packet_for_test(self, wire: bytes) -> None:
-        """Re-publish one already signed stream packet through real SVS."""
-        self._native.publish_stream_packet_for_test(bytes(wire))
+    def _stream_fault_test_access(self):
+        return _ndnsf._testing.StreamFaultAccess(self._native)
 
     def streaming_handler(self, service: str):
         def decorator(fn: Callable[[bytes, Any], object]):
@@ -2547,13 +2476,7 @@ class ServiceController:
         bootstrap_identities: Optional[list[str]] = None,
         serve_certificates: bool = True,
         bootstrap_token_file: str = "",
-        binary: str = "",
-        binary_dir=None,
-        library_dirs=None,
-        cwd=None,
-        env=None,
     ) -> None:
-        del binary, binary_dir, library_dirs, cwd, env
         self._native = _ndnsf.NativeServiceController(
             controller_prefix=controller_prefix,
             policy_file=policy_file,
@@ -2615,13 +2538,7 @@ class ServiceUser:
         adaptive_admission: bool = False,
         serve_certificates: bool = True,
         bootstrap_token: str = "",
-        binary: str = "",
-        binary_dir=None,
-        library_dirs=None,
-        cwd=None,
-        env=None,
     ) -> None:
-        del binary, binary_dir, library_dirs, cwd, env
         self.group = group
         self.controller = controller
         self.user = user
@@ -2675,51 +2592,6 @@ class ServiceUser:
         """Whether the Controller enables protected input by default."""
         return bool(getattr(self._native, "has_request_scoped_default", False))
 
-    @staticmethod
-    def load_native_request_catalog(
-        configuration_json: str,
-        model_bytes: bytes,
-        initializer_bytes: bytes | None = None,
-        *,
-        max_source_bytes: int = 256 * 1024 * 1024,
-        max_assembled_bytes: int = 512 * 1024 * 1024,
-    ):
-        """Load a source checked catalog through the native DI owner."""
-        return _ndnsf.NativeRequestCatalog.load(
-            configuration_json, bytes(model_bytes), initializer_bytes,
-            int(max_source_bytes), int(max_assembled_bytes))
-
-    def native_preparation(self, catalog, service_name: str):
-        """Bind catalog publication and inspection ports to this Core user."""
-        return self._native.native_preparation(catalog, str(service_name))
-
-    @staticmethod
-    def native_runtime_from_config(configuration_json: str, catalog, grants):
-        """Parse native runtime policy while retaining catalog and key ownership in C++."""
-        return _ndnsf.native_request_runtime_from_json(
-            str(configuration_json), catalog, grants)
-
-    def native_grant_client_from_config(
-        self, configuration_json: str, base_directory: str = "."):
-        """Construct the requester-side native grant client from public-key config."""
-        return self._native.native_grant_client_from_config(
-            configuration_json, str(base_directory))
-
-    def native_inference_client_configured(
-        self, runtime, preparation, admission, conversations=None):
-        """Create a fully configured native requester without Python planning."""
-        return self._native.native_inference_client_configured(
-            runtime, preparation, admission, conversations)
-
-    def native_conversation_coordinator_from_config(
-        self, configuration_json: str, base_directory: str = "."):
-        """Load the operator-pinned conversation owner in C++.
-
-        Key files, journal permissions, and checkpoint ownership never cross
-        the Python boundary; this returns only an opaque native coordinator.
-        """
-        return self._native.native_conversation_coordinator_from_config(
-            str(configuration_json), str(base_directory))
 
     def open_live_stream(
         self,
@@ -3615,6 +3487,15 @@ class ServiceUser:
             **_dependency_transport_kwargs(dependency_transport),
         )
         return _from_native_response(response)
+
+    def _request_di_coordinator_async(self, service, provider, request_id, payload,
+                                      ack_timeout_ms, timeout_ms, on_response, on_timeout):
+        self._native._request_di_coordinator_async(
+            service, provider, request_id, payload, ack_timeout_ms, timeout_ms,
+            on_response, on_timeout)
+
+    def _cancel_di_coordinator(self, provider, request_id, payload):
+        self._native._cancel_di_coordinator(provider, request_id, payload)
 
     def request_collaboration_async(
         self,

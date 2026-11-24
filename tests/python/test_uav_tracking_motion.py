@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 import sys
 
-import cv2
-import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,9 +14,7 @@ sys.path.insert(0, str(ROOT / "Experiments/UAV"))
 
 from motion_estimator import estimate_vehicle_speed  # noqa: E402
 from motion_fixture import MOTION_PROFILES, build_window, write_fixture  # noqa: E402
-from motion_schema import CalibrationProfile, canonical_speed_mmps, load_motion_window  # noqa: E402
-from tracking_worker import TrackingEngine  # noqa: E402
-from tracking_report import summarize_motion_result  # noqa: E402
+from motion_schema import canonical_speed_mmps, load_motion_window  # noqa: E402
 from tracking_display import DisplayFrame  # noqa: E402
 
 
@@ -99,38 +95,6 @@ def test_disabled_ego_motion_is_unknown() -> None:
         require_ego_compensation=False)
     assert estimate.status == "unknown"
     assert estimate.vehicle_speed_mmps is None
-
-
-def test_worker_preserves_motion_metadata_without_copying_oracle(tmp_path: Path) -> None:
-    image = np.zeros((120, 160, 3), dtype=np.uint8)
-    ok, encoded = cv2.imencode(".jpg", image)
-    assert ok
-    frames = [(dict(cameraId=camera, sequence=1, ptsUs=0), encoded.tobytes())
-              for camera in ("UAV1", "UAV2", "UAV3")]
-    engine = TrackingEngine(functional=True)
-    result = engine.process_window({"runId": "r", "missionId": "m", "windowId": "window-0",
-                                    "sequence": 1, "ptsUs": 0}, frames, build_window(0))
-    assert result["motion"]["inputProvenance"] == "simulated-input"
-    assert len(result["motion"]["telemetry"]) == 3
-    assert result["motion"]["estimates"] == []
-    assert result["motion"]["oracle"]["worldSpeedMmps"] == 6000
-    assert all("worldSpeedMmps" not in frame for frame in result["frames"])
-    next_frames = [(dict(cameraId=camera, sequence=2, ptsUs=1_000_000), encoded.tobytes())
-                   for camera in ("UAV1", "UAV2", "UAV3")]
-    next_result = engine.process_window(
-        {"runId": "r", "missionId": "m", "windowId": "window-1",
-         "sequence": 2, "ptsUs": 1_000_000}, next_frames, build_window(1))
-    assert next_result["motion"]["estimates"]
-    assert all(item["status"] == "ok" for item in next_result["motion"]["estimates"])
-    assert all(item["vehicleSpeedMmps"] == 0 for item in next_result["motion"]["estimates"])
-    assert {item["cameraId"] for item in next_result["motion"]["estimates"]} == {"UAV1", "UAV2", "UAV3"}
-    for item in next_result["motion"]["estimates"]:
-        frame = next(frame for frame in next_result["frames"] if frame["cameraId"] == item["cameraId"])
-        assert item["globalId"] in {track["globalId"] for track in frame["tracks"]}
-    summary = summarize_motion_result(result)
-    assert summary["status"] == "unknown"
-    assert summary["oracle"]["provenance"] == "simulated-input"
-    engine.close()
 
 
 def test_fixture_writer_records_digest_bound_windows(tmp_path: Path) -> None:

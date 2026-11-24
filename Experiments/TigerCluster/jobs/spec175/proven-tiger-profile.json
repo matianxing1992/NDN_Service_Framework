@@ -128,7 +128,6 @@
     }
   },
   "trackedFiles": [
-    {"path": "scripts/run_spec175_g3_matrix.py", "sha256": "sha256:d3b558cd31283152c7993ad959585c34cfe726ccae022bbaf670d9a764b39787"},
     {"path": "packaging/ndnsf-di-container/jobs/spec175/submit.sh", "sha256": "sha256:3c3a2b98c516fbd8720f54ac69c78fbe2c9c67494c499629a5d2df781335f839"},
     {"path": "packaging/ndnsf-di-container/jobs/spec175/submit_profile.py", "sha256": "sha256:a984bdb5ba76eabc90840ce0e87ed6cabbc79f0073bc068e9aa49c17ce9f6c37"},
     {"path": "packaging/ndnsf-di-container/jobs/spec175/run-streamed-generation.sh", "sha256": "sha256:a68e896d2b2f0f208d08dc71c3843528b9d3d96ddf2cad9ae0e0fdf600de2930"},

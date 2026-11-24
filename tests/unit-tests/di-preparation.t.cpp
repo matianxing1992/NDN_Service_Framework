@@ -144,19 +144,9 @@ struct Fixture
     catalog["publication"]["artifact_root"] = "/fixture/artifacts";
     catalog["input_format"] = "JSON";
     catalog["max_payload_bytes"] = 32;
-    NativeJson component = NativeJson::object();
-    component["candidate_id"] = "semantic-v1";
-    component["priority"] = 1;
-    component["roles"] = {"Front", "Branch", "Merge"};
-    component["node_names_by_role"] = NativeJson::object();
-    component["input_ingress_role"] = "Front";
-    component["result_egress_role"] = "Merge";
-    component["merge_kind"] = "NATIVE_POSTPROCESS";
-    component["candidate_digest"] = oracle.at("registered_digest");
-    component["semantic_partition"] = oracle.at("partition");
-    catalog["splitter"] = NativeJson::object();
-    catalog["splitter"]["kind"] = "YOLO";
-    catalog["splitter"]["components"] = NativeJson::array({component});
+    catalog["splitter"] = NativeJson{{"kind", "ONNX_SOURCE"},
+      {"selection_mode", "full"}, {"roles", {"FullModel"}},
+      {"input_ingress_role", "FullModel"}, {"result_egress_role", "FullModel"}};
     spec.key = "default";
     spec.baseDirectory = ".";
     spec.catalogConfigurationJson = nativeCanonicalJson(catalog);
@@ -607,22 +597,23 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
   BOOST_CHECK(!mutableCopy.preparedRoleJson(0));
   BOOST_CHECK(restoredProfile.planningCache->requestTransferProfiles ==
     NativeJson::array({transferProfile}));
-  auto yoloCatalog = catalog;
-  yoloCatalog["splitter"] = NativeJson{
-    {"kind", "YOLO"}, {"components", NativeJson::array()}};
-  NativeCanonicalSource yoloReference;
-  yoloReference.preparedMetadataJson = preparedMetadata;
-  yoloReference.materialManifest = materialManifest;
+  auto unsupportedCatalog = catalog;
+  unsupportedCatalog["splitter"] = NativeJson{{"kind", "ONNX_SOURCE"},
+    {"selection_mode", "full"}, {"roles", {"FullModel"}},
+    {"input_ingress_role", "FullModel"}, {"result_egress_role", "FullModel"}};
+  NativeCanonicalSource referenceSource;
+  referenceSource.preparedMetadataJson = preparedMetadata;
+  referenceSource.materialManifest = materialManifest;
   BOOST_CHECK_EXCEPTION(
-    NativeRequestCatalog::load(nativeCanonicalJson(yoloCatalog), yoloReference, restoreControl),
+    NativeRequestCatalog::load(nativeCanonicalJson(unsupportedCatalog), referenceSource, restoreControl),
     std::invalid_argument, [] (const std::invalid_argument& error) {
       return std::string(error.what()).find("REFERENCE_RESTORE_UNSUPPORTED") != std::string::npos;
     });
 
-  yoloReference.preparedMetadataJson = nativeCanonicalJson(NativeJson{
+  referenceSource.preparedMetadataJson = nativeCanonicalJson(NativeJson{
     {"schema", "ndnsf-di-prepared-metadata-v0"}});
   BOOST_CHECK_EXCEPTION(
-    NativeRequestCatalog::load(nativeCanonicalJson(yoloCatalog), yoloReference, restoreControl),
+    NativeRequestCatalog::load(nativeCanonicalJson(catalog), referenceSource, restoreControl),
     std::invalid_argument, [] (const std::invalid_argument& error) {
       return std::string(error.what()) == "PREPARED_METADATA_VERSION";
     });

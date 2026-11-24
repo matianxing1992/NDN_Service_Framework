@@ -14,6 +14,7 @@ setup(
             "ndnsf_distributed_inference.app_sdk*",
             "ndnsf_distributed_inference.api*",
             "ndnsf_distributed_inference.security*",
+            "ndnsf_distributed_inference.experimental*",
         ]
     ),
     py_modules=[

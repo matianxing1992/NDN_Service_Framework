@@ -914,8 +914,21 @@ BOOST_AUTO_TEST_CASE(CatalogComposesOwnedInputInspectionRolesAndPublication)
     const auto published = preparation->ensureArtifacts(inspected, input.candidate, proposal, input.control);
     const auto rebound = NativeRequestPreparation::bindPublishedRoles(inspected, input.candidate, proposal.roles, published);
     BOOST_CHECK_EQUAL(assembleNativeCertifiedOnnxModel(entry.source, rebound.front(), control).modelDigest, original.artifactDigest);
-    BOOST_REQUIRE(!io.payloads.empty());
-    BOOST_CHECK_EQUAL(nativePlanningDigest(io.payloads.front().data(), io.payloads.front().size()), entry.model.canonicalSourceDigest);
+    const auto metadata = nativeParseJson(published.canonicalManifestJson).at("metadata");
+    BOOST_CHECK_EQUAL(metadata.at("canonicalSourceDigest").get<std::string>(),
+                      entry.model.canonicalSourceDigest);
+    BOOST_CHECK(metadata.at("materialBacked").get<bool>());
+    BOOST_CHECK(!metadata.contains("canonicalSourceDataName"));
+    BOOST_REQUIRE(sourceSnapshot->materialManifest);
+    std::vector<std::uint8_t> expectedBundle;
+    for (const auto& material : sourceSnapshot->materialManifest->payloads) {
+      const auto bytes = material.copyBytes();
+      expectedBundle.insert(expectedBundle.end(), bytes.begin(), bytes.end());
+    }
+    const auto bundle = std::find(io.labels.begin(), io.labels.end(), "di-material-bundle-0");
+    BOOST_REQUIRE(bundle != io.labels.end());
+    BOOST_CHECK(!expectedBundle.empty());
+    BOOST_CHECK(io.payloads.at(std::distance(io.labels.begin(), bundle)) == expectedBundle);
     auto foreign = prepared;
     foreign.expectedModel.semanticsDigest = nativePlanningDigest("foreign semantics");
     BOOST_CHECK_THROW(preparation->inspectModel(foreign), std::runtime_error);

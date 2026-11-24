@@ -93,8 +93,6 @@ struct TrackingProviderRunDefinition
   TrackingAssetReference profile;
   TrackingAssetReference reidModel;
   TrackingAssetReference computationManifest;
-  TrackingAssetReference workerPython;
-  TrackingAssetReference workerScript;
 };
 
 struct UavTrackingProviderConfig

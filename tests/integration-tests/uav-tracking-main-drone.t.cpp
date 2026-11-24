@@ -286,8 +286,7 @@ BOOST_FIXTURE_TEST_CASE(MissingComputeAssetRejectsTrackingButTelemetryStillRepli
   run.observationStreamDirectory.clear();
   run.computeProducer = catalog.producerIdentity;
   run.sourceProducers[0] = definition.computeIdentity;
-  run.model = {root / "missing-model", digestOf("missing")};
-  run.workerPython = run.workerScript = run.model;
+  run.model = {root / "missing-model.onnx", digestOf("missing")};
   start();
   environment->enableProductionIngressForTest();
   auto fields = Fields{{"schema", "spec191-window-request-v1"}, {"run_id", run.runId},
@@ -450,34 +449,8 @@ struct NativeAdmissionFixture : MainDroneFixture
     catalog.ownedWorkspace = root / "admission-main-compute";
     environment->user().setUseTokens(true);
     for (size_t i = 0; i < 4; ++i) environment->provider(i).setUseTokens(true);
-    backendDirectory = root / "detector-fixture";
-    std::filesystem::create_directory(backendDirectory);
-    std::ofstream(backendDirectory / "model") << "fixed empty detector fixture";
-    for (const char* helper : {"motion_estimator.py", "motion_schema.py",
-                               "observation_schema.py", "byte_track_state.py"}) {
-      std::ofstream(backendDirectory / helper) << "# hashed fixture companion\n";
-    }
-    std::ofstream(backendDirectory / "tracking_worker.py") << R"PY(import argparse, json, pathlib, time
-p = argparse.ArgumentParser()
-p.add_argument('--vehicle-window', required=True)
-p.add_argument('--output-json', required=True)
-a, _ = p.parse_known_args()
-with pathlib.Path(__file__).with_name('backend-calls').open('a') as f:
-    f.write('one-model-request\n')
-hold = pathlib.Path(__file__).with_name('hold-backend')
-deadline = time.monotonic() + 15
-while hold.exists() and time.monotonic() < deadline:
-    time.sleep(.01)
-if hold.exists():
-    raise RuntimeError('fixture backend hold deadline')
-x = json.loads(pathlib.Path(a.vehicle_window).read_text())
-y = {'schema':'uav-vehicle-backend-window-v1', 'runId':x['runId'],
-     'missionId':x['missionId'], 'windowId':x['windowId'], 'sequence':x['sequence'],
-     'actualDevice':'cpu', 'backendState':x['previousBackendState'],
-     'frames':[{'cameraId':f['cameraId'], 'width':f['width'], 'height':f['height'],
-                'detections':[]} for f in x['frames']]}
-pathlib.Path(a.output_json).write_text(json.dumps(y))
-)PY";
+    detectorFixture = root / "detector-fixture.onnx";
+    std::ofstream(detectorFixture) << "test seam replaces only local detector execution";
     auto& run = catalog.runs.front();
     run.role = TrackingProviderRole::COMPUTE;
     run.cameraId.clear();
@@ -485,16 +458,13 @@ pathlib.Path(a.output_json).write_text(json.dumps(y))
     run.computeProducer = definition.computeIdentity;
     run.sourceGenerations = definition.sources[0].sourceManifest;
     for (size_t i = 0; i < 3; ++i) run.sourceProducers[i] = definition.sources[i].producerIdentity;
-    run.model = asset(backendDirectory / "model");
-    run.workerPython = asset(std::filesystem::canonical("/usr/bin/python3"));
-    run.workerScript = asset(backendDirectory / "tracking_worker.py");
+    run.model = asset(detectorFixture);
   }
 
   ~NativeAdmissionFixture()
   {
     releaseThird.store(true);
-    std::error_code ignored;
-    std::filesystem::remove(backendDirectory / "hold-backend", ignored);
+    holdBackend.store(false);
     try {
       if (job) stopAndDrainJob();
       if (!activeRequest.empty() && environment) environment->user().CancelCollaboration(activeRequest);
@@ -532,9 +502,45 @@ pathlib.Path(a.output_json).write_text(json.dumps(y))
 
   size_t backendCalls() const
   {
-    std::ifstream input(backendDirectory / "backend-calls");
-    return static_cast<size_t>(std::count(std::istreambuf_iterator<char>(input),
-                                        std::istreambuf_iterator<char>(), '\n'));
+    return enteredBackend.load();
+  }
+
+  VehicleBackendWindow
+  computeFixtureWindow(const VehicleWindowContext& window,
+                       const std::array<ndn::Buffer, 3>& images,
+                       const std::string& previousState,
+                       const std::function<bool()>& authorized)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + 15s;
+    enteredBackend.fetch_add(1);
+    while (holdBackend.load() && authorized() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(10ms);
+    }
+    if (!authorized()) {
+      backendObservedCancellation.store(true);
+      throw std::runtime_error("fixture native detector observed cancellation");
+    }
+    if (holdBackend.load()) throw std::runtime_error("fixture native detector hold deadline");
+
+    using person_json::Json;
+    auto state = Json::parse(previousState);
+    Json frames = Json::array();
+    for (size_t i = 0; i < window.frames.size(); ++i) {
+      const auto& frame = window.frames[i];
+      if (images[i].empty()) throw std::runtime_error("fixture needs an admitted JPEG");
+      auto& tracker = state["cameras"][frame.cameraId];
+      const auto previous = tracker.is_null() ? uint64_t{0} : tracker.at("frameId").get<uint64_t>();
+      tracker = {{"frameId", previous + 1}, {"idHighWatermark", 0},
+                 {"tracked", Json::array()}, {"lost", Json::array()}, {"removedIds", Json::array()}};
+      frames.push_back({{"cameraId", frame.cameraId}, {"width", frame.width},
+                        {"height", frame.height}, {"detections", Json::array()}});
+    }
+    const auto candidate = Json{{"schema", VEHICLE_NATIVE_BACKEND_WINDOW_SCHEMA},
+                                {"runId", window.runId}, {"missionId", window.missionId},
+                                {"windowId", window.windowId}, {"sequence", window.sequence},
+                                {"actualDevice", "cpu"}, {"frames", std::move(frames)},
+                                {"backendState", std::move(state)}};
+    return parseUavVehicleBackendWindow(candidate.dump(), window);
   }
 
   bool committed() const
@@ -552,6 +558,11 @@ pathlib.Path(a.output_json).write_text(json.dumps(y))
     definition.requestTimeoutMs = timeoutMs;
     runtime = makeRuntime(catalog);
     DroneTrackingTestAccess::attach(*runtime, environment->provider(3));
+    UavTrackingProviderTestAccess::setVehicleBackend(*DroneTrackingTestAccess::capability(*runtime),
+      definition.runId, [this] (const auto& window, const auto& frames, const auto& state,
+                                const auto& authorized) {
+        return computeFixtureWindow(window, frames, state, authorized);
+      });
     const auto thirdName = makeUavObservationDataName(definition.sources[2].producerIdentity,
       "UAV3", 2, 1, "FRAME", 1);
     interestObservation = environment->providerFace(3).onSendInterest.connect(
@@ -814,7 +825,10 @@ pathlib.Path(a.output_json).write_text(json.dumps(y))
   bool useNativeJob = false;
   std::atomic<bool> sourceCancelObserved{false};
   std::atomic<bool> oldSourceRejected{false};
-  std::filesystem::path backendDirectory;
+  std::filesystem::path detectorFixture;
+  std::atomic<size_t> enteredBackend{0};
+  std::atomic<bool> holdBackend{false};
+  std::atomic<bool> backendObservedCancellation{false};
   AdmissionFault fault = AdmissionFault::NONE;
   UavTrackingCoordinator coordinator;
   ndn::Name activeRequest;
@@ -857,9 +871,9 @@ BOOST_FIXTURE_TEST_CASE(MissingSourceCancelFencesMainAndWaitsForSourceDrain, Nat
   BOOST_CHECK(!committed());
 }
 
-BOOST_FIXTURE_TEST_CASE(EnteredBackendCancelCannotCommitAndChildDrains, NativeAdmissionFixture)
+BOOST_FIXTURE_TEST_CASE(EnteredNativeBackendCancelCannotCommitAndDrains, NativeAdmissionFixture)
 {
-  std::ofstream(backendDirectory / "hold-backend") << "owned fixture hold";
+  holdBackend.store(true);
   const auto started = std::chrono::steady_clock::now();
   install(AdmissionFault::NONE, 10000, true);
   await([this] { return backendCalls() == 1; }, 5000ms);
@@ -875,9 +889,9 @@ BOOST_FIXTURE_TEST_CASE(EnteredBackendCancelCannotCommitAndChildDrains, NativeAd
   BOOST_CHECK_EQUAL(latest.completedWindows, 0U);
   BOOST_CHECK_EQUAL(backendCalls(), 1U);
   BOOST_CHECK(!committed());
-  // The production process owner must stop the held backend. This test never
-  // removes its hold until fixture teardown, after the drain assertion.
-  BOOST_CHECK(std::filesystem::exists(backendDirectory / "hold-backend"));
+  // Only cancellation releases the held backend before fixture teardown.
+  BOOST_CHECK(holdBackend.load());
+  BOOST_CHECK(backendObservedCancellation.load());
 }
 
 BOOST_FIXTURE_TEST_CASE(AcceptedMainTransactionWinsLateLocalCancel, NativeAdmissionFixture)

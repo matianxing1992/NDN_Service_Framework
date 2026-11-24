@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from spec180_yolo_inputs import declared_yolo_checkpoint
+from yolo_inputs import declared_yolo_checkpoint
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,7 +49,6 @@ def test_shape_annotations_cannot_change_computation(monkeypatch, tmp_path, muta
     import copy
     import onnx
     import torch
-    from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
     exporter = load_exporter()
     monkeypatch.setattr(exporter, "_load_yolo", lambda _: torch.nn.Identity())
 
@@ -66,10 +65,33 @@ def test_shape_annotations_cannot_change_computation(monkeypatch, tmp_path, muta
             result.graph.input[0].type.tensor_type.shape.dim[0].dim_value = 2
         return result
 
-    monkeypatch.setattr(SymbolicShapeInference, "infer_shapes", changed)
+    monkeypatch.setattr(onnx.shape_inference, "infer_shapes", changed)
     with pytest.raises(exporter.ExportError, match="shape inference changed"):
         exporter._export_onnx(tmp_path / "unused.pt", tmp_path / "canonical.onnx",
                              input_size=32, opset=17)
+
+
+@pytest.mark.parametrize("sections", [(32, 32, 64), (4, 80)])
+def test_fixed_export_preserves_unequal_split_input_sizes(monkeypatch, tmp_path, sections):
+    import onnx
+    import torch
+    exporter = load_exporter()
+
+    class UnequalSplit(torch.nn.Module):
+        def forward(self, image):
+            value = image.reshape(1, -1)[:, :sum(sections)].reshape(
+                1, sum(sections), 1, 1)
+            return tuple(torch.relu(part) for part in torch.split(value, sections, dim=1))
+
+    monkeypatch.setattr(exporter, "_load_yolo", lambda _: UnequalSplit().eval())
+    output = tmp_path / "canonical.onnx"
+    exporter._export_onnx(tmp_path / "unused.pt", output, input_size=32, opset=17)
+    graph = onnx.load(str(output)).graph
+    split = next(node for node in graph.node if node.op_type == "Split")
+    assert len(split.input) == 2
+    values = {value.name: value for value in graph.value_info}
+    assert [[dim.dim_value for dim in values[name].type.tensor_type.shape.dim]
+            for name in split.output] == [[1, count, 1, 1] for count in sections]
 
 
 @pytest.mark.skipif(

@@ -6544,6 +6544,21 @@ BOOST_AUTO_TEST_CASE(Spec196PlacementRequestsOnlyItsMissingDirectedGoodputEdges)
   BOOST_CHECK_EQUAL(remeasurement.observers.front().observerProvider, requested.observerProvider);
   BOOST_CHECK_EQUAL(remeasurement.observers.front().goodputEdges.size(), requested.goodputEdges.size());
   BOOST_CHECK_EQUAL(remeasurement.observers.front().rttPairs.size(), requested.rttPairs.size());
+  auto dominated = unstable;
+  auto& dominatedRow = dominated.responseByObserver.at(requested.observerProvider)["observations"][1];
+  gaps.assign(15, 4.096);
+  gaps[ndn_service_framework::NETWORK_PROBE_WARMED_START] = 60.0;
+  dominatedRow["probe_data_arrival_gaps_ms"] = gaps;
+  dominatedRow["probe_rate_reason"] = "ARRIVAL_GAP_DOMINATED";
+  const auto dominatedRetry =
+    selectNativePlacementProbeRemeasurementV1(input.context, dominated, 200);
+  BOOST_REQUIRE_EQUAL(dominatedRetry.observers.size(), 1U);
+  BOOST_CHECK_EQUAL(dominatedRetry.observers.front().observerProvider, requested.observerProvider);
+  dominatedRow["probe_data_arrival_gaps_ms"] = std::vector<double>(15, 0.05);
+  dominatedRow["probe_rate_reason"] = "CLOCK_RESOLUTION";
+  const auto clockRetry = selectNativePlacementProbeRemeasurementV1(input.context, dominated, 200);
+  BOOST_REQUIRE_EQUAL(clockRetry.observers.size(), 1U);
+  BOOST_CHECK_EQUAL(clockRetry.observers.front().observerProvider, requested.observerProvider);
   auto forgedRetry = unstable;
   forgedRetry.responseByObserver.at(requested.observerProvider)["observations"][1]
     ["probe_source_timing_validated"] = false;

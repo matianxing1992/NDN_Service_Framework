@@ -467,15 +467,22 @@ NativeCanonicalPreparationCatalog::makePreparation(
       const auto& model, const auto& candidate, const auto& roles, const auto& control) {
       control.requireActive();
       state->find(model);
+      auto& publisher = publishers->at(model.descriptor.canonicalJson());
       NativeArtifactBinding binding;
       if (preparedPublication)
         // makePreparation() validated the receipt before this const capture;
         // keep request-time binding limited to request/model/role checks and
         // root consistency rather than rescanning material receipts.
-        binding = publishers->at(model.descriptor.canonicalJson()).bindPreparedAfterValidation(
+        binding = publisher.bindPreparedAfterValidation(
           model, candidate, roles, *preparedPublication, control);
-      else
-        binding = publishers->at(model.descriptor.canonicalJson())(model, candidate, roles, control);
+      else {
+        const auto publication = publisher.prepare(model, control);
+        binding = publisher.bindPreparedAfterValidation(model, candidate, roles, publication,
+                                                         control);
+        binding.servingLeases.insert(binding.servingLeases.end(),
+                                     publication.servingLeases.begin(),
+                                     publication.servingLeases.end());
+      }
       if (modelObjectKeyIndex) {
         binding.modelObjectKeyIndex = modelObjectKeyIndex;
         // Stored ciphertext is admitted and opened by DI with the current object-key lease.

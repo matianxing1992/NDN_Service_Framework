@@ -70,7 +70,7 @@ Experiments/gRPC/requirements-py38.txt` 准备依赖，再用该解释器运行 
 独立 Repo 兼容性探针 `spec192-repo-client` 要用
 `NDNSF_NDN_CXX_SOURCE_TREE` 指定 ndn-cxx 源树，固定提交
 `1204b7528986bea82651f3fa9088c165667cd598`。对应的候选凭据构建器
-`tests/minindn/spec202_build_candidate.py` 接收 `--ndn-cxx-source` 和
+`tests/minindn/build_candidate.py` 接收 `--ndn-cxx-source` 和
 `--output-dir`，在 checkout 外的新目录构建并安装候选库及 Python 绑定。
 使用同一个装有 setuptools、pybind11、PyYAML、python-ndn、cryptography 和
 MiniNDN 的 Python 解释器构建与验收。绑定构建禁用用户 site-packages。

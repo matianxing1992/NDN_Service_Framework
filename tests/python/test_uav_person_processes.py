@@ -22,8 +22,8 @@ class PersonProcessTest(unittest.TestCase):
     def setUp(self):
         self.output = Path("/tmp/spec219-process-plan")
         self.person = dict(profile="/frozen/person.json", computationManifest="/frozen/closure.json",
-                           reidModel="/models/osnet.pth", workerPython="/locked/bin/python")
-        self.kwargs = dict(source=Path("/original/media"), model=Path("/models/yolo.pt"),
+                           reidModel="/models/osnet.onnx")
+        self.kwargs = dict(source=Path("/original/media"), model=Path("/models/yolo.onnx"),
                            headless=True, window_count=120, fault="none", request_timeout_ms=60000,
                            motion_dir=None, source_ids={c: f"source-{c}" for c in
                                                        ("UAV1", "UAV2", "UAV3")},
@@ -54,8 +54,8 @@ class PersonProcessTest(unittest.TestCase):
         compute = specs["compute"].command
         gs = specs["ground-station"].command
         for flag, expected in (("--tracking-profile", self.person["profile"]),
-                               ("--reid-model", self.person["reidModel"]),
-                               ("--worker-python", self.person["workerPython"])):
+                               ("--person-computation-manifest", self.person["computationManifest"]),
+                               ("--reid-model", self.person["reidModel"])):
             self.assertEqual(compute[compute.index(flag) + 1], expected)
         self.assertEqual(gs[gs.index("--person-computation-manifest") + 1],
                          self.person["computationManifest"])
@@ -78,7 +78,7 @@ class PersonProcessTest(unittest.TestCase):
         self.assertNotIn("compute-display", specs)
         display = specs["ground-station-display"]
         self.assertEqual(display.node, "gs")
-        self.assertEqual(display.command[0], self.person["workerPython"])
+        self.assertEqual(display.command[0], sys.executable)
         socket = Path(display.command[display.command.index("--socket") + 1])
         self.assertEqual(socket, _uav_unix_socket_path(
             _uav_socket_root(self.output), "display"))
@@ -137,11 +137,8 @@ class PersonProcessTest(unittest.TestCase):
         executable = root / "launcher-fixture"
         executable.write_text(f"#!{sys.executable}\n" + body)
         executable.chmod(0o700)
-        worker = root / "tracking_worker.py"
-        worker.write_text("# fixture path only\n")
-        with patch("run_multicamera_tracking_demo._installed_program", return_value=str(executable)), \
-                patch("run_multicamera_tracking_demo._installed_tracking_script", return_value=worker):
-            return _describe_person_computation(self.person, root / "yolo.pt", root)
+        with patch("run_multicamera_tracking_demo._installed_program", return_value=str(executable)):
+            return _describe_person_computation(self.person, root / "yolo.onnx", root)
 
     def test_description_uses_isolated_compute_environment_and_exact_native_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -150,7 +147,8 @@ class PersonProcessTest(unittest.TestCase):
                                          "LD_LIBRARY_PATH": "/obsolete/sdk"}):
                 os.environ.pop("NDNSF_UAV_LIBRARY_PATH", None)
                 result = self.describe_with_fixture(root,
-                    "import os,json\nprint(json.dumps(dict(home=os.environ['HOME'], "
+                    "import os,json\nprint(json.dumps(dict(schema='uav-person-computation-manifest-v2', "
+                    "backendKind='native-onnx', home=os.environ['HOME'], "
                     "pythonpath=os.environ['PYTHONPATH'], nousersite=os.environ['PYTHONNOUSERSITE'], "
                     "loader=os.environ.get('LD_LIBRARY_PATH'))))\n")
             descriptor = Path(result["computationManifest"])
@@ -161,6 +159,27 @@ class PersonProcessTest(unittest.TestCase):
             self.assertEqual(value["nousersite"], "1")
             self.assertNotIn("/host/", value["pythonpath"])
             self.assertIsNone(value["loader"])
+
+    def test_native_description_uses_main_binary_without_discovering_worker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "native-fixture"
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "import json, sys\n"
+                "assert '--describe-native-person-computation' in sys.argv\n"
+                "assert '--worker-python' not in sys.argv\n"
+                "print(json.dumps(dict(schema='uav-person-computation-manifest-v2', "
+                "backendKind='native-onnx')))\n")
+            executable.chmod(0o700)
+            with patch("run_multicamera_tracking_demo._installed_program",
+                       return_value=str(executable)) as installed, \
+                    patch("run_multicamera_tracking_demo._installed_tracking_script") as worker:
+                result = _describe_person_computation(
+                    self.person, root / "yolo.onnx", root,
+                    application_mode="main")
+            installed.assert_called_once_with("UavDroneApp")
+            worker.assert_not_called()
 
     def test_failed_description_invalidates_prior_success(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -187,7 +206,7 @@ class PersonProcessTest(unittest.TestCase):
                     "while not ready.exists():\n"
                     " if time.monotonic()>deadline: raise RuntimeError('child not ready')\n"
                     " time.sleep(.01)\n"
-                    "print('{}')\n")
+                    "print('{\"schema\":\"uav-person-computation-manifest-v2\",\"backendKind\":\"native-onnx\"}')\n")
             started = time.monotonic()
             self.describe_with_fixture(root, body)
             self.assertLess(time.monotonic() - started, 6)
@@ -196,7 +215,11 @@ class PersonProcessTest(unittest.TestCase):
                 deadline = time.monotonic() + 1
                 while time.monotonic() < deadline:
                     status = Path(f"/proc/{pid}/stat")
-                    if not status.exists() or status.read_text().split(")", 1)[1].split()[0] == "Z":
+                    try:
+                        state = status.read_text().split(")", 1)[1].split()[0]
+                    except (FileNotFoundError, ProcessLookupError):
+                        break
+                    if state == "Z":
                         break
                     time.sleep(.02)
                 else:
@@ -280,35 +303,6 @@ class PersonProcessTest(unittest.TestCase):
         self.assertFalse(check(records, mode='headless'))
         self.assertFalse(check(records, mode='other'))
 
-    def test_person_preflight_uses_configured_backend_interpreter(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            plan = dict(personTracking=dict(preparationReceipt=str(Path(temporary) / 'receipt.json'),
-                        workerPython='/locked/bin/python', requestedDevice='cpu', frozenFiles=[]),
-                        topology=dict(nodes=['gs', 'compute', 'uav1', 'uav2', 'uav3']), processes=[],
-                        settings=dict(globalDeadlineMs=60000, trackingHostRequestTimeoutMs=60000,
-                                      nfdCsMaxPackets=4096))
-            with patch('run_multicamera_tracking_demo._check_python_dependencies') as host_models, \
-                    patch('run_multicamera_tracking_demo.subprocess.run', return_value=
-                          SimpleNamespace(returncode=0, stdout=b'Creating new settings\n'
-                              b'SPEC219_DEVICE_PROBE {"schema":"uav-person-device-probe-v1","device":"cpu"}\n',
-                              stderr=b'')) as probe:
-                result = preflight(plan, run=False, headless=True)
-            self.assertTrue(result['ok'])
-            host_models.assert_not_called()
-            self.assertEqual(probe.call_args.args[0][0], '/locked/bin/python')
-            self.assertIn('ultralytics,lap,torchreid', probe.call_args.args[0][2])
-            self.assertNotIn('/host/', probe.call_args.kwargs['env']['PYTHONPATH'])
-            self.assertIn('Creating new settings', result['personDeviceProbe']['stdout'])
-            valid = b'SPEC219_DEVICE_PROBE {"schema":"uav-person-device-probe-v1","device":"cpu"}\n'
-            for code, stdout in ((1, valid), (0, b'cpu\n'), (0, valid + valid),
-                                  (0, b'SPEC219_DEVICE_PROBE broken\n'),
-                                  (0, valid.replace(b'cpu', b'cuda:0'))):
-                with self.subTest(code=code, stdout=stdout), \
-                        patch('run_multicamera_tracking_demo.subprocess.run', return_value=
-                              SimpleNamespace(returncode=code, stdout=stdout, stderr=b'probe detail')):
-                    failed = preflight(plan, run=False, headless=True)
-                    self.assertFalse(failed['ok'])
-                    self.assertEqual(failed['personDeviceProbe']['stderr'], 'probe detail')
 
 
 if __name__ == "__main__":

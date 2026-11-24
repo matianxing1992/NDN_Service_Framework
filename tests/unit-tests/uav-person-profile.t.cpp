@@ -71,6 +71,10 @@ BOOST_AUTO_TEST_CASE(ExplicitDetectorLiteralPreservesLegacyCanonicalIdentity)
   BOOST_CHECK_EQUAL(parseUavPersonTrackingProfile(reordered).canonicalJson, wire);
   BOOST_CHECK_EQUAL(parseUavPersonTrackingProfile(
     replaceOne(wire, "raw-box", "raw-\\u0062ox")).profileDigest, profile.profileDigest);
+  const auto stock = parseUavPersonTrackingProfile(
+    replaceOne(wire, "yolo-letterbox1280-raw-box-v1", "yolo-default640-stock-box-v1"));
+  BOOST_CHECK_EQUAL(stock.detectorPreprocessId, "yolo-default640-stock-box-v1");
+  BOOST_CHECK_NE(stock.profileDigest, profile.profileDigest);
 }
 
 BOOST_AUTO_TEST_CASE(ExplicitDetectorRejectsMixedSchemasTypesAndUnknownModes)
@@ -87,7 +91,6 @@ BOOST_AUTO_TEST_CASE(ExplicitDetectorRejectsMixedSchemasTypesAndUnknownModes)
         replaceOne(wire, field, "\"detectorPreprocessId\":[]"),
         replaceOne(wire, "letterbox1280-raw", "letterbox640-raw"),
         replaceOne(wire, "raw-box-v1", "raw-box-nms51-v1"),
-        replaceOne(wire, "yolo-letterbox1280-raw-box-v1", "yolo-default640-stock-box-v1"),
         replaceOne(wire, field, field + "," + field)}) {
     BOOST_CHECK_THROW(parseUavPersonTrackingProfile(invalid), std::invalid_argument);
   }

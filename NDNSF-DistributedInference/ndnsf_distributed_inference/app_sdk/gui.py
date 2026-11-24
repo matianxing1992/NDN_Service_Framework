@@ -1529,8 +1529,7 @@ class CertificateTab(ttk.Frame):
 class RegressionRunnerTab(ttk.Frame):
     REGRESSION_CASES = {
         "auto-split": ("YOLO_SPLIT_RESULT", "ok=true"),
-        "yolo-2x2": ("YOLO_2X2_RESULT", "ok=true"),
-        "yolo-layout": ("YOLO_LAYOUT_DYNAMIC_PROVISIONING_MININDN_OK", ""),
+        "yolo-2x2": ("YOLO_2X2_NATIVE_REQUESTER_MININDN_OK", "evidence="),
         "yolo-layout-local": ("YOLO_LAYOUT_SMOKE_OK", ""),
         "onnx-executor": ("ONNX_EXECUTOR_FANIN_FANOUT_OK", ""),
         "app-api": ("APP_API_SERVICE_PLAN_OK", ""),
@@ -1541,6 +1540,7 @@ class RegressionRunnerTab(ttk.Frame):
         super().__init__(parent)
         self.app = app
         self.regression_case_var = tk.StringVar(value="yolo-2x2")
+        self.yolo_args_var = tk.StringVar()
         self.processes: dict[str, subprocess.Popen[str]] = {}
         self.process_states: dict[str, RoleProcessState] = {}
         self.status_callbacks: dict[str, Callable[[str], None]] = {}
@@ -1557,8 +1557,12 @@ class RegressionRunnerTab(ttk.Frame):
             values=list(self.REGRESSION_CASES.keys()),
             state="readonly",
         ).grid(row=0, column=1, sticky="ew", padx=6, pady=4)
+        ttk.Label(self, text="YOLO candidate arguments").grid(
+            row=1, column=0, sticky="w", padx=6, pady=4)
+        ttk.Entry(self, textvariable=self.yolo_args_var).grid(
+            row=1, column=1, sticky="ew", padx=6, pady=4)
         buttons = ttk.Frame(self)
-        buttons.grid(row=1, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
+        buttons.grid(row=2, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
         ttk.Button(buttons, text="Run Selected Regression",
                    command=self.run_selected_regression).pack(side="left", padx=4)
         ttk.Button(buttons, text="Run YOLO 2x2 MiniNDN Smoke",
@@ -1566,11 +1570,14 @@ class RegressionRunnerTab(ttk.Frame):
         ttk.Button(buttons, text="Stop Processes", command=self.stop_processes).pack(side="left")
         ttk.Button(buttons, text="Clear Logs", command=self.clear_logs).pack(side="left", padx=4)
         self.log = TextPane(self, height=25)
-        self.log.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)
-        self.rowconfigure(2, weight=1)
+        self.log.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)
+        self.rowconfigure(3, weight=1)
 
     def run_selected_regression(self) -> None:
         case = self.regression_case_var.get()
+        if case == "yolo-2x2":
+            self.run_yolo_2x2_smoke()
+            return
         self._append(
             f"Running DI regression case '{case}'. The selected case starts "
             "MiniNDN, runs distributed inference, and checks its success marker.\n"
@@ -1583,9 +1590,23 @@ class RegressionRunnerTab(ttk.Frame):
         )
 
     def run_yolo_2x2_smoke(self) -> None:
-        self._start([sys.executable, "Experiments/NDNSF_DI_Yolo2x2_Minindn.py"],
-                    "yolo-2x2-minindn",
-                    success_markers=("YOLO_2X2_RESULT", "ok=true"))
+        try:
+            candidate_args = split_extra_args(self.yolo_args_var.get())
+        except ValueError as error:
+            self._append(f"Invalid YOLO candidate arguments ({error}).\n")
+            return
+        if not candidate_args:
+            self._append(
+                "Enter --spec201-candidate, --spec201-candidate-sha256 and "
+                "the matching model and installed candidate arguments.\n"
+            )
+            return
+        self._start(
+            [sys.executable, "Experiments/NDNSF_DI_Run_Minindn_Regressions.py", "--case", "yolo-2x2",
+             *candidate_args],
+            "yolo-2x2-minindn",
+            success_markers=self.REGRESSION_CASES["yolo-2x2"],
+        )
 
     def register_status_callback(self, label: str, callback: Callable[[str], None]) -> None:
         self.status_callbacks[label] = callback

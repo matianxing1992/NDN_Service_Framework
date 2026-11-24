@@ -5,29 +5,91 @@
 The same `run_multicamera_tracking_demo.py` entrypoint supports three indoor
 video sources and one compute node running YOLO, ByteTrack and pretrained
 OSNet. Native C++ assigns the global person IDs; the Ground Station renders
-its validated results and frames retrieved from the source nodes. The CPU
-path uses PyTorch and does not require CUDA. Replay with fixed cameras
-simulates hovering UAVs; it does not qualify flight or moving-camera tracking.
+its validated results and frames retrieved from the source nodes. Replay with
+fixed cameras simulates hovering UAVs for indoor tracking tests.
 
-Prepare these inputs before launching:
+### Native ONNX replay
 
-The maintained installer has a runtime-only action. It does not rebuild the
-native stack. Supply a Torchreid 1.4.0 wheel whose SHA-256 is admitted by the
-lock, built from author revision `f8cd150fdf77e8d9e1ed143b7f308c2c609ded50`;
-the PyPI same-name package is not a replacement. For example:
+Provide the detector and OSNet ONNX files and put their SHA-256 digests in the
+person profile. For YOLO26n, select profile schema
+`uav-person-tracking-profile-v2` and set `detectorPreprocessId` to
+`yolo-default640-stock-box-v1`. The detector needs dynamic image height and
+width and either an end-to-end `[1,300,6]` output or a prepared dynamic raw
+head with a fixed class axis. Raw graphs carry the `ndnsf.uav.class-names.v1` class index; the native
+session takes argmax before selecting person detections and applying the
+person limit. The OSNet graph uses the profile's existing 512-dimensional GAP
+embedding contract. Crops use rounded, clamped integer boxes and the stock
+PIL uint8 bilinear transform; crops smaller than 16 by 32 pixels retain their
+local track without an appearance embedding.
+
+Pass both ONNX files to the existing launcher. It selects the installed main
+GS and Drone applications and generates the computation manifest with the
+same Drone executable that will run Compute. See the source manifest fields
+below. Keep the run duration equal to the source manifest duration.
 
 ```bash
-NDNSF_PERSON_PYTHON=/usr/bin/python3.10 \
-NDNSF_PERSON_WHEELS=/absolute/path/to/verified-wheels \
-  bash install_ndnsf_stack.sh --person-runtime /absolute/path/to/person-cpu
+python3 Experiments/UAV/run_multicamera_tracking_demo.py \
+  --run --headless --run-seconds 2 \
+  --model "$DETECTOR_ONNX" --reid-model "$REID_ONNX" \
+  --tracking-profile "$PERSON_PROFILE" --source-manifest "$SOURCE_MANIFEST" \
+  --output-dir "$RUN_DIRECTORY"
 ```
 
-This installs the exact hashed CPU lock in an isolated environment, verifies
-the runtime inventory and real imports, and downloads hash-checked YOLO26n and
-OSNet x1.0 MSMT17 weights into its `share/ndnsf/models/` directory. Existing
-environments must already match the lock; the installer does not overwrite
-another environment. `--plan` performs no installation or downloads. Use an
-absolute stable base interpreter, not one from a disposable environment.
+### Prepare person checkpoints for native replay
+
+Checkpoints are offline preparation inputs. Use the existing detector exporter
+with `--tracking-mode person`; it preserves either the raw or end-to-end head
+and checks two rectangular input shapes before publishing the ONNX file.
+End-to-end graphs require person at class index zero; raw graphs use the
+unique person index from their class metadata.
+The default vehicle mode continues to require a raw head. Preparation versions
+and the fixed Torchreid source are recorded in the
+[shared input recipe](../recipes/uav-multicam-tracking.json). Both exporters run
+on the preparation host.
+
+```bash
+python Experiments/UAV/prepare_vehicle_detector.py --tracking-mode person \
+  --checkpoint "$DETECTOR_CHECKPOINT" --checkpoint-sha256 "$DETECTOR_SHA256" \
+  --output "$DETECTOR_ONNX" > "$DETECTOR_EXPORT_LOG"
+python tools/person-reid/export_osnet_reid.py \
+  --checkpoint "$REID_CHECKPOINT" --dataset "$REID_DATASET" \
+  --output "$REID_ONNX" --receipt "$REID_EXPORT_RECEIPT"
+python NDNSF-UAV-APP/tracking/person_profile.py \
+  --template "$PERSON_PROFILE_TEMPLATE" --detector "$DETECTOR_ONNX" \
+  --reid "$REID_ONNX" --output "$PERSON_PROFILE"
+```
+
+The operator template must explicitly select schema
+`uav-person-tracking-profile-v2` and detector preprocessing
+`yolo-default640-stock-box-v1`, with the existing GAP ReID preprocessing.
+The last command binds the two actual ONNX digests without changing the template's
+policy. Keep the detector export log (its final line is the JSON receipt) and
+the ReID receipt; start a new run with its newly generated
+computation manifest rather than resuming checkpoint worker state.
+
+### Offline native crop reference
+
+Use the frozen host inference environment for this preparation step. The box
+file is a JSON array of four-coordinate observations. The reference uses the
+checkpoint and stock Pillow/torchvision transform rather than native resizing:
+
+```bash
+python tools/person-reid/make_person_golden.py --stock-crops \
+  --image "$REFERENCE_IMAGE" --boxes "$REFERENCE_BOXES_JSON" \
+  --reid "$REID_CHECKPOINT" --output "$GOLDEN_DIRECTORY"
+python tools/person-reid/export_osnet_reid.py \
+  --checkpoint "$REID_CHECKPOINT" --dataset "$REID_DATASET" \
+  --output "$REID_ONNX" --receipt "$GOLDEN_DIRECTORY/onnx-export.json"
+NDNSF_PERSON_CROP_GOLDEN="$GOLDEN_DIRECTORY" \
+  ./build/uav-tracking-provider-tests \
+  --run_test=UavTrackingProviderLifecycle/PersonReidMatchesIndependentStockCheckpoint
+```
+
+The C++ case requires the prepared files, verifies the export's checkpoint and
+ONNX identities, compares every input float exactly and checks all 512 output
+features against the independent reference. It also compares native JPEG RGB
+bytes when the input is a JPEG. This is a numeric boundary check; the three
+sources, cross-window IDs and cancellation still need their runtime checks.
 
 For real indoor footage, the [EPFL laboratory sequences](https://www.epfl.ch/labs/cvlab/data/data-pom-index-php/)
 provide four synchronized 25 FPS cameras. Cameras 0, 1 and 2 of the four-person
@@ -37,26 +99,23 @@ this attribution in the source manifest. Its ground-truth files are separate
 offline inputs. Source download URLs are
 `https://documents.epfl.ch/groups/c/cv/cvlab-pom-video1/www/4p-c{0,1,2}.avi`.
 These videos are operator inputs and are not downloaded by the installer.
-The [OSNet author's model repository](https://huggingface.co/kaiyangzhou/osnet)
-supplies the fixed weight revision selected by the installer; successful
-installation alone does not qualify tracking or cross-camera accuracy.
+Pin a checkpoint from the [OSNet author's model repository](https://huggingface.co/kaiyangzhou/osnet)
+for offline export and retain its source identity, digest and export receipt.
+Model preparation alone does not qualify tracking or cross-camera accuracy.
 
 - Install the native `UavDroneApp`, `UavGroundStationApp` and
   `App_ServiceController` programs and tracking modules through the maintained
   Waf build/install workflow. The runner resolves installed programs, not
   binaries from the build tree. Select `--application-mode main` explicitly;
   the historical `compat` mode uses the separate tracking programs.
-- Use a CPython 3.10 inference environment matching
-  [`requirements-person.lock`](../../NDNSF-UAV-APP/tracking/requirements-person.lock).
-  Its comments describe the verified-wheel and hash requirements, including
-  the Torchreid wheel. MiniNDN and Mininet must also be importable by the
-  launcher interpreter. FFmpeg/ffprobe and the MiniNDN system dependencies
-  must be installed.
-- Provide the detector and OSNet checkpoint files. Copy
-  [`uav_person_tracking_demo.json`](../../NDNSF-UAV-APP/configs/uav_person_tracking_demo.json)
-  to an operator-owned profile, replace its zero `detectorDigest` and
-  `reidDigest` with `sha256:` plus each file's SHA-256, and keep
-  `requestedDevice` set to `cpu`. Set camera relations for the actual setup;
+- Run the launcher with a host Python environment that can import MiniNDN and
+  Mininet. FFmpeg/ffprobe and the MiniNDN system dependencies must be installed.
+  Model execution stays in the installed native Compute application; the
+  offline preparation tools have their own versions in the shared recipe.
+- Provide the prepared detector and OSNet ONNX files. Create an operator-owned
+  profile following [the native profile preparation requirements](#prepare-person-checkpoints-for-native-replay),
+  including its schema and preprocessing selection, actual ONNX digests and
+  CPU device. Set camera relations for the actual setup;
   unverified relations are development assumptions. Do not use the zero-hash
   template as a runnable profile.
 - Create the source-only JSON manifest described below. Ground truth belongs
@@ -102,12 +161,11 @@ are operator command templates, not a claim that these example paths exist.
 
 ```bash
 LAUNCHER_PYTHON=/absolute/path/to/minindn-control/bin/python
-WORKER_PYTHON=/absolute/path/to/person-cpu/bin/python
 DEMO_PYTHONPATH=/usr/local/libexec/ndnsf-uav/tracking:/path/to/mini-ndn:/path/to/mininet-module-parent
 PERSON_PROFILE=/absolute/path/to/person-cpu-profile.json
 SOURCE_MANIFEST=/absolute/path/to/three-view-sources.json
-DETECTOR_MODEL=/absolute/path/to/person-cpu/share/ndnsf/models/yolo26n.pt
-REID_MODEL=/absolute/path/to/person-cpu/share/ndnsf/models/osnet_x1_0_msmt17.pth
+DETECTOR_MODEL=/absolute/path/to/prepared-models/person-detector.onnx
+REID_MODEL=/absolute/path/to/prepared-models/osnet.onnx
 DEMO_RUN_ROOT=/absolute/path/to/new-person-run
 
 person_args=(
@@ -116,7 +174,6 @@ person_args=(
   --tracking-profile "$PERSON_PROFILE"
   --source-manifest "$SOURCE_MANIFEST"
   --reid-model "$REID_MODEL"
-  --worker-python "$WORKER_PYTHON"
   --output-dir "$DEMO_RUN_ROOT"
   --run-seconds 1.5 --window-count 3 --global-deadline-ms 180000
 )
@@ -150,7 +207,7 @@ needs nine displayed frames; retain actual screenshots with their
 run/mission/window/result-digest bindings. The GS-received source JPEGs and
 original result JSON are bound in
 `private/ground-station/presentation/window-N/presentation.json`; the renderer
-does not obtain its display results from the compute worker's private files.
+does not obtain its display results from the compute backend's private files.
 Global/local badges and association status are native outputs. Source videos
 may already contain annotations; such burned-in boxes are not native output.
 Unknown geometry keeps speed, course and range unavailable. Replay lag is

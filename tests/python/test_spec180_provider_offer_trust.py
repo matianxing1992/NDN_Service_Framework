@@ -15,9 +15,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from ndnsf_distributed_inference.app_sdk.provider import (
     ProviderOfferTrustVerifier,
 )
-from ndnsf_distributed_inference.app_sdk.placement import (
-    v3_provider_view_factory,
-)
 from ndnsf_distributed_inference.sdk.placement import (
     DeviceTopologyProfile,
     ExecutionDisposition,
@@ -93,16 +90,6 @@ def test_provider_offer_verifier_binds_policy_and_ack_provenance():
     assert verifier.verify_ack(
         offer, ack, model_digest=MODEL, graph_digest=GRAPH,
         request_id="req-1", deadline_ms=NOW + 30_000)
-
-
-def test_v3_factory_invokes_ack_aware_production_verifier(monkeypatch):
-    monkeypatch.setattr("ndnsf_distributed_inference.app_sdk.placement.time.time",
-                        lambda: NOW / 1000)
-    verifier, offer, ack, _, _ = _fixture()
-    view = v3_provider_view_factory(verifier)(
-        ack, MODEL, NOW + 30_000, GRAPH)
-    assert view.provider == offer.provider
-    assert view.offer_digest == offer.digest()
 
 
 @pytest.mark.parametrize("field,value", [

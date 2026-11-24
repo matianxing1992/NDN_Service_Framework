@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import base64
-from concurrent.futures import Future
+from concurrent.futures import Future, InvalidStateError
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
-import time
+
+from ndnsf import AckDecision, ProviderCapabilityHint, _ndnsf, encode_provider_capability_ack
 
 from ndnsf.runtime_telemetry import ServiceOperationState, ServiceOperationStatus
 
@@ -197,28 +198,27 @@ class InferenceCoordinator:
             raise PermissionError("definition is bound to another coordinator")
         if not outer_request_id:
             raise ValueError("outer request identity is required")
-        if (str(context.role) != "coordinator" or
-                str(context.local_provider) != definition.deployment_owner):
-            raise PermissionError(
-                "coordinator Provider identity does not match deployment owner")
-        request = self.client._request_as_coordinator(
-            definition, input=input_payload, deadline=deadline, options=options,
-            coordinator_service=self.coordinator_service)
+
+        def start(budget_ms):
+            return self.client._request_as_coordinator(
+                definition, input=input_payload,
+                deadline=min(deadline, datetime.now(timezone.utc) + timedelta(milliseconds=budget_ms)),
+                options=options, coordinator_service=self.coordinator_service)
+
         sequence = 1
         last_details = b""
-        while datetime.now(timezone.utc) < deadline:
-            sequence, details = self._report_progress(
+
+        def report(request):
+            nonlocal sequence, last_details
+            sequence, last_details = self._report_progress(
                 context, definition, request, outer_request_id, sequence,
                 last_details)
-            state = request.status()
-            if state in {
-                    RequestState.COMPLETED, RequestState.FAILED,
-                    RequestState.CANCELLED, RequestState.EXPIRED}:
-                last_details = details
-                break
-            if details != last_details:
-                last_details = details
-            time.sleep(0.25)
+
+        request = _ndnsf._drive_di_coordinator_request(
+            context, outer_request_id, self.coordinator_service, definition.deployment_owner, payload,
+            int((deadline - datetime.now(timezone.utc)).total_seconds() * 1000), start, report)
+        if request is None:
+            return
         remaining = max(
             0.001, (deadline - datetime.now(timezone.utc)).total_seconds())
         try:
@@ -227,12 +227,21 @@ class InferenceCoordinator:
             result = InferenceResult(
                 False, b"", str(exc)[:160] or request.status().value,
                 outer_request_id)
-        context.publish_final_response(encode_coordinator_response(result))
+        response = encode_coordinator_response(result)
+        if context._coordinator_work_budget_ms() > 0 and datetime.now(timezone.utc) < deadline:
+            context.publish_final_response(response)
 
     def register(self, service_provider) -> None:
+        role_ack = encode_provider_capability_ack(ProviderCapabilityHint(
+            provider_name=service_provider.provider_identity,
+            service_name=self.coordinator_service,
+            service_payload_schema="ndnsf-di-capability-v1",
+            service_payload={"roles": ["coordinator"]},
+        ))
         service_provider.add_collaboration_handler(
             self.coordinator_service, ["coordinator"],
-            self.handle_collaboration, ack_handler=lambda _: True)
+            self.handle_collaboration,
+            ack_handler=lambda _: AckDecision(payload=role_ack))
 
 
 def submit_via_coordinator(
@@ -266,29 +275,36 @@ def submit_via_coordinator(
                 return
             future.set_result(decode_coordinator_response(
                 response.payload, outer_request_id))
+        except InvalidStateError:
+            pass
         except Exception as exc:
-            future.set_exception(exc)
+            try:
+                future.set_exception(exc)
+            except InvalidStateError:
+                pass
 
     def on_timeout(_: str) -> None:
-        if not future.done():
+        try:
             future.set_result(InferenceResult(
                 False, b"", "COORDINATOR_TIMEOUT", outer_request_id))
+        except InvalidStateError:
+            pass
 
-    service_user.request_collaboration_async(
-        coordinator_service, wire,
-        roles=[{
-            "role": "coordinator",
-            "service": coordinator_service,
-            "min_providers": 1,
-            "max_providers": 1,
-        }],
-        key_scopes={},
-        dependencies=[],
-        on_response=on_response,
-        on_timeout=on_timeout,
-        ack_timeout_ms=min(max(1, ack_timeout_ms), timeout_ms),
-        timeout_ms=timeout_ms,
-        request_id=outer_request_id)
+    if timeout_ms <= 1:
+        on_timeout(outer_request_id)
+        return future
+    service_user._request_di_coordinator_async(
+        coordinator_service, definition.deployment_owner, outer_request_id, wire,
+        min(max(1, ack_timeout_ms), timeout_ms - 1), timeout_ms, on_response, on_timeout)
+
+    def forward_cancel(done):
+        nonlocal wire
+        request_wire, wire = wire, b""
+        if done.cancelled():
+            service_user._cancel_di_coordinator(
+                definition.deployment_owner, outer_request_id, request_wire)
+
+    future.add_done_callback(forward_cancel)
     return future
 
 

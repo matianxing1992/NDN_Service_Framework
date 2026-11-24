@@ -8,7 +8,7 @@ import json
 import sys
 from typing import List, Optional
 
-from common import add_process_arguments, optional_local_nfd, session_kwargs
+from common import add_native_actor_arguments, optional_local_nfd
 from ndnsf import ServiceProvider
 from spec112_segmented_common import (
     decode_request,
@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider-id", type=optional_ndn_name, default="")
     parser.add_argument("--service", type=ndn_name, default="/HELLO")
     parser.add_argument("--max-response-bytes", type=positive_int, default=1 << 20)
-    add_process_arguments(parser)
+    add_native_actor_arguments(parser)
     return parser
 
 
@@ -41,7 +41,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             controller="/example/hello/controller",
             provider_prefix="/example/hello/provider",
             provider_id=args.provider_id,
-            **session_kwargs(args),
         )
 
         @provider.handler(args.service)

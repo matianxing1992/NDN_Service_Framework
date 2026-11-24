@@ -50,8 +50,11 @@ private:
   {
   }
   std::string m_canonical;
+  // Local serving ownership; never serialized or treated as authorization.
+  std::shared_ptr<void> m_servingLease;
   friend class Input;
   friend class PreparedModel;
+  friend class User;
 };
 
 /** Owning application input.  No caller buffer is borrowed by a request. */
@@ -61,7 +64,8 @@ public:
   static Input inlineBytes(std::vector<std::uint8_t> payload,
                            std::vector<std::uint8_t> applicationOptions = {});
   static Input text(std::string utf8);
-  static Input repository(DataRef reference);
+  static Input repository(DataRef reference,
+                          std::vector<std::uint8_t> applicationOptions = {});
 
 private:
   enum class Kind { InlineBytes, Text, Repository };
@@ -278,24 +282,6 @@ public:
   ModelCapabilities capabilities() const;
   /** Maximum encoded input or result accepted by the verified adapter. */
   std::size_t maxPayloadBytes() const;
-
-  /**
-   * Compatibility entry point. Prefer User::request(model, input, options),
-   * which keeps request initiation owned by the User façade.
-   */
-  [[deprecated("use User::request(model, input, options)")]]
-  RequestHandle request(const Input& input, const RequestOptions& options = {}) const;
-
-  /** Compatibility entry point; prefer User::run(model, input, options). */
-  [[deprecated("use User::run(model, input, options)")]]
-  Result run(const Input& input, const RequestOptions& options = {}) const;
-
-  /**
-   * Compatibility entry point. Prefer User::openConversation(model, options),
-   * which validates the model/User Runtime binding at the owner boundary.
-   */
-  [[deprecated("use User::openConversation(model, options)")]]
-  Conversation openConversation(const ConversationOptions& options = {}) const;
 
 private:
   // A prepared view owns its lazily materialized native client while the

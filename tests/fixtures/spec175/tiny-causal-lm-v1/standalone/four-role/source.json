@@ -1,0 +1,201 @@
+{
+  "node_mapping": {
+    "embedding": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "final-norm-head": [
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79,
+      80,
+      81
+    ],
+    "layer-00": [
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20
+    ],
+    "layer-01": [
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37
+    ],
+    "layer-02": [
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54
+    ],
+    "layer-03": [
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70
+    ]
+  },
+  "reference_digests": {
+    "four-role/role-0.onnx": "sha256:121573cfaa1057d0402a5cfc4cc44f4ba28cb2a3f9865f5d0f7a32ef3bf59cdf",
+    "four-role/role-1.onnx": "sha256:389bb9ebc21fcd1329a9efe08dc1ed0fd735c3b662ee6e3c3361b25b195a6f22",
+    "four-role/role-2.onnx": "sha256:a279bfc3ba5e30e2e9ff231111ff0d16163b1be8751171aaa04103e9b0edb68c",
+    "four-role/role-3.onnx": "sha256:523a9b3bccb3f7360bafd0f1c5493d387db9f1fe959019c3c5536d916cb58386"
+  },
+  "schema": "spec175-native-four-role-source-v1",
+  "source": {
+    "digest": "sha256:61efb8c7fcd590bb91d9f761416446e49550d22aa0585e5be3eac24cc6393a4b",
+    "path": "standalone/four-role/source.onnx"
+  },
+  "state_inputs": {
+    "/LLM/Pipeline/Stage/0": {
+      "attention_kv_in": [
+        "stage0_attention_kv_in"
+      ],
+      "convolution_state_in": [
+        "stage0_convolution_state_in"
+      ],
+      "recurrent_state_in": [
+        "stage0_recurrent_state_in"
+      ]
+    },
+    "/LLM/Pipeline/Stage/1": {
+      "attention_kv_in": [
+        "stage1_attention_kv_in"
+      ],
+      "convolution_state_in": [
+        "stage1_convolution_state_in"
+      ],
+      "recurrent_state_in": [
+        "stage1_recurrent_state_in"
+      ]
+    },
+    "/LLM/Pipeline/Stage/2": {
+      "attention_kv_in": [
+        "stage2_attention_kv_in"
+      ],
+      "convolution_state_in": [
+        "stage2_convolution_state_in"
+      ],
+      "recurrent_state_in": [
+        "stage2_recurrent_state_in"
+      ]
+    },
+    "/LLM/Pipeline/Stage/3": {
+      "attention_kv_in": [
+        "stage3_attention_kv_in"
+      ],
+      "convolution_state_in": [
+        "stage3_convolution_state_in"
+      ],
+      "recurrent_state_in": [
+        "stage3_recurrent_state_in"
+      ]
+    }
+  },
+  "state_outputs": {
+    "/LLM/Pipeline/Stage/0": {
+      "attention_kv_out": [
+        "stage0_attention_kv_out"
+      ],
+      "convolution_state_out": [
+        "stage0_convolution_state_out"
+      ],
+      "recurrent_state_out": [
+        "stage0_recurrent_state_out"
+      ]
+    },
+    "/LLM/Pipeline/Stage/1": {
+      "attention_kv_out": [
+        "stage1_attention_kv_out"
+      ],
+      "convolution_state_out": [
+        "stage1_convolution_state_out"
+      ],
+      "recurrent_state_out": [
+        "stage1_recurrent_state_out"
+      ]
+    },
+    "/LLM/Pipeline/Stage/2": {
+      "attention_kv_out": [
+        "stage2_attention_kv_out"
+      ],
+      "convolution_state_out": [
+        "stage2_convolution_state_out"
+      ],
+      "recurrent_state_out": [
+        "stage2_recurrent_state_out"
+      ]
+    },
+    "/LLM/Pipeline/Stage/3": {
+      "attention_kv_out": [
+        "stage3_attention_kv_out"
+      ],
+      "convolution_state_out": [
+        "stage3_convolution_state_out"
+      ],
+      "recurrent_state_out": [
+        "stage3_recurrent_state_out"
+      ]
+    }
+  }
+}

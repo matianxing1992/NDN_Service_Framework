@@ -393,12 +393,17 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   profile.providerCount = 2;
   test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
+  const ndn::Name largeResponseCategory("/NDNSF/LARGE-RESPONSE");
+  const auto isLargeResponse = [&] (const ndn::Name& name) {
+    return std::search(name.begin(), name.end(),
+                       largeResponseCategory.begin(), largeResponseCategory.end()) != name.end();
+  };
   test::FaultProfile faults;
   faults.dropDataPredicate = [&] (const ndn::Data& data) {
     const auto& name = data.getName();
     const bool hold = !releaseSegment.load() && !name.empty() &&
       name.at(-1).isSegment() && name.at(-1).toSegment() != 0 &&
-      name.toUri().find("/NDNSF/LARGE-RESPONSE/") != std::string::npos;
+      isLargeResponse(name);
     if (hold) {
       ++heldSegments;
       if ((terminalDuringFetch == "tamper" || terminalDuringFetch == "timeout") &&
@@ -412,7 +417,7 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   ndn::signal::ScopedConnection segmentInterestObserver =
     environment.userFace().onSendInterest.connect(
     [&] (const ndn::Interest& interest) {
-      if (interest.getName().toUri().find("/NDNSF/LARGE-RESPONSE/") != std::string::npos) {
+      if (isLargeResponse(interest.getName())) {
         ++segmentInterests;
       }
     });

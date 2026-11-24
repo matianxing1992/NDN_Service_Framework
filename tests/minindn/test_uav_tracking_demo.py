@@ -32,7 +32,7 @@ ASSETS = Path(os.environ.get(
     "NDNSF_UAV_DEMO_ASSET_DIR", "/home/tianxing/.cache/ndnsf/spec191-assets"
 )).expanduser()
 
-MODEL = Path(os.environ.get("NDNSF_UAV_DEMO_MODEL", str(ASSETS / "3UAVs.pt"))).expanduser()
+MODEL = Path(os.environ.get("NDNSF_UAV_DEMO_MODEL", str(ASSETS / "3UAVs_YOLOv8n.onnx"))).expanduser()
 
 CONTROLLED_CAMERA_VELOCITIES = {
     "UAV1": [5.0, 0.0, 0.0],
@@ -432,8 +432,8 @@ def test_minindn_rejects_replaced_observation_dependency_before_worker(category,
         if kind == "revision":
             assert (f"SPEC210_REFERENCE_DIGEST_VERIFIED camera=UAV3 window=window-1 "
                     f"category={category} exactName=") in compute
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-0" in compute
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-1" not in compute
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-0" in compute
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-1" not in compute
         assert "SPEC191_TRACKING_RESULT status=failure window=1" in ground_station
         lifecycle = json.loads((output / "lifecycle.json").read_text())
         assert lifecycle["terminal"] is True
@@ -470,8 +470,8 @@ def test_minindn_rejects_bad_observation_reference_digest_terminally(fault, cate
         assert ("SPEC191_TRACKING_BAD_REFERENCE_DIGEST_INJECTED camera=UAV3 "
                 f"window=window-1 category={category}") in source
         assert "observation dependency content digest mismatch" in compute
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-0" in compute
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-1" not in compute
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-0" in compute
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-1" not in compute
         assert "SPEC191_TRACKING_RESULT status=failure window=1" in ground_station
         lifecycle = json.loads((output / "lifecycle.json").read_text())
         assert lifecycle["terminal"] is True
@@ -500,8 +500,8 @@ def test_minindn_missing_clock_reference_fails_before_worker_terminally():
         ground_station = (output / "ground-station.log").read_text(errors="replace")
         assert "SPEC210_REFERENCE_OMITTED camera=UAV3 window=window-1 category=CLOCK" in source
         assert "tracking compute could not fetch" in compute
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-0" in compute
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-1" not in compute
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-0" in compute
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-1" not in compute
         assert "SPEC191_TRACKING_RESULT status=failure window=1" in ground_station
         lifecycle = json.loads((output / "lifecycle.json").read_text())
         assert lifecycle["terminal"] is True
@@ -535,8 +535,8 @@ def test_minindn_rejects_duplicate_or_overlimit_pose_references_before_worker(fa
         assert (f"SPEC210_REFERENCE_SHAPE_INJECTED camera=UAV3 window=window-1 "
                 f"shape={fault}") in source
         assert expected_reason in compute
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-0" in compute
-        assert "SPEC210_TRACKING_WORKER_INVOKED window=window-1" not in compute
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-0" in compute
+        assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-1" not in compute
         assert "SPEC191_TRACKING_RESULT status=failure window=1" in ground_station
         lifecycle = json.loads((output / "lifecycle.json").read_text())
         assert lifecycle["terminal"] is True
@@ -1138,8 +1138,8 @@ def test_minindn_external_fd_adapter_delivers_and_switches_source_generation():
                               else "observation stream did not produce a ready frame: FRAME_GAP")
             assert expected_error in gap_source
             gap_compute = (gap_output / "compute.log").read_text(errors="replace")
-            assert "SPEC210_TRACKING_WORKER_INVOKED window=window-0" in gap_compute
-            assert "SPEC210_TRACKING_WORKER_INVOKED window=window-1" not in gap_compute
+            assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-0" in gap_compute
+            assert "SPEC210_NATIVE_VEHICLE_BACKEND_INVOKED window=window-1" not in gap_compute
             committed = sorted((gap_output / "private/compute/worker/results").glob("window-*.json"))
             assert [path.name for path in committed] == ["window-0.json"]
             first_result = json.loads(committed[0].read_text())

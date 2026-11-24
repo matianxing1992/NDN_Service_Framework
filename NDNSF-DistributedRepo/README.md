@@ -352,32 +352,7 @@ as a normal repo object. The application user starts with the repo service
 bootstrap parameters and fetches that config through the repo before doing
 ordinary `put/get` operations:
 
-```python
-from ndnsf_distributed_inference import DistributedRepo
-
-repo = DistributedRepo.from_repo_config(
-    controller="/example/repo/controller",
-    user="/example/repo/user",
-    group="/example/repo/group",
-    trust_schema="examples/trust-schema.conf",
-    config_object_name="/example/repo/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/CONFIG/repo_policy.yaml",
-)
-manifest = repo.put(
-    "APP/Generic/BinaryBlob/demo",
-    payload,
-    object_type="binary-blob",
-    replication_factor=2,
-    policy_epoch="/Policy/example/v1",
-    metadata={"tags": ["demo", "binary"], "workflow": "example"},
-)
-payload = repo.get(manifest.object_name, manifest)
-objects = repo.list()
-matches = repo.catalog_query(
-    manifest.replica_nodes[0],
-    {"objectClass": "binary-blob", "tags": ["demo"]},
-)
-repo.remove(manifest.object_name)
-```
+Use the thin native [`py_repoclient` API](pythonWrapper/README.md) for current configuration, publication and retrieval calls. The former DI `DistributedRepo` facade has retired.
 
 The high-level `repo.put(...)` API accepts an application-relative suffix and
 expands it under the publisher namespace, for example
@@ -788,72 +763,19 @@ Packet-backed consumers should use the manifest index instead of deriving names:
 auto wires = RepoClient::getDataPackets(node, manifest);
 ```
 
-```python
-manifest = repo.put_signed_packets(
-    object_name, packets,
-    object_type="video-segment-set",
-    object_size=len(payload),
-    object_sha256=sha256)
-packets = repo.get_signed_packets(manifest.object_name, manifest)
-```
+The manifest index must be non-empty and contain unique names. Its length must
+match the declared segment count. The native client fetches each original name
+and uses Repo-specific forwarding hints for replica selection.
 
-Both operations validate a non-empty, unique `packetNames` index whose length
-matches `segmentCount`, fetch each exact complete name in order, decode the wire,
-and reject any name mismatch. A replica attempt returns only after the complete
-set succeeds; Python retries the whole set at the next declared replica after a
-failure. The ordinary `get(...)` operation remains a payload view and may
-reassemble content from these same original packets without changing storage.
+The retired Python two-replica acceptance recorded exact-name and wire-identity
+checks in `exact-packet-failover-summary.json`. The 2026-07-10 run completed in
+50,772 ms, including 42,735 ms for failover. The Python cache restart test used
+the access sequence `A, A, B, C, A` and recorded backing reads, repeats,
+evictions, digest integrity and the byte budget in `tiered-cache-summary.json`.
 
-Replica preparation also returns a short-lived, Repo-specific forwarding hint.
-The hint selects the serving Repo while every Interest name remains the original
-application Data name. This avoids Repo aliases even when several replicas hold
-the same packet prefix. Failover is atomic at packet-set scope: packets from a
-failed attempt are discarded, and the next replica starts again at the first
-manifest name. The client never combines a partial primary result with a
-secondary result.
-
-The two-replica MiniNDN acceptance test stores the same four signed packets at
-Repo A and Repo B, terminates Repo A after it returns packet zero, and verifies
-that Repo B receives all four names from packet zero onward:
-
-```bash
-sudo -n -E python3 Experiments/NDNSF_DistributedRepo_Generic_Minindn.py \
-  --exact-packet-failover-smoke \
-  --nlsr-wait-s 10 \
-  --repo-start-wait-s 15 \
-  --output-dir results/distributed_repo_exact_packet_failover_minindn
-```
-
-The result is written to `exact-packet-failover-summary.json`. It records every
-Repo/name attempt, exact-name and wire-identity checks, total latency, and
-failover latency. The 2026-07-10 acceptance completed in 50,772 ms, including a
-42,735 ms failover interval; correctness passed, while the long failed-primary
-timeout remains a latency optimization opportunity.
-
-Use this boundary across current applications:
-
-| Caller data | API | Reason |
-|---|---|---|
-| Already-signed application NDN Data | `put_signed_packets` / `get_signed_packets` | Exact names, signatures, and wires are application identity |
-| DI model/runtime files and activation blobs | object `put` / `get` | The caller owns bytes, not encoded Data packets |
-| UAV encrypted recording chunks | object `put` / `get` | Encryption output is an opaque byte object |
-| Future UAV/DI output already encoded as signed Data | packet API | Preserve the producer's original packet representation |
-
-The dedicated MiniNDN restart/cache acceptance test is:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DistributedRepo_Generic_Minindn.py \
-  --tiered-cache-smoke \
-  --tiered-cache-bytes 8192 \
-  --tiered-cache-object-bytes 4096 \
-  --output-dir results/distributed_repo_tiered_cache_minindn
-```
-
-It stores three deterministic objects, restarts Repo A on the same database,
-and reads `A, A, B, C, A`. The canonical result is written to
-`tiered-cache-summary.json`; a passing run must prove a cold backing read, a
-repeat hit without another backing read, LRU eviction, SQLite fallback, digest
-integrity, and `usedBytes <= budgetBytes`.
+Use the maintained [native Repo MiniNDN runner](../tests/minindn/run_spec192_real_cpp_repo.py)
+for present-day qualification. It includes the `O17_ROUTE` failover and cache-hit
+options and the paired `PERSIST_SEED` and `PERSIST_READ` restart cases.
 
 ## Public large-artifact Python API (`artifact-manifest-v2`)
 

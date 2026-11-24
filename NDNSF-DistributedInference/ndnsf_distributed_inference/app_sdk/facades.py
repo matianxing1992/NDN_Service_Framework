@@ -8,7 +8,6 @@ artifact provisioning, and collaboration generic enough for non-YOLO models.
 from __future__ import annotations
 
 import os
-import time
 
 import json
 from dataclasses import dataclass, field, replace
@@ -26,7 +25,6 @@ from ndnsf import (
 
 from ..client import DistributedInferenceClient, InferenceResult
 from ..client import DeploymentSession
-from ..core import AssignmentContext
 from .controller import APPController
 from ..plan import (
     ArtifactSpec,
@@ -43,7 +41,7 @@ from ..provider import (
     ProviderAdmissionPolicy,
     ProviderRuntimeContext,
 )
-from ..repo_reference import repo_manifest_from_large_data_reference, publication_manifest_name
+from ..repo_reference import publication_manifest_name
 from .contracts import DIRepoArtifactBinding
 
 
@@ -259,8 +257,7 @@ class APPClient:
     """Simple client facade for AI application code."""
 
     def __init__(self, deployment: DistributedInferenceDeployment,
-                 client: DistributedInferenceClient, *, optimization_suite=None,
-                 automatic_planner=None):
+                 client: DistributedInferenceClient, *, optimization_suite=None):
         from .engine import DistributedInferenceEngine
         from ..planner.defaults import DefaultOptimizationSuite
         self.deployment = deployment
@@ -269,77 +266,7 @@ class APPClient:
             optimization_suite or DefaultOptimizationSuite())
         self._input_encoders: dict[str, Callable[[Any], bytes]] = {}
         self._service_runtimes: dict[str, RuntimeSpec] = {}
-        self._automatic_planner = automatic_planner
 
-    def request(
-        self,
-        *,
-        model,
-        task,
-        input,
-        timeout_ms: int,
-        options=None,
-        objective=None,
-        constraints=None,
-        request_id: str = "",
-    ):
-        """Run one request without a caller-supplied deployment or split."""
-        if self._automatic_planner is None:
-            raise RuntimeError(
-                "APPClient requires an AutomaticPlanningCoordinator")
-        return self._automatic_planner.request(
-            model=model,
-            task=task,
-            input=input,
-            timeout_ms=timeout_ms,
-            options=options,
-            objective=objective,
-            constraints=constraints,
-            request_id=request_id,
-        )
-
-    def generate(self, request):
-        """Submit one complete-generation request without per-token planning."""
-        if self._automatic_planner is None:
-            raise RuntimeError(
-                "APPClient requires an AutomaticPlanningCoordinator")
-        return self._automatic_planner.generate(request)
-
-    def request_execution_control(
-        self, provider: str, role: str, service: str, payload: bytes, *,
-        timeout_ms: int = 5000
-    ):
-        """Send control through the existing authenticated collaboration service."""
-        wire = bytes(payload)
-        # The cancellation ID is already bound into ``wire``.  Deriving the
-        # request identity from the exact bytes makes transport retries reuse
-        # one NDNSF request instead of creating a second authority operation.
-        nonce = hashlib.sha256(wire).hexdigest()
-        context = AssignmentContext(
-            request_id=f"execution-control-{nonce[:24]}",
-            attempt_epoch=1,
-            plan_digest="sha256:" + hashlib.sha256(wire).hexdigest(),
-            model_variant_id="ndnsf-di-execution-control-v1",
-            role_providers=((role, provider),),
-            original_deadline_ms=int(time.time() * 1000) + max(1, timeout_ms),
-        )
-        return self._client.user.request_collaboration(
-            service,
-            wire,
-            roles=[CollaborationRole(
-                role=role,
-                service=service,
-                allow_dynamic_provisioning=False,
-                min_providers=1,
-                max_providers=1,
-            )],
-            key_scopes={},
-            dependencies=[],
-            role_scopes={role: []},
-            ack_timeout_ms=min(1000, max(100, timeout_ms // 3)),
-            timeout_ms=timeout_ms,
-            assignment_context=context,
-        )
 
     @classmethod
     def from_config(
@@ -1331,16 +1258,5 @@ class APPProvider:
     def stop(self) -> int:
         return self._provider.stop()
 
-    def set_stream_publication_interceptor_for_test(self, callback) -> None:
-        """Install an integration-only interceptor on the real Core Provider."""
-        self._provider.provider.set_stream_publication_interceptor_for_test(
-            callback)
-
-    def set_stream_retention_interceptor_for_test(self, callback) -> None:
-        """Install an integration-only retention hook on the real Core Provider."""
-        self._provider.provider.set_stream_retention_interceptor_for_test(
-            callback)
-
-    def publish_stream_packet_for_test(self, wire: bytes) -> None:
-        """Re-publish signed stream Data through the real Core SVS endpoint."""
-        self._provider.provider.publish_stream_packet_for_test(wire)
+    def _stream_fault_test_access(self):
+        return self._provider.provider._stream_fault_test_access()

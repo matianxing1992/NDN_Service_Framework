@@ -187,11 +187,10 @@ def native_program(repo: Path, name: str) -> Path:
 
 
 def _inspect_source_conv(graph_path: Path, weights_path: Path, index: int,
-                         repo: Path, resolver: Any = None) -> dict[str, Any]:
+                         inspector: Path) -> dict[str, Any]:
     """Read one Conv node's bindable facts from the maintained native helper."""
-    program = (resolver or native_program)(repo, "native-source-inspect")
     completed = subprocess.run(
-        [str(program), "--conv", str(index), str(graph_path), str(weights_path)],
+        [str(inspector), "--conv", str(index), str(graph_path), str(weights_path)],
         check=True, capture_output=True, text=True, timeout=300)
     facts = json.loads(completed.stdout)
     if facts.get("op") != "Conv":
@@ -291,7 +290,8 @@ def prepare_native_yolo_assets(
         requester: str, controller: str, authority: str,
         providers: list[str], service_roles: list[str],
         timeout_ms: int, ack_timeout_ms: int,
-        cache_root: Path | None = None) -> dict[str, Any]:
+        cache_root: Path | None = None,
+        source_inspector: Path | None = None) -> dict[str, Any]:
     """Export and bind all run-specific catalog, grant, and offer inputs."""
     if len(providers) < 2 or len(providers) > 16 or len(set(providers)) != len(providers):
         raise RuntimeError("SPEC196_YOLO_PROVIDER_ROSTER_INVALID")
@@ -367,7 +367,6 @@ def prepare_native_yolo_assets(
     if ndnsf_root not in sys.path:
         sys.path.insert(0, ndnsf_root)
     try:
-        from ndnsf_distributed_inference.adapters.onnx.graph import canonical_onnx_identity
         from ndnsf_distributed_inference.adapters.yolo.adapter import build_yolo26n_adapter
     except ImportError as error:
         raise RuntimeError("SPEC196_YOLO_ADAPTER_IMPORT_FAILED") from error
@@ -388,7 +387,14 @@ def prepare_native_yolo_assets(
     weights_path = package_dir / str(manifest["weights"]["path"])
     canonical_source_digest = _digest_bytes(graph_path.read_bytes())
     manifest_digest = _digest_bytes((package_dir / "manifest.json").read_bytes())
-    canonical_graph_digest = canonical_onnx_identity(graph_path).graph_digest
+    descriptor_path = bundle_root / "source-model-descriptor.json"
+    _write_json(descriptor_path, {"model": model_json})
+    inspector = source_inspector or native_program(repo, "native-source-inspect")
+    identity = json.loads(subprocess.run(
+        [str(inspector), "--planning", str(descriptor_path), str(graph_path), str(weights_path)],
+        check=True, capture_output=True, text=True, timeout=300).stdout)
+    model_json["graph_digest"] = identity["planning_graph_digest"]
+    canonical_graph_digest = identity["canonical_graph_digest"]
     artifact_profile_digest = _digest_value({
         "graph": str(manifest["graph"]["graphDigest"]),
         "weights": str(manifest["weights"]["digest"]),
@@ -534,18 +540,16 @@ def prepare_native_yolo_assets(
         encoding="utf-8"), encoding="utf-8")
     # The ONNX_SOURCE splitter is generated from the inspected Conv facts so the
     # catalog cannot restate operand names, geometry or channel counts that the
-    # model does not have. A historical comparison run may still set
-    # `legacy_yolo_retired: false` on a hand-built kind=YOLO catalog.
+    # model does not have.
     conv_index = int(os.environ.get("SPEC261_CONV_INDEX", "3"))
-    conv_facts = _inspect_source_conv(
-        graph_path, weights_path, conv_index, repo, native_program)
+    conv_facts = _inspect_source_conv(graph_path, weights_path, conv_index, inspector)
     from ndnsf_distributed_inference.adapters.onnx.graph import analyze_onnx_graph
     summary = analyze_onnx_graph(graph_path)
     shapes = {name: list(info.shape) for name, info in summary.tensors.items()
               if info.shape}
     splitter = native_onnx_source_splitter(
         boundary_node=f"onnx-node-{conv_index}",
-        roles=["Prefix", "Rank0", "Rank1", "Suffix"],
+        roles=list(role_map.values()),
         conv=conv_facts, shapes=shapes)
     requester_config = {
         "schema": "ndnsf-di-native-requester-v1",
@@ -636,7 +640,8 @@ def prepare_native_yolo_assets(
             }),
             "placement_strategy": "native-observation-aware-v4",
             "placement_score_mode": "network-only",
-            "max_candidates": len(splitter["components"]),
+            # This ONNX_SOURCE catalog declares one fixed hybrid boundary.
+            "max_candidates": 1,
             "max_policy_ms": min(60_000, max(5000, timeout_ms)),
             "provider_names": providers,
             "max_reentries": 1,
@@ -664,7 +669,7 @@ def prepare_native_yolo_assets(
             [path for path in bundle_root.rglob("*") if path.is_file()] +
             [path for path in package_dir.rglob("*") if path.is_file()] +
             [catalogue_registry, catalogue_registry.parent / "catalogue-public.pem"])),
-        "roles": list(splitter["components"][1]["roles"]),
+        "roles": list(splitter["roles"]),
         "model": model_json,
         "manifest_digest": manifest_digest,
         "canonical_graph_digest": canonical_graph_digest,

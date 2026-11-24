@@ -399,6 +399,62 @@ BOOST_AUTO_TEST_CASE(TrackerIdsRequireIncrementRoomAndActivatedSnapshotMembershi
   }
 }
 
+BOOST_AUTO_TEST_CASE(NativeCompactBackendBindsSchemaFrameAndIdWatermarkAcrossRestore)
+{
+  auto firstContext = window();
+  firstContext.nativeBackend = true;
+  const auto compactCandidate = [] (const VehicleWindowContext& context, uint64_t watermark) {
+    auto backend = candidate(context);
+    backend["schema"] = VEHICLE_NATIVE_BACKEND_WINDOW_SCHEMA;
+    auto& state = backend["backendState"];
+    state["schema"] = VEHICLE_NATIVE_BACKEND_STATE_SCHEMA;
+    for (const auto& frame : context.frames) {
+      state["cameras"][frame.cameraId] = {
+        {"frameId", context.sequence}, {"idHighWatermark", watermark},
+        {"tracked", Json::array()}, {"lost", Json::array()}, {"removedIds", Json::array()}};
+    }
+    auto track = person_fixture::stockTrack(1);
+    track["frameId"] = context.sequence;
+    state["cameras"]["UAV1"]["tracked"].push_back(track);
+    backend["frames"][0]["detections"][0]["byteTrackId"] = 1;
+    return backend;
+  };
+  const auto first = compactCandidate(firstContext, 4);
+  BOOST_CHECK_THROW(parseUavVehicleBackendWindow(first.dump(), window()), std::invalid_argument);
+  BOOST_CHECK_THROW(parseUavVehicleBackendWindow(candidate(firstContext).dump(), firstContext),
+                    std::invalid_argument);
+  auto invalid = first;
+  invalid["backendState"]["cameras"]["UAV1"]["tracked"][0]["isActivated"] = false;
+  BOOST_CHECK_THROW(parseUavVehicleBackendWindow(invalid.dump(), firstContext), std::invalid_argument);
+  const auto committed = process(firstContext, first);
+  BOOST_CHECK_EQUAL(Json::parse(committed.resultJson)["frames"][0]["tracks"][0]["localId"], 1);
+
+  auto nextContext = window(2);
+  UavVehicleTrackingEngine engine;
+  BOOST_CHECK_THROW(engine.restoreState(committed.candidateStateJson, nextContext),
+                    std::invalid_argument);
+  nextContext.nativeBackend = true;
+  engine.restoreState(committed.candidateStateJson, nextContext);
+  const auto second = compactCandidate(nextContext, 4);
+  invalid = second;
+  invalid["backendState"]["cameras"]["UAV2"]["frameId"] = 3;
+  BOOST_CHECK_EXCEPTION(
+    engine.processWindow(nextContext, parseUavVehicleBackendWindow(invalid.dump(), nextContext)),
+    std::invalid_argument, [] (const auto& error) {
+      return std::string(error.what()).find("frame did not advance once") != std::string::npos;
+    });
+  invalid = second;
+  invalid["backendState"]["cameras"]["UAV1"]["idHighWatermark"] = 1;
+  BOOST_CHECK_EXCEPTION(
+    engine.processWindow(nextContext, parseUavVehicleBackendWindow(invalid.dump(), nextContext)),
+    std::invalid_argument, [] (const auto& error) {
+      return std::string(error.what()).find("watermark regressed") != std::string::npos;
+    });
+  const auto done = engine.processWindow(
+    nextContext, parseUavVehicleBackendWindow(second.dump(), nextContext));
+  BOOST_CHECK_EQUAL(Json::parse(done.resultJson)["frames"][0]["tracks"][0]["localId"], 1);
+}
+
 BOOST_AUTO_TEST_CASE(GlobalCounterExhaustionDoesNotReturnUnrestorableCandidate)
 {
   auto context = window();

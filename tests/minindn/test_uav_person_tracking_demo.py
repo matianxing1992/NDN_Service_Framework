@@ -47,24 +47,6 @@ def _service_status(unit):
     return state
 
 
-def _proc_identity(pid):
-    """Return a bounded Linux process identity for the active worker oracle."""
-    proc = Path("/proc") / str(pid)
-    try:
-        stat_text = (proc / "stat").read_text(encoding="ascii")
-        fields = stat_text[stat_text.rfind(")") + 2:].split()
-        if len(fields) <= 19:
-            return None
-        argv = [part.decode("utf-8", errors="replace")
-                for part in (proc / "cmdline").read_bytes().split(b"\0") if part]
-        cgroups = {}
-        for line in (proc / "cgroup").read_text(encoding="ascii").splitlines():
-            hierarchy, controllers, path = line.split(":", 2)
-            cgroups[(hierarchy, controllers)] = path
-        return {"state": fields[0], "parentPid": int(fields[1]),
-                "startTimeTicks": int(fields[19]), "argv": argv, "cgroups": cgroups}
-    except (OSError, ValueError, IndexError):
-        return None
 
 
 def _start_and_wait_service(command, unit, log, timeout=1340, observer=None):
@@ -169,7 +151,7 @@ class PersonTrackingQualificationTests(unittest.TestCase):
         self.assertTrue(config_path.is_absolute())
         config = _load(config_path, 65536)
         paths = {"sourceManifest", "evaluationManifest", "dataAdmission", "trackingProfile",
-                 "detectorModel", "reidModel", "workerPython", "outputRoot"}
+                 "detectorModel", "reidModel", "outputRoot"}
         self.assertEqual(set(config), paths | {"headless"})
         self.assertIs(type(config["headless"]), bool)
         for key in paths:
@@ -205,7 +187,7 @@ class PersonTrackingQualificationTests(unittest.TestCase):
                    "--source-manifest", config["sourceManifest"],
                    "--tracking-profile", config["trackingProfile"],
                    "--model", config["detectorModel"], "--reid-model", config["reidModel"],
-                   "--worker-python", config["workerPython"], "--output-dir", str(output),
+                   "--application-mode", "compat", "--output-dir", str(output),
                    "--run", "--run-seconds", "60", "--window-count", "120",
                    "--global-deadline-ms", "900000", "--fault", "none"]
         if config["headless"]:
@@ -313,11 +295,11 @@ class PersonTrackingFaultTests(unittest.TestCase):
         output = root / label
         self.assertFalse(output.exists(), "preserve previous attempt")
         _check_output_socket_path(output)
-        command = [config["workerPython"], "-m", "Experiments.UAV.run_multicamera_tracking_demo",
+        command = [sys.executable, "-m", "Experiments.UAV.run_multicamera_tracking_demo",
                    "--source-manifest", str(root / "source-manifest.json"),
                    "--tracking-profile", str(profile), "--model", str(detector),
                    "--reid-model", config["reidModel"],
-                   "--worker-python", config["workerPython"], "--output-dir", str(output),
+                   "--application-mode", "compat", "--output-dir", str(output),
                    "--headless", "--run-seconds", "1.5", "--window-count", "3",
                    "--global-deadline-ms", "90000", "--fault", fault,
                    "--run" if run else "--preflight"]
@@ -357,7 +339,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
                   "serviceState": state, "cleanup": cleanup,
                   "networkStarted": (output / "person-network-attempt.json").exists(),
                   "computeStarted": (output / "compute.log").exists(),
-                  "workerRootCreated": (output / "private/compute/worker").exists(),
+                  "transactionWorkspaceCreated": (output / "private/compute/worker").exists(),
                   "securityProvisioned": ((output / "private/keychain").exists() or
                                           (output / "private/config/root.cert").exists()),
                   "logDigest": digest_file(log)}
@@ -370,7 +352,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         self.assertTrue(cleanup["drained"], cleanup)
         self.assertEqual(record["networkStarted"], network_expected, record)
         if not network_expected:
-            for key in ("computeStarted", "workerRootCreated", "securityProvisioned"):
+            for key in ("computeStarted", "transactionWorkspaceCreated", "securityProvisioned"):
                 self.assertFalse(record[key], (label, key))
         return result.returncode, output
 
@@ -381,7 +363,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         self.assertTrue(config_path.is_absolute())
         config = _load(config_path, 65536)
         self.assertEqual(set(config), {"sourceManifest", "trackingProfile", "detectorModel",
-                                      "reidModel", "workerPython", "outputRoot"})
+                                      "reidModel", "outputRoot"})
         for key, value in config.items():
             self.assertIsInstance(value, str)
             self.assertTrue(Path(value).is_absolute(), key)
@@ -416,7 +398,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         observation = {"status": "OBSERVED_NOT_QUALIFIED", "exitCode": code,
                        "computeLogDigest": digest_file(output / "compute.log"),
                        "gsLogDigest": digest_file(output / "ground-station.log"),
-                       "workerCalls": compute.count("SPEC210_TRACKING_WORKER_INVOKED"),
+                       "backendCalls": compute.count("SPEC226_NATIVE_BACKEND_INVOKED"),
                        "transactionManifests": [str(path) for path in manifests],
                        "receiptDigest": digest_file(output / "person-run-receipt.json")}
         (root / "F6-precommit-observation.json").write_text(json.dumps(observation, indent=2))
@@ -432,7 +414,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
                 "SPEC210_USER_CANCEL_CANDIDATE_DISCARDED window=window-0",
                 "SPEC210_USER_CANCEL_ROLE_CLOSED"):
             self.assertEqual(compute.count(marker), 1, marker)
-        self.assertEqual(observation["workerCalls"], 1)
+        self.assertEqual(observation["backendCalls"], 1)
         self.assertEqual(manifests, [])
         events = [json.loads(line[len("SPEC219_TRACE "):]) for line in compute.splitlines()
                   if line.startswith("SPEC219_TRACE ")]
@@ -465,7 +447,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         for key in ("profileDigest", "computationDigest", "sourceManifestDigest"):
             self.assertEqual(receipt[key], recovery[key], key)
         self.assertEqual((recovered_output / "compute.log").read_text().count(
-            "SPEC210_TRACKING_WORKER_INVOKED"), 3)
+            "SPEC226_NATIVE_BACKEND_INVOKED"), 3)
         sys.path.insert(0, str(Path(shutil.which("UavTrackingNode")).parent.parent /
                                "libexec/ndnsf-uav/tracking"))
         from tracking_display import PersonPresentationReader
@@ -559,91 +541,6 @@ class PersonTrackingFaultTests(unittest.TestCase):
         self.assertNotEqual(active_receipt["missionId"], active_recovery_receipt["missionId"])
         for key in ("profileDigest", "computationDigest", "sourceManifestDigest"):
             self.assertEqual(active_receipt[key], active_recovery_receipt[key], key)
-
-        worker_observation = {}
-
-        def observe_worker_cancel(output, unit, state):
-            gate = output / "private/spec219-person-worker-cancel"
-            if not (gate / "cancel-ready").is_file() or worker_observation:
-                return
-            self.assertEqual(state.get("ActiveState"), "active")
-            self.assertEqual(state.get("SubState"), "running")
-            active = _load(gate / "detector-inference-active.json", 4096)
-            self.assertEqual(active["schema"], "spec219-person-worker-active-v1")
-            self.assertEqual(active["runId"], output.name)
-            self.assertEqual(active["windowId"], "window-0")
-            self.assertEqual(active["sequence"], 1)
-            self.assertEqual(active["cameraId"], "UAV1")
-            self.assertEqual(active["phase"], "after-first-detector-inference")
-            process = _proc_identity(active["pid"])
-            self.assertIsNotNone(process, "worker disappeared before cancellation")
-            self.assertEqual(process["startTimeTicks"], active["startTimeTicks"])
-            self.assertNotIn(process["state"], ("Z", "X", "T"))
-            manifest = _load(output / "manifest.json", 4 * 1024 * 1024)
-            scripts = [Path(item["path"]) for item in
-                       manifest["personTracking"]["frozenFiles"]
-                       if Path(item["path"]).name == "tracking_worker.py"]
-            self.assertEqual(len(scripts), 1)
-            self.assertEqual(process["argv"].count(str(scripts[0])), 1)
-            self.assertIn("--person-session", process["argv"])
-            for option, expected in (("--run-id", output.name),
-                                     ("--mission-id", output.name),
-                                     ("--window-id", "window-0"), ("--sequence", "1")):
-                index = process["argv"].index(option)
-                self.assertEqual(process["argv"][index + 1], expected)
-            self.assertEqual(process["cgroups"].get(("0", "")), state.get("ControlGroup"))
-            compute = (output / "compute.log").read_text(errors="replace")
-            self.assertIn("SPEC210_TRACKING_WORKER_INVOKED window=window-0", compute)
-            self.assertNotIn("SPEC219_PERSON_SESSION_DONE jobId=", compute)
-            worker_observation.update({
-                "pid": active["pid"], "startTimeTicks": active["startTimeTicks"],
-                "phase": active["phase"], "state": process["state"],
-                "cgroup": process["cgroups"][("0", "")],
-            })
-            with (root / "worker-active-cancel-observation.json").open("x") as stream:
-                json.dump(worker_observation, stream, indent=2)
-                stream.write("\n")
-            (gate / "release-cancel").touch(exist_ok=False)
-
-        code, worker_cancel = self._installed_case(
-            root, config, "worker-active-cancel", profile, detector, run=True,
-            fault="user-cancel-during-person-worker", network_expected=True,
-            observer=observe_worker_cancel)
-        self.assertTrue(worker_observation, "worker inference was not independently observed")
-        worker_compute = (worker_cancel / "compute.log").read_text()
-        worker_gs = (worker_cancel / "ground-station.log").read_text()
-        worker_receipt = _load(worker_cancel / "person-run-receipt.json", 16 * 1024 * 1024)
-        worker_runtime = _load(worker_cancel / "person-worker-cancel-runtime.json", 65536)
-        self.assertEqual(code, 1)
-        self.assertTrue(worker_receipt["terminal"])
-        self.assertEqual(worker_receipt["outcome"], "collaboration-cancelled")
-        self.assertEqual(worker_receipt["counts"]["committedWindows"], 0)
-        self.assertEqual(worker_receipt["counts"]["displayedFrames"], 0)
-        self.assertEqual(worker_compute.count(
-            "SPEC210_TRACKING_WORKER_INVOKED window=window-0"), 1)
-        self.assertNotIn("SPEC219_PERSON_SESSION_DONE jobId=", worker_compute)
-        self.assertEqual(worker_compute.count(
-            "SPEC210_USER_CANCEL_ACK_QUEUED window=window-0 authority_revoked=true"), 1)
-        self.assertEqual(worker_compute.count("SPEC210_USER_CANCEL_ROLE_CLOSED"), 1)
-        self.assertEqual(worker_gs.count("SPEC210_CANCEL_ACK_CONFIRMED window=0"), 1)
-        self.assertEqual(worker_gs.count(
-            "SPEC191_TRACKING_CANCELLED window=0 accepted=true"), 1)
-        self.assertTrue((worker_cancel / "private/spec219-person-worker-cancel/cancel-sent").is_file())
-        self.assertEqual(worker_runtime["schema"], "spec219-person-worker-cancel-runtime-v1")
-        self.assertTrue(worker_runtime["workerExitedBeforeRunnerCleanup"])
-        self.assertEqual(worker_runtime["workerPid"], worker_observation["pid"])
-        self.assertEqual(worker_runtime["workerStartTimeTicks"],
-                         worker_observation["startTimeTicks"])
-        self.assertIn(worker_runtime["workerExitState"], ("missing", "Z"))
-        self.assertFalse((worker_cancel / "private/compute/worker/tracking-result.json").exists())
-        self.assertEqual(list((worker_cancel / "private/compute/worker/transactions").rglob(
-            "manifest.json")), [])
-        require_cancel_projection(worker_cancel, worker_receipt)
-        require_clean(worker_receipt, worker_cancel)
-        worker_recovery, worker_recovery_receipt = require_recovery("worker-cancel-recovery")
-        self.assertNotEqual(worker_receipt["missionId"], worker_recovery_receipt["missionId"])
-        for key in ("profileDigest", "computationDigest", "sourceManifestDigest"):
-            self.assertEqual(worker_receipt[key], worker_recovery_receipt[key], key)
 
         # The runner releases the terminal mutex only after the cancellation
         # request is waiting. The success response must win exactly once and the
@@ -757,19 +654,11 @@ class PersonTrackingFaultTests(unittest.TestCase):
         with (root / "F6-runtime-result.json").open("x") as stream:
             json.dump({
                 "status": "PASS_SCOPED",
-                "scope": "F6 active fetch/worker cancellation, terminal lock orderings, and fresh recovery",
+                "scope": "F6 native active fetch cancellation, terminal lock orderings, and fresh recovery",
                 "cases": {
                     "activeFetchCancel": {"outcome": active_receipt["outcome"],
                                            "missionId": active_receipt["missionId"],
                                            "recoveryMissionId": active_recovery_receipt["missionId"]},
-                    "workerActiveCancel": {
-                        "outcome": worker_receipt["outcome"],
-                        "missionId": worker_receipt["missionId"],
-                        "phase": worker_observation["phase"],
-                        "workerPid": worker_runtime["workerPid"],
-                        "workerExitedBeforeRunnerCleanup":
-                            worker_runtime["workerExitedBeforeRunnerCleanup"],
-                        "recoveryMissionId": worker_recovery_receipt["missionId"]},
                     "responseWins": {"outcome": response_receipt["outcome"],
                                      "missionId": response_receipt["missionId"],
                                      "committedWindows": response_receipt["counts"]["committedWindows"]},
@@ -782,8 +671,6 @@ class PersonTrackingFaultTests(unittest.TestCase):
                 "cleanup": {label: _load(path / "person-cleanup.json", 65536)["cleanupErrors"]
                             for label, path in (("active", active),
                                                 ("activeRecovery", active_recovery),
-                                                ("workerActive", worker_cancel),
-                                                ("workerRecovery", worker_recovery),
                                                 ("responseWins", response_wins),
                                                 ("cancelWins", cancel_wins),
                                                 ("cancelRecovery", cancel_recovery))},
@@ -810,8 +697,8 @@ class PersonTrackingFaultTests(unittest.TestCase):
 
         compute = (restarted / "compute.log").read_text()
         invocations = [line for line in compute.splitlines()
-                       if line.startswith("SPEC210_TRACKING_WORKER_INVOKED ")]
-        self.assertEqual(invocations, ["SPEC210_TRACKING_WORKER_INVOKED window=window-0"])
+                       if line.startswith("SPEC226_NATIVE_BACKEND_INVOKED ")]
+        self.assertEqual(invocations, ["SPEC226_NATIVE_BACKEND_INVOKED window=window-0"])
         transactions = restarted / "private/compute/worker/transactions"
         manifests = list(transactions.rglob("manifest.json"))
         self.assertEqual(len(manifests), 1)
@@ -948,7 +835,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         observation = {"status": "OBSERVED_NOT_QUALIFIED", "exitCode": code,
                        "windowZeroRequests": requests, "windowZeroSuccesses": successes,
                        "cachedEvents": cached,
-                       "workerCalls": compute.count("SPEC210_TRACKING_WORKER_INVOKED"),
+                       "backendCalls": compute.count("SPEC226_NATIVE_BACKEND_INVOKED"),
                        "sourceDigest": digest_file(root / "source-manifest.json"),
                        "gsLogDigest": digest_file(output / "ground-station.log"),
                        "computeLogDigest": digest_file(output / "compute.log")}
@@ -962,7 +849,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         self.assertEqual(code, 0, "native committed-window replay must succeed")
         self.assertEqual(len(successes), 2)
         self.assertEqual(gs.count("SPEC219_COMMITTED_WINDOW_REPLAY_VERIFIED "), 1)
-        self.assertEqual(observation["workerCalls"], 3)
+        self.assertEqual(observation["backendCalls"], 3)
 
     def test_f4_replay_preserves_state_rejects_alteration_then_fresh_mission_recovers(self):
         self.assertTrue(hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"))
@@ -1064,7 +951,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         traces = [json.loads(line[len("SPEC219_TRACE "):]) for line in compute.splitlines()
                   if line.startswith("SPEC219_TRACE ")]
         self.assertEqual(sum(item.get("event") == "cached" for item in traces), 1)
-        self.assertEqual(compute.count("SPEC210_TRACKING_WORKER_INVOKED"), 1)
+        self.assertEqual(compute.count("SPEC226_NATIVE_BACKEND_INVOKED"), 1)
         rejected = _load(output / "person-run-receipt.json", 16 * 1024 * 1024)
         self.assertEqual(rejected["outcome"], "collaboration-failed")
         self.assertEqual(rejected["counts"]["committedWindows"], 1)
@@ -1108,7 +995,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
             self.assertLessEqual(receipt["cleanupSeconds"], 10)
         with (root / "F4-state-result.json").open("x") as stream:
             json.dump({"status": "PASS", "scope": "F4 positive/cache/state/alteration/recovery",
-                       "requestIds": requests, "workerCalls": 1, "cachedEvents": 1,
+                       "requestIds": requests, "backendCalls": 1, "cachedEvents": 1,
                        "retained": observation["checkpoints"][0]["snapshot"],
                        "observationDigest": digest_file(root / "replay-state-observation.json"),
                        "failureProjectionDigest": digest_file(projection_path),
@@ -1300,8 +1187,8 @@ class PersonTrackingFaultTests(unittest.TestCase):
         self.assertTrue(errors[0].startswith("SegmentFetcher error 3:") or
                         errors[0] == "Data signer is not authorized for expected producer /example/uav/drone/UAV3",
                         "require native signature/Producer rejection, not a timeout: " + errors[0])
-        self.assertEqual(compute.count("SPEC210_TRACKING_WORKER_INVOKED"), 1)
-        self.assertNotIn("SPEC210_TRACKING_WORKER_INVOKED window=window-1", compute)
+        self.assertEqual(compute.count("SPEC226_NATIVE_BACKEND_INVOKED"), 1)
+        self.assertNotIn("SPEC226_NATIVE_BACKEND_INVOKED window=window-1", compute)
         traces = [json.loads(line[len("SPEC219_TRACE "):]) for line in compute.splitlines()
                   if line.startswith("SPEC219_TRACE ")]
         self.assertFalse(any(item.get("event") == "admitted" and
@@ -1372,7 +1259,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
             self.assertLessEqual(receipt["cleanupSeconds"], 10)
             compute = (output / "compute.log").read_text()
             self.assertIn("SPEC191_TRACKING_NODE_READY", compute)
-            self.assertNotIn("SPEC210_TRACKING_WORKER_INVOKED", compute)
+            self.assertNotIn("SPEC226_NATIVE_BACKEND_INVOKED", compute)
             transactions = output / "private/compute/worker/transactions"
             for filename in ("manifest.json", "result.json", "state.json"):
                 self.assertEqual(list(transactions.rglob(filename)), [], filename)
@@ -1407,7 +1294,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
             self.assertNotEqual(rejected["missionId"], recovery["missionId"])
             for key in ("profileDigest", "computationDigest", "sourceManifestDigest"):
                 self.assertEqual(rejected[key], recovery[key], key)
-        self.assertEqual((output / "compute.log").read_text().count("SPEC210_TRACKING_WORKER_INVOKED"), 3)
+        self.assertEqual((output / "compute.log").read_text().count("SPEC226_NATIVE_BACKEND_INVOKED"), 3)
         sys.path.insert(0, str(Path(shutil.which("UavTrackingNode")).parent.parent /
                                "libexec/ndnsf-uav/tracking"))
         from tracking_display import PersonPresentationReader
@@ -1433,9 +1320,9 @@ class PersonTrackingFaultTests(unittest.TestCase):
         self.assertEqual(rejected["counts"]["committedWindows"], 1)
         self.assertEqual(rejected["failedWindows"], 2)
         compute = (output / "compute.log").read_text()
-        self.assertEqual(compute.count("SPEC210_TRACKING_WORKER_INVOKED"), 1)
-        self.assertIn("SPEC210_TRACKING_WORKER_INVOKED window=window-0", compute)
-        self.assertNotIn("SPEC210_TRACKING_WORKER_INVOKED window=window-1", compute)
+        self.assertEqual(compute.count("SPEC226_NATIVE_BACKEND_INVOKED"), 1)
+        self.assertIn("SPEC226_NATIVE_BACKEND_INVOKED window=window-0", compute)
+        self.assertNotIn("SPEC226_NATIVE_BACKEND_INVOKED window=window-1", compute)
         transactions = output / "private/compute/worker/transactions"
         manifests = list(transactions.rglob("manifest.json"))
         self.assertEqual(len(manifests), 1)
@@ -1482,7 +1369,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         for key in ("profileDigest", "computationDigest", "sourceManifestDigest"):
             self.assertEqual(rejected[key], recovery[key], key)
         self.assertEqual((recovered_output / "compute.log").read_text().count(
-            "SPEC210_TRACKING_WORKER_INVOKED"), 3)
+            "SPEC226_NATIVE_BACKEND_INVOKED"), 3)
         recovered_reader = PersonPresentationReader(
             recovered_output / "private/ground-station/presentation/context.json")
         for window in range(3):
@@ -1505,174 +1392,6 @@ class PersonTrackingFaultTests(unittest.TestCase):
                        "remaining": ["signature/cache variants", "formal GUI fault capture"]},
                       stream, indent=2)
 
-    def test_f5_actual_worker_crash_preserves_prior_transaction_then_recovers(self):
-        self.assertTrue(hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"),
-                        "pidfd identity is required; do not fall back to numeric kill")
-        root, config, profile, detector = self._network_fixture("F5")
-        injection = {}
-        installed_node = Path(shutil.which("UavTrackingNode")).resolve()
-        installed_worker = installed_node.parent.parent / "libexec/ndnsf-uav/tracking/tracking_worker.py"
-        self.assertTrue(installed_worker.is_file())
-
-        def bounded_text(path, limit=65536):
-            with path.open("rb") as stream:
-                payload = stream.read(limit + 1)
-            self.assertLessEqual(len(payload), limit, str(path))
-            return payload.decode("utf-8", errors="replace")
-
-        def crash_owned_worker(output, unit, service_state):
-            if injection:
-                return
-            compute_path = output / "compute.log"
-            if not compute_path.exists():
-                return
-            triggers = []
-            for line in bounded_text(compute_path, 16 * 1024 * 1024).splitlines():
-                if line.startswith("SPEC219_TRACE ") and '"worker-start"' in line:
-                    event = json.loads(line[len("SPEC219_TRACE "):])
-                    if (event.get("event") == "worker-start" and
-                            event.get("windowId") == "window-1" and
-                            event.get("runId") == output.name and
-                            event.get("missionId") == output.name):
-                        triggers.append(event)
-            if not triggers:
-                return
-            self.assertEqual(len(triggers), 1, "one actual affected worker exchange required")
-            expected_group = "/system.slice/" + unit + ".service"
-            self.assertEqual(service_state.get("ControlGroup"), expected_group)
-            group = CGROUP_ROOT / expected_group.lstrip("/")
-            pids = bounded_text(group / "cgroup.procs", 16384).splitlines()
-            self.assertLessEqual(len(pids), 256)
-            candidates = []
-            expected_arguments = {"--run-id": output.name, "--mission-id": output.name,
-                                  "--person-window": str(output / "private/compute/worker/person-backend-input.json")}
-            for pid_text in pids:
-                self.assertTrue(pid_text.isdecimal())
-                proc = Path("/proc") / pid_text
-                try:
-                    argv = bounded_text(proc / "cmdline").rstrip("\0").split("\0")
-                except FileNotFoundError:
-                    continue
-                if (len(argv) >= 3 and argv[:2] == [config["workerPython"], str(installed_worker)] and
-                        "--person-session" in argv and
-                        all(argv.count(key) == 1 and argv.index(key) + 1 < len(argv) and
-                            argv[argv.index(key) + 1] == value for key, value in expected_arguments.items())):
-                    candidates.append((int(pid_text), argv))
-            self.assertEqual(len(candidates), 1, "signal only the single verified owned person worker")
-            pid, argv = candidates[0]
-            fd = os.pidfd_open(pid, 0)
-            try:
-                proc = Path("/proc") / str(pid)
-                self.assertEqual(bounded_text(proc / "cmdline").rstrip("\0").split("\0"), argv)
-                worker_membership = bounded_text(proc / "cgroup")
-                self.assertEqual([line for line in worker_membership.splitlines() if line.startswith("0::")],
-                                 ["0::" + expected_group])
-                status = dict(line.split(":", 1) for line in bounded_text(proc / "status").splitlines())
-                parent_pid = int(status["PPid"].strip())
-                parent = Path("/proc") / str(parent_pid)
-                parent_argv = bounded_text(parent / "cmdline").rstrip("\0").split("\0")
-                self.assertEqual(Path(parent_argv[0]).resolve(), installed_node)
-                self.assertIn("--role", parent_argv)
-                self.assertEqual(parent_argv[parent_argv.index("--role") + 1], "compute")
-                parent_membership = bounded_text(parent / "cgroup")
-                self.assertEqual([line for line in parent_membership.splitlines() if line.startswith("0::")],
-                                 ["0::" + expected_group])
-                transactions = output / "private/compute/worker/transactions"
-                manifests = list(transactions.rglob("manifest.json"))
-                self.assertEqual(len(manifests), 1, "kill before affected transaction marker")
-                self.assertEqual(manifests[0].parent.name, "window-0")
-                original = {str(path.relative_to(output)): digest_file(path)
-                            for path in (manifests[0], manifests[0].parent / "result.json",
-                                         manifests[0].parent / "state.json")}
-                plan = {"pid": pid, "parentPid": parent_pid, "argv": argv,
-                        "unit": unit, "controlGroup": expected_group, "trigger": triggers[0],
-                        "workerCgroupMembership": worker_membership,
-                        "parentCgroupMembership": parent_membership,
-                        "signal": "SIGKILL", "preSignalMonotonicNs": time.monotonic_ns(),
-                        "priorTransactionDigests": original}
-                with (root / "worker-kill-plan.json").open("x") as stream:
-                    json.dump(plan, stream, indent=2)
-                signal.pidfd_send_signal(fd, signal.SIGKILL)
-                injection.update(plan, signalSent=True, signalSentMonotonicNs=time.monotonic_ns())
-                with (root / "worker-kill-result.json").open("x") as stream:
-                    json.dump(injection, stream, indent=2)
-            finally:
-                os.close(fd)
-
-        code, output = self._installed_case(root, config, "crash", profile, detector,
-                                             run=True, network_expected=True, observer=crash_owned_worker)
-        self.assertTrue(injection.get("signalSent"), "a pre-worker failRole is not a worker crash")
-        self.assertEqual(code, 1)
-        rejected = _load(output / "person-run-receipt.json", 16 * 1024 * 1024)
-        self.assertTrue(rejected["terminal"])
-        self.assertEqual(rejected["outcome"], "collaboration-failed")
-        self.assertEqual(rejected["counts"]["committedWindows"], 1)
-        self.assertEqual(rejected["failedWindows"], 2)
-        compute = (output / "compute.log").read_text()
-        self.assertEqual(compute.count("SPEC210_TRACKING_WORKER_INVOKED"), 2)
-        self.assertIn("TRACKING_WORKER_FAILED outcome=2 exit=137 system_error=0", compute)
-        transactions = output / "private/compute/worker/transactions"
-        for name in ("manifest.json", "result.json", "state.json"):
-            matches = list(transactions.rglob(name))
-            self.assertEqual(len(matches), 1)
-            self.assertEqual(matches[0].parent.name, "window-0")
-        for relative_path, before_digest in injection["priorTransactionDigests"].items():
-            self.assertEqual(digest_file(output / relative_path), before_digest)
-        projection_path = output / "private/ground-station/presentation/latest.json"
-        projection = _load(projection_path, 4 * 1024 * 1024)
-        self.assertEqual(projection["state"], "failure")
-        self.assertEqual(projection["windowId"], "window-1")
-        self.assertEqual(projection["lastGoodPresentation"], "window-0/presentation.json")
-        self.assertIn("CPU tracking worker failed to produce a candidate result/state pair", projection["reason"])
-        from Experiments.UAV.run_multicamera_tracking_demo import _person_failure_display_presented
-        self.assertTrue(_person_failure_display_presented(
-            (output / "ground-station-display.log").read_text(), run_id=output.name,
-            window_index=1, projection_digest=digest_file(projection_path), mode="headless"))
-        sys.path.insert(0, str(installed_worker.parent))
-        from tracking_display import PersonPresentationReader
-        reader = PersonPresentationReader(output / "private/ground-station/presentation/context.json")
-        prior_frames, failure = reader.load(reader.root / "window-0/presentation.json")
-        self.assertIsNone(failure)
-        self.assertEqual(len(prior_frames), 3)
-        retained_frames, failure = reader.load(projection_path)
-        self.assertEqual(retained_frames, prior_frames)
-        self.assertEqual(failure["window"], 1)
-        self.assertEqual(failure["projectionDigest"], digest_file(projection_path))
-        code, recovered_output = self._installed_case(root, config, "recovery", profile, detector,
-                                                       run=True, network_expected=True)
-        self.assertEqual(code, 0)
-        recovery = _load(recovered_output / "person-run-receipt.json", 16 * 1024 * 1024)
-        self.assertTrue(recovery["terminal"])
-        self.assertEqual(recovery["outcome"], "collaboration-result")
-        self.assertEqual(recovery["counts"]["committedWindows"], 3)
-        self.assertEqual(recovery["counts"]["receivedFrames"], 9)
-        self.assertEqual(recovery["counts"]["displayedFrames"], 9)
-        self.assertEqual(recovery["failedWindows"], 0)
-        self.assertNotEqual(rejected["missionId"], recovery["missionId"])
-        for key in ("profileDigest", "computationDigest", "sourceManifestDigest"):
-            self.assertEqual(rejected[key], recovery[key], key)
-        self.assertEqual((recovered_output / "compute.log").read_text().count(
-            "SPEC210_TRACKING_WORKER_INVOKED"), 3)
-        recovered_reader = PersonPresentationReader(
-            recovered_output / "private/ground-station/presentation/context.json")
-        for window in range(3):
-            frames, failure = recovered_reader.load(
-                recovered_reader.root / f"window-{window}/presentation.json")
-            self.assertIsNone(failure)
-            self.assertEqual(len(frames), 3)
-        for receipt in (rejected, recovery):
-            self.assertTrue(receipt["installedClosureVerified"])
-            self.assertEqual(receipt["remainingOwnedProcesses"], 0)
-            self.assertEqual(receipt["cleanupErrors"], [])
-            self.assertLessEqual(receipt["cleanupSeconds"], 10)
-        with (root / "F5-crash-result.json").open("x") as stream:
-            json.dump({"status": "PASS", "signalSent": True, "childExitCode": 137,
-                       "rejectedWindow": "window-1", "preservedWindow": "window-0",
-                       "priorTransactionDigests": injection["priorTransactionDigests"],
-                       "recoveryWindows": 3, "recoveryFrames": 9,
-                       "scope": "F5 actual worker crash only; F5 full row remains PARTIAL",
-                       "remaining": ["oversized output", "bounded inference resource failure"]},
-                      stream, indent=2)
 
     def test_f3_exact_frame_route_block_then_fresh_mission_recovers(self):
         import re
@@ -1793,8 +1512,8 @@ class PersonTrackingFaultTests(unittest.TestCase):
         reason = "tracking compute could not fetch " + observation["frameName"]
         compute = (output / "compute.log").read_text()
         self.assertIn(reason, compute)
-        self.assertEqual(compute.count("SPEC210_TRACKING_WORKER_INVOKED"), 1)
-        self.assertIn("SPEC210_TRACKING_WORKER_INVOKED window=window-0", compute)
+        self.assertEqual(compute.count("SPEC226_NATIVE_BACKEND_INVOKED"), 1)
+        self.assertIn("SPEC226_NATIVE_BACKEND_INVOKED window=window-0", compute)
         transactions = output / "private/compute/worker/transactions"
         manifests = list(transactions.rglob("manifest.json"))
         self.assertEqual(len(manifests), 1)
@@ -1837,7 +1556,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         for key in ("profileDigest", "computationDigest", "sourceManifestDigest"):
             self.assertEqual(rejected[key], recovery[key], key)
         self.assertEqual((recovered_output / "compute.log").read_text().count(
-            "SPEC210_TRACKING_WORKER_INVOKED"), 3)
+            "SPEC226_NATIVE_BACKEND_INVOKED"), 3)
         reader = PersonPresentationReader(
             recovered_output / "private/ground-station/presentation/context.json")
         for window in range(3):
@@ -1879,10 +1598,11 @@ class PersonTrackingFaultTests(unittest.TestCase):
         from tracking_display import PersonPresentationReader
         from Experiments.UAV.run_multicamera_tracking_demo import _person_failure_display_presented
         rejected_receipts, cases = [], []
-        for label, field, bound, committed, outcome, backend_error in (
-                ("persons", "maxPersonsPerFrame", 4, 1, 2, "PERSON_LIMIT"),
-                ("stdout", "maxChildLogBytes", 1024, 1, 5, None),
-                ("json", "maxResultBytes", 1024, 0, 2, "BACKEND_RESULT_LIMIT")):
+        for label, field, bound, committed, backend_error in (
+                ("persons", "maxPersonsPerFrame", 4, 1,
+                 "person backend exceeded maxPersonsPerFrame"),
+                ("json", "maxResultBytes", 1024, 0,
+                 "native person backend result exceeds its byte bound")):
             bounded_profile = {**original, "limits": {**original["limits"], field: bound}}
             self.assertNotEqual(original["limits"][field], bound)
             self.assertEqual({key for key in original["limits"]
@@ -1921,13 +1641,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
             self.assertEqual(receipt["failedWindows"], 3 - committed)
             self.assertEqual(receipt["profileDigest"], parsed_profile.digest)
             compute = (output / "compute.log").read_text()
-            self.assertEqual(compute.count("SPEC210_TRACKING_WORKER_INVOKED"), committed + 1)
-            self.assertIn("TRACKING_WORKER_FAILED outcome=" + str(outcome) + " exit=", compute)
-            if backend_error:
-                self.assertIn("TRACKING_WORKER_FAILED outcome=2 exit=2 system_error=0", compute)
-                errors = [json.loads(line) for line in compute.splitlines()
-                          if line.startswith('{"event": "TRACKING_FAILED",')]
-                self.assertEqual([error["error"] for error in errors], [backend_error])
+            self.assertEqual(compute.count("SPEC226_NATIVE_BACKEND_INVOKED"), committed + 1)
             transactions = output / "private/compute/worker/transactions"
             for filename in ("manifest.json", "result.json", "state.json"):
                 matches = list(transactions.rglob(filename))
@@ -1939,7 +1653,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
             projection = _load(projection_path, 4 * 1024 * 1024)
             self.assertEqual(projection["state"], "failure")
             self.assertEqual(projection["windowId"], f"window-{committed}")
-            self.assertIn("CPU tracking worker failed to produce a candidate result/state pair", projection["reason"])
+            self.assertIn(backend_error, projection["reason"])
             self.assertTrue(_person_failure_display_presented(
                 (output / "ground-station-display.log").read_text(), run_id=output.name,
                 window_index=committed, projection_digest=digest_file(projection_path), mode="headless"))
@@ -1966,7 +1680,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
                 first = _load(prior_path, 4 * 1024 * 1024)
                 self.assertEqual([item["inputDigest"] for item in first["images"]], expected_first_images)
             cases.append({"case": label, "profileDigest": parsed_profile.digest,
-                          "changedLimit": field, "bound": bound, "nativeOutcome": outcome,
+                          "changedLimit": field, "bound": bound, "nativeFailure": backend_error,
                           "priorCommittedWindows": committed,
                           "failureProjectionDigest": digest_file(projection_path), "prior": prior})
         code, output = self._installed_case(root, config, "recovery", profile, detector,
@@ -1980,7 +1694,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         self.assertEqual(recovery["counts"]["displayedFrames"], 9)
         self.assertEqual(recovery["failedWindows"], 0)
         self.assertEqual(recovery["profileDigest"], load_person_profile(profile).digest)
-        self.assertEqual((output / "compute.log").read_text().count("SPEC210_TRACKING_WORKER_INVOKED"), 3)
+        self.assertEqual((output / "compute.log").read_text().count("SPEC226_NATIVE_BACKEND_INVOKED"), 3)
         reader = PersonPresentationReader(output / "private/ground-station/presentation/context.json")
         for window in range(3):
             frames, failure = reader.load(reader.root / f"window-{window}/presentation.json")
@@ -2000,7 +1714,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         with (root / "F5-limits-result.json").open("x") as stream:
             json.dump({"status": "PASS", "cases": cases, "recoveryWindows": 3,
                        "recoveryFrames": 9, "originalProfileDigest": original_digest,
-                       "scope": "F5 bounded actual resource/output guards; combine B134 crash evidence",
+                       "scope": "F5 bounded native resource/output guards",
                        "remaining": ["other fault rows", "original accuracy", "formal GUI"]},
                       stream, indent=2)
 
@@ -2012,7 +1726,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
         self.assertTrue(config_path.is_absolute())
         config = _load(config_path, 65536)
         self.assertEqual(set(config), {"sourceManifest", "trackingProfile", "detectorModel",
-                                      "reidModel", "workerPython", "outputRoot"})
+                                      "reidModel", "outputRoot"})
         for key, value in config.items():
             self.assertIsInstance(value, str)
             self.assertTrue(Path(value).is_absolute(), key)
@@ -2020,13 +1734,6 @@ class PersonTrackingFaultTests(unittest.TestCase):
                 self.assertTrue(Path(value).is_file(), key)
         self.assertIsNotNone(shutil.which("UavTrackingNode"))
         self.assertIsNotNone(shutil.which("systemd-run"))
-        probe = subprocess.run([config["workerPython"], "-c",
-                                "import json,torch; print(json.dumps(torch.cuda.is_available()))"],
-                               capture_output=True, text=True, timeout=15,
-                               env=dict(os.environ, PYTHONNOUSERSITE="1", PYTHONPATH=""))
-        self.assertEqual(probe.returncode, 0, probe.stderr[:1024])
-        if json.loads(probe.stdout) is not False:
-            self.skipTest("requires an actually unavailable CUDA device; never launch a negative on GPU")
         root = Path(config["outputRoot"]) / "F8"
         _check_output_socket_path(root / "cpu-recovery")
         self.assertFalse(root.exists(), "use a new fault-validation purpose root")
@@ -2043,13 +1750,13 @@ class PersonTrackingFaultTests(unittest.TestCase):
         profile_path = Path(config["trackingProfile"])
         profile = _load(profile_path, 16384)
         self.assertEqual(profile["requestedDevice"], "cpu")
-        bad_weights = root / "wrong-checkpoint.pt"
+        bad_weights = root / "wrong-model.onnx"
         bad_weights.write_bytes(b"deliberately wrong nonempty checkpoint; must never be loaded")
         code, output = self._installed_case(root, config, "wrong-weights", profile_path,
                                            bad_weights, run=True)
         self.assertEqual(code, 2)
         diagnostic = (output / "person-computation-inspection.stderr").read_text()
-        self.assertIn("person model files do not match the tracking profile", diagnostic)
+        self.assertIn("native person models do not match the tracking profile", diagnostic)
         self.assertFalse((output / "person-computation-inspection.stdout").read_bytes())
         cuda_profile = root / "cuda-profile.json"
         profile["requestedDevice"] = "cuda:0"
@@ -2057,18 +1764,14 @@ class PersonTrackingFaultTests(unittest.TestCase):
         code, output = self._installed_case(root, config, "cuda-unavailable", cuda_profile,
                                            Path(config["detectorModel"]), run=True)
         self.assertEqual(code, 2)
-        failed = _load(output / "preflight.json", 65536)
-        self.assertFalse(failed["ok"])
-        self.assertNotEqual(failed["personDeviceProbe"]["returncode"], 0)
-        self.assertIn("cuda", failed["personDeviceProbe"]["stderr"].lower())
-        self.assertNotIn('"device": "cpu"', failed["personDeviceProbe"]["stdout"])
+        diagnostic = (output / "person-computation-inspection.stderr").read_text()
+        self.assertIn("native person backend currently supports CPU only", diagnostic)
+        self.assertFalse((output / "person-computation-inspection.stdout").read_bytes())
         code, output = self._installed_case(root, config, "cpu-recovery", profile_path,
                                            Path(config["detectorModel"]), run=False)
         self.assertEqual(code, 0)
         corrected = _load(output / "preflight.json", 65536)
         self.assertTrue(corrected["ok"], corrected["errors"])
-        self.assertEqual(corrected["personDeviceProbe"]["returncode"], 0)
-        self.assertIn('"device": "cpu"', corrected["personDeviceProbe"]["stdout"])
         from Experiments.UAV.run_multicamera_tracking_demo import preflight
         frozen = _load(output / "manifest.json", 4 * 1024 * 1024)
         installed_node = Path(shutil.which("UavTrackingNode")).resolve()
@@ -2087,7 +1790,6 @@ class PersonTrackingFaultTests(unittest.TestCase):
                        "injectedExpectedDigest": entries[0]["digest"], "preflight": refused},
                       stream, indent=2)
         self.assertFalse(refused["ok"])
-        self.assertIsNone(refused["personDeviceProbe"], "reject closure before backend probing")
         self.assertTrue(any("frozen person execution input changed:" in error and
                             entries[0]["path"] in error for error in refused["errors"]),
                         refused["errors"])

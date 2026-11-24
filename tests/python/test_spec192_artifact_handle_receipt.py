@@ -16,7 +16,6 @@ from py_repoclient import (
     ArtifactHandle,
     ArtifactReference,
     ArtifactRepositoryApi,
-    LocalArtifactCommit,
     PersistentRepoClientConfig,
     RepoClient,
 )
@@ -116,8 +115,11 @@ class Spec192ArtifactBindingTest(unittest.TestCase):
         self.assertEqual(config.ack_collection_time_ms, 11)
         self.assertEqual(config.request_timeout_ms, 13)
         self.assertEqual(config.operation_wait_timeout_ms, 17)
-        self.assertIn("LocalArtifactCommit", py_repoclient.__all__)
-        self.assertIs(LocalArtifactCommit, py_repoclient.ArtifactLocalCommitRecord)
+        self.assertIn("ArtifactLocalCommitRecord", py_repoclient.__all__)
+        self.assertIs(
+            py_repoclient.ArtifactLocalCommitRecord,
+            py_repoclient.artifact_api.ArtifactLocalCommitRecord,
+        )
         del service_user
         gc.collect()
         # The native API retains one owner reference as the high-level
@@ -185,10 +187,6 @@ class Spec192ArtifactBindingTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "SPEC192_COMPATIBILITY_V1"):
             client.insert("/legacy/object", b"legacy")
-        with self.assertRaisesRegex(RuntimeError, "SPEC192_COMPATIBILITY_V1"):
-            client.configure_artifact_backend(object())
-        with self.assertRaisesRegex(RuntimeError, "SPEC192_COMPATIBILITY_V1"):
-            client.publish_file_async
         with self.assertRaisesRegex(RuntimeError, "SPEC192_COMPATIBILITY_V1"):
             client.fetch_file(fixture_reference(), "destination.bin")
         with self.assertRaisesRegex(RuntimeError, "SPEC192_COMPATIBILITY_V1"):

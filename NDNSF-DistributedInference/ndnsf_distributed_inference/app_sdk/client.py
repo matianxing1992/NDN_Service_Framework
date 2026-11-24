@@ -3,30 +3,21 @@
 from __future__ import annotations
 
 import hashlib
-import base64
 import json
 import os
 import time
 import uuid
 import asyncio
-import threading
-import warnings
-import re
 from concurrent.futures import Future
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from typing import Mapping
 
-from ..client import (
-    InferenceResult, SelectionAcceptanceTracker,
-)
+from ..client import InferenceResult
 from .contracts import (
     DeploymentProgress,
     DeploymentStatus,
     ApplicationRuntimeConfig,
-    GenerationConfig,
-    GenerationInput,
     InferenceRequestHandle as RequestRecord,
     InferenceOptions,
     RequestTiming,
@@ -35,9 +26,6 @@ from .contracts import (
     RequestHandle,
     ResultRendezvousRecord,
 )
-from ..core.execution_intent import ExecutionIntentCoordinator
-from ..core.contracts import ExecutionActivateMessage
-from .execution_control import ExistingServiceExecutionControlTransport
 from .runtime_journal import (
     FileRequestEnvelopeKeyProvider,
     RequestEnvelopeKeyProvider,
@@ -47,254 +35,16 @@ from .runtime_journal import (
     RuntimeJournalUnsafeRootError,
 )
 from .status import RequestEvent, RequestState
-from ..conversation import ConversationContinuation, ConversationCoordinator
 
 
 class RequestRecoveryError(RuntimeError):
     """Typed fail-closed request recovery error."""
 
 
-def _native_request_policy(request: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
-    """Read the user-pinned native placement strategy and bounded roster."""
-    strategy = str(request.get("placement_strategy", "native-pre-split-first")).strip()
-    if strategy not in {"native-pre-split-first", "native-observation-aware-v4"}:
-        raise ValueError("native requester request.placement_strategy is unsupported")
-    raw_names = request.get("provider_names", ())
-    if not isinstance(raw_names, (list, tuple)):
-        raise ValueError("native requester request.provider_names must be an array")
-    names = []
-    for value in raw_names:
-        if not isinstance(value, str):
-            raise ValueError("native requester provider names must be strings")
-        name = value.strip()
-        if (not name.startswith("/") or name == "/" or name.endswith("/") or
-                "//" in name or any(char.isspace() or char == "\x00" for char in name)):
-            raise ValueError("native requester provider names must be absolute NDN names")
-        names.append(name)
-    if len(names) > 16 or len(names) != len(set(names)):
-        raise ValueError("native requester provider roster is duplicate or exceeds 16 names")
-    if strategy == "native-observation-aware-v4" and len(names) < 2:
-        raise ValueError(
-            "native observation-aware placement requires 2-16 providers")
-    return strategy, tuple(names)
-
-
-def _native_placement_instance(strategy: str, score_mode: str = "preparation-and-network"):
-    from ndnsf import _ndnsf
-
-    constructors = {
-        "native-pre-split-first": _ndnsf.NativePreSplitFirstPlacement,
-        "native-observation-aware-v4": _ndnsf.NativeObservationAwarePlacementV4,
-    }
-    if (not isinstance(score_mode, str) or
-            score_mode not in {"network-only", "preparation-and-network"}):
-        raise ValueError("native requester request.placement_score_mode is unsupported")
-    if strategy == "native-observation-aware-v4":
-        return constructors[strategy](score_mode=score_mode)
-    if score_mode != "preparation-and-network":
-        raise ValueError("placement_score_mode requires native-observation-aware-v4")
-    try:
-        return constructors[strategy]()
-    except KeyError as exc:
-        raise ValueError("native requester placement strategy is unsupported") from exc
-
-
-class NativeRequestHandle:
-    """Thin compatibility handle over the C++ native inference handle.
-
-    The native handle remains the owner of request state, cancellation and
-    result bytes.  This facade only preserves the historical ``response()`` /
-    ``result()`` shape used by generic application callers; it does not expose
-    planner-only fields such as a sealed plan or Provider map.
-    """
-
-    def __init__(self, native_handle, *, timeout_ms: int):
-        self._native_handle = native_handle
-        self._timeout_ms = int(timeout_ms)
-
-    @property
-    def native_handle(self):
-        return self._native_handle
-
-    @property
-    def request_id(self) -> str:
-        return str(getattr(self._native_handle, "request_id", ""))
-
-    @property
-    def application_request_id(self) -> str:
-        return str(getattr(self._native_handle, "application_request_id", ""))
-
-    @property
-    def conversation_checkpoint(self) -> bytes | None:
-        """Return the native owner's committed opaque checkpoint, if any."""
-        value = getattr(self._native_handle, "conversation_checkpoint", None)
-        return None if value is None else bytes(value)
-
-    @property
-    def status(self):
-        return getattr(self._native_handle, "status_name", "UNKNOWN")
-
-    def _wait_timeout(self, timeout_ms: int | None) -> int:
-        value = self._timeout_ms if timeout_ms is None else int(timeout_ms)
-        if value < 0:
-            raise ValueError("native result timeout_ms must be nonnegative")
-        return value
-
-    def result(self, timeout_ms: int | None = None) -> InferenceResult:
-        native_result = self._native_handle.result(self._wait_timeout(timeout_ms))
-        return InferenceResult(
-            True,
-            bytes(native_result.payload),
-            "",
-            self.request_id,
-        )
-
-    def response(self, timeout_ms: int | None = None) -> InferenceResult:
-        return self.result(timeout_ms)
-
-    def cancel(self) -> None:
-        self._native_handle.cancel()
-
-
-class NativeStreamingHandle:
-    """Thin Python callback facade over a C++ native streaming handle."""
-
-    def __init__(self, native_handle, *, timeout_ms: int,
-                 on_event=None, on_complete=None, on_error=None,
-                 generation_id: str = ""):
-        self._native_handle = native_handle
-        self._timeout_ms = int(timeout_ms)
-        self._on_event = on_event
-        self._on_complete = on_complete
-        self._on_error = on_error
-        self._generation_id = str(generation_id)
-        self._condition = threading.Condition(threading.RLock())
-        self._events: list[bytes] = []
-        self._complete_payload: bytes | None = None
-        self._error: Mapping[str, object] | None = None
-        self._terminal = False
-
-    @property
-    def native_handle(self):
-        return self._native_handle
-
-    @property
-    def request_id(self) -> str:
-        return str(getattr(self._native_handle, "request_id", ""))
-
-    @property
-    def generation_id(self) -> str:
-        return self._generation_id
-
-    @property
-    def conversation_checkpoint(self) -> bytes | None:
-        """Return the native owner's committed opaque checkpoint, if any."""
-        value = getattr(self._native_handle, "conversation_checkpoint", None)
-        return None if value is None else bytes(value)
-
-    @property
-    def status(self):
-        return getattr(self._native_handle, "status_name", "UNKNOWN")
-
-    @property
-    def stream_events(self) -> tuple[bytes, ...]:
-        with self._condition:
-            return tuple(self._events)
-
-    @property
-    def stream_complete(self) -> bytes | None:
-        with self._condition:
-            return self._complete_payload
-
-    @property
-    def stream_error(self):
-        with self._condition:
-            return None if self._error is None else dict(self._error)
-
-    def _native_event(self, event) -> None:
-        payload = bytes(event.get("payload", b""))
-        terminal = bool(event.get("terminal", False))
-        callback = None
-        callback_value = payload
-        terminal_error = None
-        if terminal:
-            status = str(getattr(self._native_handle, "status_name", "") or "")
-            if status == "SUCCEEDED":
-                # Native observers receive a non-authoritative terminal marker;
-                # the decoded final response remains on the C++ handle.  Read
-                # it after the owner has entered the terminal state so the
-                # historical on_complete(payload) callback keeps its meaning.
-                if not payload and self._native_handle is not None:
-                    try:
-                        native_result = self._native_handle.result(0)
-                        callback_value = bytes(native_result.payload)
-                    except BaseException:
-                        pass
-            else:
-                terminal_error = {
-                    "code": "CANCELLED" if status == "CANCELLED"
-                    else "NATIVE_STREAM_FAILED",
-                    "message": (
-                        "native stream was cancelled" if status == "CANCELLED"
-                        else "native stream failed"),
-                    "status": status or "UNKNOWN",
-                }
-                callback_value = terminal_error
-        with self._condition:
-            if self._terminal:
-                return
-            if terminal_error is not None:
-                self._error = terminal_error
-                self._terminal = True
-                callback = self._on_error
-            elif terminal:
-                self._complete_payload = callback_value
-                self._terminal = True
-                callback = self._on_complete
-            else:
-                self._events.append(payload)
-                callback = self._on_event
-            self._condition.notify_all()
-        if callback is None:
-            return
-        try:
-            callback(callback_value)
-        except BaseException as exc:  # callback failures are terminal facade errors
-            if terminal_error is not None:
-                return
-            with self._condition:
-                self._error = {"code": "NativeStreamCallbackFailed",
-                               "message": str(exc) or type(exc).__name__}
-                self._terminal = True
-                self._condition.notify_all()
-            if self._on_error is not None:
-                try:
-                    self._on_error(dict(self._error))
-                except BaseException:
-                    pass
-
-    def _wait_timeout(self, timeout_ms: int | None) -> int:
-        value = self._timeout_ms if timeout_ms is None else int(timeout_ms)
-        if value < 0:
-            raise ValueError("native stream timeout_ms must be nonnegative")
-        return value
-
-    def result(self, timeout_ms: int | None = None) -> InferenceResult:
-        native_result = self._native_handle.result(self._wait_timeout(timeout_ms))
-        return InferenceResult(True, bytes(native_result.payload), "", self.request_id)
-
-    def response(self, timeout_ms: int | None = None) -> InferenceResult:
-        return self.result(timeout_ms)
-
-    def cancel(self) -> None:
-        self._native_handle.cancel()
-
-
 class APPClient:
     def __init__(self, journal: RuntimeJournal, *, executor=None, engine=None,
-                 observers=None, intent_coordinator=None, network_client=None,
-                 requester_identity: str = "", execution_control_transport=None,
-                 automatic_planner=None, native_client=None):
+                 observers=None, network_client=None,
+                 requester_identity: str = ""):
         if not journal.has_envelope_key:
             raise RuntimeJournalKeyError(
                 "APPClient requires an owner-injected request-envelope key provider")
@@ -303,47 +53,24 @@ class APPClient:
         self.engine = engine
         self.observers = observers
         self._network_client = network_client
-        self._execution_control_transport = execution_control_transport
-        self._automatic_planner = automatic_planner
-        # Optional native requester owner.  When configured, callers use the
-        # explicit request_native() surface below; the compatibility planner
-        # remains available only for instances that have not opted into this
-        # native path and is never used as a silent fallback by that surface.
-        self._native_client = native_client
-        self._native_catalog = None
-        self._native_runtime = None
-        self._native_model = None
-        self._native_splitter = None
-        self._native_placement_strategy = None
-        self._native_provider_names: tuple[str, ...] = ()
-        self._native_conversations = None
-        # The tokenizer identity is operator-pinned in the native requester
-        # configuration.  Keep it separate from the model descriptor's
-        # semantics digest: the latter is a model identity field and is not a
-        # safe substitute for the tokenizer artifact used by generation.
-        self._native_tokenizer_digest = ""
         self._network_futures = {}
         self._result_cache: dict[str, bytes] = {}
-        self._selection_acceptance_trackers: dict[
-            tuple[str, int], SelectionAcceptanceTracker] = {}
         self.requester_identity = requester_identity or journal.root.name
-        self.intent_coordinator = intent_coordinator or ExecutionIntentCoordinator()
         self._request_handles: dict[str, RequestHandle] = {}
-        self._request_events_by_id: dict[str, list[dict]] = {}
+        from ndnsf import _ndnsf
+
+        self._request_events = _ndnsf._AppRequestEvents()
         self._result_rendezvous_by_id: dict[str, dict] = {}
-        # Conversation state is deliberately a separate owner from the
-        # request-handle table.  A later request can use only an authenticated
-        # checkpoint; it can never look up a terminated request-local entry.
-        self._conversation_coordinator = ConversationCoordinator(
-            journal=journal, requester_identity=self.requester_identity)
         for record in self.journal.records():
             payload = record["payload"]
             if record["kind"] in {"request-handle", "request-handle-update"}:
                 handle = RequestRecord.from_record(payload)
                 self._request_handles[handle.request_id] = handle
             elif record["kind"] == "request-event":
-                self._request_events_by_id.setdefault(
-                    str(payload["requestId"]), []).append(payload)
+                self._request_events.restore(
+                    str(payload["requestId"]), RequestState(payload["state"]).value,
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                )
             elif record["kind"] == "result-rendezvous":
                 self._result_rendezvous_by_id[str(payload["request_id"])] = payload
 
@@ -419,7 +146,6 @@ class APPClient:
         envelope_key_provider: RequestEnvelopeKeyProvider | None = None,
         envelope_key_file: str | Path | None = None,
         test_only_allow_ephemeral_state_root: bool = False,
-        automatic_planner=None,
         **network_options,
     ) -> "APPClient":
         """Construct the canonical client over the existing NDNSF runtime.
@@ -468,7 +194,6 @@ class APPClient:
             engine=network_client.optimization_engine,
             network_client=network_client,
             requester_identity=requester,
-            automatic_planner=automatic_planner,
         )
 
     @classmethod
@@ -530,24 +255,6 @@ class APPClient:
     def optimization_engine(self):
         return self.engine
 
-    @property
-    def conversation_coordinator(self) -> ConversationCoordinator:
-        return self._conversation_coordinator
-
-    def begin_conversation_turn(
-        self, continuation: ConversationContinuation, *, input_payload: bytes,
-        canonical_token_ids=None,
-    ) -> dict[str, object]:
-        """Validate an explicit full/delta turn before any network request."""
-        if not isinstance(continuation, ConversationContinuation):
-            raise TypeError("continuation must be ConversationContinuation")
-        return self._conversation_coordinator.begin_turn(
-            continuation, input_payload=bytes(input_payload),
-            canonical_token_ids=canonical_token_ids)
-
-    def commit_conversation_turn(self, request_id: str, **kwargs):
-        """Atomically publish a successor result and opaque checkpoint."""
-        return self._conversation_coordinator.commit_turn(request_id, **kwargs)
 
     def __getattr__(self, name):
         network_client = self.__dict__.get("_network_client")
@@ -560,1033 +267,6 @@ class APPClient:
             raise RuntimeError("APPClient requires an explicit optimization engine")
         return self.engine.run_decision_graph(requests)
 
-    @property
-    def native_client(self):
-        """Return the configured native requester, if one was injected."""
-        return self._native_client
-
-    def configure_native_requester(self, runtime, admission, conversations=None, *,
-                                   request_catalog=None):
-        """Bind the existing Core user to a complete native DI runtime.
-
-        Catalog inspection, artifact publication, offer admission and grant
-        ownership stay in C++; this method only composes already native-owned
-        objects and stores the resulting requester lifetime.
-        """
-        if request_catalog is None:
-            raise TypeError("native requester requires its loaded request catalog")
-        model = getattr(request_catalog, "model_ref", None)
-        splitter = getattr(request_catalog, "splitter", None)
-        if model is None or splitter is None:
-            raise TypeError("native request catalog lacks model reference or splitter")
-        if self._network_client is None:
-            raise RuntimeError("native requester requires a network client")
-        preparation_catalog = getattr(runtime, "catalog", None)
-        contract = getattr(runtime, "contract", None)
-        if preparation_catalog is None or contract is None:
-            raise TypeError("native runtime must include catalog and contract")
-        service_user = self._network_client.service_user
-        preparation = service_user.native_preparation(
-            preparation_catalog, contract.service_name)
-        self._native_client = service_user.native_inference_client_configured(
-            runtime, preparation, admission, conversations)
-        self._native_catalog = request_catalog
-        self._native_runtime = runtime
-        self._native_model = model
-        self._native_splitter = splitter
-        self._native_placement_strategy = None
-        self._native_provider_names = ()
-        self._native_conversations = conversations
-        return self._native_client
-
-    @property
-    def native_tokenizer_digest(self) -> str:
-        """Return the operator-pinned tokenizer digest for native generation."""
-        return self._native_tokenizer_digest
-
-    @staticmethod
-    def _native_config_path(root: Path, value: str, field: str) -> Path:
-        """Resolve one operator-owned native config path."""
-        if not isinstance(value, str) or not value or "\x00" in value:
-            raise ValueError(f"native requester {field} path is invalid")
-        candidate = Path(value)
-        # The native requester contract permits operator-owned absolute paths;
-        # only relative paths are confined to the configuration directory.
-        if candidate.is_absolute():
-            return candidate.resolve()
-        resolved = (root / candidate).resolve()
-        try:
-            resolved.relative_to(root.resolve())
-        except ValueError as exc:
-            raise ValueError(f"native requester {field} path escapes config directory") from exc
-        return resolved
-
-    def configure_native_requester_from_config(self, configuration: str | Path):
-        """Compose a native requester from one pinned requester configuration.
-
-        Python performs bounded file/path composition only. Catalog, grant,
-        runtime identity, state mapping, and offer admission validation remain
-        in the native owners; this method never invokes the Python planner.
-        """
-        if self._network_client is None:
-            raise RuntimeError("native requester requires a network client")
-        config_path = Path(configuration).expanduser().resolve()
-        try:
-            root = json.loads(config_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError("native requester configuration is unreadable") from exc
-        if not isinstance(root, dict) or root.get("schema") != "ndnsf-di-native-requester-v1":
-            raise ValueError("unsupported native requester configuration")
-        try:
-            request = dict(root["request"])
-            tokenizer_digest = str(request.get("tokenizer_digest", "")).strip()
-            if tokenizer_digest and not re.fullmatch(
-                    r"sha256:[0-9a-f]{64}", tokenizer_digest):
-                raise ValueError(
-                    "native requester request.tokenizer_digest must be a canonical sha256 digest")
-            generation_mode = str(
-                request.get("generation_mode", "TOKEN_DIAGNOSTIC"))
-            if generation_mode not in {"TOKEN_DIAGNOSTIC", "TOKEN_STREAMING"}:
-                raise ValueError(
-                    "native requester request.generation_mode must be "
-                    "TOKEN_DIAGNOSTIC or TOKEN_STREAMING")
-            if generation_mode == "TOKEN_STREAMING" and not tokenizer_digest:
-                raise ValueError(
-                    "native requester request.tokenizer_digest is required for TOKEN_STREAMING")
-            placement_strategy_id, provider_names = _native_request_policy(request)
-            placement_strategy = _native_placement_instance(
-                placement_strategy_id,
-                request.get("placement_score_mode", "preparation-and-network"))
-            catalog_config = dict(root["catalog"])
-            source_config = dict(catalog_config["source"])
-            model_path = self._native_config_path(
-                config_path.parent, source_config["file"], "catalog source")
-            initializer_path = None
-            if "initializer_file" in source_config:
-                initializer_path = self._native_config_path(
-                    config_path.parent, source_config["initializer_file"],
-                    "catalog initializer")
-            service_user = self._network_client.service_user
-            model_bytes = model_path.read_bytes()
-            initializer_bytes = (
-                initializer_path.read_bytes() if initializer_path is not None else None)
-            catalog = service_user.load_native_request_catalog(
-                json.dumps(catalog_config, sort_keys=True, separators=(",", ":"),
-                           ensure_ascii=False),
-                model_bytes, initializer_bytes,
-                max_source_bytes=int(root["limits"]["max_source_bytes"]),
-                max_assembled_bytes=int(root["limits"]["max_assembled_bytes"]),
-            )
-            model = catalog.model_ref
-            if (str(getattr(model, "adapter_id", "")).lower().startswith("qwen") and
-                    generation_mode != "TOKEN_STREAMING"):
-                raise ValueError(
-                    "native Qwen requester configuration requires TOKEN_STREAMING")
-            grant = dict(root["grant"])
-            forbidden_grant_fields = {
-                "authority_private_key_file", "content_key_file", "content_key_id",
-                "requester_public_key_file", "recipient_public_key_files",
-                "allowed_model_manifests", "publication_sources", "publication_source",
-            }
-            forbidden = sorted(forbidden_grant_fields.intersection(grant))
-            if forbidden:
-                raise ValueError(
-                    "native requester grant configuration contains authority-owned fields: "
-                    + ", ".join(forbidden))
-            for field in ("authority_service", "authority_public_key_file",
-                          "requester_private_key_file", "authority_identity",
-                          "protection_epoch"):
-                if not grant.get(field):
-                    raise ValueError(
-                        f"native requester grant configuration requires {field}")
-            grant_config = {
-                "schema": "ndnsf-di-native-grant-client-v1",
-                "requester_identity": root["core"]["requester_identity"],
-                "authority_identity": grant["authority_identity"],
-                "protection_epoch": grant["protection_epoch"],
-                "requester_private_key_file": grant["requester_private_key_file"],
-                "authority_service": grant["authority_service"],
-                "authority_public_key_file": grant["authority_public_key_file"],
-            }
-            grants = service_user.native_grant_client_from_config(
-                json.dumps(grant_config, sort_keys=True, separators=(",", ":"),
-                           ensure_ascii=False), str(config_path.parent))
-            runtime_config = {
-                "schema": "ndnsf-di-native-request-runtime-v1",
-                "contract": {
-                    "service_name": request["service"],
-                    "task_name": request["task"],
-                    "adapter_name": model.adapter_id,
-                    "adapter_descriptor_digest": model.adapter.descriptor_digest,
-                    "adapter_composition_digest": request[
-                        "adapter_composition_digest"],
-                    "task_descriptor_digest": request["task_descriptor_digest"],
-                    "generation_mode": generation_mode,
-                    "tokenizer_digest": tokenizer_digest,
-                },
-                "requester_identity": root["core"]["requester_identity"],
-                "protection_epoch": grant["protection_epoch"],
-                "input_layout_digest": request["input_layout_digest"],
-                "security": {
-                    "policy_digest": request["security_policy_digest"],
-                    "require_protected_artifacts": True,
-                },
-                "budget": {
-                    "max_candidates": request["max_candidates"],
-                    "max_policy_ms": request["max_policy_ms"],
-                    "max_reentries": request.get("max_reentries", 1),
-                },
-                "state_mapping": {
-                    "inputs": dict(catalog.state_mapping.inputs),
-                    "outputs": dict(catalog.state_mapping.outputs),
-                },
-                "no_progress_ms": request.get("no_progress_ms", 5000),
-                "max_segments": request.get("max_segments", 4096),
-            }
-            runtime = service_user.native_runtime_from_config(
-                json.dumps(runtime_config, sort_keys=True, separators=(",", ":")),
-                catalog, grants)
-            offer = dict(root["offer_admission"])
-            offer_keys = {
-                str(key): self._native_config_path(
-                    config_path.parent, value, f"offer key {key}")
-                .read_text(encoding="utf-8")
-                for key, value in dict(offer["public_key_files"]).items()
-            }
-            from ndnsf import _ndnsf
-            admission = _ndnsf.NativeOfferAdmission(
-                json.dumps(offer["policy"], sort_keys=True, separators=(",", ":"),
-                            ensure_ascii=False),
-                offer_keys, str(offer["candidate_digest"]))
-            conversations = None
-            if "conversation" in root:
-                conversation_config = root["conversation"]
-                if not isinstance(conversation_config, dict):
-                    raise ValueError("native conversation configuration must be an object")
-                conversations = service_user.native_conversation_coordinator_from_config(
-                    json.dumps(conversation_config, sort_keys=True,
-                               separators=(",", ":"), ensure_ascii=False),
-                    str(config_path.parent))
-        except (KeyError, TypeError, OSError) as exc:
-            raise ValueError("native requester configuration is incomplete") from exc
-        result = self.configure_native_requester(
-            runtime, admission, conversations, request_catalog=catalog)
-        self._native_placement_strategy = placement_strategy
-        self._native_provider_names = provider_names
-        self._native_tokenizer_digest = tokenizer_digest
-        return result
-
-    def _apply_native_request_defaults(self, options) -> None:
-        configured = tuple(getattr(self, "_native_provider_names", ()))
-        if not configured:
-            return
-        supplied = tuple(getattr(options, "provider_names", ()))
-        if supplied and supplied != configured:
-            raise ValueError(
-                "native request provider_names differ from the pinned requester roster")
-        options.provider_names = list(configured)
-
-    def request_native(self, *, model, input, split_strategy,
-                       placement_strategy, options):
-        """Submit directly to NativeInferenceClient without Python planning."""
-        if self._native_client is None:
-            raise RuntimeError(
-                "native requester is not configured; refusing Python planner fallback")
-        return self._native_client.request(
-            model, input, split_strategy, placement_strategy, options)
-
-    def request_native_payload(self, payload: bytes, *, options,
-                               task_name: str | None = None,
-                               application_options: bytes | None = None,
-                               on_event=None,
-                               request_id: str | None = None):
-        """Submit one payload and optionally observe native result events.
-
-        The callback receives a non-secret event snapshot from the native
-        handle: ``request_id`` (str), ``payload`` (bytes), and ``terminal``
-        (bool).  Native code owns event ordering, replay, and callback
-        isolation; this facade only attaches the observer before returning the
-        handle.
-        """
-        if self._native_client is None or self._native_model is None or self._native_splitter is None:
-            raise RuntimeError(
-                "native requester is not configured; refusing Python planner fallback")
-        from ndnsf import _ndnsf
-        if not isinstance(payload, (bytes, bytearray, memoryview)):
-            raise TypeError("native request payload must be bytes-like")
-        if on_event is not None and not callable(on_event):
-            raise TypeError("native event observer must be callable")
-        if request_id is not None:
-            if not isinstance(request_id, str) or not request_id or "\x00" in request_id:
-                raise ValueError("native application request_id must be a non-empty string")
-            options.application_request_id = request_id
-        native_input = _ndnsf.NativeApplicationInput()
-        native_input.task_name = str(
-            task_name or getattr(self._native_runtime.contract, "task_name", ""))
-        native_input.input_schema_digest = self._native_model.adapter.input_schema_digest
-        native_input.options_schema_digest = self._native_model.adapter.options_schema_digest
-        native_input.payload = list(bytes(payload))
-        if application_options is not None:
-            if not isinstance(application_options, (bytes, bytearray, memoryview)):
-                raise TypeError("native application options must be bytes-like")
-            native_input.options = list(bytes(application_options))
-        options.task_name = native_input.task_name
-        self._apply_native_request_defaults(options)
-        handle = self.request_native(
-            model=self._native_model,
-            input=native_input,
-            split_strategy=self._native_splitter,
-            placement_strategy=(
-                getattr(self, "_native_placement_strategy", None) or
-                _ndnsf.NativePreSplitFirstPlacement()),
-            options=options,
-        )
-        if on_event is not None:
-            handle.observe(on_event)
-        return handle
-
-    def request_native_reference(self, reference, *, options,
-                                 task_name: str | None = None,
-                                 application_options: bytes | None = None,
-                                 on_event=None,
-                                 request_id: str | None = None):
-        """Submit a published encrypted repository reference natively.
-
-        ``reference`` must be the value returned by
-        :meth:`publish_application_input_reference` (or an equivalent
-        ``LargeDataReference`` object).  The requester forwards canonical
-        metadata only; repository resolution and decryption remain Provider
-        responsibilities in the C++ runtime.
-        """
-        if (self._native_client is None or self._native_model is None or
-                self._native_splitter is None):
-            raise RuntimeError(
-                "native requester is not configured; refusing Python planner fallback")
-        from ndnsf import _ndnsf
-        from ..repo_reference import LargeDataReference
-        if on_event is not None and not callable(on_event):
-            raise TypeError("native event observer must be callable")
-        if request_id is not None:
-            if not isinstance(request_id, str) or not request_id or "\x00" in request_id:
-                raise ValueError("native application request_id must be a non-empty string")
-            options.application_request_id = request_id
-        if isinstance(reference, LargeDataReference):
-            checked = reference
-        else:
-            checked = LargeDataReference.from_mapping(reference)
-        publication_digest = checked.digest()
-        published = {
-            str(record.get("payload", {}).get("referenceDigest", ""))
-            for record in self.journal.records()
-            if record.get("kind") == "application-input-publication"
-        }
-        if publication_digest not in published:
-            raise RuntimeError("DI_INPUT_PUBLICATION_MISSING")
-        wire = json.dumps(
-            checked.to_dict(), sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False)
-        native_input = _ndnsf.NativeApplicationInput()
-        native_input.task_name = str(
-            task_name or getattr(self._native_runtime.contract, "task_name", ""))
-        native_input.input_schema_digest = self._native_model.adapter.input_schema_digest
-        native_input.options_schema_digest = self._native_model.adapter.options_schema_digest
-        native_input.transport_mode = _ndnsf.NativeInputTransportMode.REPOSITORY_REFERENCE
-        native_input.repository_reference = wire
-        if application_options is not None:
-            if not isinstance(application_options, (bytes, bytearray, memoryview)):
-                raise TypeError("native application options must be bytes-like")
-            native_input.options = list(bytes(application_options))
-        options.task_name = native_input.task_name
-        self._apply_native_request_defaults(options)
-        handle = self.request_native(
-            model=self._native_model,
-            input=native_input,
-            split_strategy=self._native_splitter,
-            placement_strategy=(
-                getattr(self, "_native_placement_strategy", None) or
-                _ndnsf.NativePreSplitFirstPlacement()),
-            options=options,
-        )
-        if on_event is not None:
-            handle.observe(on_event)
-        return handle
-
-    def _native_request_task(self, *, model, task, input, timeout_ms: int,
-                             options=None, strategy=None,
-                             request_id: str = ""):
-        """Route one validated ``ApplicationInput`` through the native owner.
-
-        This compatibility seam preserves the generic API shape while the
-        native client owns planning, authorization, transport and result
-        state.  Incomplete configuration or identity drift fails closed; the
-        automatic planner is never an implicit fallback after this seam is
-        selected.
-        """
-        from ..adapters import InputTransportMode
-        from .placement import TaskOptions
-
-        native_model = getattr(self, "_native_model", None)
-        native_splitter = getattr(self, "_native_splitter", None)
-        native_runtime = getattr(self, "_native_runtime", None)
-        if native_model is None or native_splitter is None or native_runtime is None:
-            raise RuntimeError("native requester configuration is incomplete")
-        if strategy is not None:
-            raise ValueError(
-                "native generic task does not accept a Python placement strategy")
-        timeout_ms = int(timeout_ms)
-        if timeout_ms <= 1:
-            raise ValueError(
-                "native generic task timeout_ms must be greater than one")
-
-        native_adapter = getattr(native_model, "adapter", None)
-        for input_name, native_name in (
-                ("input_schema_digest", "input_schema_digest"),
-                ("options_schema_digest", "options_schema_digest")):
-            expected = str(getattr(input, input_name, "") or "")
-            actual = str(getattr(native_adapter, native_name, "") or "")
-            if expected and actual and expected != actual:
-                raise RuntimeError("NATIVE_INPUT_SCHEMA_IDENTITY_MISMATCH")
-
-        # Compatibility model/task objects must describe the operator-pinned
-        # native catalog exactly.  Never silently replace a caller identity
-        # with whichever model happens to be loaded in the native requester.
-        for python_name, native_name in (
-                ("model_name", "model_name"),
-                ("content_digest", "content_digest"),
-                ("semantics_digest", "semantics_digest"),
-                ("source_revision", "source_revision")):
-            expected = str(getattr(model, python_name, "") or "")
-            actual = str(getattr(native_model, native_name, "") or "")
-            if expected and actual and expected != actual:
-                raise RuntimeError("NATIVE_MODEL_IDENTITY_MISMATCH")
-
-        task_name = str(getattr(task, "task_name", "") or "")
-        if not task_name or task_name != input.task_name:
-            raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
-        runtime_task_name = str(
-            getattr(getattr(native_runtime, "contract", None), "task_name", "")
-            or "")
-        if runtime_task_name and runtime_task_name != input.task_name:
-            raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
-        runtime_contract = getattr(native_runtime, "contract", None)
-        for task_name, contract_name in (
-                ("adapter_name", "adapter_name"),
-                ("adapter_descriptor_digest", "adapter_descriptor_digest"),
-                ("adapter_composition_digest", "adapter_composition_digest"),
-                ("task_descriptor_digest", "task_descriptor_digest")):
-            expected = str(getattr(task, task_name, "") or "")
-            actual = str(getattr(runtime_contract, contract_name, "") or "")
-            if expected and actual and expected != actual:
-                raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
-
-        if options is not None:
-            if not isinstance(options, TaskOptions):
-                raise TypeError("generic request options must be TaskOptions")
-            if (options.schema_digest != input.options_schema_digest or
-                    bytes(options.payload) != bytes(input.options)):
-                raise RuntimeError("NATIVE_OPTIONS_IDENTITY_MISMATCH")
-
-        from ndnsf import _ndnsf
-        native_options = _ndnsf.NativeRequestOptions()
-        native_options.timeout_ms = timeout_ms
-        native_options.ack_timeout_ms = max(1, min(5_000, timeout_ms // 2))
-        native_options.task_name = input.task_name
-        effective_request_id = str(request_id or ("ndnsf-di-" + uuid.uuid4().hex))
-
-        if input.transport_mode is InputTransportMode.REPO_REF:
-            native_handle = self.request_native_reference(
-                input.repo_reference,
-                options=native_options,
-                task_name=input.task_name,
-                application_options=input.options,
-                request_id=effective_request_id,
-            )
-        else:
-            native_handle = self.request_native_payload(
-                input.payload,
-                options=native_options,
-                task_name=input.task_name,
-                application_options=input.options,
-                request_id=effective_request_id,
-            )
-        return NativeRequestHandle(native_handle, timeout_ms=timeout_ms)
-
-    def _native_request_streaming(self, *, model, task, input, timeout_ms: int,
-                                  options=None, stream_options=None,
-                                  on_event=None, on_complete=None, on_error=None,
-                                  conversation=None, canonical_token_ids=None,
-                                  objective=None, constraints=None,
-                                  request_id: str = "", strategy=None):
-        """Route a stream-only request through the native handle owner.
-
-        The native runtime must already describe a non-generation stream.  A
-        model-specific token-generation contract needs adapter-owned fields
-        (token/state names and EOS policy) and therefore remains on the
-        explicit native Qwen entry until that contract is supplied as a native
-        value object.  Conversation turns are likewise rejected here rather
-        than silently handed back to the Python planner.
-        """
-        from ..adapters import InputTransportMode
-        from .placement import TaskOptions
-
-        if conversation is not None or canonical_token_ids is not None:
-            raise RuntimeError(
-                "native streaming conversation requires a configured native owner")
-        if objective is not None or constraints:
-            raise ValueError(
-                "native streaming does not accept Python planning constraints")
-        if strategy is not None:
-            raise ValueError(
-                "native streaming does not accept a Python placement strategy")
-        if on_event is not None and not callable(on_event):
-            raise TypeError("native stream on_event must be callable")
-        if on_complete is not None and not callable(on_complete):
-            raise TypeError("native stream on_complete must be callable")
-        if on_error is not None and not callable(on_error):
-            raise TypeError("native stream on_error must be callable")
-
-        native_model = getattr(self, "_native_model", None)
-        native_splitter = getattr(self, "_native_splitter", None)
-        native_runtime = getattr(self, "_native_runtime", None)
-        if native_model is None or native_splitter is None or native_runtime is None:
-            raise RuntimeError("native requester configuration is incomplete")
-        timeout_ms = int(timeout_ms)
-        if timeout_ms <= 1:
-            raise ValueError(
-                "native streaming timeout_ms must be greater than one")
-
-        native_adapter = getattr(native_model, "adapter", None)
-        for input_name, native_name in (
-                ("input_schema_digest", "input_schema_digest"),
-                ("options_schema_digest", "options_schema_digest")):
-            expected = str(getattr(input, input_name, "") or "")
-            actual = str(getattr(native_adapter, native_name, "") or "")
-            if expected and actual and expected != actual:
-                raise RuntimeError("NATIVE_INPUT_SCHEMA_IDENTITY_MISMATCH")
-        for python_name, native_name in (
-                ("model_name", "model_name"),
-                ("content_digest", "content_digest"),
-                ("semantics_digest", "semantics_digest"),
-                ("source_revision", "source_revision")):
-            expected = str(getattr(model, python_name, "") or "")
-            actual = str(getattr(native_model, native_name, "") or "")
-            if expected and actual and expected != actual:
-                raise RuntimeError("NATIVE_MODEL_IDENTITY_MISMATCH")
-        task_name = str(getattr(task, "task_name", "") or "")
-        if not task_name or task_name != input.task_name:
-            raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
-        runtime_contract = getattr(native_runtime, "contract", None)
-        if (str(getattr(runtime_contract, "task_name", "") or "") and
-                str(getattr(runtime_contract, "task_name", "")) != input.task_name):
-            raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
-        for task_field, contract_field in (
-                ("adapter_name", "adapter_name"),
-                ("adapter_descriptor_digest", "adapter_descriptor_digest"),
-                ("adapter_composition_digest", "adapter_composition_digest"),
-                ("task_descriptor_digest", "task_descriptor_digest")):
-            expected = str(getattr(task, task_field, "") or "")
-            actual = str(getattr(runtime_contract, contract_field, "") or "")
-            if expected and actual and expected != actual:
-                raise RuntimeError("NATIVE_TASK_IDENTITY_MISMATCH")
-        if str(getattr(runtime_contract, "generation_mode", "") or "") == "TOKEN_STREAMING":
-            raise RuntimeError(
-                "native streaming requires an adapter-owned generation contract")
-        if options is not None:
-            if not isinstance(options, TaskOptions):
-                raise TypeError("native streaming options must be TaskOptions")
-            if (options.schema_digest != input.options_schema_digest or
-                    bytes(options.payload) != bytes(input.options)):
-                raise RuntimeError("NATIVE_OPTIONS_IDENTITY_MISMATCH")
-
-        from ndnsf import _ndnsf
-        raw = (stream_options.as_dict()
-               if callable(getattr(stream_options, "as_dict", None))
-               else dict(stream_options or {}))
-        generation_id = str(raw.get("generation_id", "") or uuid.uuid4().hex)
-        if (len(generation_id) != 32 or generation_id != generation_id.lower()
-                or any(char not in "0123456789abcdef" for char in generation_id)):
-            raise ValueError("native stream generation_id must be lowercase 16-byte hex")
-        if int(raw.get("attempt_epoch", 1)) != 1:
-            raise ValueError("native streaming starts at attempt epoch 1")
-        native_stream = _ndnsf.NativeStreamRequestOptions()
-        mode = str(raw.get("mode", "Normal"))
-        if mode.lower() == "normal":
-            native_stream.mode = _ndnsf.NativeInvocationMode.NORMAL
-        elif mode.lower() == "targeted":
-            native_stream.mode = _ndnsf.NativeInvocationMode.TARGETED
-        else:
-            raise ValueError("native stream mode must be Normal or Targeted")
-        native_stream.generation_id = list(bytes.fromhex(generation_id))
-        native_stream.attempt_epoch = 1
-        # NativeInferenceClient allocates the request-scoped stream epoch and
-        # event-key commitment after the owner request identity exists.  Keep
-        # the initial epoch valid without attempting to reproduce that state
-        # machine in Python.
-        native_stream.stream_epoch = max(1, int(raw.get("stream_epoch", 1)))
-        native_stream.deadline_epoch_ms = int(time.time() * 1000) + timeout_ms
-        for name in (
-                "max_events", "interest_window", "interest_lifetime_ms",
-                "max_event_retries", "publisher_queue_capacity",
-                "callback_queue_capacity", "reorder_capacity", "retention_ms",
-                "completion_grace_ms", "max_event_wire_bytes", "max_replacements"):
-            if name in raw:
-                setattr(native_stream, name, int(raw[name]))
-        native_stream.allow_replacement = bool(raw.get("allow_replacement", False))
-        native_options = _ndnsf.NativeRequestOptions()
-        native_options.timeout_ms = timeout_ms
-        native_options.ack_timeout_ms = max(1, min(5_000, timeout_ms // 2))
-        native_options.task_name = input.task_name
-        native_options.output_mode = "STREAM"
-        native_options.stream = native_stream
-        effective_request_id = str(request_id or ("ndnsf-di-" + uuid.uuid4().hex))
-        callback = None
-        # Construct the facade before submission so the C++ observer can only
-        # target a live owner, even when a request completes immediately.
-        facade = NativeStreamingHandle(
-            None,
-            timeout_ms=timeout_ms,
-            on_event=on_event,
-            on_complete=on_complete,
-            on_error=on_error,
-            generation_id=generation_id,
-        )
-        callback = facade._native_event
-        if input.transport_mode is InputTransportMode.REPO_REF:
-            native_handle = self.request_native_reference(
-                input.repo_reference,
-                options=native_options,
-                task_name=input.task_name,
-                application_options=input.options,
-                on_event=callback,
-                request_id=effective_request_id,
-            )
-        else:
-            native_handle = self.request_native_payload(
-                input.payload,
-                options=native_options,
-                task_name=input.task_name,
-                application_options=input.options,
-                on_event=callback,
-                request_id=effective_request_id,
-            )
-        facade._native_handle = native_handle
-        return facade
-
-    def request(
-        self,
-        *,
-        model,
-        task,
-        input,
-        timeout_ms: int,
-        options=None,
-        objective=None,
-        constraints=None,
-        request_id: str = "",
-        strategy=None,
-    ):
-        """Run the canonical model/task-first deferred-planning lifecycle."""
-        if self._automatic_planner is None:
-            raise RuntimeError(
-                "APPClient requires an AutomaticPlanningCoordinator")
-        request_args = dict(
-            model=model,
-            task=task,
-            input=input,
-            timeout_ms=timeout_ms,
-            options=options,
-            objective=objective,
-            constraints=constraints,
-            request_id=request_id,
-        )
-        if strategy is not None:
-            request_args["strategy"] = strategy
-        return self._automatic_planner.request(**request_args)
-
-    def publish_application_input_reference(
-        self,
-        service: str,
-        payload: bytes,
-        *,
-        object_label: str = "input",
-        object_type: str = "",
-        freshness_ms: int = 60000,
-    ) -> dict:
-        """Publish and bind one encrypted DI application input.
-
-        The native NDNSF publisher is the authority for the Data name,
-        content digest, authorization scope, and protection epoch.  This
-        method only converts that result into the DI-owned reference and
-        records non-secret publication metadata; it never accepts a caller
-        supplied reference map or copies plaintext into the journal.
-        """
-        if self._network_client is None:
-            raise RuntimeError("application input publication requires a network client")
-        if not isinstance(payload, (bytes, bytearray, memoryview)):
-            raise TypeError("application input payload must be bytes-like")
-        if not service.startswith("/"):
-            raise ValueError("service must be an absolute NDN name")
-        service_user = getattr(self._network_client, "service_user", None)
-        if service_user is None:
-            raise RuntimeError("network client does not expose the ServiceUser owner")
-        publication = service_user.publish_encrypted_large_data(
-            service,
-            bytes(payload),
-            object_label=object_label,
-            freshness_ms=int(freshness_ms),
-            content_name={"kind": "input", "label": object_label,
-                          "input_kind": "application"},
-        )
-        from ..repo_reference import bind_published_large_data_reference
-        reference = bind_published_large_data_reference(
-            publication,
-            service_name=service,
-            payload=bytes(payload),
-            object_type=object_type,
-        )
-        reference_digest = reference.digest()
-        self.journal.append("application-input-publication", {
-            "schema": "ndnsf-di-input-publication-v1",
-            "eventType": "INPUT_REFERENCE_PUBLISHED",
-            "referenceDigest": reference_digest,
-            "dataName": reference.data_name,
-            "manifestDigest": reference.manifest_digest,
-            "plaintextSize": reference.plaintext_size,
-            "contentDigest": reference.ciphertext_digest,
-            "authorizationScope": reference.authorization_scope,
-            "protectionEpoch": reference.protection_epoch,
-            "encrypted": True,
-        })
-        return reference.to_dict()
-
-    def request_task(
-        self,
-        *,
-        model,
-        task,
-        input,
-        timeout_ms: int,
-        options=None,
-        strategy=None,
-        request_id: str = "",
-    ):
-        """Submit a generic model/task request through the sole coordinator.
-
-        This canonical APP owner mirrors ``InferenceClient.request_task`` for
-        maintained applications.  REPO_REF inputs must carry the digest of a
-        publication recorded by :meth:`publish_application_input_reference`;
-        a caller-edited JSON reference is rejected before any Request wire is
-        published.
-        """
-        from ..adapters import ApplicationInput, InputTransportMode
-        from ..repo_reference import LargeDataReference
-        if not isinstance(input, ApplicationInput):
-            raise TypeError("generic request input must be ApplicationInput")
-        transport_mode = getattr(input.transport_mode, "value",
-                                 str(input.transport_mode))
-        if transport_mode == InputTransportMode.REPO_REF.value:
-            reference = LargeDataReference.from_mapping(input.repo_reference or {})
-            publication_digest = str(
-                input.metadata.get("publicationDigest", "") or
-                input.metadata.get("publication_digest", ""))
-            if publication_digest != reference.digest():
-                raise RuntimeError("DI_INPUT_PUBLICATION_BINDING_MISMATCH")
-            published = {
-                str(record.get("payload", {}).get("referenceDigest", ""))
-                for record in self.journal.records()
-                if record.get("kind") == "application-input-publication"
-            }
-            if publication_digest not in published:
-                raise RuntimeError("DI_INPUT_PUBLICATION_MISSING")
-            print(
-                "NDNSF_DI_INPUT_REFERENCE_PUBLISHED",
-                f"referenceDigest={publication_digest}",
-                f"manifestDigest={reference.manifest_digest}",
-                f"plaintextSize={reference.plaintext_size}",
-                flush=True,
-            )
-        if getattr(self, "_native_client", None) is not None:
-            return self._native_request_task(
-                model=model,
-                task=task,
-                input=input,
-                timeout_ms=int(timeout_ms),
-                options=options,
-                strategy=strategy,
-                request_id=request_id,
-            )
-        effective_request_id = str(request_id or ("ndnsf-di-" + uuid.uuid4().hex))
-        return self.request(
-            model=model,
-            task=task,
-            input=input,
-            timeout_ms=int(timeout_ms),
-            options=options,
-            constraints={"ack_close_policy": "DEADLINE"},
-            request_id=effective_request_id,
-            strategy=strategy,
-        )
-
-    def request_streaming(
-        self,
-        *,
-        model,
-        task,
-        input,
-        timeout_ms: int,
-        options=None,
-        stream_options=None,
-        on_event=None,
-        on_complete=None,
-        on_error=None,
-        conversation: ConversationContinuation | None = None,
-        canonical_token_ids=None,
-        objective=None,
-        constraints=None,
-        request_id: str = "",
-        strategy=None,
-    ):
-        """Run one model/task-first plan and expose its verified event stream.
-
-        A conversation turn is registered before the first network Request is
-        published. ``canonical_token_ids`` is adapter-derived metadata (not a
-        Provider/cache handle) and is required for APPEND_DELTA so the owner
-        can prove the exact parent prefix. The returned handle retains the
-        pending turn and exposes a checkpoint only after receipt commit.
-        """
-        if getattr(self, "_native_client", None) is not None:
-            return self._native_request_streaming(
-                model=model,
-                task=task,
-                input=input,
-                timeout_ms=int(timeout_ms),
-                options=options,
-                stream_options=stream_options,
-                on_event=on_event,
-                on_complete=on_complete,
-                on_error=on_error,
-                conversation=conversation,
-                canonical_token_ids=canonical_token_ids,
-                objective=objective,
-                constraints=constraints,
-                request_id=request_id,
-                strategy=strategy,
-            )
-        if self._automatic_planner is None:
-            raise RuntimeError(
-                "APPClient requires an AutomaticPlanningCoordinator")
-        conversation_turn = None
-        planner_request_id = str(request_id or "")
-        if conversation is not None:
-            if not isinstance(conversation, ConversationContinuation):
-                raise TypeError("conversation must be ConversationContinuation")
-            # The native Name representation is absolute (``/id``), while
-            # callers commonly supply the human-readable component (``id``).
-            # Normalize once before registering the conversation turn so the
-            # owner journal, native Request, and verified collaboration
-            # records compare the same identity.
-            from .placement import normalize_request_id_component
-            planner_request_id = normalize_request_id_component(
-                planner_request_id or ("ndnsf-di-" + uuid.uuid4().hex))
-            generation_id = ""
-            if stream_options is not None:
-                if callable(getattr(stream_options, "as_dict", None)):
-                    generation_id = str(getattr(
-                        stream_options, "generation_id", "") or "")
-                elif isinstance(stream_options, dict):
-                    generation_id = str(
-                        stream_options.get("generation_id", "") or "")
-            generation_id = generation_id or uuid.uuid4().hex
-            if (len(generation_id) != 32
-                    or generation_id != generation_id.lower()
-                    or any(char not in "0123456789abcdef"
-                           for char in generation_id)):
-                raise ValueError(
-                    "conversation generation identity must be 16-byte lowercase hex")
-            if stream_options is None:
-                stream_options = {"generation_id": generation_id}
-            elif callable(getattr(stream_options, "as_dict", None)):
-                try:
-                    stream_options = replace(
-                        stream_options, generation_id=generation_id)
-                except TypeError as exc:
-                    raise TypeError(
-                        "stream_options must expose a replaceable generation_id"
-                    ) from exc
-            elif isinstance(stream_options, dict):
-                stream_options = dict(stream_options)
-                stream_options["generation_id"] = generation_id
-            else:
-                raise TypeError(
-                    "stream_options must be a mapping or options object")
-            conversation_turn = self._conversation_coordinator.begin_turn(
-                conversation,
-                input_payload=bytes(input.payload),
-                canonical_token_ids=canonical_token_ids,
-                request_id=planner_request_id,
-                generation_id=generation_id,
-            )
-            # ``begin_turn`` fills the digest fields that bind the signed
-            # continuation to this exact application input.  Pass that
-            # normalized value into the planner; forwarding the caller's
-            # digest-less convenience object would make the Provider reject
-            # the request even though the turn was registered successfully.
-            input_digest = "sha256:" + hashlib.sha256(
-                bytes(input.payload)).hexdigest()
-            conversation = replace(
-                conversation,
-                turn_input_digest=input_digest,
-                request_contract_digest=str(
-                    conversation_turn["requestContractDigest"]),
-            )
-        elif canonical_token_ids is not None:
-            raise ValueError(
-                "canonical_token_ids requires an explicit conversation turn")
-        request_args = dict(
-            model=model,
-            task=task,
-            input=input,
-            timeout_ms=timeout_ms,
-            options=options,
-            stream_options=stream_options,
-            on_event=on_event,
-            on_complete=on_complete,
-            on_error=on_error,
-            conversation=conversation,
-            objective=objective,
-            constraints=constraints,
-            request_id=planner_request_id,
-        )
-        if strategy is not None:
-            request_args["strategy"] = strategy
-        try:
-            handle = self._automatic_planner.request_streaming(**request_args)
-            if conversation_turn is not None:
-                attach = getattr(handle, "_attach_conversation", None)
-                if not callable(attach):
-                    raise RuntimeError(
-                        "streaming handle cannot retain conversation turn ownership")
-                attach(self._conversation_coordinator, conversation_turn)
-            return handle
-        except BaseException:
-            if conversation_turn is not None:
-                self._conversation_coordinator.abort_turn(
-                    str(conversation_turn["requestId"]))
-            raise
-
-    def generate(self, request):
-        """Submit one complete-generation request through one invocation.
-
-        The adapter/provider owns the internal autoregressive loop; this
-        method never expands it into per-token NDNSF Requests.
-        """
-        if self._automatic_planner is None:
-            raise RuntimeError(
-                "APPClient requires an AutomaticPlanningCoordinator")
-        return self._automatic_planner.generate(request)
-
-    def configure_automatic_planning(
-        self,
-        *,
-        service_name: str,
-        adapters,
-        strategy,
-        catalog_snapshot_provider,
-        verify_offer_signature,
-        split_materializer=None,
-        artifact_publisher=None,
-        canonical_artifact_ensurer=None,
-        budget=None,
-        ack_timeout_ms: int = 300,
-        data_v1_no_progress_ms: int = 2000,
-        ack_coverage_roles=(),
-        ack_coverage_predicate=None,
-        require_ack_provenance: bool = True,
-        grant_binding_provider=None,
-        protection_epoch: str = "plaintext-v1",
-        lifecycle_observer=None,
-    ):
-        """Attach the canonical deferred planner after the network client exists."""
-        if self._network_client is None:
-            raise RuntimeError("automatic planning requires a network client")
-        from .placement import (
-            AutomaticPlanningCoordinator,
-            CatalogSnapshotArtifactPublisher,
-            RejectGeneratedSplitMaterializer,
-            v2_provider_view_factory,
-            v3_provider_view_factory,
-        )
-        snapshot_provider = catalog_snapshot_provider or (lambda: ())
-        placement_profile = str(
-            getattr(strategy, "placement_profile", "DI_PLACEMENT_V2"))
-        # Spec180's request-scoped V3 planning closes discovery at the
-        # registered ACK timeout.  A caller-provided role predicate would make
-        # ACK coverage an offline authority and could terminate the window
-        # before all Providers have had a chance to advertise.  Keep the
-        # generic V2 compatibility hook, but reject it at the V3 configuration
-        # boundary rather than silently ignoring it later.
-        if (placement_profile == "DI_PLACEMENT_V3"
-                and (tuple(ack_coverage_roles)
-                     or ack_coverage_predicate is not None)):
-            raise ValueError(
-                "DI_PLACEMENT_V3 does not permit caller ACK coverage; "
-                "use the registered ACK timeout")
-        if placement_profile == "DI_PLACEMENT_V3":
-            provider_factory = v3_provider_view_factory(
-                verify_offer_signature,
-                require_ack_provenance=bool(require_ack_provenance))
-        else:
-            provider_factory = v2_provider_view_factory(
-                verify_offer_signature)
-        coordinator = AutomaticPlanningCoordinator(
-            service_user=self._network_client.service_user,
-            service_name=service_name,
-            adapters={
-                adapter.descriptor.name: adapter for adapter in adapters
-            },
-            strategy=strategy,
-            provider_view_factory=provider_factory,
-            split_materializer=(
-                split_materializer or RejectGeneratedSplitMaterializer()),
-            artifact_publisher=(
-                artifact_publisher
-                or CatalogSnapshotArtifactPublisher(snapshot_provider)),
-            canonical_artifact_ensurer=canonical_artifact_ensurer,
-            catalog_snapshot_provider=snapshot_provider,
-            budget=budget,
-            ack_timeout_ms=ack_timeout_ms,
-            data_v1_no_progress_ms=data_v1_no_progress_ms,
-            ack_coverage_roles=tuple(ack_coverage_roles),
-            ack_coverage_predicate=ack_coverage_predicate,
-            grant_binding_provider=grant_binding_provider,
-            protection_epoch=protection_epoch,
-            lifecycle_observer=lifecycle_observer,
-        )
-        self._automatic_planner = coordinator
-        return coordinator
-
-    def track_selection_acceptance(
-        self, *, request_id: str, attempt: int, deadline_ms: int,
-        encryption_key: bytes,
-    ) -> SelectionAcceptanceTracker:
-        """Create/reuse the encrypted V2 final-Selection control journal."""
-        key = (request_id, int(attempt))
-        current = self._selection_acceptance_trackers.get(key)
-        if current is not None:
-            if current.deadline_ms != int(deadline_ms):
-                raise ValueError(
-                    "Selection acceptance tracker deadline is immutable")
-            return current
-        tracker = SelectionAcceptanceTracker(
-            request_id=request_id, attempt=attempt,
-            deadline_ms=deadline_ms, encryption_key=encryption_key)
-        self._selection_acceptance_trackers[key] = tracker
-        return tracker
-
-    def prepare_intent(self, intent, validator=lambda value: None):
-        prepared = self.intent_coordinator.prepare(intent)
-        self.intent_coordinator.revalidate(prepared.intent_id, validator)
-        return self.intent_coordinator.commit(prepared.intent_id)
 
     def emit_outcome(self, outcome, *, idempotency_key: str, timeout_ms: int = 100):
         if self.observers is None:
@@ -1803,7 +483,7 @@ class APPClient:
                 "request_id must be 1-256 characters using letters, digits, "
                 "dot, underscore, colon, or hyphen"
             )
-        if request_id in self._request_handles or self._events(request_id):
+        if request_id in self._request_handles or self._request_events.count(request_id):
             raise ValueError(f"request_id already exists: {request_id}")
         if deadline is None:
             expires_at_ms = now + int(ttl_ms)
@@ -1870,10 +550,9 @@ class APPClient:
             requester_identity=self.requester_identity,
             attempt_epoch=1,
             envelope_reference=reference,
-            event_cursor=len(initial_states),
             service_name=service,
         )
-        self._append_events(
+        handle = self._append_events(
             handle, [(state, "", "") for state in initial_states],
             extra_entries=(
                 ("request-handle", handle.to_record()),
@@ -1881,13 +560,13 @@ class APPClient:
             ),
             prepared_envelope=prepared_envelope,
         )
-        self._request_handles[request_id] = handle
         if network_submission:
             options = dict(inference_options or {})
             options.setdefault("timeout_ms", max(1, expires_at_ms - now))
             options.update({
                 "request_id": request_id,
-                "on_result": lambda result: self._network_result(handle, result),
+                "on_result": lambda result, **binding: self._network_result(
+                    handle, result, **binding),
                 "on_error": lambda error: self._event(
                     handle, RequestState.FAILED, reason=type(error).__name__),
             })
@@ -1918,57 +597,17 @@ class APPClient:
                 self._event(handle, RequestState.FAILED, reason=type(exc).__name__)
         return handle
 
-    def bind_execution_activation(
-        self, handle: RequestHandle, activation: ExecutionActivateMessage,
-    ) -> RequestHandle:
-        """Durably bind USER-authorized exact ReadySet activation."""
-        current = self._request_handles.get(handle.request_id, handle)
-        if (activation.requester_identity != current.requester_identity
-                or activation.request_id != current.request_id
-                or activation.attempt != current.attempt_epoch
-                or not activation.members):
-            raise RequestRecoveryError("EXECUTION_ACTIVATION_BINDING_MISMATCH")
-        wire = activation.to_bytes()
-        digest = activation.digest()
-        if current.activation_digest:
-            if current.activation_digest != digest:
-                raise RequestRecoveryError("EXECUTION_ACTIVATION_CONFLICT")
-            return current
-        updated = replace(
-            current,
-            activation_digest=digest,
-            execution_activation_wire=base64.b64encode(wire).decode("ascii"),
-            event_cursor=len(self._events(current.request_id)) + 1,
-        )
-        self._append_events(
-            updated, [(RequestState.CERTIFIED, "", "")],
-            extra_entries=(("request-handle-update", updated.to_record()),))
-        self._request_handles[current.request_id] = updated
-        return updated
-
-    def _execution_activation(
-        self, handle: RequestHandle,
-    ) -> ExecutionActivateMessage:
-        if not handle.activation_digest or not handle.execution_activation_wire:
-            raise RequestRecoveryError("EXECUTION_ACTIVATION_MISSING")
-        try:
-            activation = ExecutionActivateMessage.from_bytes(
-                base64.b64decode(handle.execution_activation_wire, validate=True))
-        except Exception as exc:
-            raise RequestRecoveryError("EXECUTION_ACTIVATION_INVALID") from exc
-        if activation.digest() != handle.activation_digest:
-            raise RequestRecoveryError("EXECUTION_ACTIVATION_DIGEST_MISMATCH")
-        if (activation.requester_identity != handle.requester_identity
-                or activation.request_id != handle.request_id
-                or activation.attempt != handle.attempt_epoch):
-            raise RequestRecoveryError("EXECUTION_ACTIVATION_BINDING_MISMATCH")
-        return activation
-
-    def _network_result(self, handle: RequestHandle, result) -> None:
+    def _network_result(self, handle: RequestHandle, result, *, native_request_id="") -> None:
         # The callback closes over the initially submitted handle.  Certificate
         # binding may advance the durable handle while the request is in flight,
         # so terminal processing must use the latest journal-backed identity.
         handle = self._request_handles.get(handle.request_id, handle)
+        if self.status(handle) in (
+                RequestState.COMPLETED, RequestState.FAILED,
+                RequestState.CANCELLED, RequestState.EXPIRED):
+            return
+        if handle.activation_digest:
+            raise RequestRecoveryError("LEGACY_EXECUTION_RESULT_RETIRED")
         wire_request_id = str(getattr(result, "request_id", "")).lstrip("/")
         if wire_request_id != handle.request_id:
             self._event(
@@ -1979,12 +618,15 @@ class APPClient:
             "requestId": handle.request_id,
             "wireRequestId": wire_request_id,
         }
+        if native_request_id:
+            binding["nativeRequestId"] = native_request_id
         if not bool(getattr(result, "status", False)):
             self._append_events(
                 handle,
                 [(RequestState.FAILED, "", str(getattr(
                     result, "error", "NETWORK_FAILURE"))[:160])],
                 extra_entries=(("request-wire-binding", binding),),
+                allow_terminal_winner=True,
             )
             return
         payload = bytes(getattr(result, "payload", b""))
@@ -1997,44 +639,33 @@ class APPClient:
                 handle, RequestState.FAILED,
                 reason="RESULT_PERSISTENCE_FAILED")
             return
-        if handle.activation_digest:
-            self._execution_activation(handle)
-            current_state = self.status(handle)
-            if current_state == RequestState.CERTIFIED:
-                transitions = (RequestState.EXECUTING, RequestState.COMPLETED)
-            elif current_state == RequestState.EXECUTING:
-                transitions = (RequestState.COMPLETED,)
-            else:
-                self._event(
-                    handle, RequestState.FAILED,
-                    reason="EXECUTION_ACTIVATION_STATE_MISMATCH")
-                return
-        else:
-            transitions = (
-                RequestState.CERTIFIED,
-                RequestState.EXECUTING,
-                RequestState.COMPLETED,
-            )
+        transitions = (
+            RequestState.CERTIFIED,
+            RequestState.EXECUTING,
+            RequestState.COMPLETED,
+        )
         try:
-            self._complete_request(
+            committed = self._complete_request(
                 handle, payload, prepared_result.wire_digest,
                 wire_request_id=wire_request_id,
                 transitions=transitions,
                 extra_entries=(("request-wire-binding", binding),),
                 network_result=result,
                 prepared_envelope=prepared_result,
+                allow_terminal_winner=True,
             )
         except (RuntimeJournalError, OSError):
             self._event(
                 handle, RequestState.FAILED,
                 reason="RESULT_PERSISTENCE_FAILED")
             return
-        self._result_cache[handle.request_id] = payload
+        if committed:
+            self._result_cache[handle.request_id] = payload
 
     def _complete_request(
         self, handle, payload, protected_digest, *, wire_request_id,
         transitions, extra_entries=(), network_result=None,
-        prepared_envelope=None,
+        prepared_envelope=None, allow_terminal_winner=False,
     ):
         terminal_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
         rendezvous = ResultRendezvousRecord(
@@ -2066,14 +697,13 @@ class APPClient:
         updated = replace(
             handle,
             result_rendezvous_digest=rendezvous_digest,
-            event_cursor=len(self._events(handle.request_id)) + len(transitions),
             terminal_evidence_digest=terminal_digest,
         )
         transition_rows = [
             (state, terminal_digest if state == RequestState.COMPLETED else "", "")
             for state in transitions
         ]
-        self._append_events(
+        return self._append_events(
             updated,
             transition_rows,
             extra_entries=(
@@ -2082,9 +712,8 @@ class APPClient:
                 ("request-handle-update", updated.to_record()),
             ),
             prepared_envelope=prepared_envelope,
-        )
-        self._request_handles[handle.request_id] = updated
-        self._result_rendezvous_by_id[handle.request_id] = rendezvous_payload
+            allow_terminal_winner=allow_terminal_winner,
+        ) is not None
 
     def open_request(
         self, request_id: str, attempt_epoch: int = None,
@@ -2118,8 +747,7 @@ class APPClient:
         return self._request_handles[request_id]
 
     def status(self, handle: RequestHandle) -> RequestState:
-        events = self._events(handle.request_id)
-        return RequestState(events[-1]["state"]) if events else RequestState.CREATED
+        return RequestState(self._request_events.status(handle.request_id))
 
     def wait(self, handle: RequestHandle, timeout_ms: int = 1000) -> RequestState:
         deadline = time.monotonic()+timeout_ms/1000
@@ -2152,10 +780,11 @@ class APPClient:
         return payload
 
     def _completed_inference_result(self, handle: RequestHandle) -> InferenceResult:
+        payload = self.result(handle)
         rendezvous = self._result_rendezvous_by_id.get(handle.request_id, {})
         return InferenceResult(
             True,
-            self.result(handle),
+            payload,
             "",
             handle.request_id,
             str(rendezvous.get("provider_result_data_name", "")),
@@ -2178,6 +807,8 @@ class APPClient:
                 RequestState.COMPLETED, RequestState.FAILED,
                 RequestState.CANCELLED, RequestState.EXPIRED}:
             return
+        if current.activation_digest:
+            raise RequestRecoveryError("LEGACY_EXECUTION_CONTROL_RETIRED")
         cancellation_id = "sha256:" + hashlib.sha256(
             (f"{handle.request_id}:{current.attempt_epoch}:"
              f"{current.activation_digest}:{reason}").encode()
@@ -2186,90 +817,19 @@ class APPClient:
             current,
             cancellation_id=cancellation_id,
             cancellation_reason=str(reason)[:160],
-            event_cursor=len(self._events(handle.request_id)) + 1,
         )
-        if current.activation_digest:
-            activation = self._execution_activation(current)
-            if not current.service_name:
-                raise RequestRecoveryError("EXECUTION_CONTROL_SERVICE_MISSING")
-            transport = self._execution_control_transport
-            if transport is None and self._network_client is not None:
-                transport = ExistingServiceExecutionControlTransport(
-                    self._network_client)
-            if transport is None:
-                raise RequestRecoveryError("EXECUTION_CONTROL_TRANSPORT_MISSING")
-            request_record = {
-                "schema": "ndnsf-di-execution-control-v2",
-                "operation": "CANCEL",
-                "requestId": current.request_id,
-                "attemptEpoch": current.attempt_epoch,
-                "requesterIdentity": current.requester_identity,
-                "activationDigest": current.activation_digest,
-                "cancellationId": cancellation_id,
-                "reason": str(reason)[:160],
-            }
-            self.journal.append("request-cancellation-request", request_record)
-            evidence_records = []
-            seen_providers = set()
-            for member in activation.members:
-                if member.provider in seen_providers:
-                    continue
-                seen_providers.add(member.provider)
-                payload = {
-                    **request_record,
-                    "providerName": member.provider,
-                    "providerRole": member.role,
-                }
-                try:
-                    evidence = transport.cancel(
-                        member.provider,
-                        current.service_name,
-                        payload,
-                        timeout_ms=max(1, min(5000, current.expires_at_ms - int(time.time() * 1000))),
-                    )
-                except Exception as exc:
-                    self.journal.append("request-cancellation-failure", {
-                        **request_record,
-                        "provider": member.provider,
-                        "reason": type(exc).__name__,
-                    })
-                    raise RequestRecoveryError("CANCELLATION_INCOMPLETE") from exc
-                if (
-                    not evidence.accepted
-                    or evidence.operation != "CANCEL"
-                    or evidence.provider != member.provider
-                    or evidence.service_name != current.service_name
-                    or evidence.requester_identity != current.requester_identity
-                    or evidence.request_id != current.request_id
-                    or evidence.attempt_epoch != current.attempt_epoch
-                    or evidence.activation_digest != current.activation_digest
-                    or evidence.cancellation_id != cancellation_id
-                ):
-                    self.journal.append("request-cancellation-failure", {
-                        **request_record,
-                        "provider": member.provider,
-                        "reason": "EVIDENCE_BINDING_MISMATCH",
-                    })
-                    raise RequestRecoveryError("CANCELLATION_INCOMPLETE")
-                evidence_records.append((
-                    "execution-control-evidence", evidence.to_record()))
-            self._append_events(
-                updated,
-                [(RequestState.CANCELLED, "", str(reason)[:160])],
-                extra_entries=(
-                    *evidence_records,
-                    ("request-handle-update", updated.to_record()),
-                ),
-            )
-        else:
-            self._append_events(
-                updated,
-                [(RequestState.CANCELLED, "", str(reason)[:160])],
-                extra_entries=((
-                    "request-handle-update", updated.to_record()),),
-            )
-        self._request_handles[handle.request_id] = updated
-        future = self._network_futures.get(handle.request_id)
+        committed = self._append_events(
+            updated,
+            [(RequestState.CANCELLED, "", updated.cancellation_reason)],
+            extra_entries=((
+                "request-handle-update", updated.to_record()),),
+            allow_terminal_winner=True,
+        )
+        if committed is not None:
+            self._cancel_network_future(handle.request_id)
+
+    def _cancel_network_future(self, request_id: str) -> None:
+        future = self._network_futures.get(request_id)
         if future is not None:
             future.cancel()
 
@@ -2285,10 +845,6 @@ class APPClient:
             return plan
         return self.executor.deploy_plan(plan, *args, **kwargs)
 
-    def deploy_plan(self, plan, *args, **kwargs):
-        """Bounded compatibility alias for :meth:`prepare_session`."""
-        return self.prepare_session(plan, *args, **kwargs)
-
     def collaboration_status(self, request_id: str, *, timeout_ms: int = 500):
         if self._network_client is None:
             return ()
@@ -2296,7 +852,7 @@ class APPClient:
             request_id, timeout_ms=timeout_ms)
 
     def _events(self, request_id):
-        return list(self._request_events_by_id.get(request_id, ()))
+        return [json.loads(wire) for wire in self._request_events.events(request_id)]
 
     def _event(self, handle, state, result_digest="", reason=""):
         self._append_events(
@@ -2304,53 +860,45 @@ class APPClient:
 
     def _append_events(
         self, handle, transitions, *, extra_entries=(),
-        prepared_envelope=None,
+        prepared_envelope=None, allow_terminal_winner=False,
     ):
-        events = self._events(handle.request_id)
-        current = RequestState(events[-1]["state"]) if events else None
-        terminal = {
-            RequestState.COMPLETED, RequestState.FAILED,
-            RequestState.CANCELLED, RequestState.EXPIRED,
-        }
-        order = {
-            RequestState.CREATED: 0,
-            RequestState.PLANNING: 1,
-            RequestState.PREPARING: 2,
-            RequestState.CERTIFIED: 3,
-            RequestState.EXECUTING: 4,
-            RequestState.COMPLETED: 5,
-        }
-        payloads = []
-        for state, result_digest, reason in transitions:
-            state = RequestState(state)
-            if current in terminal:
-                if current == state and len(transitions) == 1:
-                    return ()
-                raise RuntimeError("durable request state is already terminal")
-            if (current is not None and state not in terminal and
-                    order.get(state, -1) <= order.get(current, -1)):
-                raise ValueError("durable request state must advance monotonically")
-            payloads.append({
-                "requestId": handle.request_id,
-                "sequence": len(events) + len(payloads) + 1,
-                "state": state.value,
-                "timestampMs": int(time.time() * 1000),
-                "resultDigest": result_digest,
-                "reasonCode": reason,
-            })
-            current = state
-        entries = (
-            *extra_entries,
-            *(("request-event", payload) for payload in payloads),
+        committed_handle = handle
+
+        def persist(rows):
+            nonlocal committed_handle
+            payloads = tuple(json.loads(row) for row in rows)
+            previous_sequence = payloads[0]["sequence"] - 1
+            identity = (handle.attempt_epoch, handle.envelope_digest)
+            committed_handle = replace(handle, event_cursor=payloads[-1]["sequence"])
+            entries = []
+            for kind, payload in extra_entries:
+                if kind == "request-handle":
+                    identity = None
+                if kind in ("request-handle", "request-handle-update"):
+                    payload = committed_handle.to_record()
+                entries.append((kind, payload))
+            entries.extend(("request-event", payload) for payload in payloads)
+            fence = (handle.request_id, previous_sequence, identity)
+            if prepared_envelope is None:
+                self.journal.append_many(entries, _request_fence=fence)
+            else:
+                self.journal.commit_prepared_envelope(
+                    prepared_envelope, entries, _request_fence=fence)
+
+            # Update the durable projections before the native owner exposes the new status.
+            for kind, payload in extra_entries:
+                if kind in ("request-handle", "request-handle-update"):
+                    self._request_handles[handle.request_id] = committed_handle
+                elif kind == "result-rendezvous":
+                    self._result_rendezvous_by_id[handle.request_id] = payload
+
+        persisted = self._request_events.append(
+            handle.request_id,
+            [(RequestState(state).value, digest, reason) for state, digest, reason in transitions],
+            persist,
+            allow_terminal_winner,
         )
-        if prepared_envelope is None:
-            self.journal.append_many(entries)
-        else:
-            self.journal.commit_prepared_envelope(
-                prepared_envelope, entries)
-        self._request_events_by_id.setdefault(
-            handle.request_id, []).extend(payloads)
-        return tuple(payloads)
+        return committed_handle if persisted else None
 
 
 class RequestCatalog:
@@ -2507,42 +1055,6 @@ class InferenceClient:
     def requests(self):
         return self._requests
 
-    @property
-    def native_client(self):
-        """Return the explicitly configured native requester, if any."""
-        return self._core.native_client
-
-    def configure_native_requester(self, runtime, admission, conversations=None, *,
-                                   request_catalog=None):
-        """Configure the native requester through the canonical core owner."""
-        if conversations is None:
-            return self._core.configure_native_requester(
-                runtime, admission, request_catalog=request_catalog)
-        return self._core.configure_native_requester(
-            runtime, admission, conversations, request_catalog=request_catalog)
-
-    def request_native(self, *, model, input, split_strategy,
-                       placement_strategy, options):
-        """Submit through NativeInferenceClient without Python planning."""
-        return self._core.request_native(
-            model=model, input=input, split_strategy=split_strategy,
-            placement_strategy=placement_strategy, options=options)
-
-    def request_native_reference(self, reference, *, options,
-                                 task_name: str | None = None,
-                                 application_options: bytes | None = None,
-                                 on_event=None,
-                                 request_id: str | None = None):
-        """Submit a published encrypted repository reference natively."""
-        kwargs = {
-            "options": options,
-            "task_name": task_name,
-            "application_options": application_options,
-            "on_event": on_event,
-        }
-        if request_id is not None:
-            kwargs["request_id"] = request_id
-        return self._core.request_native_reference(reference, **kwargs)
 
     def deploy(self, definition):
         return self._deployments.ensure(definition)
@@ -2583,6 +1095,8 @@ class InferenceClient:
             )
 
             def finish(item):
+                if item.cancelled():
+                    return
                 try:
                     result = item.result()
                     if on_result is not None:
@@ -2596,47 +1110,6 @@ class InferenceClient:
 
         return submit
 
-    def request_model(
-        self, *, model, input: GenerationInput,
-        generation: GenerationConfig, strategy=None, request_id: str = "",
-    ):
-        if self._core._automatic_planner is None:
-            raise RuntimeError(
-                "model-first request requires an AutomaticPlanningCoordinator")
-        return self._core._automatic_planner.request_application(
-            model=model, input=input, generation=generation,
-            strategy=strategy, request_id=request_id)
-
-    def request_task(
-        self, *, model, task, input, timeout_ms: int,
-        options=None, strategy=None, request_id: str = "",
-    ):
-        """Submit a generic task/input through the existing coordinator.
-
-        This is the model-neutral counterpart to ``request_model``.  It does
-        not accept Provider lists, deployment records, or role assignments;
-        those remain post-ACK coordinator decisions.
-        """
-        if getattr(self._core, "native_client", None) is not None:
-            return self._core.request_task(
-                model=model,
-                task=task,
-                input=input,
-                timeout_ms=int(timeout_ms),
-                options=options,
-                strategy=strategy,
-                request_id=request_id,
-            )
-        if self._core._automatic_planner is None:
-            raise RuntimeError(
-                "model-first request requires an AutomaticPlanningCoordinator")
-        if int(timeout_ms) <= 0:
-            raise ValueError("generic task timeout_ms must be positive")
-        return self._core._automatic_planner.request(
-            model=model, task=task, input=input, timeout_ms=int(timeout_ms),
-            options=options, strategy=strategy, request_id=request_id,
-            constraints={"ack_close_policy": "DEADLINE"},
-            generation_mode="FULL")
 
     def request_preplanned(
         self, deployment: RequestableDeployment, *, input,
@@ -2645,18 +1118,6 @@ class InferenceClient:
         return self._request_impl(
             deployment, input=input, timeout=timeout, deadline=deadline,
             options=options, authorized_coordinator="")
-
-    def request(
-        self, deployment: RequestableDeployment, *, input,
-        timeout=None, deadline=None, options: InferenceOptions | None = None,
-    ) -> InferenceRequestHandle:
-        warnings.warn(
-            "InferenceClient.request(deployment, ...) is preplanned compatibility; "
-            "use request_preplanned() or InferenceApplication.request(model=...)",
-            DeprecationWarning, stacklevel=2)
-        return self.request_preplanned(
-            deployment, input=input, timeout=timeout, deadline=deadline,
-            options=options)
 
     def _request_as_coordinator(
         self, deployment: RequestableDeployment, *, input,
@@ -2676,16 +1137,23 @@ class InferenceClient:
         if (authorized_coordinator and
                 definition.coordinator_service != authorized_coordinator):
             raise PermissionError("definition is bound to another coordinator")
-        deployment_handle = self._deployments.ensure(deployment)
         effective_options = options or InferenceOptions()
         if not isinstance(effective_options, InferenceOptions):
             raise TypeError("options must be InferenceOptions")
         deadline_utc = timing.deadline_utc()
+        submitter = None
         if self._request_submitter is None:
             remote = (
                 definition.application_identity != self._core.requester_identity and
                 definition.coordinator_service != authorized_coordinator)
-            definition_ref = self._deployments.definition_ref(definition)
+            if remote:
+                definition_ref = self._deployments.definition_ref(definition)
+                submitter = self._remote_coordinator_submitter(
+                    definition_ref, deadline_utc, effective_options)
+            elif effective_options != InferenceOptions():
+                raise RequestRecoveryError("PREPLANNED_NETWORK_OPTIONS_UNSUPPORTED")
+        deployment_handle = self._deployments.ensure(deployment)
+        if self._request_submitter is None:
             record = self._core.submit(
                 service=definition.service,
                 input=input,
@@ -2693,16 +1161,10 @@ class InferenceClient:
                 deployment_revision=revision,
                 deadline=deadline_utc,
                 objective=definition.objective,
-                inference_options={
-                    "metadata": dict(effective_options.metadata),
-                    "output_encoding": effective_options.output_encoding,
-                },
+                inference_options={"deployment_revision": revision} if submitter is None else None,
                 _encoded_input=(
-                    self._encode_remote_input(input) if remote else None),
-                _network_submitter=(
-                    self._remote_coordinator_submitter(
-                        definition_ref, deadline_utc, effective_options)
-                    if remote else None),
+                    self._encode_remote_input(input) if submitter is not None else None),
+                _network_submitter=submitter,
             )
         else:
             record = self._request_submitter(
@@ -2835,10 +1297,10 @@ class InferenceClient:
             return
         required = int(getattr(definition.constraints, "minimum_providers", 1))
         ready = [item for item in progress if item.phase.value == "READY"]
-        unique = {(item.role, item.provider) for item in ready}
+        ready_providers = {item.provider for item in ready}
         expected_roles = set(definition.roles)
         observed_roles = {item.role for item in ready}
-        if (len(unique) < required or
+        if (len(ready_providers) < required or
                 (expected_roles and not expected_roles.issubset(observed_roles)) or
                 not certificate_rows):
             if progress:
@@ -2865,14 +1327,14 @@ class InferenceClient:
     def run(self, deployment: RequestableDeployment, *, input,
             timeout=None, deadline=None,
             options: InferenceOptions | None = None) -> InferenceResult:
-        return self.request(
+        return self.request_preplanned(
             deployment, input=input, timeout=timeout, deadline=deadline,
             options=options).result()
 
     async def run_async(self, deployment: RequestableDeployment, *, input,
                         timeout=None, deadline=None,
                         options: InferenceOptions | None = None) -> InferenceResult:
-        return await self.request(
+        return await self.request_preplanned(
             deployment, input=input, timeout=timeout, deadline=deadline,
             options=options).result_async()
 

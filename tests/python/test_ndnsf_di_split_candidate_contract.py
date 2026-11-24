@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 
 from ndnsf_distributed_inference.adapters import build_object_detection_adapter
-from ndnsf_distributed_inference.app_sdk.placement import AutomaticPlanningCoordinator
 from ndnsf_distributed_inference.adapters.onnx.graph import (
     OnnxGraphSummary,
     OnnxNodeInfo,
@@ -12,22 +11,7 @@ from ndnsf_distributed_inference.adapters.onnx.graph import (
     to_model_graph_snapshot,
     to_split_candidate,
 )
-from ndnsf_distributed_inference.splitter import (
-    AdapterDescriptor,
-    GraphNodeView,
-    ModelDescriptor,
-    ModelGraphSnapshot,
-    RoleDependency,
-    RoleExecutionPlan,
-    RoleResourceRequirement,
-    SplitCandidate,
-    SplitSource,
-    SplitterDescriptor,
-    TensorContract,
-    TensorEdgeView,
-    seal_hybrid_plan,
-)
-from ndnsf_distributed_inference.core import RedistributionEdge
+from ndnsf_distributed_inference.splitter import AdapterDescriptor, GraphNodeView, ModelDescriptor, ModelGraphSnapshot, RoleDependency, RoleExecutionPlan, RoleResourceRequirement, SplitCandidate, SplitSource, SplitterDescriptor, TensorContract, TensorEdgeView
 
 
 def digest(char: str) -> str:
@@ -150,59 +134,6 @@ class SplitCandidateContractTest(unittest.TestCase):
                 adapter=self.adapter,
             ).validate_graph(self.graph)
 
-    def test_hybrid_candidate_expands_every_rank_for_v3_selection(self):
-        plan = RoleExecutionPlan(
-            roles=("stage-0", "stage-1"),
-            dependencies=(RoleDependency("stage-0", "stage-1", ("e1",)),),
-            node_roles={"n0": "stage-0", "n1": "stage-0", "n2": "stage-1"},
-        )
-        candidate = SplitCandidate(
-            source=SplitSource.GENERATED,
-            splitter=SplitterDescriptor("hybrid", "1", digest("e")),
-            model=self.model,
-            graph_digest=self.graph.graph_digest,
-            execution_plan=plan,
-            fragments_by_role={"stage-0": digest("f"), "stage-1": digest("0")},
-            artifacts_by_role={
-                "stage-0": (digest("7"),),
-                "stage-1": (digest("8"), digest("9")),
-            },
-            requirements_by_role={
-                role: RoleResourceRequirement(
-                    ("onnxruntime",), 1024, 128, 64, 128, 64)
-                for role in plan.roles
-            },
-            cross_partition_tensors=("e1",),
-            estimated_costs={"transfer_bytes": None},
-            tensor_degrees_by_role={"stage-0": 1, "stage-1": 2},
-            rank_artifact_digests_by_role={
-                "stage-0": (digest("7"),),
-                "stage-1": (digest("8"), digest("9")),
-            },
-            hybrid_plan=seal_hybrid_plan(
-                tensor_degrees=(1, 2),
-                redistributions=(RedistributionEdge(
-                    producer_ranks=(0,), consumer_ranks=(1, 2),
-                    tensor="e1", operation="SCATTER", epoch="epoch-1",
-                    integrity_digest=digest("a"),
-                    source_layout_digest=digest("b"),
-                    target_layout_digest=digest("c"),
-                    temporary_memory_bytes=4096),),
-            ),
-        )
-        candidate.validate_against(self.graph)
-        specs = AutomaticPlanningCoordinator._v3_role_specs(
-            candidate, self.graph)
-        self.assertEqual(
-            tuple((item.role, item.rank, item.artifact_digest) for item in specs),
-            (("stage-0", 0, digest("7")),
-             ("stage-1", 0, digest("8")),
-             ("stage-1", 1, digest("9"))),
-        )
-        self.assertEqual(
-            tuple(item.role_kind for item in specs),
-            ("PIPELINE_RANGE", "HYBRID_RANK", "HYBRID_RANK"),
-        )
 
     def test_onnx_dependency_graph_deduplicates_repeated_input_ports(self):
         adapter = build_object_detection_adapter()

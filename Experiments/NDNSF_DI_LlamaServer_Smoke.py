@@ -207,7 +207,7 @@ HTTPServer((args.host, args.port), Handler).serve_forever()
 
 
 def run_repo_backed_materialize_smoke() -> None:
-    from py_repoclient.orchestration import LocalDistributedRepo, StorageCapability
+    from py_repoclient import ArtifactRepositoryApi
     from llama_server_lib import (
         build_llama_server_artifact_references,
         decode_chat_response,
@@ -221,15 +221,20 @@ def run_repo_backed_materialize_smoke() -> None:
         fake_runtime = root / "llama-server"
         fake_model.write_bytes(b"fake qwen gguf model for artifact smoke")
         write_fake_llama_server(fake_runtime)
-        repo = LocalDistributedRepo([
-            StorageCapability(repo_node="/local/repo", free_bytes=1_000_000_000)
-        ])
+        owner = "/example/llama-artifact-smoke"
+        repo_root = root / "repo"
+        repo = ArtifactRepositoryApi.make_in_app(durable_root=repo_root, owner_id=owner)
         references = build_llama_server_artifact_references(
             repo,
             model_path=fake_model,
             llama_server_path=fake_runtime,
             include_local_payload_paths=False,
+            publisher_identity=owner,
         )
+        del repo
+        fake_model.unlink()
+        fake_runtime.unlink()
+        repo = ArtifactRepositoryApi.make_in_app(durable_root=repo_root, owner_id=owner)
         materialized_model, materialized_runtime = (
             provider_module.materialize_llama_server_artifacts(
                 artifact_references=references,

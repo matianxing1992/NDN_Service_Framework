@@ -105,6 +105,17 @@ namespace ndn_service_framework{
         std::string errorMessage;
     };
 
+    /** Commitments to a signed descriptor supplied in the current User request. */
+    struct ProtectedRequestInputReference
+    {
+        ndn::Name name;
+        uint64_t plaintextSize = 0;
+        std::string plaintextDigest;
+        std::string manifestDigest;
+        std::string protectionEpoch;
+        std::string authorizationScope;
+    };
+
     class ImmutableProtectedPublicationStore;
 
     struct ImmutableProtectedDataResult
@@ -683,6 +694,11 @@ namespace ndn_service_framework{
                 LargeDataFetchResult fetchEncryptedLargeDataResult(
                     const ndn::Name& dataName,
                     const ndn::Name& serviceName = ndn::Name());
+                /** Resolve the current User's canonical protected input under this dispatch. */
+                LargeDataFetchResult fetchProtectedRequestInput(
+                    const ProtectedRequestInputReference& reference,
+                    std::chrono::steady_clock::time_point deadline =
+                        std::chrono::steady_clock::time_point::max());
                 std::optional<ndn::Buffer> fetchEncryptedLargeData(
                     const ndn::Name& dataName,
                     const ndn::Name& serviceName = ndn::Name());
@@ -818,6 +834,15 @@ namespace ndn_service_framework{
                                             size_t maxSegmentSize,
                                             int freshnessMs,
                                             CollaborationTransferMetrics* metrics);
+                /**
+                 * Publish an object, then advertise its reference in the same collaboration.
+                 * An empty result means that object publication or reference submission failed.
+                 * Queued advertisements expire with the work that submitted them.
+                 */
+                ndn::Name publishLargeReference(
+                    KeyScope keyScope, Topic dataTopic, const Topic& referenceTopic,
+                    const ndn::Buffer& payload, LargeDataReference reference,
+                    size_t maxSegmentSize = 7000, int freshnessMs = 60000);
                 /** Reuse immutable ciphertext across authorized invocations.
                  * A private per-object key is granted only through this
                  * invocation's scope. Same-name content/protection changes fail.
@@ -866,6 +891,13 @@ namespace ndn_service_framework{
                     int timeoutMs,
                     std::size_t expectedSegments = 0,
                     CollaborationTransferMetrics* metrics = nullptr);
+                /**
+                 * Resolve a collaboration wire reference within the current work deadline.
+                 * Pass the validated notification's Producer to bind the object to it.
+                 */
+                std::optional<ndn::Buffer> fetchLargeReference(
+                    const ndn::Buffer& wire, KeyScope keyScope, int timeoutMs,
+                    const ndn::Name& expectedProducer = {});
                 /** Fetch under this dispatch's original authority and deadline.
                  * An authority change cancels the active segmented transfer. */
                 std::optional<ndn::Buffer> fetchLargeFromProducerCurrent(
@@ -1220,31 +1252,6 @@ namespace ndn_service_framework{
                 std::function<void(const ndn::Name& messageName,
                                    const ndn::Buffer& wire)>;
 
-            /**
-             * Test-only hook at the real streamed-event publication boundary.
-             * Returning false suppresses the SVS publication after the exact
-             * signed Data has been retained in the Provider IMS.  This lets
-             * integration tests exercise the production exact-Interest retry
-             * path without intercepting DummyFace traffic.
-             */
-            using StreamPublicationInterceptorForTest =
-                std::function<bool(const ndn::Data& data)>;
-
-            /** Test-only hook at the encrypted collaboration publication
-             * boundary. Returning false suppresses the SVS publication after
-             * the real Provider has built the collaboration Data name and
-             * encrypted payload. */
-            using CollaborationPublicationInterceptorForTest =
-                std::function<bool(const ndn::Name& dataName)>;
-
-            /** Test-only hook that can suppress retention before publication. */
-            using StreamRetentionInterceptorForTest =
-                std::function<bool(const ndn::Data& data)>;
-
-            /** Test-only observer fired after a retained event is evicted. */
-            using StreamRetentionExpiryObserverForTest =
-                std::function<void(const ndn::Name& eventName)>;
-
             enum class ProviderRequestLifecycleState
             {
                 REQUEST_OBSERVED,
@@ -1387,25 +1394,6 @@ namespace ndn_service_framework{
             /** Re-issue the LocalMock NAC-ABE Producer public-parameter
              * fetch after fixture transport wiring is complete. */
             void refreshNacProducerForTest();
-
-            /** Install or clear the LocalMock streamed-event publication hook. */
-            void setStreamPublicationInterceptorForTest(
-                StreamPublicationInterceptorForTest interceptor);
-            void setCollaborationPublicationInterceptorForTest(
-                CollaborationPublicationInterceptorForTest interceptor);
-            void setStreamRetentionInterceptorForTest(
-                StreamRetentionInterceptorForTest interceptor);
-            void setStreamRetentionExpiryObserverForTest(
-                StreamRetentionExpiryObserverForTest observer);
-            /** Re-publish one already signed streamed Data packet through the
-             * production SVS endpoint.  This is test-only fault-controller
-             * plumbing used to inject duplicate and reordered publications;
-             * it does not re-sign or modify the packet. */
-            void publishStreamPacketForTest(const ndn::Data& data);
-            size_t streamPublisherHighWaterMarkForTest(
-                const ndn::Name& requesterName,
-                const ndn::Name& serviceName,
-                const ndn::Name& requestId);
 
             ndn::Name getName();
 
@@ -1594,10 +1582,6 @@ namespace ndn_service_framework{
                                                  AckStrategyHandler ackHandler,
                                                  RequestHandler requestHandler,
                                                  ServiceInvocationMode invocationMode);
-            ServiceRegistration addScopedService(const ndn::Name& serviceName,
-                                                 AckStrategyHandler ackHandler,
-                                                 RequestHandler requestHandler,
-                                                 ServiceMode mode);
             /** Register an async TargetedOnly handler with the same scoped
              * generation and close semantics as addScopedService. */
             ServiceRegistration addScopedTargetedService(
@@ -1776,8 +1760,6 @@ namespace ndn_service_framework{
 
             void setLocalPublicationHandler(LocalPublicationHandler handler);
 
-            void setLegacyAckStrategyHandler(const ndn::Name& serviceName,
-                                             LegacyAckStrategyHandler ackHandler);
 
             void setSelectionStatusQueryable(const ndn::Name& serviceName,
                                               bool enabled = true);
@@ -2194,6 +2176,38 @@ namespace ndn_service_framework{
             void
             onMissingData(const std::vector<ndn::svs::MissingDataInfo> &);
 
+        private:
+            friend struct PythonStreamFaultTestAccess;
+
+            using StreamPublicationInterceptorForTest =
+                std::function<bool(const ndn::Data& data)>;
+            using StreamRetentionInterceptorForTest =
+                std::function<bool(const ndn::Data& data)>;
+            using CollaborationPublicationInterceptorForTest =
+                std::function<bool(const ndn::Name& dataName)>;
+            using StreamRetentionExpiryObserverForTest =
+                std::function<void(const ndn::Name& eventName)>;
+
+            /** Suppress SVS publication after the exact signed Data is retained. */
+            void setStreamPublicationInterceptorForTest(
+                StreamPublicationInterceptorForTest interceptor);
+            /** Suppress event retention before publication. */
+            void setStreamRetentionInterceptorForTest(
+                StreamRetentionInterceptorForTest interceptor);
+            /** Re-publish exact signed stream Data through the production SVS endpoint. */
+            void publishStreamPacketForTest(const ndn::Data& data);
+
+            /** Suppress SVS publication after the real collaboration Data is built. */
+            void setCollaborationPublicationInterceptorForTest(
+                CollaborationPublicationInterceptorForTest interceptor);
+            /** Observe a retained event after eviction. */
+            void setStreamRetentionExpiryObserverForTest(
+                StreamRetentionExpiryObserverForTest observer);
+            size_t streamPublisherHighWaterMarkForTest(
+                const ndn::Name& requesterName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId);
+
         protected:
             friend struct ServiceProviderTestAccess;
 
@@ -2507,7 +2521,8 @@ namespace ndn_service_framework{
                 const ScopedProtectedObjectKeys* objectKeys = nullptr,
                 ndn::ConstBufferPtr authenticatedEnvelope = {},
                 const ProtectedBlobManifest* authenticatedManifest = nullptr,
-                std::shared_ptr<const HybridMessageKeyOriginals> authenticatedKeys = {});
+                std::shared_ptr<const HybridMessageKeyOriginals> authenticatedKeys = {},
+                const ProtectedRequestInputReference* requestInput = nullptr);
             struct ImmutablePublicationOperation
             {
                 std::shared_ptr<std::mutex> authorityMutex;
@@ -2733,13 +2748,15 @@ namespace ndn_service_framework{
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 std::string selectionDigest = "");
-            void publishCollaborationData(const ndn::Name& requesterName,
+            bool publishCollaborationData(const ndn::Name& requesterName,
                                           const ndn::Name& requestId,
                                           const std::string& producerRole,
                                           const std::string& keyScope,
                                           const ndn::Name& topic,
                                           const ndn::Buffer& payload,
-                                          CollaborationLocalWorkObserver localWorkObserver = {});
+                                          CollaborationLocalWorkObserver localWorkObserver = {},
+                                          std::function<bool()> current = {},
+                                          std::shared_ptr<std::mutex> authorityMutex = {});
             ndn::Name publishCollaborationLargeData(
                 const ndn::Name& requesterName,
                 const ndn::Name& requestId,

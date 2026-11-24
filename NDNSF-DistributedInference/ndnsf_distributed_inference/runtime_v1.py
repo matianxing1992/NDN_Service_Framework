@@ -1407,7 +1407,6 @@ class ExactForwardCacheManager:
             self._evictions += 1
 
 
-
 def stage_definition_from_plan_stage(stage: dict[str, Any], *,
                                      model: ModelManifestV1,
                                      plan_hash: str = "",
@@ -2796,23 +2795,13 @@ def _cmd_production_bench(args: argparse.Namespace) -> int:
     if not args.campaign or not args.out:
         return _deprecated_simulation("bench")
     campaign = read_json(args.campaign)
-    runner = str(campaign.get("runner", "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"))
-    perf = campaign.get("performance", {})
-    if "command" in campaign:
-        command = _expand_command(campaign["command"], {
-            "campaign": str(Path(args.campaign).resolve()),
-            "out": str(Path(args.out).resolve()),
-        }, ("campaign", "out"))
-    else:
-        command = [
-            sys.executable, runner,
-            "--output-dir", str(args.out),
-            "--runtime", "qwen-onnx-cpu-native",
-            "--measured-duration-s", str(perf.get("measurementSeconds", 60)),
-            "--request-interval-ms", str(1000.0 / float(perf.get("offeredRps", 1.0))),
-            "--max-new-tokens", str(campaign.get("maxNewTokens", 32)),
-            "--campaign-id", str(campaign.get("campaignId", "operator-bench")),
-        ]
+    if "command" not in campaign:
+        print("benchmark campaign requires an explicit command", file=sys.stderr)
+        return 2
+    command = _expand_command(campaign["command"], {
+        "campaign": str(Path(args.campaign).resolve()),
+        "out": str(Path(args.out).resolve()),
+    }, ("campaign", "out"))
     return _emit_or_execute(command, args, identities={
         "campaign": str(Path(args.campaign).resolve()),
         "output": str(Path(args.out).resolve()),

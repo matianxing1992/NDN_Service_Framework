@@ -11,6 +11,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <optional>
@@ -330,9 +331,23 @@ void nativeValidateKvNextPlacement(const std::map<std::string, std::string>& pro
 
 std::vector<std::vector<std::uint8_t>> nativeConversationAuthenticationKeys(
   const std::string& identity, const std::vector<NativeConversationJournalKey>& keys);
+class NativeJournalEnvelopeKeyUnavailable : public std::invalid_argument
+{
+public:
+  using std::invalid_argument::invalid_argument;
+};
+
+/** Authenticate and read a v1, v2 or v3 request journal envelope. */
+std::string nativeReadRequestJournalEnvelope(
+  const std::string& encoded, const std::string& envelopeId,
+  const std::vector<NativeConversationJournalKey>& keys, std::uint64_t nowMs);
 std::string nativeReadConversationEnvelope(
   const std::string& encoded, const std::string& envelopeId,
   const std::vector<NativeConversationJournalKey>& keys, std::uint64_t nowMs);
+/** Seal an ordinary request journal envelope using the v3 wire format. */
+std::string nativeSealRequestJournalEnvelope(
+  const std::string& plaintext, const std::string& envelopeId,
+  std::uint64_t expiresAtMs, const NativeConversationJournalKey& key);
 std::string nativeSealConversationEnvelope(
   const std::string& plaintext, const std::string& envelopeId,
   std::uint64_t expiresAtMs, const NativeConversationJournalKey& key);

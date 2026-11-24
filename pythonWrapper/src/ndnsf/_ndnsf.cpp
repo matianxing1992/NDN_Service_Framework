@@ -11,14 +11,9 @@
 #include "ndn-service-framework/Stream.hpp"
 #include "ndn-service-framework/common.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-cancellation.hpp"
 #include "di_bindings.hpp"
 #ifdef NDNSF_HAVE_UAV_TRACKING
 #include "uav-tracking-job.hpp"
@@ -53,6 +48,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -62,7 +58,9 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <initializer_list>
 #include <iostream>
+#include <locale>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -81,11 +79,49 @@
 namespace py = pybind11;
 namespace nsf = ndn_service_framework;
 
+namespace ndn_service_framework {
+
+struct PythonStreamFaultTestAccess
+{
+  static void setPublication(ServiceProvider& provider,
+    std::function<bool(const ndn::Data&)> interceptor)
+  {
+    provider.setStreamPublicationInterceptorForTest(std::move(interceptor));
+  }
+
+  static void setRetention(ServiceProvider& provider,
+    std::function<bool(const ndn::Data&)> interceptor)
+  {
+    provider.setStreamRetentionInterceptorForTest(std::move(interceptor));
+  }
+
+  static void republish(ServiceProvider& provider, const ndn::Data& data)
+  {
+    provider.publishStreamPacketForTest(data);
+  }
+
+  static std::optional<uint64_t> cursor(ServiceProvider& provider, const ndn::Name& name)
+  {
+    const auto parsed = provider.parseOwnedStreamEventName(name);
+    if (!parsed) return std::nullopt;
+    return parsed->cursor;
+  }
+};
+
+} // namespace ndn_service_framework
+
+PyFunctionPtr
+keepPyFunction(py::function fn)
+{
+  return PyFunctionPtr(new py::function(std::move(fn)), [](py::function* value) {
+    py::gil_scoped_acquire gil;
+    delete value;
+  });
+}
+
 namespace {
 
 std::mutex g_keyChainMutex;
-
-using PyFunctionPtr = std::shared_ptr<py::function>;
 
 int
 envIntValue(const char* name, int defaultValue, int minValue, int maxValue)
@@ -113,15 +149,6 @@ pythonFacePollTimeout()
   return ndn::time::milliseconds(pollMs);
 }
 
-PyFunctionPtr
-keepPyFunction(py::function fn)
-{
-  return PyFunctionPtr(new py::function(std::move(fn)), [](py::function* value) {
-    py::gil_scoped_acquire gil;
-    delete value;
-  });
-}
-
 void
 processFaceEvents(ndn::Face& face, ndn::time::milliseconds timeout)
 {
@@ -147,59 +174,6 @@ getOrCreateIdentity(ndn::KeyChain& keyChain, const ndn::Name& identity)
       .getDefaultKey()
       .getDefaultCertificate();
   }
-}
-
-std::vector<std::uint8_t>
-readNativeFile(const std::filesystem::path& path, std::uint64_t limit)
-{
-  std::ifstream input(path, std::ios::binary | std::ios::ate);
-  if (!input) throw std::runtime_error("native configuration file is unavailable");
-  const auto size = input.tellg();
-  if (size < 0 || static_cast<std::uint64_t>(size) > limit)
-    throw std::runtime_error("native configuration file exceeds limit");
-  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-  input.seekg(0);
-  if (!bytes.empty() && !input.read(reinterpret_cast<char*>(bytes.data()), bytes.size()))
-    throw std::runtime_error("native configuration file read failed");
-  return bytes;
-}
-
-std::shared_ptr<EVP_PKEY>
-loadNativePrivateKey(const std::filesystem::path& path)
-{
-  auto bytes = readNativeFile(path, 65536);
-  std::unique_ptr<BIO, decltype(&BIO_free)> bio(
-    BIO_new_mem_buf(bytes.data(), static_cast<int>(bytes.size())), BIO_free);
-  EVP_PKEY* key = bio ? PEM_read_bio_PrivateKey(bio.get(), nullptr,
-    [] (char*, int, int, void*) { return 0; }, nullptr) : nullptr;
-  if (!bytes.empty()) OPENSSL_cleanse(bytes.data(), bytes.size());
-  if (!key || EVP_PKEY_id(key) != EVP_PKEY_ED25519)
-    throw std::runtime_error("native grant configuration requires Ed25519 private keys");
-  return {key, EVP_PKEY_free};
-}
-
-std::string
-nativeRawPublicKey(EVP_PKEY& key)
-{
-  std::string bytes(32, '\0');
-  std::size_t size = bytes.size();
-  if (EVP_PKEY_get_raw_public_key(
-        &key, reinterpret_cast<unsigned char*>(bytes.data()), &size) != 1 || size != bytes.size())
-    throw std::runtime_error("native grant authority key has no Ed25519 raw public key");
-  return bytes;
-}
-
-std::shared_ptr<EVP_PKEY>
-loadNativePublicKey(const std::filesystem::path& path)
-{
-  auto bytes = readNativeFile(path, 65536);
-  std::unique_ptr<BIO, decltype(&BIO_free)> bio(
-    BIO_new_mem_buf(bytes.data(), static_cast<int>(bytes.size())), BIO_free);
-  EVP_PKEY* key = bio ? PEM_read_bio_PUBKEY(bio.get(), nullptr, nullptr, nullptr) : nullptr;
-  if (!bytes.empty()) OPENSSL_cleanse(bytes.data(), bytes.size());
-  if (!key || EVP_PKEY_id(key) != EVP_PKEY_ED25519)
-    throw std::runtime_error("native grant configuration requires Ed25519 public keys");
-  return {key, EVP_PKEY_free};
 }
 
 ndn::Name
@@ -2385,6 +2359,9 @@ splitTextList(const std::string& text)
 std::string
 decodeBase64Url(const std::string& encoded)
 {
+  if (encoded.empty() || encoded.size() % 4 != 0) {
+    throw std::invalid_argument("malformed typed provider capability base64");
+  }
   auto valueOf = [] (char ch) -> int {
     if (ch >= 'A' && ch <= 'Z') return ch - 'A';
     if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
@@ -2394,12 +2371,16 @@ decodeBase64Url(const std::string& encoded)
     return -1;
   };
   std::string decoded;
-  int bits = 0;
+  std::uint32_t bits = 0;
   int bitCount = 0;
-  for (const char ch : encoded) {
-    if (ch == '=') {
-      break;
-    }
+  const auto padding = encoded.find('=');
+  const auto dataLength = padding == std::string::npos ? encoded.size() : padding;
+  if (encoded.size() - dataLength > 2 ||
+      (padding != std::string::npos && encoded.find_first_not_of('=', padding) != std::string::npos)) {
+    throw std::invalid_argument("malformed typed provider capability base64");
+  }
+  for (std::size_t i = 0; i < dataLength; ++i) {
+    const auto ch = encoded[i];
     const int value = valueOf(ch);
     if (value < 0) {
       throw std::invalid_argument("malformed typed provider capability base64");
@@ -2411,37 +2392,261 @@ decodeBase64Url(const std::string& encoded)
       decoded.push_back(static_cast<char>((bits >> bitCount) & 0xff));
     }
   }
+  if (bitCount != 0 && (bits & ((std::uint32_t{1} << bitCount) - 1)) != 0) {
+    throw std::invalid_argument("malformed typed provider capability base64");
+  }
   return decoded;
+}
+
+using ndnsf::di::NativeJson;
+
+NativeJson
+parseAckFields(std::string_view text)
+{
+  auto fields = NativeJson::object();
+  const auto trim = [](std::string_view value) {
+    constexpr std::string_view whitespace = " \t\r\n\v\f";
+    const auto begin = value.find_first_not_of(whitespace);
+    if (begin == std::string_view::npos) {
+      return std::string_view{};
+    }
+    return value.substr(begin, value.find_last_not_of(whitespace) - begin + 1);
+  };
+  while (!text.empty()) {
+    const auto end = text.find(';');
+    const auto item = text.substr(0, end);
+    text.remove_prefix(end == std::string_view::npos ? text.size() : end + 1);
+    const auto separator = item.find('=');
+    if (separator == std::string_view::npos) {
+      continue;
+    }
+    const auto key = trim(item.substr(0, separator));
+    if (key.empty()) {
+      continue;
+    }
+    const std::string value(trim(item.substr(separator + 1)));
+    auto& field = fields[std::string(key)];
+    field = value;
+    if (value.rfind("json64:", 0) == 0) {
+      try {
+        field = ndnsf::di::nativeParseJson(decodeBase64Url(value.substr(7)), 64);
+      }
+      catch (const std::exception&) {
+        // Other metadata still exposes an undecodable field as text.
+        // The typed capability reader rejects it below.
+      }
+    }
+  }
+  return fields;
+}
+
+struct AckCapabilityWire
+{
+  const NativeJson* value = nullptr;
+  std::string errorKind;
+  std::string error;
+};
+
+AckCapabilityWire
+findAckCapability(const NativeJson& fields)
+{
+  auto typed = fields.find("providerCapabilityHint");
+  if (typed == fields.end()) {
+    typed = fields.find("provider_capability_hint");
+  }
+  if (typed == fields.end()) {
+    return {};
+  }
+  if (!typed->is_object()) {
+    return {nullptr, "malformedTyped", "malformed typed provider capability envelope"};
+  }
+  const auto schema = typed->find("schema");
+  if (schema != typed->end() &&
+      (*schema != "ndnsf-provider-capability-v1" && *schema != "ndnsf-provider-capability-v2")) {
+    return {nullptr, "unknownTypedVersion",
+            "unknown typed provider capability schema: " +
+              (schema->is_string() ? schema->get<std::string>() : schema->dump())};
+  }
+  return {&*typed, {}, {}};
+}
+
+const NativeJson*
+firstAckField(const NativeJson& fields, std::initializer_list<const char*> aliases)
+{
+  for (const auto* alias : aliases) {
+    if (const auto value = fields.find(alias); value != fields.end()) {
+      return &*value;
+    }
+  }
+  return nullptr;
+}
+
+std::string
+legacyAckText(const NativeJson* value, std::string fallback = {})
+{
+  if (!value) {
+    return fallback;
+  }
+  if (value->is_string()) {
+    return value->get<std::string>();
+  }
+  if (value->is_null()) {
+    return "None";
+  }
+  if (value->is_boolean()) {
+    return value->get<bool>() ? "True" : "False";
+  }
+  return value->dump();
+}
+
+std::uint64_t
+legacyAckCount(const NativeJson* value)
+{
+  if (!value || value->is_null() || *value == "") {
+    return 0;
+  }
+  double count = 0;
+  if (value->is_number()) {
+    count = value->get<double>();
+  }
+  else if (value->is_boolean()) {
+    count = value->get<bool>() ? 1 : 0;
+  }
+  else {
+    std::istringstream stream(legacyAckText(value));
+    stream.imbue(std::locale::classic());
+    if (!(stream >> count) || !(stream >> std::ws).eof()) {
+      throw std::invalid_argument("malformed legacy ACK metadata: invalid work count");
+    }
+  }
+  if (!std::isfinite(count) || count >= std::ldexp(1.0, 64)) {
+    throw std::invalid_argument("malformed legacy ACK metadata: invalid work count");
+  }
+  return count <= 0 ? 0 : static_cast<std::uint64_t>(count);
+}
+
+NativeJson
+legacyAckCapability(const NativeJson& fields, const std::string& providerName,
+                    const std::string& serviceName)
+{
+  const auto provider = legacyAckText(
+    firstAckField(fields, {"providerName", "provider", "repoNode"}), providerName);
+  const auto service = legacyAckText(
+    firstAckField(fields, {"serviceName", "service"}), serviceName);
+  if (provider.empty() || service.empty()) {
+    throw std::invalid_argument(
+      "legacy ACK requires provider and service identity in fields or decoder context");
+  }
+  auto ready = legacyAckText(firstAckField(fields, {"ready", "status"}), "ready");
+  const auto first = ready.find_first_not_of(" \t\r\n\v\f");
+  ready = first == std::string::npos
+    ? "" : ready.substr(first, ready.find_last_not_of(" \t\r\n\v\f") - first + 1);
+  std::transform(ready.begin(), ready.end(), ready.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  const auto reason = legacyAckText(firstAckField(fields, {"reasonCode", "negativeAckReason"}));
+  const auto runtimeStatus = legacyAckText(firstAckField(fields, {"runtimeStatus", "status"}));
+  auto servicePayload = fields;
+  servicePayload["runtimeStatus"] = runtimeStatus;
+  return {
+    {"schema", "ndnsf-provider-capability-v1"},
+    {"providerName", provider},
+    {"serviceName", service},
+    {"ready", reason.empty() && !ready.empty() && ready != "0" && ready != "false" &&
+      ready != "no" && ready != "off" && ready != "rejected" && ready != "unavailable" &&
+      ready != "model-unavailable" && ready != "admission-rejected"},
+    {"reasonCode", reason},
+    {"message", legacyAckText(firstAckField(fields, {"message"}), "legacy ACK metadata")},
+    {"runtimeHint", {
+      {"providerName", provider},
+      {"queueLength", legacyAckCount(firstAckField(fields, {"queueLength", "queueDepth", "queue"}))},
+      {"activeWorkCount", legacyAckCount(firstAckField(
+        fields, {"activeWorkCount", "activeWorkers", "inflight"}))},
+      {"capacityHints", fields},
+    }},
+    {"servicePayloadSchema", "ndnsf-legacy-ack-fields-v1"},
+    {"servicePayload", std::move(servicePayload)},
+  };
+}
+
+std::optional<std::vector<std::string>>
+compareAckCapabilityAliases(const py::dict& fields, const py::dict& typed)
+{
+  std::optional<std::vector<std::string>> conflicts;
+  const auto check = [&](std::initializer_list<const char*> aliases, const auto& matches) {
+    for (const auto* alias : aliases) {
+      if (fields.contains(alias)) {
+        if (!conflicts) conflicts.emplace();
+        if (!matches(fields[alias])) conflicts->emplace_back(*aliases.begin());
+        break;
+      }
+    }
+  };
+  const auto value = [](const py::dict& dict, const char* key, const char* alternative,
+                        py::object fallback) -> py::object {
+    if (dict.contains(key)) return dict[key];
+    if (dict.contains(alternative)) return dict[alternative];
+    return fallback;
+  };
+  const auto matchesText = [&](const char* key, const char* alternative) {
+    return [expected = py::str(value(typed, key, alternative, py::str("")))](
+             const py::handle& actual) {
+      return expected.equal(py::str(actual));
+    };
+  };
+  check({"providerName", "provider", "repoNode"}, matchesText("providerName", "provider_name"));
+  check({"serviceName", "service"}, matchesText("serviceName", "service_name"));
+  check({"reasonCode", "negativeAckReason"}, matchesText("reasonCode", "reason_code"));
+
+  const auto runtime = value(typed, "runtimeHint", "runtime_hint", py::none());
+  if (runtime.is_none() || (py::isinstance<py::dict>(runtime) && py::len(runtime) == 0)) {
+    check({"queueLength", "queueDepth", "queue"}, [](const py::handle&) { return true; });
+    check({"activeWorkCount", "activeWorkers", "inflight"}, [](const py::handle&) { return true; });
+  }
+  else {
+    const auto runtimeFields = py::dict(runtime);
+    const auto matchesCount = [&](const char* key, const char* alternative) {
+      return [&, key, alternative](const py::handle& actual) {
+        auto expected = value(runtimeFields, key, alternative, py::int_(0));
+        if (!py::bool_(expected)) expected = py::int_(0);
+        const auto integer = py::reinterpret_steal<py::object>(PyNumber_Long(expected.ptr()));
+        if (!integer) throw py::error_already_set();
+        const auto expectedFloat = PyLong_AsDouble(integer.ptr());
+        if (PyErr_Occurred()) throw py::error_already_set();
+        const auto actualFloat = py::reinterpret_steal<py::object>(PyNumber_Float(actual.ptr()));
+        if (!actualFloat) {
+          if (!PyErr_ExceptionMatches(PyExc_TypeError) && !PyErr_ExceptionMatches(PyExc_ValueError))
+            throw py::error_already_set();
+          PyErr_Clear();
+          return false;
+        }
+        return PyFloat_AS_DOUBLE(actualFloat.ptr()) == expectedFloat;
+      };
+    };
+    check({"queueLength", "queueDepth", "queue"}, matchesCount("queueLength", "queue_length"));
+    check({"activeWorkCount", "activeWorkers", "inflight"},
+          matchesCount("activeWorkCount", "active_work_count"));
+  }
+  if (conflicts) std::sort(conflicts->begin(), conflicts->end());
+  return conflicts;
 }
 
 std::optional<boost::property_tree::ptree>
 providerCapabilityFromAckPayload(const ndn::Buffer& payload)
 {
-  const auto text = bytesToString(payload);
-  const auto encoded = fieldFromText(text, "providerCapabilityHint");
-  if (encoded.empty()) {
+  const auto fields = parseAckFields(bytesToString(payload));
+  const auto capability = findAckCapability(fields);
+  if (!capability.error.empty()) {
+    throw std::invalid_argument(capability.error);
+  }
+  if (!capability.value) {
     return std::nullopt;
   }
+  // The existing native selection policy uses property-tree projections.
   boost::property_tree::ptree root;
-  std::istringstream input(decodeBase64Url(encoded.rfind("json64:", 0) == 0 ?
-                                           encoded.substr(7) : encoded));
-  try {
-    boost::property_tree::read_json(input, root);
-  }
-  catch (const std::exception& exc) {
-    throw std::invalid_argument(
-      std::string("malformed typed provider capability JSON: ") + exc.what());
-  }
-  const auto schema = root.get<std::string>("schema", "ndnsf-provider-capability-v1");
-  if (schema != "ndnsf-provider-capability-v1" &&
-      schema != "ndnsf-provider-capability-v2") {
-    throw std::invalid_argument("unknown typed provider capability schema: " + schema);
-  }
+  std::istringstream input(capability.value->dump());
+  boost::property_tree::read_json(input, root);
   if (!root.get_child_optional("servicePayload")) {
     if (const auto snakePayload = root.get_child_optional("service_payload")) {
-      // Python dataclass producers intentionally serialize public fields in
-      // snake_case, while the native producer emits the wire-contract
-      // camelCase spelling. Normalize both at this language boundary.
       root.put_child("servicePayload", *snakePayload);
     }
   }
@@ -2463,7 +2668,9 @@ typedServiceString(const boost::property_tree::ptree& root, const std::string& k
 {
   const auto path = "servicePayload." + key;
   if (const auto scalar = root.get_optional<std::string>(path)) {
-    return *scalar;
+    if (!scalar->empty()) {
+      return *scalar;
+    }
   }
   if (const auto child = root.get_child_optional(path)) {
     std::ostringstream values;
@@ -3045,6 +3252,49 @@ public:
     return m_ctx->localProvider().toUri();
   }
 
+  std::int64_t
+  coordinatorWorkBudgetMs() const
+  {
+    if (!m_ctx->hasCurrentWorkAuthority()) {
+      return 0;
+    }
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+      m_ctx->assignment().workDeadline - std::chrono::steady_clock::now()).count();
+  }
+
+  void
+  armCoordinatorCancellation(const std::string& requestDigest)
+  {
+    namespace control = ndnsf::di::detail;
+    if (m_ctx->assignment().scopeKeys.count(control::NATIVE_CANCELLATION_SCOPE)) {
+      m_coordinatorCancellation.emplace(control::NativeCancellationBinding{
+        m_ctx->sessionId(), 1, "coordinator", requestDigest});
+      m_ctx->allowData(control::NATIVE_CANCELLATION_SCOPE,
+                       ndn::Name(control::NATIVE_CANCELLATION_TOPIC));
+    }
+  }
+
+  bool
+  coordinatorCancellationReceived()
+  {
+    namespace control = ndnsf::di::detail;
+    const auto scope = control::NATIVE_CANCELLATION_SCOPE;
+    const auto topic = ndn::Name(control::NATIVE_CANCELLATION_TOPIC);
+    if (!m_coordinatorCancellation) {
+      return false;
+    }
+    const auto& binding = *m_coordinatorCancellation;
+    py::gil_scoped_release release;
+    const auto records = m_ctx->waitFor(scope, topic, 0, 0);
+    return std::any_of(records.begin(), records.end(), [&] (const auto& record) {
+      return record.sessionId == binding.requestId && record.keyScope == scope &&
+             record.topic == topic && record.producerRole == "user-control-v1" &&
+             record.producer == m_ctx->requesterName() &&
+             control::nativeCancellationPhase(
+               std::string(record.payload.begin(), record.payload.end()), binding) == "cancel";
+    });
+  }
+
   PyCollaborationAssignment assignment() const
   {
     const auto& native = m_ctx->assignment();
@@ -3266,6 +3516,82 @@ public:
     }
     return toPyBytes(*payload);
   }
+  std::string publishLargeReference(const std::string& keyScope,
+                                    const std::string& dataTopic,
+                                    const std::string& referenceTopic,
+                                    const py::bytes& payload,
+                                    const std::string& objectType,
+                                    const std::string& objectId,
+                                    const std::string& digest,
+                                    const std::string& dataName,
+                                    size_t maxSegmentSize,
+                                    int freshnessMs)
+  {
+    nsf::LargeDataReference reference;
+    if (!dataName.empty()) {
+      reference.dataName = ndn::Name(dataName);
+    }
+    reference.objectType = objectType;
+    reference.objectId = objectId;
+    reference.digest = digest;
+    const auto buffer = toBuffer(payload);
+    py::gil_scoped_release release;
+    const auto publishedName = m_ctx->publishLargeReference(
+      keyScope, ndn::Name(dataTopic), ndn::Name(referenceTopic), buffer,
+      std::move(reference), maxSegmentSize, freshnessMs);
+    if (publishedName.empty()) {
+      throw std::runtime_error("large collaboration object publication returned no Data name");
+    }
+    return publishedName.toUri();
+  }
+  std::optional<py::bytes> fetchLargeReference(const py::bytes& reference,
+                                              const std::string& keyScope,
+                                              int timeoutMs,
+                                              const std::string& expectedProducer)
+  {
+    const auto wire = toBuffer(reference);
+    ndn::Name producer;
+    if (!expectedProducer.empty()) {
+      producer = ndn::Name(expectedProducer);
+    }
+    std::optional<ndn::Buffer> payload;
+    {
+      py::gil_scoped_release release;
+      payload = m_ctx->fetchLargeReference(wire, keyScope, timeoutMs, producer);
+    }
+    if (!payload) {
+      return std::nullopt;
+    }
+    return toPyBytes(*payload);
+  }
+  std::optional<py::bytes> fetchProtectedRequestInput(
+    const std::string& name, uint64_t plaintextSize, const std::string& plaintextDigest,
+    const std::string& manifestDigest, const std::string& protectionEpoch,
+    const std::string& authorizationScope, int timeoutMs)
+  {
+    if (timeoutMs <= 0) {
+      return std::nullopt;
+    }
+    const nsf::ProtectedRequestInputReference reference{
+      ndn::Name(name), plaintextSize, plaintextDigest, manifestDigest,
+      protectionEpoch, authorizationScope};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    nsf::LargeDataFetchResult result;
+    {
+      py::gil_scoped_release release;
+      result = m_ctx->fetchProtectedRequestInput(reference, deadline);
+    }
+    if (result.errorMessage == "PROTECTED_REQUEST_INPUT_SIZE_MISMATCH") {
+      throw std::invalid_argument("large reference size mismatch");
+    }
+    if (result.errorMessage.rfind("PROTECTED_REQUEST_INPUT_", 0) == 0) {
+      throw std::invalid_argument(result.errorMessage);
+    }
+    if (!result.success) {
+      return std::nullopt;
+    }
+    return toPyBytes(result.plaintext);
+  }
 
   std::optional<py::bytes> fetchLargeExact(const std::string& dataName,
                                            const std::string& keyScope,
@@ -3411,6 +3737,7 @@ public:
 
 private:
   nsf::ServiceProvider::CollaborationContext* m_ctx = nullptr;
+  std::optional<ndnsf::di::detail::NativeCancellationBinding> m_coordinatorCancellation;
 };
 
 class PyOpaqueSelectionParticipant final : public nsf::OpaqueSelectionParticipant
@@ -3534,6 +3861,20 @@ private:
   std::shared_ptr<py::function> m_onAborted;
 };
 
+std::function<bool(const ndn::Data&)>
+makeStreamFaultInterceptor(nsf::ServiceProvider& provider, py::function callback)
+{
+  auto kept = keepPyFunction(std::move(callback));
+  return [&provider, kept = std::move(kept)] (const ndn::Data& data) {
+    const auto cursor = nsf::PythonStreamFaultTestAccess::cursor(provider, data.getName());
+    if (!cursor) return true;
+    py::gil_scoped_acquire gil;
+    const auto wire = data.wireEncode();
+    return (*kept)(data.getName().toUri(), *cursor,
+      py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size())).cast<bool>();
+  };
+}
+
 class NativeServiceProvider
 {
 public:
@@ -3635,18 +3976,8 @@ public:
     if (!m_provider) {
       throw std::runtime_error("provider is not initialized");
     }
-    auto kept = keepPyFunction(std::move(callback));
-    m_provider->setStreamPublicationInterceptorForTest(
-      [kept = std::move(kept)] (const ndn::Data& data) {
-        py::gil_scoped_acquire gil;
-        const auto wire = data.wireEncode();
-        const auto parsed = nsf::parseInvocationEventName(data.getName());
-        return (*kept)(
-          data.getName().toUri(),
-          parsed ? parsed->cursor : 0,
-          py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size()))
-          .cast<bool>();
-      });
+    nsf::PythonStreamFaultTestAccess::setPublication(*m_provider,
+      makeStreamFaultInterceptor(*m_provider, std::move(callback)));
   }
 
   void
@@ -3655,18 +3986,8 @@ public:
     if (!m_provider) {
       throw std::runtime_error("provider is not initialized");
     }
-    auto kept = keepPyFunction(std::move(callback));
-    m_provider->setStreamRetentionInterceptorForTest(
-      [kept = std::move(kept)] (const ndn::Data& data) {
-        py::gil_scoped_acquire gil;
-        const auto wire = data.wireEncode();
-        const auto parsed = nsf::parseInvocationEventName(data.getName());
-        return (*kept)(
-          data.getName().toUri(),
-          parsed ? parsed->cursor : 0,
-          py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size()))
-          .cast<bool>();
-      });
+    nsf::PythonStreamFaultTestAccess::setRetention(*m_provider,
+      makeStreamFaultInterceptor(*m_provider, std::move(callback)));
   }
 
   void
@@ -3675,7 +3996,7 @@ public:
     if (!m_provider) {
       throw std::runtime_error("provider is not initialized");
     }
-    m_provider->publishStreamPacketForTest(*dataFromWireBytes(wire));
+    nsf::PythonStreamFaultTestAccess::republish(*m_provider, *dataFromWireBytes(wire));
   }
 
   void
@@ -4133,6 +4454,10 @@ public:
     while (m_running.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
       throwIfError();
+      py::gil_scoped_acquire gil;
+      if (PyErr_CheckSignals() < 0) {
+        throw py::error_already_set();
+      }
     }
     throwIfError();
   }
@@ -4568,101 +4893,6 @@ public:
   bool hasRequestScopedDefault() const
   {
     return m_user && m_user->hasRequestScopedDefault();
-  }
-
-  std::shared_ptr<ndnsf::di::NativeInferenceClient>
-  nativeInferenceClient(std::shared_ptr<const ndnsf::di::NativeAdapterRegistry> adapters)
-  {
-    if (!m_user) {
-      throw std::runtime_error("user is not initialized");
-    }
-    // NativeInferenceClient does not own the Face or ServiceUser.  The
-    // binding's keep_alive policy below keeps this NativeServiceUser alive
-    // for the client lifetime; the aliasing shared_ptr only expresses the
-    // non-owning boundary to the native client.
-    auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(),
-                                                  [] (nsf::ServiceUser*) {});
-    return std::make_shared<ndnsf::di::NativeInferenceClient>(
-      std::move(user), std::move(adapters));
-  }
-
-  std::shared_ptr<ndnsf::di::NativeRequestPreparation>
-  nativePreparation(
-    std::shared_ptr<const ndnsf::di::NativeCanonicalPreparationCatalog> catalog,
-    const std::string& serviceName)
-  {
-    if (!m_user) throw std::runtime_error("user is not initialized");
-    if (!catalog || serviceName.empty() || serviceName.front() != '/')
-      throw std::invalid_argument("native preparation requires catalog and service name");
-    auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(), [] (nsf::ServiceUser*) {});
-    return catalog->makePreparation(std::move(user), serviceName);
-  }
-
-  std::shared_ptr<ndnsf::di::NativeInferenceClient>
-  nativeInferenceClientConfigured(
-    const ndnsf::di::NativeRequestRuntime& runtime,
-    std::shared_ptr<ndnsf::di::NativeRequestPreparation> preparation,
-    std::shared_ptr<const ndnsf::di::NativeOfferAdmission> admission,
-    std::shared_ptr<ndnsf::di::NativeConversationCoordinator> conversations = nullptr)
-  {
-    if (!m_user) throw std::runtime_error("user is not initialized");
-    if (!runtime.catalog)
-      throw std::invalid_argument("native runtime requires a preparation catalog");
-    if (!preparation || !admission)
-      throw std::invalid_argument("native runtime requires preparation and offer admission");
-    auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(), [] (nsf::ServiceUser*) {});
-    return std::make_shared<ndnsf::di::NativeInferenceClient>(
-      std::move(user), runtime.catalog->adapters(), runtime,
-      std::move(conversations), std::move(preparation), std::move(admission));
-  }
-
-  std::shared_ptr<ndnsf::di::NativeConversationCoordinator>
-  nativeConversationCoordinatorFromConfig(const std::string& configurationJson,
-                                           const std::string& baseDirectory)
-  {
-    if (!m_user) throw std::runtime_error("user is not initialized");
-    return ndnsf::di::nativeConversationCoordinatorFromConfig(
-      configurationJson, std::filesystem::path(baseDirectory), m_userIdentity.toUri());
-  }
-
-  std::shared_ptr<const ndnsf::di::NativeAuthenticatedGrantClient>
-  nativeGrantClientFromConfig(const std::string& configurationJson,
-                              const std::string& baseDirectory)
-  {
-    if (!m_user) throw std::runtime_error("user is not initialized");
-    const auto root = ndnsf::di::nativeParseJson(configurationJson);
-    if (root.value("schema", std::string{}) != "ndnsf-di-native-grant-client-v1")
-      throw std::invalid_argument("unsupported native grant client schema");
-    const auto base = std::filesystem::absolute(baseDirectory);
-    const auto path = [&base] (const std::string& value) {
-      if (value.empty()) throw std::invalid_argument("native grant path is empty");
-      const auto candidate = std::filesystem::path(value);
-      return candidate.is_absolute() ? candidate : (base / candidate);
-    };
-    const auto requester = root.at("requester_identity").get<std::string>();
-    const auto authority = root.at("authority_identity").get<std::string>();
-    if (requester != m_userIdentity)
-      throw std::invalid_argument(
-        "native grant requester identity must match the ServiceUser identity");
-    const auto epoch = root.at("protection_epoch").get<std::string>();
-    if (root.contains("authority_private_key_file") || root.contains("content_key_file") ||
-        root.contains("content_key_id") || root.contains("requester_public_key_file") ||
-        root.contains("recipient_public_key_files") || root.contains("allowed_model_manifests") ||
-        root.contains("publication_sources") || root.contains("publication_source")) {
-      throw std::invalid_argument(
-        "native grant client configuration must not contain authority policy or content keys");
-    }
-    auto requesterKey = loadNativePrivateKey(
-      path(root.at("requester_private_key_file").get<std::string>()));
-    const auto authorityPublicKey = loadNativePublicKey(
-      path(root.at("authority_public_key_file").get<std::string>()));
-    const auto authorityService = root.at("authority_service").get<std::string>();
-    auto user = std::shared_ptr<nsf::ServiceUser>(m_user.get(), [] (nsf::ServiceUser*) {});
-    return std::make_shared<const ndnsf::di::NativeAuthenticatedGrantClient>(
-      requester, requesterKey, authority, nativeRawPublicKey(*authorityPublicKey), epoch,
-      ndnsf::di::NativeAuthenticatedGrantClient::issueThroughCore(
-        user, authority, authorityService),
-      ndnsf::di::NativeAuthenticatedGrantClient::publishThroughCore(user));
   }
 
   bool
@@ -6100,6 +6330,132 @@ public:
   }
 
   void
+  requestDiCoordinatorAsync(const std::string& serviceName, const std::string& providerName,
+                            const std::string& requestId, const py::bytes& initialPayload,
+                            int ackTimeoutMs, int timeoutMs, py::function onResponse,
+                            py::function onTimeout)
+  {
+    namespace control = ndnsf::di::detail;
+    const auto requestedId = ndn::Name(requestId);
+    const auto provider = ndn::Name(providerName);
+    const auto service = ndn::Name(serviceName);
+    if (requestedId.empty() || provider.empty() || service.empty() ||
+        ackTimeoutMs <= 0 || ackTimeoutMs >= timeoutMs) {
+      throw std::invalid_argument("invalid deferred coordinator binding");
+    }
+    start();
+    const auto payload = toBuffer(initialPayload);
+    auto response = keepPyFunction(std::move(onResponse));
+    auto timeout = keepPyFunction(std::move(onTimeout));
+    const auto notify = [response, requestId] (const nsf::ResponseMessage* value,
+                                             const std::string& error) {
+      py::gil_scoped_acquire gil;
+      PyServiceResponse output;
+      output.status = value && value->getStatus();
+      output.requestId = requestId;
+      output.error = value ? value->getErrorInfo() : error;
+      if (value) {
+        output.payload = toPyBytes(value->getPayload());
+        output.dataName = value->getDataName();
+        output.signerCertificate = value->getSignerCertificate();
+        output.providerIdentity = value->getProviderIdentity();
+        output.wireDigest = value->getWireDigest();
+      }
+      else {
+        output.payload = py::bytes();
+      }
+      try { (*response)(output); }
+      catch (const py::error_already_set& e) { PyErr_WriteUnraisable(e.value().ptr()); }
+    };
+    const auto weak = weak_from_this();
+    boost::asio::post(m_face.getIoContext(),
+      [weak, service, provider, requestedId, payload, ackTimeoutMs, timeoutMs, notify, timeout] {
+        const auto self = weak.lock();
+        if (!self) return;
+        try {
+          nsf::CollaborationPlan plan;
+          plan.ackCollectionTimeMs = ackTimeoutMs;
+          plan.timeoutMs = timeoutMs;
+          nsf::CollaborationRoleSpec role;
+          role.service = service;
+          role.role = "coordinator";
+          role.allowDynamicProvisioning = false;
+          plan.roles.push_back(std::move(role));
+          plan.keyScopes.push_back({control::NATIVE_CANCELLATION_SCOPE, {"coordinator"}});
+          plan.participantSelector = std::make_shared<RoleAssignmentSelectionPolicy>(
+            std::map<std::string, ndn::Name>{}, std::map<std::string, ndn::Name>{},
+            std::map<std::string, std::vector<std::string>>{},
+            std::map<std::string, std::string>{{"coordinator", provider.toUri()}});
+          self->m_user->BeginCollaborationWithProviders(
+            service, payload, ackTimeoutMs, timeoutMs,
+            [weak, provider, plan = std::move(plan), notify] (
+                const nsf::CollaborationAckClosure& closed) mutable {
+              if (const auto owner = weak.lock()) {
+                boost::asio::post(owner->m_face.getIoContext(),
+                  [weak, provider, plan = std::move(plan), closed, notify]() mutable {
+                    const auto current = weak.lock();
+                    if (!current) return;
+                    try {
+                      const auto offered = std::any_of(closed.candidates.begin(),
+                        closed.candidates.end(), [&] (const auto& candidate) {
+                          if (candidate.providerName != provider || !candidate.ack.getStatus())
+                            return false;
+                          const auto roles = rolesFromAckPayload(candidate.ack.getPayload());
+                          return std::find(roles.begin(), roles.end(), "coordinator") != roles.end();
+                        });
+                      if (offered && current->m_user->CommitCollaborationPlan(
+                            closed.requestId, closed.digest, std::move(plan))) return;
+                      current->m_user->CancelCollaboration(closed.requestId);
+                      notify(nullptr, "COORDINATOR_SELECTION_REJECTED");
+                    }
+                    catch (const std::exception& e) {
+                      current->m_user->CancelCollaboration(closed.requestId);
+                      notify(nullptr, e.what());
+                    }
+                  });
+              }
+            },
+            [notify] (const nsf::ResponseMessage& value) { notify(&value, {}); },
+            [timeout] (const ndn::Name& id) {
+              py::gil_scoped_acquire gil;
+              try { (*timeout)(id.toUri()); }
+              catch (const py::error_already_set& e) { PyErr_WriteUnraisable(e.value().ptr()); }
+            }, requestedId, {}, {}, std::nullopt, {}, {}, {}, {provider});
+        }
+        catch (const std::exception& e) {
+          notify(nullptr, e.what());
+        }
+      });
+  }
+
+  void
+  cancelDiCoordinator(const std::string& providerName, const std::string& requestId,
+                      const py::bytes& requestWire)
+  {
+    namespace control = ndnsf::di::detail;
+    const auto id = ndn::Name(requestId);
+    const auto provider = ndn::Name(providerName);
+    const auto payload = toBuffer(requestWire);
+    const auto wire = control::nativeCancellationWire(
+      {id.toUri(), 1, "coordinator", ndnsf::di::nativePlanningDigest(payload.data(), payload.size())},
+      "cancel");
+    const auto weak = weak_from_this();
+    boost::asio::post(m_face.getIoContext(), [weak, provider, id, wire] {
+      if (const auto owner = weak.lock()) {
+        try {
+          if (owner->m_user->publishCollaborationData(
+                provider, id, control::NATIVE_CANCELLATION_SCOPE,
+                ndn::Name(control::NATIVE_CANCELLATION_TOPIC), ndn::Buffer(wire.begin(), wire.end()))) {
+            return;
+          }
+        }
+        catch (const std::exception&) {}
+        owner->m_user->CancelCollaboration(id);
+      }
+    });
+  }
+
+  void
   requestCollaborationAsync(const std::string& serviceName,
                             const py::bytes& initialPayload,
                             const std::vector<std::map<std::string, py::object>>& roles,
@@ -7160,6 +7516,87 @@ bindDeploymentControlMessage(py::module_& m, const char* name)
 
 PYBIND11_MODULE(_ndnsf, m)
 {
+  m.def("_legacy_publication_manifest_digest",
+        [](const std::string& dataName, const std::string& objectId,
+           std::int64_t plaintextSize, const std::string& contentDigest,
+           const std::string& authorizationScope, const std::string& protectionEpoch) {
+    return ndnsf::di::nativePlanningDigest(
+      "version=1\nname=" + dataName + "\nobject_id=" + objectId +
+      "\nplaintext_size=" + std::to_string(plaintextSize) +
+      "\ncontent_digest=" + contentDigest + "\nauthorization_scope=" + authorizationScope +
+      "\nprotection_epoch=" + protectionEpoch + "\nencrypted=1\n");
+  });
+
+  m.def("_encode_structured_large_reference",
+        [](const std::string& dataName, std::int64_t plaintextSize,
+           const std::string& digest, bool encrypted, const std::string& referenceScope,
+           const std::string& keyScope, const std::string& protectionEpoch) {
+    if (dataName.empty() || dataName.front() != '/' || plaintextSize <= 0 ||
+        digest.size() != 71 || digest.compare(0, 7, "sha256:") != 0 || !encrypted ||
+        referenceScope.empty() || referenceScope != keyScope ||
+        protectionEpoch.empty() || protectionEpoch == "plaintext-v1") {
+      throw std::invalid_argument("large reference metadata is not authenticated");
+    }
+    if (digest.find_first_not_of("0123456789abcdefABCDEF", 7) != std::string::npos) {
+      throw std::invalid_argument("large reference metadata digest is invalid");
+    }
+    nsf::LargeDataReference reference;
+    reference.dataName = ndn::Name(dataName);
+    reference.plaintextSize = static_cast<std::size_t>(plaintextSize);
+    reference.digest = digest;
+    return toPyBytes(nsf::encodeLargeDataReferencePayload(reference));
+  });
+
+  m.def("_read_provider_capability_ack",
+        [](const py::bytes& payload, bool allowLegacy, const std::string& provider,
+           const std::string& service) {
+    const auto fields = parseAckFields(static_cast<std::string>(payload));
+    const auto capability = findAckCapability(fields);
+    std::string kind = capability.errorKind;
+    std::string error = capability.error;
+    NativeJson fallback;
+    const NativeJson* hint = capability.value;
+    if (hint) {
+      kind = "typed";
+    }
+    else if (error.empty()) {
+      if (allowLegacy) {
+        try {
+          fallback = legacyAckCapability(fields, provider, service);
+          hint = &fallback;
+          kind = "legacy";
+        }
+        catch (const std::invalid_argument& failure) {
+          error = failure.what();
+        }
+      }
+      else {
+        error = "typed provider capability envelope is required";
+      }
+    }
+    const auto loads = py::module_::import("json").attr("loads");
+    auto projected = loads(fields.dump(-1, ' ', false, NativeJson::error_handler_t::replace));
+    py::object decodedHint = py::none();
+    if (hint) {
+      decodedHint = loads(hint->dump(-1, ' ', false, NativeJson::error_handler_t::replace));
+    }
+    std::optional<std::vector<std::string>> conflicts;
+    if (kind == "typed") {
+      try {
+        conflicts = compareAckCapabilityAliases(projected.cast<py::dict>(),
+                                                decodedHint.cast<py::dict>());
+      }
+      catch (const py::error_already_set& failure) {
+        // The public value projection still checks all typed fields and reports
+        // its original validation error for malformed metadata.
+        if (!failure.matches(PyExc_TypeError) && !failure.matches(PyExc_ValueError))
+          throw;
+      }
+    }
+    return py::make_tuple(std::move(projected), kind, error, std::move(decodedHint),
+                          std::move(conflicts));
+  }, py::arg("payload"), py::arg("allow_legacy") = false, py::arg("provider") = "",
+     py::arg("service") = "");
   bindDistributedInference(m);
   bindDeploymentControlMessage<nsf::DeploymentIntent>(m, "NativeDeploymentIntent");
   bindDeploymentControlMessage<nsf::ProviderCapabilityOffer>(m, "NativeProviderCapabilityOffer");
@@ -8920,6 +9357,10 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_property_readonly("role", &PyCollaborationContext::role)
     .def_property_readonly("requester_name", &PyCollaborationContext::requesterName)
     .def_property_readonly("local_provider", &PyCollaborationContext::localProvider)
+    .def("_coordinator_work_budget_ms", &PyCollaborationContext::coordinatorWorkBudgetMs)
+    .def("_arm_coordinator_cancellation", &PyCollaborationContext::armCoordinatorCancellation)
+    .def("_coordinator_cancellation_received",
+         &PyCollaborationContext::coordinatorCancellationReceived)
     .def_property_readonly("assignment", &PyCollaborationContext::assignment)
     .def("require_inputs", &PyCollaborationContext::requireInputs,
          py::arg("inputs"), py::arg("validate"))
@@ -8956,6 +9397,18 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("data_name"),
          py::arg("key_scope"),
          py::arg("timeout_ms") = 5000)
+    .def("publish_large_reference", &PyCollaborationContext::publishLargeReference,
+         py::arg("key_scope"), py::arg("data_topic"), py::arg("reference_topic"),
+         py::arg("payload"), py::arg("object_type"), py::arg("object_id"),
+         py::arg("digest"), py::arg("data_name"),
+         py::arg("max_segment_size"), py::arg("freshness_ms"))
+    .def("fetch_large_reference", &PyCollaborationContext::fetchLargeReference,
+         py::arg("reference"), py::arg("key_scope"), py::arg("timeout_ms") = 5000,
+         py::arg("expected_producer") = "")
+    .def("fetch_protected_request_input", &PyCollaborationContext::fetchProtectedRequestInput,
+         py::arg("name"), py::arg("plaintext_size"), py::arg("plaintext_digest"),
+         py::arg("manifest_digest"), py::arg("protection_epoch"),
+         py::arg("authorization_scope"), py::arg("timeout_ms"))
     .def("fetch_large_exact", &PyCollaborationContext::fetchLargeExact,
          py::arg("data_name"),
          py::arg("key_scope"),
@@ -9063,15 +9516,6 @@ PYBIND11_MODULE(_ndnsf, m)
          &NativeServiceProvider::providerSigningKeyName)
     .def_property_readonly("provider_signing_certificate_name",
          &NativeServiceProvider::providerSigningCertificateName)
-    .def("set_stream_publication_interceptor_for_test",
-         &NativeServiceProvider::setStreamPublicationInterceptorForTest,
-         py::arg("callback"))
-    .def("set_stream_retention_interceptor_for_test",
-         &NativeServiceProvider::setStreamRetentionInterceptorForTest,
-         py::arg("callback"))
-    .def("publish_stream_packet_for_test",
-         &NativeServiceProvider::publishStreamPacketForTest,
-         py::arg("wire"))
     .def("configure_opaque_selection_store",
          &NativeServiceProvider::configureOpaqueSelectionStore,
          py::arg("wal_path"), py::arg("storage_key"),
@@ -9109,7 +9553,44 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("run", &NativeServiceProvider::run, py::call_guard<py::gil_scoped_release>())
     .def("wait_until_ready", &NativeServiceProvider::waitUntilReady,
          py::arg("timeout_ms") = 15000)
-    .def("stop", &NativeServiceProvider::stop);
+    .def("stop", &NativeServiceProvider::stop, py::call_guard<py::gil_scoped_release>());
+
+  struct StreamFaultAccess
+  {
+    explicit StreamFaultAccess(const py::object& owner)
+      : provider(owner)
+    {
+      if (!py::isinstance<NativeServiceProvider>(owner)) {
+        throw py::type_error("stream fault access requires a native Provider");
+      }
+    }
+
+    py::object
+    lockProvider() const
+    {
+      auto owner = provider();
+      if (owner.is_none()) {
+        throw std::runtime_error("stream fault Provider has been released");
+      }
+      return owner;
+    }
+
+    py::weakref provider;
+  };
+  auto testing = m.def_submodule("_testing", "Integration fixture access to Core.");
+  py::class_<StreamFaultAccess>(testing, "StreamFaultAccess")
+    .def(py::init<const py::object&>())
+    .def("intercept_publication", [] (StreamFaultAccess& access, py::function callback) {
+      access.lockProvider().cast<NativeServiceProvider&>()
+        .setStreamPublicationInterceptorForTest(std::move(callback));
+    })
+    .def("intercept_retention", [] (StreamFaultAccess& access, py::function callback) {
+      access.lockProvider().cast<NativeServiceProvider&>()
+        .setStreamRetentionInterceptorForTest(std::move(callback));
+    })
+    .def("republish", [] (StreamFaultAccess& access, const py::bytes& wire) {
+      access.lockProvider().cast<NativeServiceProvider&>().publishStreamPacketForTest(wire);
+    });
 
   py::enum_<nsf::DependencyRedundancy>(m, "NativeDependencyRedundancy")
     .value("NONE", nsf::DependencyRedundancy::None)
@@ -9142,23 +9623,6 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("adaptive_admission") = false,
          py::arg("serve_certificates") = true,
          py::arg("bootstrap_token") = "")
-	    .def("native_inference_client", &NativeServiceUser::nativeInferenceClient,
-         py::arg("adapters"), py::keep_alive<0, 1>())
-	    .def("native_preparation", &NativeServiceUser::nativePreparation,
-         py::arg("catalog"), py::arg("service_name"), py::keep_alive<0, 1>())
-	    .def("native_grant_client_from_config",
-         &NativeServiceUser::nativeGrantClientFromConfig,
-         py::arg("configuration_json"), py::arg("base_directory") = ".",
-         py::keep_alive<0, 1>())
-    .def("native_inference_client_configured",
-         &NativeServiceUser::nativeInferenceClientConfigured,
-         py::arg("runtime"), py::arg("preparation"), py::arg("admission"),
-         py::arg("conversations") = nullptr,
-         py::keep_alive<0, 1>())
-    .def("native_conversation_coordinator_from_config",
-         &NativeServiceUser::nativeConversationCoordinatorFromConfig,
-         py::arg("configuration_json"), py::arg("base_directory") = ".",
-         py::keep_alive<0, 1>())
 	    .def("open_live_stream", &NativeServiceUser::openLiveStream,
          py::arg("descriptor"), py::arg("on_item"),
          py::arg("start") = "latest",
@@ -9292,6 +9756,8 @@ PYBIND11_MODULE(_ndnsf, m)
          &NativeServiceUser::publishCollaborationData,
          py::arg("target_provider"), py::arg("request_id"),
          py::arg("key_scope"), py::arg("topic"), py::arg("payload"))
+    .def("_request_di_coordinator_async", &NativeServiceUser::requestDiCoordinatorAsync)
+    .def("_cancel_di_coordinator", &NativeServiceUser::cancelDiCoordinator)
     .def("request_collaboration_async", &NativeServiceUser::requestCollaborationAsync,
          py::arg("service"),
          py::arg("payload"),

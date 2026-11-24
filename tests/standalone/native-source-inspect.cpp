@@ -52,7 +52,8 @@ main(int argc, char** argv)
   const bool catalogMode = (argc == 4 || argc == 5) && std::string(argv[1]) == "--catalog";
   const bool initializerMode = argc == 4 && std::string(argv[1]) == "--initializer";
   const bool planningMode = (argc >= 4 && argc <= 6) && std::string(argv[1]) == "--planning";
-  const bool preflightMode = argc == 6 && std::string(argv[1]) == "--preflight";
+  const bool preflightMode = (argc == 4 || argc == 6) &&
+                             std::string(argv[1]) == "--preflight";
   const bool preflightTensorLayout = argc == 6 &&
                                     std::string(argv[1]) == "--preflight-tensor-layout";
   const bool convMode = (argc == 4 || argc == 5) && std::string(argv[1]) == "--conv";
@@ -68,7 +69,7 @@ main(int argc, char** argv)
     std::cerr << "usage: native-source-inspect model.onnx | "
                  "--catalog catalog.json model.onnx | "
                  "--planning descriptor.json model.onnx [sidecar [sha256:...]] | "
-                 "--preflight catalog.json model.onnx sidecar sha256:... | "
+                 "--preflight catalog.json model.onnx [sidecar sha256:...] | "
                  "--preflight-tensor-layout catalog.json model.onnx sidecar sha256:... | "
                  "--conv-output-shards model.onnx | --attention-head-shards model.onnx | "
                  "--reshape-layout model.onnx ordinal axis split | --tensor-layout model.onnx | "
@@ -193,16 +194,21 @@ main(int argc, char** argv)
           {"planning_graph_digest", graph.graphDigest}, {"nodes", std::move(nodes)}}) << std::endl;
         return 0;
       }
-      const auto catalog = NativeRequestCatalog::load(
-        preflightCatalog, std::move(source), rangeControl);
+      const auto catalog = NativeRequestCatalog::load(preflightCatalog, std::move(source), rangeControl);
       if (!catalog.planningCache || catalog.planningCache->candidates.size() != 1)
         throw std::invalid_argument("source preflight requires one exact catalog candidate");
-      // Use the same candidate whose state contracts were bound by the Requester catalog.
-      const auto& [candidate, roles] = catalog.planningCache->candidates.front();
+      const auto& prepared = catalog.planningCache->candidates.front();
+      const auto& candidate = prepared.candidate;
+      const auto& roles = prepared.roles;
       auto facts = NativeJson::array();
       for (const auto& role : roles) {
+        auto inputs = NativeJson::array();
+        auto outputs = NativeJson::array();
+        for (const auto& port : role.expectedInputs) inputs.push_back(port.name);
+        for (const auto& port : role.expectedOutputs) outputs.push_back(port.name);
         auto& record = facts.emplace_back(NativeJson{
           {"role", role.role}, {"nodes", role.nodeIndices.size()},
+          {"input_names", std::move(inputs)}, {"output_names", std::move(outputs)},
           {"memory_mib", role.requiredDeviceMemoryMb}, {"entries", 0}});
         if (!role.sourceTransformV1.empty()) {
           const auto recipe = nativeParseJson(role.sourceTransformV1);

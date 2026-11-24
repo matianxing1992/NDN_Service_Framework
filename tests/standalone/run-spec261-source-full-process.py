@@ -8,7 +8,7 @@ numerical oracle remain in the C++ production executables.
 
 import argparse
 import sys, json
-import hashlib, os, shutil, subprocess, tempfile, time, sqlite3, struct
+import hashlib, os, shutil, signal, subprocess, tempfile, time, sqlite3, struct
 from cryptography.hazmat.primitives.serialization import load_pem_public_key, Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from pathlib import Path
@@ -39,7 +39,7 @@ model=model_descriptor('YOLOFixture',dg('YOLOFixture-content'),dg('YOLOFixture-s
 adapter_digest=digest(ad)
 package=dg('yolo-package-manifest'); profile=dg('yolo-artifact-profile'); asm=dg('yolo-assembler'); offer_policy=dg('yolo-offer-policy')
 catalog={"schema":"ndnsf-di-native-request-catalog-v1","model":json.loads(canonical_bytes(model).decode()),"source":{"data_name":"/catalog/source","digest":src_digest,"model_manifest_digest":package,"canonical_graph_digest":"sha256:1fc5a2c048d90edff32c573deaf87e3262292455e37e92311f329f3ffedaaacf"},"recipe":{"artifact_profile_digest":profile,"assembler_descriptor_digest":asm,"backend_abi":"onnxruntime-cpu-v1","precision":"float32","quantization":"none","layout":"native","padding":"none","protection_epoch":"epoch-1","max_source_bytes":1000000,"max_assembled_bytes":1000000,"max_nodes":64},"publication":{"artifact_root":"/Model/YOLOFixture/artifacts","package_manifest_digest":package},"input_format":"OPAQUE","max_payload_bytes":4096,"splitter":{"kind":"ONNX_SOURCE","selection_mode":"full","roles":["FullModel"],"input_ingress_role":"FullModel","result_egress_role":"FullModel","postprocessing":{}},"node_mapping":{},"state_inputs":{},"state_outputs":{}}
-plan={"version":2,"services":[{"service":"/Inference/NativeUnary","schemaVersion":2,"model":"/Model/YOLOFixture","modelFamily":"yolo","modelFormat":"onnx","plannerKind":"native-yolo-component","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2","roles":["FullModel"],"dependencies":[],"planner":{"schemaVersion":2,"modelFamily":"yolo","modelFormat":"onnx","plannerKind":"native-yolo-component","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2"}}]}
+plan={"version":2,"services":[{"service":"/Inference/NativeUnary","schemaVersion":2,"model":"/Model/YOLOFixture","modelFamily":"yolo","modelFormat":"onnx","plannerKind":"native-source-full","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2","roles":["FullModel"],"dependencies":[],"planner":{"schemaVersion":2,"modelFamily":"yolo","modelFormat":"onnx","plannerKind":"native-source-full","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2"}}]}
 manifest={"services":[{"name":"/Inference/NativeUnary","model":"/Model/YOLOFixture","roles":["FullModel"],"artifacts":[{"artifact":"/Artifact/YOLO/FullModel","backend":"onnxruntime-cpu","kind":"model","role":"FullModel"}],"input":{"codec":"tensor-bundle","fields":{"images":{"dtype":"float32","shape":[1,3]}}},"output":{"codec":"tensor-bundle","fields":{"predictions":{"dtype":"float32"}}}}]}
 # provider plan and manifest files generated later
 
@@ -102,8 +102,12 @@ base=os.environ.copy(); base.update({'NDN_CLIENT_TRANSPORT':'unix://'+str(nfd_so
 base.setdefault('NDN_LOG', 'ndn_service_framework.*=TRACE:ndnsf.di.NativeRequester=WARN')
 # The process oracle reads readiness and execution evidence from this logger.
 base['NDN_LOG'] += ':ndnsf.di.RuntimeEvidence=WARN'
+starts={}
+measurements={'first_failure':None,'forced_cleanup':[], 'cleanup_errors':[],
+              'live_processes':[]}
 def launch(cmd,env,name):
  p=b.run(cmd,env,run_root/(name+'.log'),wait=False)
+ starts[p.pid]=name
  (run_root/(name+'.pid')).write_text(str(p.pid)+'\n')
  return p
 children=[]
@@ -122,7 +126,8 @@ try:
   controller_command += ['--revoke-after-ms',str(revoke_after_ms),'--revoke-kind','identity','--revoke-identity','/example/hello/provider']
  controller_command += ['--run-for-ms','120000']
  controller_started_at=time.monotonic()
- c=launch(controller_command,penv(run_root/'controller-store'),'controller');children.append(c); b.wait_marker(c,run_root/'controller.log','ServiceController started...',30)
+ controller_env=b.controller_environment(base,run_root/'controller-store')
+ c=launch(controller_command,controller_env,'controller');children.append(c); b.wait_marker(c,run_root/'controller.log','NDNSF_CONTROLLER_READY',30)
  a=launch([str(AUTHORITY),'--config',str(run_root/'authority/authority.json')],penv(run_root/'authority-store'),'authority');children.append(a); b.wait_marker(a,run_root/'authority.log','NATIVE_GRANT_AUTHORITY_READY',30)
  pe=penv(run_root/'provider-store')
  shutil.copy2(offerpriv,run_root/'provider/offer-private.pem')
@@ -163,7 +168,9 @@ try:
   raise RuntimeError('requester did not finish within 120s')
  print('requester rc',rq.returncode)
  print('ROOT',run_root)
- if rq.returncode != 0:
+ # The C++ revocation selector checks the specific rejection and no execution;
+ # the driver reports orchestration failure, not an expected native rejection.
+ if rq.returncode != 0 and not args.revoke:
   raise SystemExit(rq.returncode)
  # This script owns process startup, scheduled revocation and cleanup only.
  # Business success/failure, grant identity and Provider execution are
@@ -173,5 +180,31 @@ try:
  if args.revoke:
   time.sleep(0.2)
   print('NATIVE_REQUEST_REVOKE_ORCHESTRATION_COMPLETE')
+except BaseException as error:
+ measurements['first_failure']=str(error)
+ raise
 finally:
- for p in reversed(children): b.stop(p)
+ active_failure=sys.exc_info()[0] is not None
+ for p in reversed(children):
+  try:
+   b.stop(p)
+  except Exception as error:
+   measurements['cleanup_errors'].append(starts[p.pid]+': '+str(error))
+  try:
+   p._ndnsf_log_handle.close()
+  except Exception as error:
+   measurements['cleanup_errors'].append(starts[p.pid]+' log: '+str(error))
+  if p.poll() == -signal.SIGKILL:
+   measurements['forced_cleanup'].append(starts[p.pid])
+ measurements['actor_exit_codes']={starts[p.pid]:p.poll() for p in children}
+ for name,code in measurements['actor_exit_codes'].items():
+  if code != 0 and not (args.revoke and name == 'requester' and code is not None):
+   measurements['cleanup_errors'].append(name+' exited '+str(code))
+ measurements['live_processes']=[p.pid for p in children if p.poll() is None]
+ cleanup_failed=(measurements['forced_cleanup'] or measurements['cleanup_errors']
+                 or measurements['live_processes'])
+ if cleanup_failed and measurements['first_failure'] is None:
+  measurements['first_failure']='owned process cleanup failed'
+ (run_root/'unary-process-measurements.json').write_text(json.dumps(measurements,indent=2)+'\n')
+ if not active_failure and cleanup_failed:
+  raise RuntimeError('owned process cleanup was not clean; see unary-process-measurements.json')

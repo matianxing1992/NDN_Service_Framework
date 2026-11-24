@@ -6,7 +6,7 @@ import json
 
 from ndnsf_distributed_inference.app_sdk import (
     APPDeployment, APPProvider, ArtifactReference, DeploymentDefinition,
-    DeploymentPlan, DeploymentRevision, ProviderEvidenceSigner, ProviderEvidenceVerifier,
+    DeploymentPlan, ProviderEvidenceSigner, ProviderEvidenceVerifier,
     ProviderReadiness,
 )
 from ndnsf_distributed_inference.app_sdk.runtime_journal import (
@@ -51,7 +51,7 @@ def signed_readiness(revision, *, fail_role="", signer=None):
         capacity_by_role={"prefill": 1, "decode": 1}, permission_ready=True)
     artifacts = tuple(item.digest for item in revision.definition.artifacts)
     receipts = tuple(provider.stage(
-        revision.revision,
+        revision.plan_digest,
         ExecutionTargetProposal(
             role, "/provider", "missing" if role == fail_role else "runner", "cpu"),
         artifacts,
@@ -94,7 +94,7 @@ class DeploymentWorkflowTest(unittest.TestCase):
 
     def test_round_trip_digest_stability_and_secret_rejection(self):
         item=definition(); self.assertEqual(item.digest(), item.digest())
-        revision=DeploymentRevision.resolve(item); self.assertEqual(revision.definition_digest,item.digest())
+        revision=DeploymentPlan.resolve(item); self.assertEqual(revision.definition_digest,item.digest())
         with self.assertRaisesRegex(ValueError,"secret"):
             DeploymentDefinition("d","m",item.artifacts,("r",),{"token":"bad"})
 
@@ -111,7 +111,7 @@ class DeploymentWorkflowTest(unittest.TestCase):
             self.assertEqual(app.apply(revision).status,"ACTIVE")
             restarted=APPDeployment(RuntimeJournal(root,"operator"), readiness_verifier=verifier)
             self.assertEqual(restarted.status("demo"),RevisionState.ACTIVE)
-            preview = DeploymentRevision.resolve(definition("qwen-7b"), epoch=2)
+            preview = DeploymentPlan.resolve(definition("qwen-7b"), epoch=2)
             rollback_readiness, _, rollback_provider, _ = signed_readiness(
                 preview, signer=signer)
             rollback_activations = tuple(
@@ -121,7 +121,7 @@ class DeploymentWorkflowTest(unittest.TestCase):
                 definition("qwen-7b"), readiness=rollback_readiness,
                 activation_receipts=rollback_activations)
             self.assertEqual(newer.lifecycle_epoch,2)
-            self.assertEqual(newer.revision, preview.revision)
+            self.assertEqual(newer.revision, preview.plan_digest)
             self.assertEqual(restarted.drain(
                 "demo", action_receipts=rollback_provider.drain()).status,
                 RevisionState.INACTIVE.value)
@@ -129,7 +129,7 @@ class DeploymentWorkflowTest(unittest.TestCase):
                 RuntimeJournal(root,"operator"), readiness_verifier=verifier)
             self.assertEqual(restarted_again.status("demo"),RevisionState.INACTIVE)
             self.assertEqual(restarted_again.delete(
-                "demo", action_receipts=rollback_provider.delete(preview.revision)).status,
+                "demo", action_receipts=rollback_provider.delete(preview.plan_digest)).status,
                 RevisionState.DELETED.value)
 
     def test_apply_handle_reopens_and_restart_reconciles_authenticated_evidence(self):

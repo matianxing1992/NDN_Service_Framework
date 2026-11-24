@@ -261,15 +261,16 @@ validateTrackingProviderConfig(const UavTrackingProviderConfig& config)
     require(run.requestTimeoutMs > 1000 && run.requestTimeoutMs <= 1200000,
             "invalid prepared tracking request budget");
     reference(run.model, compute);
-    reference(run.workerPython, compute);
-    reference(run.workerScript, compute);
     const bool person = compute && run.mode == TrackingMode::PERSON;
+    if (compute) {
+      require(run.model.path.extension() == ".onnx",
+              "tracking compute requires a prepared ONNX detector");
+    }
     reference(run.profile, person);
     reference(run.reidModel, person);
     reference(run.computationManifest, person);
     if (!compute) {
-      require(run.model.path.empty() && run.workerPython.path.empty() && run.workerScript.path.empty() &&
-              run.profile.path.empty() && run.reidModel.path.empty() &&
+      require(run.model.path.empty() && run.profile.path.empty() && run.reidModel.path.empty() &&
               run.computationManifest.path.empty(), "source cannot load compute assets");
     }
     if (!person) {
@@ -291,11 +292,21 @@ loadTrackingProviderConfig(const std::filesystem::path& path)
   result.droneId = person_json::text(json.at("droneId"));
   result.ownedWorkspace = person_json::text(json.at("ownedWorkspace"));
   require(json.at("runs").is_array() && json.at("runs").size() <= 16, "provider run array");
-  for (const auto& entry : json.at("runs")) {
+  for (auto entry : json.at("runs")) {
+    // Existing native v1 catalogs carried paired null worker placeholders.
+    const bool hadPython = entry.contains("workerPython");
+    const bool hadScript = entry.contains("workerScript");
+    require(hadPython == hadScript, "retired worker placeholders must be paired");
+    if (hadPython) {
+      require(entry.at("workerPython").is_null() && entry.at("workerScript").is_null(),
+              "Python tracking worker configuration is retired; prepare ONNX models offline");
+      entry.erase("workerPython");
+      entry.erase("workerScript");
+    }
     person_json::exactKeys(entry, {"runId", "mode", "role", "cameraId", "sourceProducers",
       "computeProducer", "windowCount", "requestTimeoutMs", "sourceGenerations", "observationStreamDirectory",
       "worldFrameId", "acquisitionKind", "deliveryMode", "model", "profile", "reidModel",
-      "computationManifest", "workerPython", "workerScript"});
+      "computationManifest"});
     TrackingProviderRunDefinition run;
     run.runId = person_json::text(entry.at("runId"));
     const auto mode = person_json::text(entry.at("mode"));
@@ -323,8 +334,6 @@ loadTrackingProviderConfig(const std::filesystem::path& path)
     run.profile = optionalAsset("profile");
     run.reidModel = optionalAsset("reidModel");
     run.computationManifest = optionalAsset("computationManifest");
-    run.workerPython = optionalAsset("workerPython");
-    run.workerScript = optionalAsset("workerScript");
     result.runs.push_back(std::move(run));
   }
   validateTrackingProviderConfig(result);

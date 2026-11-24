@@ -38,7 +38,7 @@ deployment implementations.
 Every iTiger launch binds one `RuntimeAllocationHandoff` containing:
 
 - Spec 111 candidate/source revision and completed offline-gate digest;
-- `DeploymentRevision` ID and canonical digest;
+- `DeploymentPlan` ID and canonical digest;
 - exact OCI reference by digest, SIF SHA-256 and release manifest digest;
 - model/tokenizer/artifact references and digests outside the image;
 - Slurm cluster snapshot, partition/account/QOS/GRES and selected placement;

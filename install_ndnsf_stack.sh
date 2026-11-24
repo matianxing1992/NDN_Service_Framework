@@ -8,7 +8,6 @@ PROMOTE_NATIVE_STAGE=0
 PYTHON_BIN="${PYTHON:-python3}"
 source "$ROOT/scripts/host-build-jobs.sh"
 JOBS="${NDNSF_BUILD_JOBS:-$(ndnsf_default_host_build_jobs)}"
-PERSON_RUNTIME=""
 WAF_CONFIGURE_ARGS=()
 QWEN_MININDN=0
 PREPARE_EXPERIMENT=""
@@ -160,9 +159,6 @@ Options:
   --work-root DIR         New private deployment directory for --prepare-experiment.
   --namespace NAME        New absolute NDN root for --prepare-experiment.
   --offline               Require local inputs during explicit experiment preparation.
-  --person-runtime PATH   Install only the locked CPython 3.10 person CPU environment.
-                          NDNSF_PERSON_PYTHON selects the base interpreter (python3.10).
-                          NDNSF_PERSON_WHEELS must contain the hash-verified Torchreid wheel.
   --with-nfd-nlsr-deps     Install NFD/NLSR build OS packages.
   --check-dependencies     Verify the installed global dependency closure.
   --uninstall              Remove only installer-recorded files/packages/sources.
@@ -267,11 +263,6 @@ while [[ $# -gt 0 ]]; do
       INSTALL_TEST_PACKAGES=1
       INSTALL_DOC_PACKAGES=1
       shift
-      ;;
-    --person-runtime)
-      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--person-runtime requires a path' >&2; exit 2; }
-      PERSON_RUNTIME="$(realpath -m -- "$2")"
-      shift 2
       ;;
     --with-qwen-minindn)
       QWEN_MININDN=1
@@ -406,7 +397,7 @@ if [[ -n "$PREPARE_EXPERIMENT" ]]; then
   }
   if (( CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES || UNINSTALL_STACK || SOURCE_MODE ||
         QWEN_MININDN || INSTALL_YOLO_MININDN || FORCE_DEPENDENCIES || NATIVE_ONLY ||
-        ! RUN_SYSTEM_INSTALL )) || [[ -n "$PERSON_RUNTIME" || "$INSTALL_MININDN" != auto ]] ||
+        ! RUN_SYSTEM_INSTALL )) || [[ "$INSTALL_MININDN" != auto ]] ||
         ((${#WAF_CONFIGURE_ARGS[@]})); then
     echo '--prepare-experiment is an installed-input preparation action; do not combine it with build/install profiles' >&2
     exit 2
@@ -539,10 +530,6 @@ if (( QWEN_MININDN || INSTALL_YOLO_MININDN )) && [[ "$INSTALL_MININDN" == 0 ]]; 
   echo 'The Qwen and YOLO MiniNDN profiles require the shared MiniNDN runtime' >&2
   exit 2
 fi
-if [[ -n "$PERSON_RUNTIME" && "$INSTALL_MININDN" != auto ]]; then
-  echo 'MiniNDN options cannot be combined with --person-runtime' >&2
-  exit 2
-fi
 if [[ "$INSTALL_MININDN" == 1 ]] &&
    (( CONFIGURE_ONLY || NDNCXX_ONLY || PROMOTE_NATIVE_STAGE || ! RUN_SYSTEM_INSTALL )); then
   echo '--with-minindn requires an install or dependency check' >&2
@@ -554,7 +541,7 @@ if [[ "$INSTALL_MININDN" == auto ]]; then
     INSTALL_MININDN=1
   elif (( NDNSF_INSTALL_DI && RUN_SYSTEM_INSTALL && ! CONFIGURE_ONLY && ! CHECK_DEPENDENCIES &&
           ! NDNCXX_ONLY && ! UNINSTALL_STACK && ! PROMOTE_NATIVE_STAGE )) &&
-       [[ "$INSTALL_DEPENDENCIES" != 0 && -z "$PREPARE_EXPERIMENT$PERSON_RUNTIME" ]]; then
+       [[ "$INSTALL_DEPENDENCIES" != 0 && -z "$PREPARE_EXPERIMENT" ]]; then
     INSTALL_MININDN=1
   fi
 fi
@@ -1684,7 +1671,7 @@ prepare_build_dir() {
 release_default_sdk_scratch() {
   if (( DEFAULT_BUILD_SCRATCH )); then
     local retained
-    for retained in "$DEPS_DIR" "$LOCK_FILE" "$RUNTIME_PREFIX" "${PERSON_RUNTIME:-}" \
+    for retained in "$DEPS_DIR" "$LOCK_FILE" "$RUNTIME_PREFIX" \
                     "${NDNSF_NDN_CXX_SOURCE_TREE:-}"; do
       [[ -n "$retained" ]] || continue
       retained="$(realpath -m -- "$retained")"
@@ -3076,6 +3063,15 @@ minindn_python_site() {
   printf '%s/ndnsf/mini-ndn/v0.7.0/%s/site-packages\n' "$GLOBAL_LIBRARY_DIR" "$python_tag"
 }
 
+write_minindn_site_registration() {
+  local mini_site="$1" registration="$2"
+  "$PYTHON_BIN" -I - "$mini_site" > "$registration" <<'PY'
+import sys
+
+print("import sys; sys.path.insert(0, " + repr(sys.argv[1]) + ")")
+PY
+}
+
 check_minindn_runtime() {
   local tool mini_site
   for tool in mn mnexec ip tc ovs-vsctl nfd nfdc ndnsec infoedit infoconv; do
@@ -3171,7 +3167,7 @@ PY
   run "${pip_env[@]}" "$PYTHON_BIN" -m pip --isolated install \
     --no-cache-dir --no-compile --target "$mini_stage" \
     "python-ndn==$(selected_python_ndn_version)"
-  printf '%s\n' "$mini_site" > "$stage_root$system_site/ndnsf-minindn.pth"
+  write_minindn_site_registration "$mini_site" "$stage_root$system_site/ndnsf-minindn.pth"
   printf '%s\n' "$MININDN_COMMIT" "$MININET_COMMIT" > "$(dirname -- "$mini_stage")/source-commits"
   while IFS= read -r -d '' topology; do
     install -m 0644 "$topology" "$stage_root/usr/local/etc/mini-ndn/"
@@ -3919,20 +3915,6 @@ if [[ -n "$PREPARE_EXPERIMENT" ]]; then
   exec "${prepare_command[@]}"
 fi
 
-if [[ -n "$PERSON_RUNTIME" ]]; then
-  if (( UNINSTALL_STACK || CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES ||
-        QWEN_MININDN || INSTALL_YOLO_MININDN || SOURCE_MODE )); then
-    echo '--person-runtime is a separate runtime-only action' >&2
-    exit 2
-  fi
-  if (( PLAN_ONLY )); then
-    echo "Person CPU runtime: $PERSON_RUNTIME; CPython 3.10; requirements-person.lock; verified Torchreid wheel required."
-    echo 'No native build, model download or installation in plan mode.'
-    exit 0
-  fi
-  exec bash "$ROOT/scripts/install-person-runtime.sh" "$PERSON_RUNTIME"
-fi
-
 # One public entry point; configure.sh only translates legacy arguments.
 if (( UNINSTALL_STACK )); then
   if [[ "$(readlink -f "$PYTHON_BIN")" != "$(readlink -f /usr/bin/python3)" ]]; then
@@ -4251,7 +4233,7 @@ manifest = py_repoclient.make_manifest(
     "/Policy/install-smoke/v1",
 )
 assert manifest.sha256
-assert ndnsf_distributed_inference.GenericRepoClient is py_repoclient.RepoClient
+assert callable(py_repoclient.RepoClient)
 if sys.argv[1] == "1":
     from ndnsf import _ndnsf
 

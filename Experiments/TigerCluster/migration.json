@@ -293,12 +293,6 @@
       "mode": 509
     },
     {
-      "source": "packaging/ndnsf-di-container/jobs/spec175/replay-exact-sif.py",
-      "target": "Experiments/TigerCluster/jobs/spec175/replay-exact-sif.py",
-      "sha256": "b92c156fb95dda44b0021a66946cb65243ea6e1984b2d8fcd687f2215c0055ea",
-      "mode": 509
-    },
-    {
       "source": "packaging/ndnsf-di-container/jobs/spec175/run-streamed-generation.sh",
       "target": "Experiments/TigerCluster/jobs/spec175/run-streamed-generation.sh",
       "sha256": "a68e896d2b2f0f208d08dc71c3843528b9d3d96ddf2cad9ae0e0fdf600de2930",
@@ -345,12 +339,6 @@
       "target": "Experiments/TigerCluster/jobs/spec180/profile.json",
       "sha256": "0bb356f2734557d0200ea4cc6506bdee0a148907df791aac26601abb093b7282",
       "mode": 436
-    },
-    {
-      "source": "packaging/ndnsf-di-container/jobs/spec180/qwen-functional.sbatch",
-      "target": "Experiments/TigerCluster/jobs/spec180/qwen-functional.sbatch",
-      "sha256": "8b03367f0533fa3850eb5325156a678591e85ac2055dc73cb35b028f39dc81d8",
-      "mode": 509
     },
     {
       "source": "packaging/ndnsf-di-container/jobs/spec180/render-tiger-yb-args.py",

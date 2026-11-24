@@ -585,7 +585,7 @@ BOOST_AUTO_TEST_CASE(SemanticStemFollowsTheN4Rows)
   value.useId.clear();  // the use id belongs to the capsule rows only
   const auto prefix = value.representationPrefix(producer, rep);
   BOOST_REQUIRE(prefix.size() >= 2);
-  BOOST_CHECK_EQUAL(prefix[-2].toUri(), std::string("rep"));
+  BOOST_CHECK(prefix[-2] == ndn::name::Component("rep"));
   BOOST_CHECK_EQUAL(prefix[-1].value_size(), 32U);
   BOOST_CHECK(!prefix[-1].isImplicitSha256Digest());
   BOOST_CHECK(prefix[-1].type() == ndn::tlv::GenericNameComponent);

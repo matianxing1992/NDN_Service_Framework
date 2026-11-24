@@ -23,67 +23,64 @@ def _module():
     return module
 
 
-def test_make_backend_uses_the_current_artifact_backend_signature(
-        tmp_path: Path, monkeypatch):
+def test_open_repo_api_uses_owned_service_user_and_explicit_provider(monkeypatch):
     helper = _module()
-    token = tmp_path / "bootstrap.token"
-    token.write_text("test-token\n", encoding="utf-8")
-    captured = {}
+    calls = []
 
-    class Backend:
-        @classmethod
-        def from_config(cls, config, *, generated_policy_dir, state_root,
-                        user, bootstrap_token, committed_receipts,
-                        ack_timeout_ms, packet_payload_bytes, chunk_bytes,
-                        test_only_allow_ephemeral_state_root):
-            captured.update({
-                "config": config,
-                "generated_policy_dir": generated_policy_dir,
-                "state_root": state_root,
-                "user": user,
-                "bootstrap_token": bootstrap_token,
-                "committed_receipts": committed_receipts,
-                "ack_timeout_ms": ack_timeout_ms,
-                "test_only_allow_ephemeral_state_root": (
-                    test_only_allow_ephemeral_state_root),
-            })
-            return captured
+    class User:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
 
-    monkeypatch.setattr(helper, "CollaborationArtifactApiBackend", Backend)
+        def start(self):
+            calls.append("start")
+
+        def stop(self):
+            calls.append("stop")
+
+    def make_persistent(user, config):
+        assert isinstance(user, User)
+        assert config.provider_scope == ["/example/repo"]
+        assert config.service_prefix == "/NDNSF/DistributedRepo/Object/v1"
+        assert config.ack_collection_time_ms == 5000
+        assert config.request_timeout_ms == 60000
+        calls.append("make_persistent")
+        return "api"
+
+    monkeypatch.setattr(helper, "ServiceUser", User)
+    monkeypatch.setattr(helper.ArtifactRepositoryApi, "make_persistent", make_persistent)
     args = SimpleNamespace(
-        config="policy.yaml",
-        generated_policy_dir="generated",
-        state_root="state",
-        user="/example/user",
-        bootstrap_token_file=str(token),
-        ack_timeout_ms=5000,
-        test_only_allow_ephemeral_app_state=True,
+        group="/example/group", controller="/example/controller", user="/example/user",
+        trust_schema="/test/trust.conf",
+        repo_provider="/example/repo", repo_service_prefix="/NDNSF/DistributedRepo/Object/v1",
+        ack_timeout_ms=5000, timeout_ms=60000,
     )
-
-    result = helper.make_backend(args)
-
-    assert result is captured
-    assert captured["bootstrap_token"] == "test-token"
-    assert captured["committed_receipts"] == ()
-    assert captured["ack_timeout_ms"] == 5000
-    assert captured["test_only_allow_ephemeral_state_root"] is True
+    with helper.open_repo_api(args) as api:
+        assert api == "api"
+        assert "bootstrap_token" not in calls[0]
+        assert calls[0]["user"] == args.user
+        assert calls[1:] == ["start", "make_persistent"]
+    assert calls[-1] == "stop"
 
 
-def test_publish_receipts_are_scoped_to_the_current_operation():
+def test_stage_reference_is_immutable_and_belongs_to_publisher(tmp_path):
     helper = _module()
-    backend = SimpleNamespace(last_receipts=(
-        {"receipt": {"receiptId": "old"}, "dataName": "/old"},
-        {"receipt": {"receiptId": "current"}, "dataName": "/current"},
-    ))
-    result = SimpleNamespace(replicas=(
-        SimpleNamespace(state="COMMITTED", receipt_id="current"),
-    ))
-
-    receipts = helper.receipts_for_publish_result(backend, result)
-
-    assert receipts == [
-        {"receipt": {"receiptId": "current"}, "dataName": "/current"}
-    ]
+    path = tmp_path / "stage.onnx"
+    path.write_bytes(b"frozen stage")
+    digest = helper.sha256_file(path)
+    reference = helper.stage_reference(
+        SimpleNamespace(user="/example/user"), {"modelDigest": "model-revision"},
+        {"stageIndex": 2, "sha256": "sha256:" + digest}, path)
+    reference.validate_producer_ownership()
+    assert reference.logical_name == (
+        f"/example/user/NDNSF/Spec175/TinyOnnx/model-revision/stage-2/{digest}")
+    assert reference.content_digest == digest
+    assert reference.size_bytes == path.stat().st_size
+    assert reference.policy_epoch == "repo-policy-v1"
+    probe = helper.stage_reference(
+        SimpleNamespace(user="/example/user"), {"modelDigest": "model-revision"},
+        {"stageIndex": 2, "sha256": digest}, path, format_version="raw-file-v1")
+    assert probe.content_digest == digest
+    assert probe.root_manifest_name == ""
 
 
 def test_publication_start_barrier_accepts_only_the_expected_token(

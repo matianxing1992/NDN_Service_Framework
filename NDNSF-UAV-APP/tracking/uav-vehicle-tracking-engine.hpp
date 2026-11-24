@@ -13,6 +13,11 @@
 
 namespace ndnsf::examples::uav {
 
+inline constexpr char VEHICLE_NATIVE_BACKEND_WINDOW_SCHEMA[] =
+  "uav-vehicle-backend-window-v2";
+inline constexpr char VEHICLE_NATIVE_BACKEND_STATE_SCHEMA[] =
+  "uav-vehicle-backend-state-v2";
+
 /** Existing vehicle policies, frozen with the native computation identity. */
 struct VehicleTrackingPolicy
 {
@@ -59,6 +64,7 @@ struct VehicleWindowContext
   std::array<VehicleFrameContext, 3> frames;
   // The explicit compatibility path alone supplies this original motion input.
   person_json::Json legacyMotion = nullptr;
+  bool nativeBackend = false;
 };
 
 /** Local model/tracker evidence; application IDs and motion never come from Python. */

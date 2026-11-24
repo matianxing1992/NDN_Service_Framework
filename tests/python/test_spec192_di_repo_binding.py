@@ -180,6 +180,11 @@ def test_service_plan_transports_repo_model_input_and_output_bindings(tmp_path):
 
     input_only_plan = client.service_plan(
         "/Spec192/DI/Infer",
+        local_artifacts={"Detect": ArtifactSpec(
+            "/Spec192/DI/model", local_model.read_bytes(), "model.bin", kind="onnx-model",
+            content_name={"kind": "model-file", "label": "canonical-source",
+                          "model_name": "spec192-role-model", "model_identity": "a" * 64},
+        )},
         artifact_references={"roles": {"Detect": {
             "input": {"repoBinding": bindings["input"].to_dict()},
         }}},

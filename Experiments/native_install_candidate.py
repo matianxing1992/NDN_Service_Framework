@@ -388,8 +388,8 @@ def validate_spec201_candidate(path: Path, expected_sha256: str,
             raise RuntimeError("SPEC201_CANDIDATE_NATIVE_SELECTOR_INCOMPLETE")
         observed.add((Path(binary).name, mode))
     targets = {row["target"] for rows in coverage.values() for row in rows}
-    targets.add("spec201-candidate-closure")
-    targets.add("spec201-transparent-repo")
+    targets.add("naming-candidate-closure")
+    targets.add("naming-transparent-repo")
     if any((target, mode) not in observed for target in targets for mode in ("0", "1")):
         raise RuntimeError("SPEC201_CANDIDATE_NATIVE_FAMILY_NOT_QUALIFIED")
     return record
@@ -446,6 +446,23 @@ def resolve_installed_python_package(requested: str | Path | None = None) -> Pat
     if not resolved.is_dir():
         raise RuntimeError(f"CANDIDATE_PYTHON_PACKAGE_MISSING:{resolved}")
     return resolved
+
+
+def resolve_yolo_extension_pair(installed_package: Path, source_package: Path,
+                                naming_candidate: dict[str, Any]) -> tuple[Path, Path]:
+    """Locate the installed extension and its frozen build output."""
+    installed = list(installed_package.glob("_ndnsf*.so"))
+    if len(installed) != 1:
+        raise RuntimeError("SPEC196_CANDIDATE_PYTHON_EXTENSION_MISSING_OR_AMBIGUOUS")
+    extension = installed[0].resolve()
+    built = {path for row in naming_candidate["configs"]
+             if (path := Path(row["path"])).name == extension.name and path != extension}
+    if not built:
+        # Older frozen candidates used the maintained in-place build output.
+        built.update(source_package.glob("_ndnsf*.so"))
+    if len(built) != 1:
+        raise RuntimeError("SPEC196_CANDIDATE_PYTHON_EXTENSION_MISSING_OR_AMBIGUOUS")
+    return extension, built.pop()
 
 
 def apply_yolo_repo_operation_policy(policy_path: Path,

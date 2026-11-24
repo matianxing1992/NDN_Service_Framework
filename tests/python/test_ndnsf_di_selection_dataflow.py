@@ -9,7 +9,6 @@ import unittest
 from concurrent.futures import Future
 from types import SimpleNamespace
 
-from ndnsf import CollaborationContext as CoreCollaborationContext
 from ndnsf_distributed_inference.core.contracts import (
     DATA_DRIVEN_V2,
     LEGACY_READY_SET_V1,
@@ -31,10 +30,6 @@ from ndnsf_distributed_inference.core.deployment_control import (
     SelectionPreparationCallbacks,
     ShardPreparationCallbacks,
     ShardPreparationPipeline,
-)
-from ndnsf_distributed_inference.client import (
-    SelectionAcceptanceState,
-    SelectionAcceptanceTracker,
 )
 from ndnsf_distributed_inference.sdk.placement import DIProviderOfferV2
 from ndnsf_distributed_inference.provider import (
@@ -589,25 +584,6 @@ class SelectionDataflowV2Test(unittest.TestCase):
         with self.assertRaises(ValueError):
             DIRequestEnvelopeV2.from_bytes(noncanonical)
 
-    def test_large_publication_empty_data_name_fails_before_reference(self):
-        class Native:
-            published = []
-
-            @staticmethod
-            def publish_large(*_args):
-                return ""
-
-            def publish(self, *args):
-                self.published.append(args)
-
-        native = Native()
-        context = CoreCollaborationContext(native)
-        with self.assertRaisesRegex(RuntimeError, "returned no Data name"):
-            context.publish_large_reference(
-                "tensor-scope", "/activation/data", "/activation/ref",
-                b"payload")
-        self.assertEqual(native.published, [])
-
     def test_gpu_offers_cannot_overlap_and_unused_hold_releases(self):
         ledger = GpuMiBAdmissionLedger(
             provider="/provider/a", boot_epoch="boot-epoch-a",
@@ -984,28 +960,6 @@ class SelectionDataflowV2Test(unittest.TestCase):
         self.assertEqual(disposition, "CLEAN_COMPUTE")
         with self.assertRaisesRegex(ValueError, "invalid StateReuseBindingV2"):
             replace(binding, migration_mode="PLAINTEXT_TRANSFER")
-
-    def test_lost_acceptance_is_unknown_and_retry_is_byte_identical(self):
-        tracker = SelectionAcceptanceTracker(
-            request_id="request-1", attempt=1, deadline_ms=9000,
-            encryption_key=b"k" * 32,
-            clock_ms=lambda: 1000,
-        )
-        payload = b"canonical-selection"
-        tracker.record_selection("/provider/a", payload)
-        tracker.mark_delivery_timeout("/provider/a")
-        self.assertEqual(
-            tracker.state("/provider/a"), SelectionAcceptanceState.UNKNOWN)
-        self.assertEqual(tracker.retry_payload("/provider/a"), payload)
-        with self.assertRaises(ValueError):
-            tracker.record_selection("/provider/a", payload + b"-changed")
-        expired = SelectionAcceptanceTracker(
-            request_id="request-2", attempt=1, deadline_ms=9000,
-            encryption_key=b"e" * 32, clock_ms=lambda: 9001,
-        )
-        expired.record_selection("/provider/a", payload)
-        with self.assertRaises(TimeoutError):
-            expired.retry_payload("/provider/a")
 
     def test_residency_revalidation_miss_promotion_and_retention_fences(self):
         events = []

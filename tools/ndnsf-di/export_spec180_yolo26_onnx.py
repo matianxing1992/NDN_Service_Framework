@@ -171,6 +171,10 @@ def _load_yolo(model_path: Path):
     selected, model = load_yolo_model(str(model_path))
     if Path(selected).resolve() != model_path.resolve():
         raise ExportError(f"Ultralytics selected unexpected checkpoint: {selected}")
+    # Both the canonical graph and its independent PyTorch oracle use
+    # the registered one-to-one head and its six-field detection rows.
+    if not model.end2end:
+        raise ExportError("YOLO26n checkpoint does not expose its one-to-one detection head")
     return YoloFull(model).eval()
 
 
@@ -196,10 +200,10 @@ def _export_onnx(model_path: Path, graph_path: Path, *, input_size: int,
     )
     loaded = onnx.load(str(temporary))
     onnx.checker.check_model(loaded)
-    # The fixed-input export needs intermediate tensor sizes for placement.
-    # Standard ONNX inference leaves YOLO Reshape dimensions symbolic.
-    from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
-    inferred = SymbolicShapeInference.infer_shapes(loaded, auto_merge=True)
+    # Propagate declared shape data without guessing unresolved dimensions.
+    # Standard ONNX handles Split sizes supplied as the opset-13+ second input.
+    inferred = onnx.shape_inference.infer_shapes(
+        loaded, strict_mode=True, data_prop=True)
     if (inferred is None or
             [node.SerializeToString() for node in loaded.graph.node] !=
             [node.SerializeToString() for node in inferred.graph.node] or

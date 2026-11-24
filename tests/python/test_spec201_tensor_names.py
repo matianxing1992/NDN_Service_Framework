@@ -17,12 +17,13 @@ from ndnsf_distributed_inference.sdk.placement import (
 class TensorNamingParity(unittest.TestCase):
     def test_actual_native_endpoint_and_typed_wire(self):
         root = Path(__file__).resolve().parents[2]
-        binary = os.environ.get("SPEC201_TENSOR_NAMING_CPP", str(root / "build/unit-tests"))
+        binary = Path(os.environ.get(
+            "SPEC201_TENSOR_NAMING_CPP", str(root / "build/native-plan-closure"))).resolve()
         with tempfile.TemporaryDirectory(prefix="spec201-tensor-parity-") as directory:
             output = Path(directory) / "tensor.json"
             env = dict(os.environ, SPEC201_TENSOR_RECORDS=str(output))
             result = subprocess.run([binary, "--run_test=NativeTensorC04WireGoldensBindCompleteEndpointAndSignedStride"],
-                cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cwd=directory, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout)
             record = json.loads(output.read_text())

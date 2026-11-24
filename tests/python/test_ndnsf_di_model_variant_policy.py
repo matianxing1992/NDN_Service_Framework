@@ -5,7 +5,7 @@ import unittest
 from ndnsf_distributed_inference.core.decision_validation import validate_model_selection
 from ndnsf_distributed_inference.core.ports import ModelCandidate
 from ndnsf_distributed_inference.planner.model_variant_policy import ExactOrCompatibleModelVariantPolicy
-from support.spec111_policy import request
+from support.policy import request
 from ndnsf_distributed_inference.llm_stub_planner import qwen_model_candidates
 
 

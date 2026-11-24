@@ -112,7 +112,7 @@ Python `RepoClient` 是轻量持久化兼容包装：`RepoClient(user, repo_serv
 | --- | --- |
 | `artifact_lifecycle` | `AuthenticatedReplicaReceipt`、`ArtifactReplicaSession`、`AtomicArtifactDestination`、`HmacReceiptAuthenticator`、`resolve_active_artifact`、`retrieve_to_atomic_destination`。 |
 | `artifact_transfer` | `ArtifactStoreAssignment/Offer`、`PendingReplicaLeaseCollaboration`、`PendingReplicaTaskCollaboration`、`ReplicaLeaseCollaborationClient`、`ReplicaTaskCollaborationClient`、`ReplicaTaskControlSnapshot`，以及 store offer/assignment/upload lease 的 encode/decode helpers。 |
-| backend/orchestration | `FilesystemArtifactApiBackend`、`CollaborationArtifactApiBackend`、`ArtifactControlMetrics`、`install_artifact_collaboration_service`、`NetworkDistributedRepoClient`、`RepoNodeApp`。 |
+| Repo 进程与客户端 | 由已安装的 `DistributedRepoServer` 启动 Repo，Python 调用 `ArtifactRepositoryApi.make_persistent`。旧 `CollaborationArtifactApiBackend` 仍会报告 `SPEC192_COMPATIBILITY_V1`。 |
 | persistence | `ArtifactCapacityStatus`、`ArtifactFinalizationRecord`、`ArtifactStorageIdentity`、`ArtifactTransferSessionRecord`、`FilesystemCasPayloadStore`、`LifecycleTransitionError`、`MetadataStore`、`PayloadStore`、`PersistenceOwnershipError`、`RepoLifecycleEvent`、`SqliteRepositoryPersistence`。 |
 | service naming | `DEFAULT_REPO_SERVICE_ROOT`、`canonical_repo_operation`、`is_internal_repo_service`、`repo_service_for_operation`、`repo_versioned_services`。 |
 
@@ -182,7 +182,7 @@ const auto localBytes = RepoClient::localGet(
 
 以下方法与上面对象操作对应，但目标是调用方提供的 registry + service prefix，适用于同进程组合，不发送网络 Interest：
 
-`localPut`、`localGet`、`localPutRange`、`localCommitRanges`、`localAbortRanges`、`localGetRange`、`localGetManifest`、`localList`、`localRemove`、`localInsert`、`localStatus`、`localPutSegmented`、`localGetSegmented`、`localGetObject`、`localCacheStatus`、`localCatalogStatus`、`localCatalogSnapshot`、`localCatalogDelta`、`localCatalogLookup`。
+`localPut`、`localGet`、`localPutRange`、`localCommitRanges`、`localAbortRanges`、`localGetRange`、`localGetManifest`、`localList`、`localRemove`、`localInsert`、`localStatus`、`localPutSegmented`、`localGetSegmented`、`localCacheStatus`、`localCatalogStatus`、`localCatalogSnapshot`、`localCatalogDelta`、`localCatalogLookup`。
 
 range/object 用法与远端同名方法相同，仅首两个实参改为 `LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix`。不要把 local 调用结果当成网络路径或远端 Provider 权限的证明。
 

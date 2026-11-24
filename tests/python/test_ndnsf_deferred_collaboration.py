@@ -175,21 +175,6 @@ class DeferredCollaborationContractTest(unittest.TestCase):
         self.assertEqual(handle.result(timeout_ms=100), response)
         self.assertEqual(handle._state.timeout_reason, "")
 
-    def test_default_di_is_deferred_and_preplanned_is_compatibility_only(self):
-        placement = (
-            __import__(
-                "ndnsf_distributed_inference.app_sdk.placement",
-                fromlist=["AutomaticPlanningCoordinator"])
-            .AutomaticPlanningCoordinator)
-        source = __import__("inspect").getsource(placement.request)
-        self.assertIn('mode="DEFERRED"', source)
-        service_source = (
-            __import__("inspect").getsource(
-                __import__("ndnsf.service", fromlist=["ServiceUser"])
-                .ServiceUser.begin_collaboration))
-        self.assertIn("PREPLANNED", service_source)
-        self.assertIn("DEFERRED", service_source)
-
 
 if __name__ == "__main__":
     unittest.main()

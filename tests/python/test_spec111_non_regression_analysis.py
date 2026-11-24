@@ -7,22 +7,12 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools/spec111/analyze_non_regression_campaign.py"
-RUNNER = ROOT / "tools/spec111/run_non_regression_campaign.py"
 
 
 def load_module():
     spec = importlib.util.spec_from_file_location("spec111_analysis", SCRIPT)
     if spec is None or spec.loader is None:
         raise RuntimeError("unable to load Spec 111 analysis")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def load_runner():
-    spec = importlib.util.spec_from_file_location("spec111_runner", RUNNER)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("unable to load Spec 111 runner")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -51,20 +41,6 @@ def passing_summary() -> dict[str, object]:
 
 
 class NonRegressionAnalysisTest(unittest.TestCase):
-    def test_each_command_uses_unique_ephemeral_app_state_outside_results(self):
-        runner = load_runner()
-        first_output = ROOT / "results/spec111/a"
-        second_output = ROOT / "results/spec111/b"
-
-        first = runner.command_for(ROOT, "cell-a", 1, first_output)
-        second = runner.command_for(ROOT, "cell-b", 2, second_output)
-        first_state = Path(first[first.index("--app-state-root") + 1])
-        second_state = Path(second[second.index("--app-state-root") + 1])
-
-        self.assertNotEqual(first_state, second_state)
-        self.assertEqual(first_state.parent, Path("/tmp"))
-        self.assertTrue(first_state.name.startswith("spec111-app-state-"))
-        self.assertFalse(str(first_state).startswith(str(ROOT / "results")))
 
     def test_constant_paired_changes_have_deterministic_passing_intervals(self):
         module = load_module()

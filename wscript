@@ -896,6 +896,22 @@ int main() {{ return requiredApi == nullptr; }}
             conf.env.LIB_ONNXRUNTIME or
             conf.env.LIBPATH_ONNXRUNTIME)
 
+    conf.env.HAVE_UAV_OPENCV = False
+    if 'uav' in selected_components:
+        conf.check_cfg(package='opencv4', args=['--cflags', '--libs'],
+                       uselib_store='UAV_OPENCV', mandatory=False,
+                       pkg_config_path=pkg_config_path)
+        conf.env.LIB_UAV_OPENCV = [
+            name for name in conf.env.LIB_UAV_OPENCV
+            if name in ('opencv_core', 'opencv_imgproc')]
+        if set(conf.env.LIB_UAV_OPENCV) == {'opencv_core', 'opencv_imgproc'}:
+            conf.env.HAVE_UAV_OPENCV = bool(conf.check(
+                features='cxx cxxprogram', use='UAV_OPENCV', mandatory=False,
+                fragment='#include <opencv2/imgproc.hpp>\n'
+                         'int main(){cv::Mat input(1,1,CV_8UC3), output; '
+                         'cv::resize(input, output, cv::Size(2,2));}',
+                msg='Checking native vehicle OpenCV resize closure'))
+
     conf.env.HAVE_GSTREAMER = False
     if 'uav' in selected_components:
         conf.check_cfg(package='gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0',
@@ -920,7 +936,7 @@ int main() {{ return requiredApi == nullptr; }}
     # OpenSSL, NDNSD, protobuf, ONNX Runtime, GTK and GStreamer .pc files can
     # inject their own include, library or RPATH flags.
     for uselib in ('NDN_CXX', 'NDN_SVS', 'NAC-ABE', 'NAC_ABE', 'OPENSSL',
-                   'NDNSD', 'PROTOBUF', 'ONNXRUNTIME', 'GTKMM', 'GSTREAMER'):
+                   'NDNSD', 'PROTOBUF', 'ONNXRUNTIME', 'GTKMM', 'GSTREAMER', 'UAV_OPENCV'):
         for key_prefix in ('INCLUDES_', 'LIBPATH_', 'STLIBPATH_',
                            'CXXFLAGS_', 'CFLAGS_', 'LINKFLAGS_'):
             key = key_prefix + uselib
@@ -995,6 +1011,7 @@ int main() {{ return requiredApi == nullptr; }}
     conf.define_cond('HAVE_TESTS', conf.env.WITH_TESTS)
     conf.define_cond('HAVE_ONNXRUNTIME_CPP', conf.env.HAVE_ONNXRUNTIME_CPP)
     conf.define_cond('HAVE_GSTREAMER', conf.env.HAVE_GSTREAMER)
+    conf.define_cond('HAVE_UAV_OPENCV', conf.env.HAVE_UAV_OPENCV)
     if conf.env.HAVE_ONNXRUNTIME_CPP:
         conf.env.append_value('DEFINES', ['NDNSF_DI_ENABLE_ONNXRUNTIME_CPP'])
     # The config header will contain all defines that were added using conf.define()

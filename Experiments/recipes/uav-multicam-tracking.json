@@ -55,12 +55,51 @@
   "consumers": [
     {
       "entry": "Experiments/UAV/run_multicamera_tracking_demo.py",
-      "args": ["--source", "<prepared root>", "--model", "<prepared root>/3UAVs_YOLOv8n.pt", "--license", "Apache-2.0"]
+      "args": ["--source", "<prepared root>", "--model", "<prepared root>/3UAVs_YOLOv8n.onnx", "--license", "Apache-2.0"]
     }
   ],
   "expectedFiles": {
     "detectorCheckpoint": "3UAVs_YOLOv8n.pt",
     "views": ["uav1_1min.mp4", "uav2_1min.mp4", "uav3_1min.mp4"]
   },
-  "knownGap": "The demo's own DEFAULT_MODEL constant names 3UAVs.pt, while the upstream artifact is 3UAVs_YOLOv8n.pt; a default run therefore reports a missing checkpoint even with the asset present. Pass --model explicitly, which the documented invocation already does."
+  "preparation": {
+    "entry": "Experiments/UAV/prepare_vehicle_detector.py",
+    "args": ["--checkpoint", "<prepared root>/3UAVs_YOLOv8n.pt", "--checkpoint-sha256", "c51091c489af103ab641c3db0580231b1ed622bfa1f95694ef0fa59607ff1117", "--output", "<prepared root>/3UAVs_YOLOv8n.onnx"],
+    "classNames": ["car", "truck", "van"],
+    "testedTools": {"ultralytics": "8.4.213", "torch": "2.2.2+cpu", "onnx": "1.17.0", "onnxruntime": "1.19.2"}
+  },
+  "personPreparation": {
+    "detectorEntry": "Experiments/UAV/prepare_vehicle_detector.py",
+    "detectorArgs": [
+      "--tracking-mode",
+      "person",
+      "--checkpoint",
+      "<operator detector checkpoint>",
+      "--checkpoint-sha256",
+      "<checkpoint SHA-256>",
+      "--output",
+      "<prepared root>/person-detector.onnx"
+    ],
+    "reidEntry": "tools/person-reid/export_osnet_reid.py",
+    "profileEntry": "NDNSF-UAV-APP/tracking/person_profile.py",
+    "profileSchema": "uav-person-tracking-profile-v2",
+    "detectorPreprocessId": "yolo-default640-stock-box-v1",
+    "reidPreprocessId": "osnet-rgb-256x128-imagenet-l2-v1",
+    "torchreidSource": {
+      "revision": "f8cd150fdf77e8d9e1ed143b7f308c2c609ded50",
+      "url": "https://codeload.github.com/KaiyangZhou/deep-person-reid/tar.gz/f8cd150fdf77e8d9e1ed143b7f308c2c609ded50",
+      "sha256": "4bfadf35fc6ddf7b008b5e9c63a44aa0ec31e374b08f4818e04cc27c25bfbe8b"
+    },
+    "testedTools": {
+      "python": "3.10.18",
+      "ultralytics": "8.4.90",
+      "torch": "2.4.1+cpu",
+      "torchvision": "0.19.1+cpu",
+      "pillow": "10.4.0",
+      "numpy": "1.24.4",
+      "torchreid": "1.4.0",
+      "onnx": "1.17.0",
+      "onnxruntime": "1.19.2"
+    }
+  }
 }

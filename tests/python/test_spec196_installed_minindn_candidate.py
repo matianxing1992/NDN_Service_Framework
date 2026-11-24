@@ -24,6 +24,47 @@ from native_probe_validation_links import render_anchored_probe_validation_schem
 
 
 class InstalledCandidateTest(unittest.TestCase):
+    def test_public_requester_uses_initialized_node_identity_store(self):
+        tree = ast.parse((ROOT / "Experiments/NDNSF_DI_Yolo2x2_Minindn.py").read_text())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "requester_environment")
+        scope = {"Path": Path}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "requester-env", "exec"),
+             scope)
+        original = {"NDN_CLIENT_TRANSPORT": "unix:///run/nfd/requester.sock"}
+        result = scope["requester_environment"](
+            original, Path("/run/state"), node_home=Path("/run/node home"),
+            controller_certificate=Path("/run/controller.cert"))
+        self.assertEqual(result["HOME"], "/run/node home")
+        self.assertEqual(result["NDN_CLIENT_PIB"], "pib-sqlite3:")
+        self.assertEqual(result["NDN_CLIENT_TPM"], "tpm-file:")
+        self.assertEqual(result["NDNSF_CONTROLLER_CERT_FILE"], "/run/controller.cert")
+        self.assertEqual(result["NDN_CLIENT_TRANSPORT"], original["NDN_CLIENT_TRANSPORT"])
+        self.assertNotIn("NDN_CLIENT_PIB", original)
+
+    def test_external_wheel_uses_its_frozen_build_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            installed = root / "site/ndnsf"
+            checkout = root / "checkout/ndnsf"
+            build = root / "build/ndnsf"
+            for path in (installed, checkout, build):
+                path.mkdir(parents=True)
+                (path / "_ndnsf.so").touch()
+            frozen = {"configs": [{"path": str(path / "_ndnsf.so")}
+                                  for path in (installed, build)]}
+
+            pair = candidate.resolve_yolo_extension_pair(installed, checkout, frozen)
+            self.assertEqual(pair, (installed / "_ndnsf.so", build / "_ndnsf.so"))
+
+            older = {"configs": frozen["configs"][:1]}
+            pair = candidate.resolve_yolo_extension_pair(installed, checkout, older)
+            self.assertEqual(pair, (installed / "_ndnsf.so", checkout / "_ndnsf.so"))
+
+            frozen["configs"].append({"path": str(checkout / "_ndnsf.so")})
+            with self.assertRaisesRegex(RuntimeError, "MISSING_OR_AMBIGUOUS"):
+                candidate.resolve_yolo_extension_pair(installed, checkout, frozen)
+
     def test_actual_runner_profile_serializes_candidate_paths(self):
         tree = ast.parse((ROOT / "Experiments/NDNSF_DI_Yolo2x2_Minindn.py").read_text())
         call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call)
@@ -36,12 +77,14 @@ class InstalledCandidateTest(unittest.TestCase):
         for candidate_path in (Path("/tmp/spec201-candidate.json"), None):
             with self.subTest(candidate_path=candidate_path):
                 args = SimpleNamespace(spec201_candidate=candidate_path,
+                    topology_file=Path("/tmp/spec201-topology.conf"),
                     requester_publication_dir=Path("/tmp/spec201-publications"),
                     spec201_candidate_sha256="a" * 64, input_size=32)
                 record = eval(code, {"args_cli": args})
                 encoded = json.loads(json.dumps(record))
                 self.assertEqual(encoded["spec201_candidate"],
                     str(candidate_path.resolve()) if candidate_path is not None else None)
+                self.assertEqual(encoded["topology_file"], "/tmp/spec201-topology.conf")
                 self.assertEqual(encoded["requester_publication_dir"], "/tmp/spec201-publications")
                 self.assertEqual(encoded["spec201_candidate_sha256"], "a" * 64)
                 self.assertEqual(encoded["input_size"], 32)
@@ -81,9 +124,6 @@ class InstalledCandidateTest(unittest.TestCase):
         (self.source_app_package / "__init__.py").write_text("", encoding="utf-8")
         (self.source_app_package / "app_sdk/client.py").write_text(
             "class APPClient: pass\n", encoding="utf-8")
-        (self.source_app_package / "compatibility").mkdir()
-        (self.source_app_package / "compatibility/manifest.json").write_text(
-            '{"exports": []}\n', encoding="utf-8")
         self.topology = self.root / "topology.conf"
         self.topology.write_text("user\nprovider\n", encoding="utf-8")
         self.policy = self.root / "policy.yaml"
@@ -165,9 +205,9 @@ class InstalledCandidateTest(unittest.TestCase):
             candidate.sha256_file(self.source_app_package / "app_sdk/client.py"))
         self.assertEqual(
             record["pythonApplication"]["packageFiles"]
-            ["compatibility/manifest.json"],
+            ["__init__.py"],
             candidate.sha256_file(
-                self.source_app_package / "compatibility/manifest.json"))
+                self.source_app_package / "__init__.py"))
         output = self.root / "candidate.json"
         candidate.write_candidate(output, record)
         self.assertEqual(json.loads(output.read_text())["candidateDigest"],
@@ -182,8 +222,8 @@ class InstalledCandidateTest(unittest.TestCase):
 
     def test_python_application_package_data_changes_the_candidate_digest(self) -> None:
         first = self.build()
-        app_manifest = self.source_app_package / "compatibility/manifest.json"
-        app_manifest.write_text('{"exports": ["changed"]}\n', encoding="utf-8")
+        app_manifest = self.source_app_package / "__init__.py"
+        app_manifest.write_text('# changed namespace\n', encoding="utf-8")
         second = self.build()
         self.assertNotEqual(first["candidateDigest"], second["candidateDigest"])
         self.assertNotEqual(first["pythonApplication"], second["pythonApplication"])
@@ -250,11 +290,11 @@ class InstalledCandidateTest(unittest.TestCase):
         source_package = source.index('str(REPO / "NDNSF-DistributedInference")',
                                       source.index("python_path_parts = ["))
         inserted_installed_root = source.index(
-            "python_path_parts.insert(1, str(installed_package.parent))")
+            "python_path_parts.insert(0, str(installed_package.parent))")
         self.assertLess(source_package, inserted_installed_root)
         self.assertIn("source_app_package=(REPO / \"NDNSF-DistributedInference\" /", source)
 
-    def test_model_generation_uses_source_adapter_and_installed_binding(self) -> None:
+    def test_model_generation_prefers_installed_adapter_and_binding(self) -> None:
         source = (ROOT / "Experiments/NDNSF_DI_Yolo2x2_Minindn.py").read_text()
         main = next(node for node in ast.parse(source).body
                     if isinstance(node, ast.FunctionDef) and node.name == "main")
@@ -269,8 +309,10 @@ class InstalledCandidateTest(unittest.TestCase):
         for directory in (adapter, adapter.parent, adapter.parent.parent):
             (directory / "__init__.py").write_text("", encoding="utf-8")
         global_app = self.installed_package.parent / "ndnsf_distributed_inference"
-        global_app.mkdir()
-        (global_app / "__init__.py").write_text("", encoding="utf-8")
+        installed_adapter = global_app / "adapters/yolo"
+        installed_adapter.mkdir(parents=True)
+        for directory in (installed_adapter, installed_adapter.parent, global_app):
+            (directory / "__init__.py").write_text("", encoding="utf-8")
         local_binding = self.root / "pythonWrapper/ndnsf"
         local_binding.mkdir(parents=True)
         (local_binding / "__init__.py").write_text("", encoding="utf-8")
@@ -286,7 +328,7 @@ class InstalledCandidateTest(unittest.TestCase):
             env={**os.environ, "PYTHONPATH": namespace["py_path"]},
             cwd=self.root, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(process.stdout),
-                         [str(adapter / "__init__.py"),
+                         [str(installed_adapter / "__init__.py"),
                           str(self.installed_package / "__init__.py")])
 
     def test_runner_supplies_closed_loop_mode_to_app_environment(self) -> None:

@@ -1499,6 +1499,15 @@ detail::nativeTensorNamingCoordinate(const std::string& id)
   return isShortTensorNamingCoordinate(id) ? id : nativePlanningDigest(id);
 }
 
+NativeTensorEndpointV3
+detail::decodeStandaloneTensorEndpoint(const std::string& wire)
+{
+  std::istringstream input(wire);
+  boost::property_tree::ptree root;
+  boost::property_tree::read_json(input, root);
+  return tensorEndpointFromV3Json(root, {}, {});
+}
+
 void detail::validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpoint)
 {
   validateNativeTensorEndpointV3(endpoint);

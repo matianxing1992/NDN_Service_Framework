@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 
-from common import add_process_arguments, optional_local_nfd, print_commands, session_kwargs  # noqa: E402
+from common import add_native_actor_arguments, optional_local_nfd, print_commands  # noqa: E402
 
 from ndnsf import ServiceController  # noqa: E402
 
@@ -22,7 +22,7 @@ HELLO_BOOTSTRAP_IDENTITIES = [
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the HELLO ServiceController")
     parser.add_argument("--policy-file", default="examples/hello.policies")
-    add_process_arguments(parser)
+    add_native_actor_arguments(parser)
     return parser
 
 
@@ -41,7 +41,6 @@ def main() -> int:
             controller_prefix="/example/hello/controller",
             policy_file=args.policy_file,
             bootstrap_identities=HELLO_BOOTSTRAP_IDENTITIES,
-            **session_kwargs(args),
         )
         return controller.run()
 

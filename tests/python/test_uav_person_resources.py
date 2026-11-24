@@ -135,6 +135,19 @@ class ResourceAdmissionTests(unittest.TestCase):
     def check(self):
         return validate_person_resources(self.resource, self.timing, {'compute'})
 
+    def test_native_model_observation_binds_the_compute_root_and_inference_interval(self):
+        window = self.timing["windows"][0]
+        window.update(backendKind="native-onnx", workerPid=10, inferenceStartNs=145)
+        result = self.check()
+        self.assertTrue(result["complete"], result["errors"])
+        self.assertEqual(result["summary"]["modelCoverage"][0]["observationKind"],
+                         "native-compute-poll")
+        window["workerPid"] = 20
+        self.assertFalse(self.check()["complete"], "a child cannot impersonate the native owner")
+        window["workerPid"] = 10
+        window["inferenceStartNs"] = 151
+        self.assertFalse(self.check()["complete"], "pre-inference samples cannot qualify the window")
+
     def test_loaded_model_process_is_required(self):
         self.assertTrue(self.check()['complete'])
         self.resource['samples'][0]['monotonicNs'] = 110

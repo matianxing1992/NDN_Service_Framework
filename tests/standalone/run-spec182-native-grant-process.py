@@ -123,11 +123,22 @@ def actor_environment(base, store):
     if not store.is_absolute():
         raise ValueError('fixture actor store must be absolute')
     result = dict(base)
+    result.pop('NDNSF_FILE_KEYRING', None)
     result.update(HOME=str(store / 'home'),
                   NDN_CLIENT_PIB='pib-sqlite3:' + str(store / 'pib'),
                   NDN_CLIENT_TPM='tpm-file:' + str(store / 'tpm'),
                   NDNSF_REQUEST_LARGE_DATA_DIR=str(store / 'large-data'),
                   NDNSF_CONFIG=str(store / 'ndnsf-session.conf'))
+    return result
+
+
+def controller_environment(base, store):
+    """Provision a run-owned Controller sealing key and reuse this environment on restart."""
+    result = actor_environment(base, store)
+    keyring = Path(store) / 'controller.keyring'
+    with os.fdopen(os.open(keyring, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
+        stream.write('controller-abe ' + os.urandom(32).hex() + '\n')
+    result['NDNSF_FILE_KEYRING'] = str(keyring)
     return result
 
 
@@ -515,7 +526,7 @@ def main():
                 raise RuntimeError("private NFD socket startup timed out")
             time.sleep(0.05)
 
-        controller_env = actor_environment(env, controller_store)
+        controller_env = controller_environment(env, controller_store)
         controller_process = run([
             str(controller), "--controller-prefix", "/example/hello/controller",
             "--trust-schema", str(shared / 'trust-schema.conf'),
@@ -524,7 +535,7 @@ def main():
             "--run-for-ms", "120000",
         ], controller_env, controller_log, wait=False)
         children.append(controller_process)
-        wait_marker(controller_process, controller_log, "ServiceController started...", 20)
+        wait_marker(controller_process, controller_log, "NDNSF_CONTROLLER_READY", 20)
 
         authority_env = actor_environment(env, authority_store)
         authority_process = run([str(authority), "--config", str(authority_dir / "authority.json")],

@@ -6,8 +6,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from py_repoclient import RepoCompatibilityError, RepoOperationMetrics
-import py_repoclient.orchestration as legacy_repo
+from py_repoclient import RepoOperationMetrics
 
 
 class NativeRepoOperationMetricsTest(unittest.TestCase):
@@ -74,11 +73,6 @@ class NativeRepoOperationMetricsTest(unittest.TestCase):
         ]
         native.validate()
         self.assertEqual(json.loads(native.to_json()), expected)
-
-    def test_python_metrics_shadow_is_versioned_retired(self):
-        with self.assertRaises(RepoCompatibilityError) as captured:
-            legacy_repo.RepoOperationMetrics()
-        self.assertEqual(captured.exception.code, "SPEC192_COMPATIBILITY_V1")
 
 
 if __name__ == "__main__":

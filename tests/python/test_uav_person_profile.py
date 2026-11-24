@@ -81,6 +81,10 @@ class PersonProfileTests(unittest.TestCase):
             json.dumps(reordered).encode()).canonical_bytes, DETECTOR_GOLDEN)
         escaped = DETECTOR_GOLDEN.replace(b"raw-box", b"raw-\\u0062ox")
         self.assertEqual(profile_module.parse_person_profile(escaped).digest, DETECTOR_DIGEST)
+        stock = profile_module.parse_person_profile(DETECTOR_GOLDEN.replace(
+            b"yolo-letterbox1280-raw-box-v1", b"yolo-default640-stock-box-v1"))
+        self.assertEqual(stock.detector_preprocess_id, "yolo-default640-stock-box-v1")
+        self.assertNotEqual(stock.digest, DETECTOR_DIGEST)
         with self.assertRaises(AttributeError):
             parsed.detector_preprocess_id = "other"
 
@@ -92,7 +96,7 @@ class PersonProfileTests(unittest.TestCase):
         invalid.append(missing)
         for key, replacements in {
                 "schema": ["uav-person-tracking-profile-v1", "uav-person-tracking-profile-v3", None],
-                "detectorPreprocessId": [None, True, 1280, [], "yolo-default640-stock-box-v1",
+                "detectorPreprocessId": [None, True, 1280, [],
                                          "yolo-letterbox640-raw-box-v1",
                                          "yolo-letterbox1280-raw-box-nms51-v1"]}.items():
             invalid.extend({**value, key: replacement} for replacement in replacements)

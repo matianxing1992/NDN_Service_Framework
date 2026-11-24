@@ -42,6 +42,7 @@
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
+#include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/EncryptedLargeDataRangeStore.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
 #include "ndnsf-integration-fixture.hpp"
@@ -760,63 +761,50 @@ runNativeIngressCase(
         environment.userFace().put(*data);
   }
 
-  if (referenceCase != NativeIngressReferenceCase::Inline) {
-    const std::vector<uint8_t> inputPayload(inputText.begin(), inputText.end());
-    ndn::Name inputDataName(requesterName);
-    inputDataName.append("NDNSF").append("LARGE-DATA").append(serviceName);
-    inputDataName.append(requestId).append("native-request-input");
-    inputDataName.appendVersion();
-    if (referenceCase == NativeIngressReferenceCase::Valid ||
-        referenceCase == NativeIngressReferenceCase::SizeMismatch) {
-      const auto inputAdText = inputDataName.toUri() + "|REQUEST-LARGE|" +
-                               serviceName.toUri();
-      const ndn::Buffer inputAd(
-        reinterpret_cast<const uint8_t*>(inputAdText.data()), inputAdText.size());
-      const auto encryptedInput = hybridAesGcmEncrypt(
-        artifactKey.key,
-        ndn::span<const uint8_t>(inputPayload.data(), inputPayload.size()),
-        ndn::span<const uint8_t>(inputAd.data(), inputAd.size()));
-      HybridMessageEnvelope inputEnvelope;
-      inputEnvelope.setKeyId(artifactKey.keyId);
-      inputEnvelope.setEpochId(artifactKey.epochId);
-      inputEnvelope.setMessageType("REQUEST-LARGE");
-      inputEnvelope.setNonce(encryptedInput.nonce);
-      inputEnvelope.setCipherText(encryptedInput.ciphertext);
-      inputEnvelope.setAuthTag(encryptedInput.tag);
-      const auto inputBlock = inputEnvelope.WireEncode();
-      const ndn::Buffer inputWire(inputBlock.data(), inputBlock.size());
-      const auto inputSegments = artifactSegmenter.segment(
-        ndn::span<const uint8_t>(inputWire.data(), inputWire.size()),
-        inputDataName,
-        64,
-        ndn::time::milliseconds(60000));
-      if (inputSegments.empty()) {
-        throw std::runtime_error("native ingress test produced no input segments");
-      }
-      for (const auto& data : inputSegments) {
-        environment.user().cacheDataForTest(
-          *data, ndn::time::milliseconds(60000));
-        environment.userFace().put(*data);
-      }
+  if (referenceCase == NativeIngressReferenceCase::Malformed) {
+    requestWireText = "{\"schema\":\"ndnsf-di-request-envelope-v2\"";
+  }
+  else if (referenceCase != NativeIngressReferenceCase::Inline) {
+    auto publicationContext = environment.user().prepareServiceRequest(serviceName.toUri());
+    LargeDataPublishOptions options;
+    PublishedContentName contentName;
+    contentName.label = "native-request-input";
+    contentName.semanticRole = ContentSemanticRole::BlobObject;
+    options.contentName = std::move(contentName);
+    const ndn::Buffer inputPayload(inputText.begin(), inputText.end());
+    const auto published = environment.user().publishEncryptedLargeData(
+      publicationContext, inputPayload, "native-request-input",
+      ndn::time::milliseconds(60000), true, options);
+    BOOST_REQUIRE_MESSAGE(published.success, published.errorMessage);
+    BOOST_REQUIRE(!published.manifestName.empty());
+
+    auto referenceName = published.manifestName;
+    if (referenceCase == NativeIngressReferenceCase::Missing) {
+      // Select a different well-formed commitment in the same Producer namespace.
+      const auto digestIndex = referenceName[-1] == ndn::name::Component("MANIFEST") ? -2 : -1;
+      const auto missingDigest = makeNamingDigestComponent(std::string(64, '0'));
+      BOOST_REQUIRE(referenceName[digestIndex] != missingDigest);
+      referenceName.set(digestIndex, missingDigest);
+      const auto producer = ProtectedBlobManifest::inferProducer(referenceName);
+      BOOST_REQUIRE(producer && *producer == requesterName);
     }
 
-    if (referenceCase == NativeIngressReferenceCase::Malformed) {
-      requestWireText = "{\"schema\":\"ndnsf-di-request-envelope-v2\"";
-    }
-    else {
-      // The only request bytes on the wire are the reference envelope; the
-      // published plaintext is available only through Provider fetch/decrypt.
-      const auto declaredSize = referenceCase == NativeIngressReferenceCase::SizeMismatch
-        ? inputPayload.size() + 1 : inputPayload.size();
-      std::ostringstream referenceEnvelope;
-      referenceEnvelope << "{\"input_reference\":{\"dataName\":\""
-                        << inputDataName.toUri()
-                        << "\",\"plaintextSize\":" << declaredSize
-                        << "},\"input_transport\":\"REPO_REF\","
-                           "\"schema\":\"ndnsf-di-request-envelope-v2\","
-                           "\"schema_version\":2}";
-      requestWireText = referenceEnvelope.str();
-    }
+    const auto declaredSize = referenceCase == NativeIngressReferenceCase::SizeMismatch
+      ? published.plaintextSize + 1 : published.plaintextSize;
+    requestWireText = nativeCanonicalJson({
+      {"schema", "ndnsf-di-request-envelope-v2"},
+      {"schema_version", 2},
+      {"input_transport", "REPO_REF"},
+      {"input_reference", {
+        {"dataName", referenceName.toUri(ndn::name::UriFormat::CANONICAL)},
+        {"manifestDigest", published.manifestDigest},
+        {"plaintextSize", declaredSize},
+        {"ciphertextDigest", published.contentDigest},
+        {"authorizationScope", published.authorizationScope},
+        {"protectionEpoch", published.protectionEpoch},
+        {"encrypted", true},
+      }},
+    });
   }
 
   environment.providerPubSub().subscribeToProducer(
@@ -1044,8 +1032,7 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRejectsNativeRepositoryReferenceSizeMismat
   BOOST_CHECK(result.handlerEntered);
   BOOST_CHECK(!result.providerInputMatches);
   BOOST_CHECK(result.statusFailed);
-  BOOST_CHECK_EQUAL(result.statusMessage,
-                    "native DI request input plaintext size mismatch");
+  BOOST_CHECK_EQUAL(result.statusMessage, "DI_INPUT_REPO_SIZE_MISMATCH");
   BOOST_CHECK(!result.responseReceived);
   BOOST_CHECK(!result.timedOut);
 }
@@ -5643,6 +5630,7 @@ struct Spec175NativeTinyStreamResult
   bool planCommitted = false;
   bool timedOut = false;
   bool completed = false;
+  std::size_t completionCallbacks = 0;
   bool failed = false;
   bool cancelled = false;
   bool streamedContext = false;
@@ -6210,6 +6198,7 @@ runSpec175NativeTinyOneRoleCase(RequestStatisticsFault statisticsFault = Request
         result.finalPayload.assign(
           reinterpret_cast<const char*>(response.data()), response.size());
         result.completed = true;
+        ++result.completionCallbacks;
       },
       [&] (const StreamedInvocationError& error) {
         result.failed = true;
@@ -6515,8 +6504,8 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   if (caseOptions.conversationFault == Spec190NativeConversationFault::CommitAckLoss) {
     const auto droppedProvider =
       environment.provider(roleProviderIndex.back()).getName();
-    environment.provider(roleProviderIndex.back())
-      .setCollaborationPublicationInterceptorForTest(
+    ServiceProviderTestAccess::setCollaborationPublicationInterceptor(
+        environment.provider(roleProviderIndex.back()),
         [droppedProvider, conversationCommitAckDropped] (const ndn::Name& dataName) {
           const auto parsed = parseCollaborationDataName(dataName);
           if (!parsed || parsed->producerName != droppedProvider ||
@@ -7173,7 +7162,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   auto heldPublication = std::make_shared<std::optional<ndn::Data>>();
   auto heldPublicationMutex = std::make_shared<std::mutex>();
   if (caseOptions.fault == Spec175NativeTinyFault::NeverRetainedEvent5) {
-    finalProvider.setStreamRetentionInterceptorForTest(
+    ServiceProviderTestAccess::setStreamRetentionInterceptor(finalProvider,
       [retentionSuppressions, eventProducer = finalProvider.getName()] (const ndn::Data& data) {
         const auto parsed = test::inspectEventCursorForTest(data.getName(), eventProducer);
         if (parsed && *parsed == 5) {
@@ -7184,7 +7173,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       });
   }
   if (caseOptions.fault == Spec175NativeTinyFault::RetentionExpiredEvent5) {
-    finalProvider.setStreamRetentionExpiryObserverForTest(
+    ServiceProviderTestAccess::setStreamRetentionExpiryObserver(finalProvider,
       [retentionExpirations, eventProducer = finalProvider.getName()] (const ndn::Name& name) {
         const auto parsed = test::inspectEventCursorForTest(name, eventProducer);
         if (parsed && *parsed == 5) {
@@ -7200,7 +7189,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       caseOptions.fault == Spec175NativeTinyFault::TamperEventOneSignature ||
       caseOptions.fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3 ||
       caseOptions.fault == Spec175NativeTinyFault::ProviderUnavailableAfterEvent3WithReplacement) {
-    finalProvider.setStreamPublicationInterceptorForTest(
+    ServiceProviderTestAccess::setStreamPublicationInterceptor(finalProvider,
       [fault = caseOptions.fault, publicationSuppressions,
        publicationReorders, publicationDuplicates,
        providerTransportDetachments, heldPublication,
@@ -7660,6 +7649,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       result.finalPayload.assign(
         reinterpret_cast<const char*>(response.data()), response.size());
       result.completed = true;
+      ++result.completionCallbacks;
       trace("initial-complete");
     },
     [&] (const StreamedInvocationError& error) {
@@ -7710,6 +7700,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
             result.finalPayload.assign(
               reinterpret_cast<const char*>(response.data()), response.size());
             result.completed = true;
+            ++result.completionCallbacks;
             trace("replacement-complete");
           },
           [&] (const StreamedInvocationError& recoveryError) {
@@ -7796,7 +7787,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   result.publicationDuplicates =
     publicationDuplicates->load(std::memory_order_relaxed);
   result.tamperedPublications = result.bridgeStats.tamperedStreamDataPackets;
-  result.publisherQueueHighWater = finalProvider.streamPublisherHighWaterMarkForTest(
+  result.publisherQueueHighWater = ServiceProviderTestAccess::streamPublisherHighWaterMark(finalProvider,
     requesterName, serviceName, requestId);
   result.callbackQueueHighWater =
     environment.user().streamCallbackQueueHighWaterMarkForTest(requestId);
@@ -7833,12 +7824,12 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     result.failed = true;
     result.error = "not every Provider epoch coordinator terminated cleanly";
   }
-  finalProvider.setStreamRetentionInterceptorForTest({});
-  finalProvider.setStreamRetentionExpiryObserverForTest({});
-  finalProvider.setStreamPublicationInterceptorForTest({});
+  ServiceProviderTestAccess::setStreamRetentionInterceptor(finalProvider, {});
+  ServiceProviderTestAccess::setStreamRetentionExpiryObserver(finalProvider, {});
+  ServiceProviderTestAccess::setStreamPublicationInterceptor(finalProvider, {});
   if (caseOptions.conversationFault == Spec190NativeConversationFault::CommitAckLoss) {
-    environment.provider(roleProviderIndex.back())
-      .setCollaborationPublicationInterceptorForTest({});
+    ServiceProviderTestAccess::setCollaborationPublicationInterceptor(
+      environment.provider(roleProviderIndex.back()), {});
   }
   if (requestScope) {
     environment.flushReorderedPackets();
@@ -10476,10 +10467,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     return;
   }
 
+  const auto firstResult = first.result(std::chrono::milliseconds(0));
   BOOST_REQUIRE(first.status() == NativeRequestStatus::Succeeded);
   if (repositoryInput)
     BOOST_REQUIRE(repositoryReferenceObserved->load(std::memory_order_relaxed));
-  const auto firstResult = first.result(std::chrono::milliseconds(0));
   if (exerciseReplacement) {
     const auto counts = options.workStatistics->snapshot().counts;
     BOOST_CHECK_EQUAL(counts.at("core.controlInventoryComplete"), 1U);
@@ -11598,8 +11589,10 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI03FourProviderEpochCoordinator)
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI04ReordersEventThreeAfterFour)
 {
-  const auto result = runSpec175NativeTinyTwoProviderCase(
-    "i04", Spec175NativeTinyFault::ReorderEvent3After4);
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = "i04";
+  options.fault = Spec175NativeTinyFault::ReorderEvent3After4;
+  const auto result = runSpec175NativeTinyMultiProviderCase(4, std::move(options));
   BOOST_TEST_MESSAGE("Spec175 I04 completed=" << result.completed
                     << " failed=" << result.failed
                     << " publicationReorders="
@@ -11611,11 +11604,30 @@ BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI04ReordersEventThreeAfterFour)
   BOOST_REQUIRE(!result.failed);
   BOOST_REQUIRE(!result.timedOut);
   BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE_EQUAL(result.ackCandidates, 4U);
+  BOOST_REQUIRE_EQUAL(result.providerCoordinatorCompletions, 4U);
+  BOOST_REQUIRE_EQUAL(result.providerFailures, 0U);
   BOOST_REQUIRE_EQUAL(result.publicationSuppressions, 1U);
   BOOST_REQUIRE_EQUAL(result.publicationReorders, 1U);
+  BOOST_REQUIRE_EQUAL(result.completionCallbacks, 1U);
   BOOST_REQUIRE_EQUAL(result.events.size(), 8U);
-  BOOST_CHECK(result.events.front().find("\"tokenId\":4") != std::string::npos);
-  BOOST_CHECK(result.events.back().find("\"tokenId\":2") != std::string::npos);
+  const std::vector<std::uint64_t> expectedTokens{4, 5, 6, 7, 8, 9, 10, 2};
+  for (std::size_t index = 0; index < result.events.size(); ++index) {
+    const auto event = nativeParseJson(result.events[index]);
+    BOOST_CHECK_EQUAL(event.at("tokenEpoch").get<std::uint64_t>(), index + 1);
+    BOOST_CHECK_EQUAL(event.at("tokenId").get<std::uint64_t>(), expectedTokens[index]);
+  }
+  BOOST_CHECK(nativeParseJson(result.finalPayload).at("tokenIds") == expectedTokens);
+  BOOST_REQUIRE_EQUAL(result.decodeStateSnapshots.size(), 4U);
+  for (const auto& state : result.decodeStateSnapshots) {
+    BOOST_CHECK_EQUAL(state.commits, 8U);
+    BOOST_CHECK_EQUAL(state.hits, 7U);
+    BOOST_CHECK_EQUAL(state.misses, 0U);
+    BOOST_CHECK_EQUAL(state.entries, 0U);
+    BOOST_CHECK_EQUAL(state.pinnedEntries, 0U);
+    BOOST_CHECK_EQUAL(state.candidates, 0U);
+    BOOST_CHECK_EQUAL(state.cleanups, 1U);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(Spec175NativeTinyOnnxI05SuppressesDuplicateEventFour)
@@ -14493,10 +14505,10 @@ BOOST_AUTO_TEST_CASE(Spec220CollaborationFacePublicationIsRequestObserved)
       }
       pumpDone.store(true, std::memory_order_release);
       if (pumpThread.joinable()) pumpThread.join();
-      provider.setCollaborationPublicationInterceptorForTest({});
+      ServiceProviderTestAccess::setCollaborationPublicationInterceptor(provider, {});
     }
   } cleanup{provider, releaseCallback, pumpDone, pumpThread};
-  provider.setCollaborationPublicationInterceptorForTest(
+  ServiceProviderTestAccess::setCollaborationPublicationInterceptor(provider,
     [callbackEntered, releaseCallbackFuture] (const ndn::Name&) {
       callbackEntered->set_value();
       releaseCallbackFuture.wait();
@@ -14554,7 +14566,7 @@ BOOST_AUTO_TEST_CASE(Spec220CollaborationFacePublicationIsRequestObserved)
 
   auto unobservedCallback = std::make_shared<std::promise<void>>();
   auto unobservedFuture = unobservedCallback->get_future();
-  provider.setCollaborationPublicationInterceptorForTest(
+  ServiceProviderTestAccess::setCollaborationPublicationInterceptor(provider,
     [unobservedCallback] (const ndn::Name&) {
       unobservedCallback->set_value();
       return false;

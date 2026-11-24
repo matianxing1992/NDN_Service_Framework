@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 
 from ndnsf import (
-    AckCandidate,
     GenericProviderRuntimeHint,
     ProviderCapabilityHint,
     ServiceOperationStatus,
@@ -17,37 +16,11 @@ from ndnsf import (
     parse_ack_metadata,
 )
 from ndnsf_distributed_inference.artifact_deployment import ArtifactProvisioningState
-from py_repoclient.orchestration import (
-    NetworkDistributedRepoClient,
-    RepoNodeApp,
-    RepoObjectManifest,
-    StorageCapability,
-)
 from ndnsf_distributed_inference.runtime_v1 import ModelFragmentKey, ProviderFragmentInventoryManager
-from py_repoclient import capability_from_ack as repo_client_capability_from_ack
 
 
 class AppCoreEnvelopeMigrationTest(unittest.TestCase):
-    def test_retired_python_repo_cannot_create_a_provider_or_capability(self):
-        from py_repoclient import RepoCompatibilityError
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            for operation, call in (
-                ("RepoNodeApp", lambda: RepoNodeApp(database_path=root / "repo.sqlite3")),
-                ("StorageCapability", lambda: StorageCapability(repo_node="/repo/A", free_bytes=1024)),
-                ("RepoObjectManifest", lambda: RepoObjectManifest(object_name="/model/stage0")),
-            ):
-                with self.subTest(operation=operation):
-                    with self.assertRaises(RepoCompatibilityError) as error:
-                        call()
-                    self.assertEqual(error.exception.code, "SPEC192_COMPATIBILITY_V1")
-                    self.assertEqual(error.exception.operation, operation)
-                    self.assertEqual(list(root.iterdir()), [])
-
-    def test_core_hint_roundtrip_survives_retirement_of_python_repo_decoders(self):
-        from py_repoclient import RepoCompatibilityError
-
+    def test_core_hint_roundtrip_preserves_typed_payload(self):
         hint = ProviderCapabilityHint(
             provider_name="/repo/core", service_name="/NDNSF/DistributedRepo",
             runtime_hint=GenericProviderRuntimeHint(
@@ -61,24 +34,6 @@ class AppCoreEnvelopeMigrationTest(unittest.TestCase):
         self.assertEqual(decoded.provider_name, "/repo/core")
         self.assertEqual(decoded.service_payload["freeBytes"], 4096)
         self.assertEqual(fields["repoNode"], "/repo/legacy")
-        candidate = AckCandidate(
-            "/provider/repo", "/NDNSF/DistributedRepo", "req-1", True, "repo-ready", payload)
-        with self.assertRaises(RepoCompatibilityError) as error:
-            repo_client_capability_from_ack(candidate)
-        self.assertEqual(error.exception.code, "SPEC192_COMPATIBILITY_V1")
-        self.assertEqual(error.exception.operation, "capability_from_ack")
-
-    def test_retired_network_client_cannot_emit_a_collaboration(self):
-        from py_repoclient import RepoCompatibilityError
-
-        class User:
-            def begin_collaboration(self, *args, **kwargs):
-                raise AssertionError("retired Python Repo client sent a request")
-
-        with self.assertRaises(RepoCompatibilityError) as error:
-            NetworkDistributedRepoClient(User(), "/NDNSF/DistributedRepo")
-        self.assertEqual(error.exception.code, "SPEC192_COMPATIBILITY_V1")
-        self.assertEqual(error.exception.operation, "NetworkDistributedRepoClient")
 
     def test_di_inventory_manager_exposes_core_capability_hint(self) -> None:
         key = ModelFragmentKey(
