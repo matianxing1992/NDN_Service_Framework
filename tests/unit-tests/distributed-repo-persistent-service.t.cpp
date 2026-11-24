@@ -5102,8 +5102,10 @@ BOOST_AUTO_TEST_CASE(UnbootstrappedSelectedRepoRequestWaitsUntilTimeoutOrCancell
     }
     BOOST_REQUIRE(result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready);
     BOOST_CHECK_EXCEPTION(result.get(), std::runtime_error, [cancel] (const auto& error) {
-      return std::string(error.what()) == (cancel ? "test-bootstrap-closed"
-        : "repo-request-timeout: Provider request timed out");
+      // The timeout now names the provider and service it waited for, so the case checks the
+      // classification it is about rather than the whole sentence.
+      return std::string(error.what()).rfind(cancel ? "test-bootstrap-closed"
+        : "repo-request-timeout: Provider request timed out", 0) == 0;
     });
     BOOST_CHECK(!emitted->load());
     face.getIoContext().restart();

@@ -72,6 +72,12 @@ bool
 isCertificateSignedByIdentity(const ndn::security::Certificate& certificate,
                               const ndn::Name& signerIdentity);
 
+/** Supplement trust-schema validation of current control Data with the deployed
+ * Controller signing certificate, when one is configured. */
+bool
+matchesConfiguredControllerSigner(const ndn::Data& data, const ndn::Name& identity,
+                                  const ndn::Name* declaredCertificate = nullptr);
+
 ndn::security::Certificate
 requestControllerSignedCertificate(ndn::Face& face,
                                    ndn::security::KeyChain& keyChain,

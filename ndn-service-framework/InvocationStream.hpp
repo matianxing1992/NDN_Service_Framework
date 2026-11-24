@@ -213,6 +213,11 @@ struct StreamedInvocationMetrics {
 struct StreamedInvocationSharedState {
   mutable std::mutex mutex;
   ndn::Name requestId;
+  /** The provider this stream was admitted to, when it named one. A Controller change ends only the streams it
+   *  actually affects; an empty provider means the stream did not target one and is ended conservatively. */
+  ndn::Name providerName;
+  /** Service this stream belongs to, so a Controller change can fail exactly its streams. */
+  ndn::Name serviceName;
   StreamedInvocationStatus status = StreamedInvocationStatus::Created;
   StreamedInvocationMetrics metrics;
   // The public handle can be cancelled from an application callback thread.

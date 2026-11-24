@@ -1181,6 +1181,12 @@ def build(bld):
             bld.path.ant_glob(
                 'NDNSF-DistributedInference/cpp/ndnsf-di/*.hpp',
                 excl=[
+                    # Installed explicitly above as the stable umbrellas; installing them again here made Waf
+                    # create the same installed node twice, which fails a full `waf install`.
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/provider.hpp',
+                    'NDNSF-DistributedInference/cpp/ndnsf-di/extensions.hpp',
                     'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp',
                     'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp',
                     'NDNSF-DistributedInference/cpp/ndnsf-di/portable-kv-checkpoint.hpp',

@@ -43,6 +43,7 @@
     "tests/installed-api/tokenizer-stable-probe.cpp": "core",
     "tests/integration-tests/collaboration-input-admission.t.cpp": "core",
     "tests/integration-tests/control-authorization-names.t.cpp": "core",
+    "tests/integration-tests/controller-bootstrap-lifetime.t.cpp": "core",
     "tests/integration-tests/controller-revocation-flow.t.cpp": "core",
     "tests/integration-tests/controller-version-refresh.t.cpp": "core",
     "tests/integration-tests/di-core-operation.t.cpp": "di",

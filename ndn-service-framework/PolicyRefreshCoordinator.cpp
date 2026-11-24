@@ -16,25 +16,10 @@ PolicyRefreshCoordinator::PolicyRefreshCoordinator(ndn::Name serviceName,
 }
 
 bool
-PolicyRefreshCoordinator::sameStatus(const PolicyStatusData& left,
-                                      const PolicyStatusData& right) const
-{
-  try {
-    const auto lhs = left.wireEncode();
-    const auto rhs = right.wireEncode();
-    return lhs.size() == rhs.size() &&
-           std::equal(lhs.begin(), lhs.end(), rhs.begin());
-  }
-  catch (const std::exception&) {
-    return false;
-  }
-}
-
-bool
 PolicyRefreshCoordinator::installCurrentStatus(const PolicyStatusData& status,
                                                 uint64_t nowMs,
                                                 bool controllerSignatureValid,
-                                                bool preservePendingFetch)
+                                                bool preservePendingFetch, bool freshQuery)
 {
   if (!controllerSignatureValid || !status.validate(nowMs) ||
       (!m_serviceName.empty() && status.getServiceName() != m_serviceName)) {
@@ -43,7 +28,7 @@ PolicyRefreshCoordinator::installCurrentStatus(const PolicyStatusData& status,
   if (m_hasStatus) {
     const int relation = status.getControllerVersion().compare(
         m_status.getControllerVersion());
-    if (relation < 0 || (relation == 0 && !sameStatus(status, m_status))) {
+    if (relation < 0 || (relation == 0 && !status.canReplaceSameVersion(m_status, freshQuery))) {
       return false;
     }
   }
@@ -159,7 +144,7 @@ PolicyRefreshCoordinator::rejectOrRetry(Outcome rejection,
 PolicyRefreshCoordinator::Result
 PolicyRefreshCoordinator::completeFetch(const PolicyStatusData& status,
                                         uint64_t nowMs,
-                                        bool controllerSignatureValid)
+                                        bool controllerSignatureValid, bool freshQuery)
 {
   if (!m_inFlight) {
     return {Outcome::REJECTED_STATUS, std::nullopt,
@@ -176,7 +161,7 @@ PolicyRefreshCoordinator::completeFetch(const PolicyStatusData& status,
                          "invalid_or_stale_controller_status", nowMs);
   }
   if (m_hasStatus && status.getControllerVersion() == m_status.getControllerVersion() &&
-      !sameStatus(status, m_status)) {
+      !status.canReplaceSameVersion(m_status, freshQuery)) {
     return rejectOrRetry(Outcome::REJECTED_STATUS,
                          "conflicting_equal_version_status", nowMs);
   }

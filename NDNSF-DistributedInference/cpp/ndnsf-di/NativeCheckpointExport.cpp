@@ -3,7 +3,9 @@
 
 #include <cerrno>
 #include <fcntl.h>
+#include <linux/fs.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -24,7 +26,6 @@ public:
   Fd(const Fd&) = delete;
   Fd& operator=(const Fd&) = delete;
   int get() const noexcept { return m_fd; }
-  int release() noexcept { const auto fd = m_fd; m_fd = -1; return fd; }
   void reset(int fd = -1) noexcept
   {
     if (m_fd >= 0) ::close(m_fd);
@@ -122,55 +123,52 @@ detail::writePrivateCheckpointFile(const std::filesystem::path& destination,
   require(parentFd.get() >= 0, "native checkpoint parent directory unavailable");
   Fd temporary;
   const auto temporaryPath = makeTemporaryPath(parent, destination.filename().string(), temporary);
-  Fd backupPlaceholder;
-  std::filesystem::path backupPath;
-  bool movedOld = false;
+  struct stat newFile{};
   bool renamedNew = false;
+  const auto rename = [&] (unsigned flags) {
+    return ::syscall(SYS_renameat2, AT_FDCWD, temporaryPath.c_str(),
+                     AT_FDCWD, destination.c_str(), flags);
+  };
+  const auto discard = [] (const std::filesystem::path& path) {
+    return ::unlink(path.c_str()) == 0 || errno == ENOENT;
+  };
   try {
     invoke(options, NativeCheckpointExportStage::BeforeWrite, cancelled);
     writer(temporary.get());
     invoke(options, NativeCheckpointExportStage::BeforeFileSync, cancelled);
     require(::fsync(temporary.get()) == 0, "native checkpoint file sync failed");
-    require(::close(temporary.release()) == 0, "native checkpoint file close failed");
-    if (hadDestination) {
-      backupPath = makeTemporaryPath(parent, destination.filename().string() + ".backup",
-                                     backupPlaceholder);
-      backupPlaceholder.reset();
-      require(::unlink(backupPath.c_str()) == 0, "native checkpoint backup placeholder cleanup failed");
-      require(::rename(destination.c_str(), backupPath.c_str()) == 0,
-              "native checkpoint old file backup failed");
-      movedOld = true;
-    }
+    require(::fstat(temporary.get(), &newFile) == 0, "native checkpoint file stat failed");
     invoke(options, NativeCheckpointExportStage::BeforeRename, cancelled);
-    require(::rename(temporaryPath.c_str(), destination.c_str()) == 0,
+    if (hadDestination) {
+      struct stat active{};
+      require(::lstat(destination.c_str(), &active) == 0 &&
+                active.st_dev == existing.st_dev && active.st_ino == existing.st_ino,
+              "native checkpoint destination changed");
+    }
+    // Exchange leaves the old inode under the private temporary name while
+    // keeping the active path readable throughout the replacement.
+    require(rename(hadDestination ? RENAME_EXCHANGE : RENAME_NOREPLACE) == 0,
             "native checkpoint atomic rename failed");
     renamedNew = true;
     invoke(options, NativeCheckpointExportStage::BeforeDirectorySync, cancelled);
     require(::fsync(parentFd.get()) == 0, "native checkpoint directory sync failed");
-    if (movedOld) {
-      require(::unlink(backupPath.c_str()) == 0, "native checkpoint backup cleanup failed");
-      movedOld = false;
-    }
+    if (hadDestination)
+      require(discard(temporaryPath), "native checkpoint backup cleanup failed");
   }
   catch (...) {
-    if (temporary.get() >= 0) temporary.reset();
-    const auto discard = [] (const std::filesystem::path& path) {
-      return path.empty() || ::unlink(path.c_str()) == 0 || errno == ENOENT;
-    };
-    bool cleanupConfirmed = discard(temporaryPath);
-    const bool outputRemoved = !renamedNew || discard(destination);
-    if (movedOld) {
-      if (::rename(backupPath.c_str(), destination.c_str()) != 0) {
-        // This is the only previous copy. Keep it even when recovery cannot finish.
+    if (renamedNew) {
+      // Keep the new inode pinned so a concurrent replacement cannot recycle its identity.
+      struct stat active{};
+      const bool stillOwnsOutput = ::lstat(destination.c_str(), &active) == 0 &&
+        active.st_dev == newFile.st_dev && active.st_ino == newFile.st_ino;
+      if (!stillOwnsOutput || (hadDestination ? rename(RENAME_EXCHANGE) != 0
+                                               : !discard(destination))) {
         (void)::fsync(parentFd.get());
-        throw NativeCheckpointRollbackUnconfirmed(backupPath);
+        throw NativeCheckpointRollbackUnconfirmed(hadDestination ? temporaryPath :
+                                                                        std::filesystem::path());
       }
-      movedOld = false;
     }
-    else {
-      const bool backupRemoved = discard(backupPath);
-      cleanupConfirmed = cleanupConfirmed && outputRemoved && backupRemoved;
-    }
+    const bool cleanupConfirmed = discard(temporaryPath);
     if (::fsync(parentFd.get()) != 0 || !cleanupConfirmed)
       throw NativeCheckpointRollbackUnconfirmed();
     throw;

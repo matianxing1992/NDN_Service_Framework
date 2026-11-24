@@ -70,7 +70,7 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
                      const std::vector<uint8_t>& payload,
                      int timeoutMs,
                      const std::function<void()>& requireCurrent,
-                     const char* timeoutError = "repo-request-timeout: Provider request timed out",
+                     const char* timeoutError = nullptr,
                      const char* failurePrefix = "");
 
 struct BoundUserFace
@@ -2555,7 +2555,10 @@ requestRepoProvider(ndn_service_framework::ServiceUser& user,
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeoutMs);
   const std::string timeoutError =
-    "repo-request-timeout: Provider request timed out";
+    "repo-request-timeout: Provider request timed out provider=" +
+    providerIdentity.toUri(ndn::name::UriFormat::CANONICAL) + " service=" +
+    serviceName.toUri(ndn::name::UriFormat::CANONICAL) + " ackCollectionMs=" +
+    std::to_string(ackCollectionTimeMs) + " timeoutMs=" + std::to_string(timeoutMs);
   auto result = std::make_shared<SelectedRequestResult>();
   auto startState = std::make_shared<SelectedRequestStart>();
   std::shared_ptr<const ndn::Buffer> requestPayload = payload.empty()
@@ -4381,6 +4384,10 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
     requireCurrent();
   auto state = std::make_shared<ReplyState>();
   auto dispatch = std::make_shared<DispatchState>();
+  const std::string timeoutMessage = timeoutError ? timeoutError :
+    "repo-request-timeout: Provider request timed out provider=" +
+    providerIdentity.toUri(ndn::name::UriFormat::CANONICAL) + " service=" +
+    serviceName.toUri(ndn::name::UriFormat::CANONICAL);
   const auto deadline = std::chrono::steady_clock::now() +
     std::chrono::milliseconds(std::max(1, timeoutMs));
   // Drain an in-flight start before the caller can release its User. A queued
@@ -4390,7 +4397,7 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
     dispatch->abandoned = true;
   });
   user.postToIo([userPtr = &user, state, dispatch, providerIdentity, serviceName,
-                 request = RepoClientCompat::makeRequest(payload), deadline, timeoutError,
+                 request = RepoClientCompat::makeRequest(payload), deadline, timeoutMessage,
                  failurePrefix] () mutable {
     std::lock_guard<std::mutex> startGuard(dispatch->mutex);
     const auto now = std::chrono::steady_clock::now();
@@ -4401,9 +4408,9 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
       userPtr->RequestService(
         std::vector<ndn::Name>{providerIdentity}, serviceName, std::move(request),
         std::max(1, static_cast<int>(remaining.count())),
-        [state, timeoutError] (const ndn::Name&) {
+        [state, timeoutMessage] (const ndn::Name&) {
           std::lock_guard<std::mutex> guard(state->mutex);
-          state->failure = timeoutError;
+          state->failure = timeoutMessage;
           state->done = true;
           state->arrived.notify_all();
         },
@@ -4437,7 +4444,7 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
       break;
     }
     if (std::chrono::steady_clock::now() >= deadline)
-      throw TargetedReplyFailure(timeoutError, true);
+      throw TargetedReplyFailure(timeoutMessage, true);
   }
   if (state->startFailure)
     std::rethrow_exception(state->startFailure);
@@ -4638,6 +4645,17 @@ canonicalSha256Digest(std::string digest)
       digest[index] = static_cast<char>(character - 'A' + 'a');
   }
   return digest;
+}
+
+std::vector<uint8_t>
+RepoClientCompat::requestTargeted(ndn_service_framework::ServiceUser& user,
+                                  const ndn::Name& providerIdentity,
+                                  const ndn::Name& serviceName,
+                                  const std::vector<uint8_t>& payload,
+                                  int timeoutMs)
+{
+  return requestTargetedReply(user, providerIdentity, serviceName, payload,
+                                      timeoutMs, {});
 }
 
 } // namespace ndnsf_distributed_repo

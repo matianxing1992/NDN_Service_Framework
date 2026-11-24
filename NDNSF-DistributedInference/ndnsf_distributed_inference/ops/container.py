@@ -18,7 +18,7 @@ import time
 from types import SimpleNamespace
 
 from . import cluster
-from .deployment_config import (_digest_file, _name, _read_json, provider_cache_path,
+from .deployment_config import (_digest_file, _name, _read_json, actor_file_keyring, provider_cache_path,
                                 provider_recipient_map)
 from .trust_resources import TrustResourceError, describe_failure
 
@@ -352,6 +352,9 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
     protected = [Path(item['credential_home']) for item in config['actors']
                  if not item['external'] and (kind == 'oracle' or item['node'] == node['id']) and
                  (management or item['id'] != role_id)]
+    checkpoint = config['security'].get('controller_recovery_checkpoint')
+    if checkpoint and kind != 'controller':
+        protected.append(Path(checkpoint).parent)
     credential_homes = {_canonical(path) for path in protected}
     verification_keys = {_canonical(path) for path in verification_keys}
     if (oracle_inputs or verification_keys) and kind != 'oracle':
@@ -475,10 +478,20 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
         add(source.parent / 'nodes' / node['id'] / 'gpu-allocation.json')
     for key in ('trust_schema', 'controller_certificate'):
         add(config['security'][key])
+    keyring = actor_file_keyring(config, actor)
+    if keyring:
+        add(keyring)
     for path in trust_resources:
         add(path)
     if kind == 'controller':
         add(config['security']['controller_policy'])
+        if checkpoint:
+            if not Path(checkpoint).parent.is_dir():
+                raise cluster.ClusterError('CONTROLLER_RECOVERY_DIRECTORY_MISSING')
+            output(checkpoint)
+        handoff = actor.get('parameters', {}).get('signer-handoff-file')
+        if handoff:
+            add(handoff)
     elif kind == 'provider':
         for path in config['model'].values():
             add(path)

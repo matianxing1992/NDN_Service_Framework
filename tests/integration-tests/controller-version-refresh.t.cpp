@@ -1,5 +1,6 @@
 #include "tests/fixtures/test-resource-paths.hpp"
 #include "tests/boost-test.hpp"
+#include "isolated-test-trust.hpp"
 
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
 #include "ndn-service-framework/PolicyRefreshCoordinator.hpp"
@@ -30,7 +31,7 @@ wallClockMs()
 
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(ControllerVersionRefresh)
+BOOST_AUTO_TEST_SUITE(ControllerVersionRefresh, *boost::unit_test::fixture<test::ControllerSealFixture>())
 
 BOOST_AUTO_TEST_CASE(ControllerStatusRefreshCoordinatesRevocationAndUnrelatedTraffic)
 {

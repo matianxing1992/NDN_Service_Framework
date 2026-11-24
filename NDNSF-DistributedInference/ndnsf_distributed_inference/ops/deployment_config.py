@@ -41,6 +41,12 @@ class DeploymentConfigError(ValueError):
     pass
 
 
+# A controller accepts a run-scoped revocation, which is how a qualification run turns a rollover
+# from a unit-test scenario into something a deployment actually performs.
+ROLLOVER_PARAMETERS = ('revoke-trigger-file', 'revoke-kind', 'revoke-identity',
+                       'revoke-service', 'revoke-attribute', 'signer-handoff-file')
+
+
 def _fail(field, reason):
     raise DeploymentConfigError(f"DEPLOYMENT_CONFIG_INVALID:{field}:{reason}")
 
@@ -170,6 +176,13 @@ def provider_cache_path(cache_root, identity):
     """Project a stable cache purpose from the full canonical Provider Name."""
     digest = hashlib.sha256(_name(identity, 'provider.identity')).hexdigest()
     return str(Path(cache_root) / ('provider-' + digest))
+
+
+def actor_file_keyring(config, actor):
+    """Select the local secret-file path owned by the Controller or Requester."""
+    if actor['kind'] in ('controller', 'requester') and not actor.get('external', False):
+        return actor.get('file_keyring', config['security'].get('file_keyring'))
+    return None
 
 
 def preparation_deployment(config):
@@ -342,8 +355,70 @@ def load_deployment(path, *, prepare_only=False):
         _fail("release.manifest", "unsupported installer ledger")
 
     security = _object(config["security"], "security", {
-        "trust_schema", "controller_certificate", "controller_policy"},
+        "trust_schema", "controller_certificate", "controller_policy", "file_keyring",
+        "controller_min_version", "controller_recovery_checkpoint",
+        "controller_recovery_import_sha256", "controller_recovery_import_witness_sha256",
+        "controller_recovery_bootstrap", "controller_policy_lease_ms",
+        "controller_policy_max_lease_ms", "controller_policy_clock_skew_ms",
+        # A rollover fixture has to let the Provider notice a revocation while the Requester keeps
+        # using its cached policy; one shared lease forces both to expire on the same schedule.
+        "requester_policy_max_lease_ms", "provider_policy_max_lease_ms",
+        "requester_policy_revalidation_period_ms", "provider_policy_revalidation_period_ms"},
         {"trust_schema", "controller_certificate"})
+    if "controller_min_version" in security:
+        field = "security.controller_min_version"
+        version = _string(security["controller_min_version"], field)
+        if (not re.fullmatch(r"[1-9][0-9]{0,19}:[1-9][0-9]{0,19}", version)
+                or any(int(part) >= 2**64 for part in version.split(":"))):
+            _fail(field, "expected nonzero uint64 generation:epoch")
+    checkpoint_field = "security.controller_recovery_checkpoint"
+    if "controller_recovery_checkpoint" in security:
+        value = _string(security["controller_recovery_checkpoint"], checkpoint_field)
+        if Path(value).name in ("", ".", "..") or value.endswith("/"):
+            _fail(checkpoint_field, "expected a checkpoint file path")
+        security["controller_recovery_checkpoint"] = resolve(value, checkpoint_field)
+    imports = ("controller_recovery_import_sha256", "controller_recovery_import_witness_sha256")
+    for name in imports:
+        if name in security:
+            field = "security." + name
+            digest = _string(security[name], field)
+            if "controller_recovery_checkpoint" not in security or not re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", digest):
+                _fail(field, "expected a trusted SHA-256 receipt and a recovery checkpoint")
+    if "controller_recovery_bootstrap" in security:
+        field = "security.controller_recovery_bootstrap"
+        if _boolean(security["controller_recovery_bootstrap"], field) and (
+                "controller_recovery_checkpoint" not in security or
+                any(name in security for name in imports) or
+                "controller_min_version" in security):
+            _fail(field, "requires a checkpoint and no recovery import or version floor")
+    if "controller_policy_lease_ms" in security:
+        field = "security.controller_policy_lease_ms"
+        if _integer(security["controller_policy_lease_ms"], field, 5000) > 300000:
+            _fail(field, "expected integer <= 300000")
+    if "controller_policy_max_lease_ms" in security:
+        field = "security.controller_policy_max_lease_ms"
+        if _integer(security["controller_policy_max_lease_ms"], field, 5000) > 300000:
+            _fail(field, "expected integer <= 300000")
+    for role in ("requester", "provider"):
+        lease_field = "security." + role + "_policy_max_lease_ms"
+        if lease_field in security:
+            name = lease_field.split(".", 1)[1]
+            if _integer(security[name], lease_field, 5000) > 300000:
+                _fail(lease_field, "expected integer <= 300000")
+        period_field = "security." + role + "_policy_revalidation_period_ms"
+        if period_field in security:
+            name = period_field.split(".", 1)[1]
+            if _integer(security[name], period_field, 1000) > 600000:
+                _fail(period_field, "expected integer <= 600000")
+    if "controller_policy_clock_skew_ms" in security:
+        field = "security.controller_policy_clock_skew_ms"
+        if _integer(security["controller_policy_clock_skew_ms"], field, 0) > 1000:
+            _fail(field, "expected integer <= 1000")
+    if "file_keyring" in security:
+        # Older deployments use this path for both secret owners.
+        security["file_keyring"] = resolve(security["file_keyring"], "security.file_keyring",
+                                           control=True, exists=True)
     model = _object(config["model"], "model", {"plan", "manifest", "tokenizer"},
                     () if config.get('operation') in ('prepare', 'repo-benchmark')
                     else {"plan", "manifest", "tokenizer"})
@@ -417,7 +492,7 @@ def load_deployment(path, *, prepare_only=False):
     reservations = {key: [] for key in nodes}
     for actor in _array(config["actors"], "actors", True):
         _object(actor, "actor", {"id", "kind", "identity", "external", "node",
-                               "credential_home", "resources", "parameters"},
+                               "credential_home", "resources", "parameters", "file_keyring"},
                 {"id", "kind", "identity"})
         actor_id = _identifier(actor["id"], "actor.id")
         identity = _name(actor["identity"], "actor.identity")
@@ -427,7 +502,7 @@ def load_deployment(path, *, prepare_only=False):
             _fail("actor.kind", "unsupported actor kind")
         external = _boolean(actor.setdefault("external", False), "actor.external")
         if external:
-            if actor.keys() & {"node", "credential_home", "resources", "parameters"}:
+            if actor.keys() & {"node", "credential_home", "resources", "parameters", "file_keyring"}:
                 _fail("actor", "external references cannot own process inputs")
         else:
             _object(actor, "actor", required={"node", "credential_home", "resources"})
@@ -435,6 +510,11 @@ def load_deployment(path, *, prepare_only=False):
                 _fail("actor.node", "unknown node")
             actor["credential_home"] = resolve(actor["credential_home"], "actor.credential_home",
                                                 exists=True, directory=True)
+            if "file_keyring" in actor:
+                if actor["kind"] not in ("controller", "requester"):
+                    _fail("actor.file_keyring", "only Controller and Requester own these files")
+                actor["file_keyring"] = resolve(actor["file_keyring"], "actor.file_keyring",
+                                                 control=True, exists=True)
             home = (actor["node"], actor["credential_home"])
             if any((local or node == home[0]) and
                    (Path(previous) == Path(home[1]) or
@@ -460,6 +540,12 @@ def load_deployment(path, *, prepare_only=False):
     for kind in ("controller", "requester"):
         if len(by_kind[kind]) != 1:
             _fail("actors", "requires exactly one " + kind)
+    secret_owners = [by_kind[kind][0] for kind in ("controller", "requester")]
+    if any("file_keyring" in actor for actor in secret_owners):
+        controller_ring, requester_ring = (actor_file_keyring(config, actor)
+                                          for actor in secret_owners)
+        if controller_ring and controller_ring == requester_ring:
+            _fail("actor.file_keyring", "Controller and Requester require distinct files")
     if len(by_kind['artifact-authority']) > 1 or (
             not publish_only and not benchmark and len(by_kind['artifact-authority']) != 1):
         _fail('actors', 'requires exactly one artifact-authority except publish-only preparation')
@@ -468,8 +554,31 @@ def load_deployment(path, *, prepare_only=False):
             _fail("security.controller_policy", "external Controller cannot own policy inputs")
     elif "controller_policy" not in security:
         _fail("security.controller_policy", "owned Controller requires policy input")
-    for key in security:
-        security[key] = resolve(security[key], "security." + key, exists=True)
+    controller = by_kind["controller"][0]
+    if "controller_policy_lease_ms" in security and controller["external"]:
+        _fail("security.controller_policy_lease_ms", "requires an owned Controller")
+    if (not controller["external"] and "controller_policy_max_lease_ms" in security and
+            security.get("controller_policy_lease_ms", 60000) >
+            security["controller_policy_max_lease_ms"]):
+        _fail("security.controller_policy_max_lease_ms", "below the configured issuer lease")
+    # A role limit below the Controller's issuance window rejects every signed status: the native side
+    # refuses a status whose validity exceeds the configured maximum lease. Cross-check each role the
+    # launcher actually applies, not just the shared field.
+    issuer_lease = security.get("controller_policy_lease_ms", 60000)
+    for role in ("requester", "provider"):
+        # The prefixed name belongs to the diagnostic, not to the lookup: keying the dict with
+        # "security.<field>" made this check a no-op.
+        role_key = role + "_policy_max_lease_ms"
+        role_field = "security." + role_key
+        if not controller["external"] and role_key in security and \
+                security[role_key] < issuer_lease:
+            _fail(role_field, "below the configured issuer lease")
+    if "controller_recovery_checkpoint" in security and (
+            controller["external"] or not actor_file_keyring(config, controller)):
+        _fail(checkpoint_field, "an owned Controller with a keyring is required")
+    for key in ("trust_schema", "controller_certificate", "controller_policy", "file_keyring"):
+        if key in security:
+            security[key] = resolve(security[key], "security." + key, exists=True)
     if ((not by_kind["provider"] and config.get('operation') not in ('prepare', 'repo-benchmark')) or
             len(by_kind["repo"]) > 1):
         _fail("actors", "requires providers and at most one Repo")
@@ -529,6 +638,16 @@ def load_deployment(path, *, prepare_only=False):
     writes = _translate_native(config, by_kind, resolve)
     protected_roots = [Path(release["prefix"])] + [
         Path(actor["credential_home"]) for actor in actors.values() if not actor["external"]]
+    if "controller_recovery_checkpoint" in security:
+        checkpoint = Path(security["controller_recovery_checkpoint"])
+        parent = checkpoint.parent
+        if (any(parent == path or parent in path.parents or path in parent.parents
+                for path in protected_roots + roots) or
+                any(parent == path or parent in path.parents for path in read_paths)):
+            _fail(checkpoint_field, "checkpoint directory overlaps deployment data or credentials")
+        if local and (not parent.is_dir() or (checkpoint.exists() and not checkpoint.is_file())):
+            _fail(checkpoint_field, "private checkpoint directory must be provisioned")
+        protected_roots.append(parent)
     journal = config["requester"].get("conversation", {}).get("journal")
     journal_root = Path(journal["state_root"]) / journal["identity"] if journal else None
     for value, directory, field in writes:
@@ -752,8 +871,10 @@ def _translate_native(config, by_kind, resolve):
                                    'repo.parameters.request-timeout-ms', 251)
                 if timeout > 2147483647:
                     _fail('repo.parameters.request-timeout-ms', 'exceeds native signed int')
-        elif parameters.keys() - {periodic}:
+        elif parameters.keys() - {periodic, *ROLLOVER_PARAMETERS}:
             _fail("actor.parameters", "role parameters belong in common/native configuration")
+        elif actor['kind'] == 'controller':
+            paths(parameters, ('signer-handoff-file',), "controller.parameters")
     barrier_outputs = {requester[key][field]
                        for key in ('test_stream_barrier', 'test_handoff_barrier') if key in requester
                        for field in ('ready_file', 'release_file')}

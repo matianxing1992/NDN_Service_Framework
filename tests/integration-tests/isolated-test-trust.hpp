@@ -5,11 +5,16 @@
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/util/io.hpp>
+#include <ndn-cxx/util/random.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
 
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <map>
+#include <optional>
 #include <stdexcept>
 #include <system_error>
 #include <unistd.h>
@@ -93,6 +98,60 @@ rule
 
 
 } // namespace trust_detail
+
+/** Provision the real Controller seal for integration tests without retaining credentials. */
+class ControllerSealFixture
+{
+public:
+  ControllerSealFixture()
+    : m_directory(trust_detail::makeTestTrustDirectory())
+  {
+    const auto path = m_directory / "controller.ring";
+    std::array<uint8_t, 32> key{};
+    ndn::random::generateSecureBytes(key);
+    std::ofstream ring(path);
+    ring << "controller-abe " << ndn::toHex(key, false) << '\n';
+    ring.close();
+    std::error_code error;
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                       std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace, error);
+    if (!ring || error) {
+      std::filesystem::remove_all(m_directory, error);
+      throw std::runtime_error("cannot provision the isolated Controller seal");
+    }
+    for (const auto* name : {"NDNSF_FILE_KEYRING", "NDNSF_CONTROLLER_GENERATION_STATE",
+                             "NDNSF_CONTROLLER_MIN_VERSION", "NDNSF_CONTROLLER_RECOVERY_CHECKPOINT",
+                             "NDNSF_CONTROLLER_RECOVERY_IMPORT_SHA256"}) {
+      const auto* previous = std::getenv(name);
+      m_previous.emplace(name, previous ? std::optional<std::string>(previous) : std::nullopt);
+    }
+    if (::setenv("NDNSF_FILE_KEYRING", path.c_str(), 1) != 0) {
+      std::filesystem::remove_all(m_directory, error);
+      throw std::runtime_error("cannot select the isolated Controller seal");
+    }
+    for (const auto& entry : m_previous) {
+      if (entry.first != "NDNSF_FILE_KEYRING")
+        ::unsetenv(entry.first.c_str());
+    }
+  }
+
+  ~ControllerSealFixture()
+  {
+    for (const auto& [name, value] : m_previous) {
+      if (value)
+        ::setenv(name.c_str(), value->c_str(), 1);
+      else
+        ::unsetenv(name.c_str());
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(m_directory, ignored);
+  }
+
+private:
+  std::filesystem::path m_directory;
+  std::map<std::string, std::optional<std::string>> m_previous;
+};
 
 
 /** Fixed certificate anchors for local tests, without starting NAC actors. */

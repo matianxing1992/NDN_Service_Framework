@@ -45,6 +45,32 @@ NDNSF service invocation.
 
 ## Run On One Real Machine
 
+The Controller requires a private keyring with a `controller-abe` entry.
+For a fresh deployment, provision it once on the Controller host.
+
+```bash
+install -d -m 700 "$HOME/.ndnsf"
+export NDNSF_FILE_KEYRING="$HOME/.ndnsf/controller.ring"
+(umask 077; set -C; seal=$(openssl rand -hex 32) && printf 'controller-abe %s\n' "$seal" > "$NDNSF_FILE_KEYRING")
+```
+
+Reuse the same keyring on restart and keep its backup separate from the state
+backup. A deployment with legacy Controller state needs an independent
+checkpoint and a trusted SHA-256 receipt for the legacy file before migration.
+
+Use `ndnsf-historical-publish --config PATH` on the Producer host for a
+durable object readable under a service's user permissions. The JSON config
+identifies the Producer's `pib` and `identity`, the `controller` and pinned
+`controller_certificate`, the `service`, the Producer-owned `object_prefix`,
+and the input `payload_file`. Set `repo_provider`, `repo_route`,
+`repo_service_prefix`, `group`, and `trust_schema` from the deployment.
+Run with the Producer's private credential home and NFD transport. The
+publisher confirms the Controller's signed receipt before sending the original
+Data, CK, and publication proof to Repo. Retain the published names to retrieve
+the same object after rotation. To serve these original packets from the
+Producer after commit, use `--serve-committed PATH`. This mode keeps the exact
+object available for up to 60 seconds and exits on SIGTERM or SIGINT.
+
 Start a local NFD, run the controller, then run the provider and user examples:
 
 ```bash

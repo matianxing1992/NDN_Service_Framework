@@ -215,13 +215,15 @@ def build(bld):
                             bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.cpp')],
                     includes=['..', '../NDNSF-DistributedRepo/include',
                               '../ndn-service-framework'],
-                    use='ndnsf-distributed-repo NDN_CXX BOOST OPENSSL DL',
-                    cxxflags=flags, linkflags=links, install_path=None)
+                    use='ndnsf-distributed-repo ndn-service-framework NDN_CXX BOOST OPENSSL DL',
+                    cxxflags=flags, linkflags=links, rpath=[bld.bldnode.abspath()],
+                    install_path=None)
     # Revalidate the restored Controller baseline without linking the inference backend.
     bld.program(target='../controller-baseline', name='controller-baseline',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/controller-revocation-state.t.cpp'),
                         bld.path.find_node('unit-tests/controller-revocation-policy.t.cpp'),
+                        bld.path.find_node('integration-tests/controller-bootstrap-lifetime.t.cpp'),
                         bld.path.find_node('integration-tests/controller-revocation-flow.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=['..', '../ndn-service-framework'],
@@ -500,8 +502,8 @@ def build(bld):
                         bld.path.find_node('unit-tests/generic-dynamic-api-targeted.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedInference/cpp/ndnsf-di'],
-                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
-                defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
+                use='ndn-service-framework ndnsf-distributed-inference ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                defines=['HAVE_TESTS', 'NDNSF_TEST_REPO_REOPEN'], cxxflags=['-fPIC', '-O0', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     bld.program(target='../naming-invocation-names',
@@ -959,11 +961,6 @@ def build(bld):
             links += ['-fsanitize=thread']
         bld.program(target='../repo-persistent-api' + suffix,
                 name='repo-persistent-api' + suffix,
-                # T011: the REPO-side registration referenced
-                # integration-tests/controller-bootstrap-lifetime.t.cpp, which
-                # exists in no branch of this repository. Keep the target and
-                # its real sources; the dangling reference would make
-                # configure fail before any target builds.
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/persistent-artifact-api.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
@@ -2246,10 +2243,19 @@ def build(bld):
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp'),
                         bld.path.find_node('integration-tests/uav-tracking-flow.t.cpp'),
                         bld.path.find_node('integration-tests/uav-observation-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/uav-collaboration-flow.t.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavFrameIngress.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavMultiViewRecognition.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavMissionSession.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavDetectorProvider.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavDiagnostics.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/ground-station/UavIncidentCoordinator.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/drone/UavCollaborationParticipant.cpp'),
+                        bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-computation.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/tracking/UavTrackingSession.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',

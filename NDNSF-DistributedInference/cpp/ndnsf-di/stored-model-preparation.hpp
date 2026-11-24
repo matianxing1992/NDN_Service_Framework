@@ -44,6 +44,13 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
   const std::function<NativeRequestCatalog()>& loadCatalog, const std::string& configurationJson,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState);
 
+NativeStoredModelPublication
+nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
+  const ndn::Name& repository, const ndn::Name& publicationPrefix,
+  const std::function<NativeRequestCatalog()>& loadCatalog, const std::string& configurationJson,
+  const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
+  bool importLegacyJournal, const NativeStoredModelHandleOutput* output = nullptr);
+
 /** Recover the real native catalog from admitted encrypted metadata, without source files.
  * Only metadata is fetched here. Weight bundles remain lazy Provider inputs.
  */

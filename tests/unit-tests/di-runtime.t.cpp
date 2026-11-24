@@ -95,6 +95,8 @@ public:
               std::to_string(++s_sequence)))
   {
     std::filesystem::create_directories(m_root);
+    std::filesystem::permissions(m_root, std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::replace);
     write("trust.conf",
           "; Local test trust schema\n"
           "rule\n"
@@ -466,6 +468,30 @@ BOOST_AUTO_TEST_CASE(RequestTimeStoredPreparationRejectsInvalidInputsWithoutSide
   BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
 
+BOOST_AUTO_TEST_CASE(StoredPreparationRequiresAFileProtectionKey)
+{
+  TempRuntimeConfig files;
+  RuntimeConfig config;
+  config.nativeConfigPath = files.makeConfig("source.json").string();
+  auto runtime = Runtime::open(config);
+  const auto user = runtime->user();
+  const ndnsf_distributed_repo::RepoArtifactTarget target{"/repo", "/repo/provider", "/repo/service"};
+  const auto journal = files.root() / "preparation.json";
+  const auto handle = files.root() / "private-handle";
+
+  ndn_service_framework::test::ScopedEnvironmentValue keyRing("NDNSF_FILE_KEYRING", nullptr);
+
+  BOOST_CHECK_EXCEPTION(user.prepareStoredModel("default", target, journal, handle,
+    std::chrono::seconds(5)), DiError, [] (const DiError& error) {
+      return error.code() == "MODEL_PROTECTION_REQUIRED";
+    });
+  BOOST_CHECK(!std::filesystem::exists(journal));
+  BOOST_CHECK(!std::filesystem::exists(handle));
+  BOOST_CHECK(!std::filesystem::exists(journal.string() + ".lock"));
+  runtime->close();
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+}
+
 BOOST_AUTO_TEST_CASE(PublishStoredModeDoesNotRequireInferenceKeysOrGenerationBudget)
 {
   TempRuntimeConfig files;
@@ -622,7 +648,17 @@ BOOST_AUTO_TEST_CASE(StoredModelOpenKeepsCoreOwnerUntilQuietReadCallbacksDrain)
   const auto repositoryConfig = ndnsf_distributed_repo::RepoArtifactTarget{
     "/repo", "/repo/provider", "/repo/service"};
   const auto handlePath = files.root() / "private-handle";
-  ndnsf::di::nativeExportStoredModelHandle(handle, handlePath);
+  const auto legacyHandlePath = files.root() / "legacy-private-handle";
+  ndnsf::di::nativeExportStoredModelHandle(handle, legacyHandlePath);
+  const auto ringPath = files.root() / "stored-open-keyring";
+  std::ofstream(ringPath) << "fixture-key " << std::string(64, '5') << '\n';
+  std::filesystem::permissions(ringPath, std::filesystem::perms::owner_read |
+                                        std::filesystem::perms::owner_write);
+  ndn_service_framework::test::ScopedEnvironmentValue keyRing("NDNSF_FILE_KEYRING",
+                                                              ringPath.c_str());
+  const auto protection = ndnsf::di::nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(protection);
+  ndnsf::di::nativeExportSealedStoredModelHandle(handle, handlePath, *protection);
   struct RepoReadObservations
   {
     std::mutex mutex;
@@ -710,6 +746,15 @@ BOOST_AUTO_TEST_CASE(StoredModelOpenKeepsCoreOwnerUntilQuietReadCallbacksDrain)
   ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
     successfulRuntime, fixtureUser, grants, admission);
   {
+    BOOST_CHECK_EXCEPTION(successfulRuntime->user().openStoredModel(
+      "default", legacyHandlePath, repositoryConfig, std::chrono::seconds(10)), DiError,
+      [] (const DiError& error) {
+        return error.code() == "STORED_MODEL_HANDLE_INVALID" &&
+          std::string_view(error.what()).find("DI_STORED_MODEL_LEGACY_IMPORT_REQUIRED") !=
+            std::string_view::npos;
+      });
+    BOOST_CHECK_EQUAL(observations->unexpectedInterests.load(), 0U);
+    BOOST_CHECK(observations->fetchedNames.empty());
     const auto prepared = successfulRuntime->user().openStoredModel(
       "default", handlePath, repositoryConfig, std::chrono::seconds(10));
     BOOST_CHECK_EQUAL(prepared.manifest().modelName, "QwenFixture");
@@ -733,7 +778,7 @@ BOOST_AUTO_TEST_CASE(StoredModelOpenKeepsCoreOwnerUntilQuietReadCallbacksDrain)
     auto wrongHandle = handle;
     wrongHandle.masterKey.front() ^= 1;
     const auto wrongHandlePath = files.root() / "wrong-private-handle";
-    ndnsf::di::nativeExportStoredModelHandle(wrongHandle, wrongHandlePath);
+    ndnsf::di::nativeExportSealedStoredModelHandle(wrongHandle, wrongHandlePath, *protection);
     BOOST_CHECK_THROW(successfulRuntime->user().openStoredModel(
       "default", wrongHandlePath, repositoryConfig, std::chrono::seconds(10)), std::exception);
 

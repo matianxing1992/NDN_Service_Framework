@@ -1105,6 +1105,7 @@ template<typename StartRequest>
 std::vector<uint8_t>
 waitForSignedResponse(ndn_service_framework::ServiceUser& serviceUser,
                       const ndn::Name& expectedProvider,
+                      const char* operation,
                       StartRequest&& start,
                       std::chrono::steady_clock::time_point waitDeadline =
                         std::chrono::steady_clock::time_point::max())
@@ -1119,7 +1120,7 @@ waitForSignedResponse(ndn_service_framework::ServiceUser& serviceUser,
     std::forward<StartRequest>(start));
   const auto expectedProviderIdentity = expectedProvider.toUri(ndn::name::UriFormat::ALTERNATE);
   const auto startOnFace = [&serviceUser, result, startState, startRequest,
-                            expectedProviderIdentity, waitDeadline] {
+                            expectedProviderIdentity, operation, waitDeadline] {
     bool expiredBeforeStart = false;
     {
       std::lock_guard<std::mutex> guard(startState->mutex);
@@ -1127,7 +1128,7 @@ waitForSignedResponse(ndn_service_framework::ServiceUser& serviceUser,
       if (waitDeadline != std::chrono::steady_clock::time_point::max() &&
           std::chrono::steady_clock::now() >= waitDeadline) {
         startState->error = std::make_exception_ptr(RepoRequestTimeoutError(
-          "repo-request-timeout: Provider request deadline expired before Face startup"));
+          std::string("repo-request-timeout: deadline expired before Face startup operation=") + operation));
         startState->abandoned = true;
         startState->done = true;
         expiredBeforeStart = true;
@@ -1142,11 +1143,11 @@ waitForSignedResponse(ndn_service_framework::ServiceUser& serviceUser,
     }
     try {
       const auto requestId = (*startRequest)(
-        [result] (const ndn::Name&) {
+        [result, operation] (const ndn::Name&) {
           completeWithError(result,
-            "repo-request-timeout: Provider request timed out", true);
+            std::string("repo-request-timeout: Provider request timed out operation=") + operation, true);
         },
-        [result, expectedProviderIdentity, waitDeadline] (
+        [result, expectedProviderIdentity, operation, waitDeadline] (
             const ndn_service_framework::ResponseMessage& response) {
           const bool providerMatches =
             ndn::Name(response.getProviderIdentity()) == ndn::Name(expectedProviderIdentity);
@@ -1359,6 +1360,14 @@ runSelectedRepoRequest(ndn_service_framework::ServiceUser& serviceUser,
   if (timeoutMs <= config.ackCollectionTimeMs) {
     throw RepoRequestTimeoutError(
       "repo-request-timeout: remaining deadline cannot exceed the selected request ACK window");
+  }
+  // A deployment that names the provider is already addressed to one target, and the maintained
+  // Repo answers targeted requests without running the ACK/Selection exchange. Asking it to
+  // select first costs the ACK window and, for a mutating request, the whole deadline without a
+  // retry: the selection path only replays read-only operations after a timeout.
+  if (!target.providerIdentity.empty()) {
+    return detail::requestTargetedReply(
+      serviceUser, target.providerIdentity, serviceName, requestBytes, timeoutMs, {});
   }
   try {
     return RepoClientCompat::requestSelectedService(
@@ -3696,6 +3705,7 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
           std::chrono::milliseconds(config.requestTimeoutMs));
       const auto locationWire = waitForSignedResponse(*m_impl->serviceUser,
         target.providerIdentity,
+          "location-lookup",
         [serviceUser = m_impl->serviceUser,
          providerIdentity = target.providerIdentity,
          servicePrefix = target.servicePrefix, locationRequest, deadline,
@@ -3802,6 +3812,7 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
               std::chrono::milliseconds(config.requestTimeoutMs));
           const auto bytes = waitForSignedResponse(*m_impl->serviceUser,
             target.providerIdentity,
+              "object-bytes",
             [serviceUser = m_impl->serviceUser,
              providerIdentity = target.providerIdentity,
              servicePrefix = target.servicePrefix, artifactObjectName,
@@ -4032,6 +4043,7 @@ ArtifactRepositoryApi::getReceipt(
     std::chrono::milliseconds(effectiveTimeout);
   const auto payload = waitForSignedResponse(*m_impl->serviceUser,
     seed->providerIdentity,
+      "presence-query",
     [serviceUser = m_impl->serviceUser,
      providerIdentity = seed->providerIdentity,
      servicePrefix = seed->servicePrefix, query, effectiveTimeout]
@@ -4271,6 +4283,7 @@ ArtifactRepositoryApi::checkAvailability(const ArtifactHandle& handle,
           std::chrono::milliseconds(locationTimeoutMs));
       locationWire = waitForSignedResponse(*m_impl->serviceUser,
         target.providerIdentity,
+          "location-timeout",
         [serviceUser = m_impl->serviceUser,
          providerIdentity = target.providerIdentity,
          servicePrefix = target.servicePrefix, locationRequest,
@@ -4404,6 +4417,7 @@ ArtifactRepositoryApi::checkAvailability(const ArtifactHandle& handle,
           std::chrono::milliseconds(availabilityTimeoutMs));
       probeWire = waitForSignedResponse(*m_impl->serviceUser,
         target.providerIdentity,
+          "availability-probe",
         [serviceUser = m_impl->serviceUser,
          providerIdentity = target.providerIdentity,
          servicePrefix = target.servicePrefix, probe,

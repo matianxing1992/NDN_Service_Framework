@@ -53,7 +53,7 @@ public:
   bool installCurrentStatus(const PolicyStatusData& status,
                             uint64_t nowMs,
                             bool controllerSignatureValid = true,
-                            bool preservePendingFetch = false);
+                            bool preservePendingFetch = false, bool freshQuery = false);
 
   /** End an externally owned transport fetch, retaining an unmet version hint. */
   void finishTransportFetch();
@@ -69,7 +69,7 @@ public:
   /** Complete the current fetch with a Controller-signed status snapshot. */
   Result completeFetch(const PolicyStatusData& status,
                        uint64_t nowMs,
-                       bool controllerSignatureValid = true);
+                       bool controllerSignatureValid = true, bool freshQuery = false);
 
   /** Record a timeout/transport failure and return a bounded retry request. */
   Result failFetch(uint64_t nowMs);
@@ -89,8 +89,6 @@ public:
 private:
   Result startFetch(const ControllerVersion& version, uint64_t nowMs);
   Result rejectOrRetry(Outcome rejection, const char* reason, uint64_t nowMs);
-  bool sameStatus(const PolicyStatusData& left,
-                  const PolicyStatusData& right) const;
   uint64_t retryDelayMs(size_t attempt) const;
 
 private:

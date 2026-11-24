@@ -129,11 +129,10 @@ nativeGrantKvRoleStorage(User& user, const std::string& operationId,
     deadline - std::chrono::steady_clock::now()).count();
   require(remaining > 1 && remaining <= 10 * 60 * 1000, "handoff grant deadline expired");
   const auto budget = static_cast<int>(remaining);
-  const auto wire = repo::RepoClientCompat::requestSelectedService(user,
+  const auto wire = repo::RepoClientCompat::requestTargeted(user,
     ndn::Name(target.providerIdentity), repo::makeRepoServiceName(
       ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
-    std::vector<std::uint8_t>(encoded.begin(), encoded.end()),
-    std::min(1000, std::max(1, budget / 2)), budget);
+    std::vector<std::uint8_t>(encoded.begin(), encoded.end()), budget);
   const auto granted = repo::RepoUserStorageGrantReply::fromJson(
     std::string(wire.begin(), wire.end()));
   granted.validateExpected(target, user.getName().toUri(ndn::name::UriFormat::ALTERNATE), request);

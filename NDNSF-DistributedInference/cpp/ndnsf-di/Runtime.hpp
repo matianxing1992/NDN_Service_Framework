@@ -314,6 +314,14 @@ public:
     const std::filesystem::path& privateHandleFile,
     Milliseconds timeout = Milliseconds{300000}) const;
 
+  /** Import and resume an existing journal pinned to the expected publication prefix. */
+  NativeStoredModelPreparationReceipt
+  publishStoredModel(const std::string& modelKey,
+    const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+    const std::filesystem::path& preparationState,
+    const std::filesystem::path& privateHandleFile,
+    Milliseconds timeout, const ndn::Name& legacyJournalPrefix) const;
+
   /** Prepare or recover the same stored model package used by external preparation,
    * then open it for inference. Source mode only; both phases share one deadline.
    */
@@ -365,7 +373,7 @@ private:
   publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
     const std::string& modelKey, const ndnsf_distributed_repo::RepoArtifactTarget& repository,
     const std::filesystem::path& preparationState,
-    const std::filesystem::path& privateHandleFile) const;
+    const std::filesystem::path& privateHandleFile, const ndn::Name& legacyJournalPrefix = {}) const;
 
   PreparedModel
   openStoredModelImpl(detail::StoredModelPreparationOperation& operation,

@@ -8,6 +8,7 @@
 
 #include "ServiceAuthorizationTable.hpp"
 #include "NDNSFMessages.hpp"
+#include "PolicyStatus.hpp"
 #include "InvocationStream.hpp"
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
@@ -31,6 +32,7 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1423,7 +1425,8 @@ namespace ndn_service_framework{
             /** Install a Controller-signed policy status after the enclosing
              * Data has passed the configured trust validator. */
             bool installControllerStatus(const PolicyStatusData& status,
-                                         bool controllerSignatureValid = true);
+                                         bool controllerSignatureValid = true,
+                                         bool freshQuery = false);
             /** Persist an accepted Controller status Data (opt-in durable
              * mode, FR-039); no-op when the store is disabled. */
             void persistAcceptedControllerStatus(
@@ -1445,6 +1448,13 @@ namespace ndn_service_framework{
              * still performs its own permission check.
             */
             bool hasProviderPermissionForService(const ndn::Name& serviceName) const;
+
+            /** Invoked when a refreshed permission record no longer grants any service this Provider serves.
+             *  The host application decides what stopping means for it; the Provider only reports the fact. */
+            void setAuthorityWithdrawnHook(std::function<void(const std::vector<std::string>&)> hook)
+            {
+                m_authorityWithdrawnHook = std::move(hook);
+            }
             /** Return whether NAC-ABE public parameters and the Provider DKEY
              * are installed so protected incoming requests can be decrypted. */
             bool isRequestDecryptionReady();
@@ -1894,6 +1904,7 @@ namespace ndn_service_framework{
             void scheduleControllerStatusRefresh(
                 const ndn::Name& serviceName,
                 const PolicyStatusData& status);
+            void scheduleControllerStatusExpiry(const PolicyStatusData& status);
             // Bounded DKEY re-arm retries for a LocalMock whose immediate
             // refresh was deferred (no fixture-owned Consumer).  The retry
             // fires only while the Face is pumped and stops as soon as the
@@ -1918,7 +1929,7 @@ namespace ndn_service_framework{
             #endif
             bool authorizeControllerTransition(
                 const ndn::Name& serviceName,
-                ProtectedTransition transition) const;
+                ProtectedTransition transition, bool requireNacProducerBinding = false) const;
             void adoptControllerVersion(const ControllerVersion& version);
             /**
              * Evict per-service authorization material after an authenticated
@@ -2978,6 +2989,10 @@ namespace ndn_service_framework{
             }
             ndn::Face& m_face;
             ndn::Scheduler m_scheduler;
+            /** Re-fetch this provider's permissions on the configured period, so a withdrawal reaches a
+             *  Provider that has already been provisioned. */
+            void scheduleProviderPermissionRefresh();
+            bool m_providerPermissionRefreshScheduled = false;
             ndn::Name identity;
             ndn::KeyChain m_keyChain;
             ndn::KeyChain* m_testSigningKeyChain = nullptr;
@@ -3124,9 +3139,12 @@ namespace ndn_service_framework{
             ndn::Name m_controllerPrefix;
             std::map<std::string, std::shared_ptr<detail::PolicyStatusFetch>>
                 m_policyStatusFetchInFlight;
+            /** Reports that this Provider's authority was withdrawn; empty when the host ignores it. */
+            std::function<void(const std::vector<std::string>&)> m_authorityWithdrawnHook;
             uint64_t m_nextPolicyStatusFetchTicket = 0;
-            std::map<std::string, ControllerVersion>
+            std::map<std::string, std::pair<ControllerVersion, uint64_t>>
                 m_policyStatusRefreshScheduled;
+            std::map<std::string, ndn::scheduler::ScopedEventId> m_policyStatusExpiryEvents;
             // A grant-only PermissionResponse can add a service while the
             // ABE generation remains unchanged. Defer one identity-scoped
             // DKEY replacement for the affected service until its signed
@@ -3153,6 +3171,7 @@ namespace ndn_service_framework{
             std::function<void()> m_testImmutablePublicationQueued;
             std::function<void(const ndn::Name&)> m_testBeforeImmutablePublicationCommit;
             std::function<void(const ndn::Name&)> m_testAfterImmutablePublicationCommit;
+            std::vector<ndn::Name> m_lastPublishedCkNames;
             size_t m_requiredKeyEpoch = 0;
             uint64_t m_policyGracePeriodMs = 0;
             HybridMessageCrypto m_hybridMessageCrypto;

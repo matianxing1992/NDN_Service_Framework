@@ -2,8 +2,13 @@
 #include "isolated-test-trust.hpp"
 #include "tests/boost-test.hpp"
 
+#include "ndn-service-framework/AbeHistoricalAuthorization.hpp"
+#include "ndn-service-framework/AbeHistoricalKeyRequest.hpp"
+#include "ndn-service-framework/AbePublicParametersArchive.hpp"
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
+#include "ndn-service-framework/FileKeyRing.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndn-service-framework/RevocationState.hpp"
 #include "ndn-service-framework/RuntimeStatusStore.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
@@ -12,9 +17,16 @@
 #include "ndn-service-framework/common.hpp"
 #include "ndn-service-framework/utils.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include "ndn-service-framework/HistoricalReadClient.hpp"
+#include "ndn-service-framework/detail/historical-policy-status.hpp"
+#include "ndn-service-framework/historical-object-publisher.hpp"
 #include "ndn-service-framework/CertificateBootstrap.hpp"
 
+#include <ndn-cxx/security/certificate-fetcher-offline.hpp>
+#include <ndn-cxx/security/validation-policy.hpp>
+
 #include <nac-abe/algo/abe-support.hpp>
+#include <nac-abe/ndn-crypto/data-enc-dec.hpp>
 
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -25,9 +37,11 @@
 #include <ndn-cxx/util/dummy-client-face.hpp>
 #include <ndn-cxx/util/signal/scoped-connection.hpp>
 #include <ndn-cxx/util/scope.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 #include <ndn-cxx/util/time-unit-test-clock.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -78,13 +92,61 @@ struct ServiceControllerTestAccess
   static void
   requestDkey(ServiceController& controller, const ndn::Interest& interest)
   {
-    controller.m_aa.onDecryptionKeyRequest(interest);
+    controller.onCurrentAbeKeyInterest(interest);
+  }
+
+  static void
+  requestAbeParameters(ServiceController& controller, const ndn::Interest& interest)
+  {
+    controller.onCurrentAbeParametersInterest(interest);
+  }
+
+  static bool
+  acceptsHistoricalGrantWire(const ServiceController& controller, const std::string& wire)
+  {
+    return controller.acceptsHistoricalGrantWire(wire);
+  }
+
+  static void
+  storeHistoricalReceipt(ServiceController& controller, const ndn::Data& publication,
+                         const ndn::Data& receipt)
+  {
+    const auto& wire = receipt.wireEncode();
+    controller.m_generationStore->recordHistoricalPublicationReceipt(publication.getFullName(),
+      std::string(reinterpret_cast<const char*>(wire.data()), wire.size()));
+  }
+
+  static bool
+  acceptsHistoricalPublication(const ServiceController& controller, const ndn::Data& publication)
+  {
+    return controller.acceptsHistoricalPublication(publication);
+  }
+
+  static bool
+  hasHistoricalGrant(const ServiceController& controller, const ndn::Name& identity,
+                     const ControllerVersion& version, const std::string& policy)
+  {
+    return controller.hasHistoricalGrant(identity, version, policy);
+  }
+
+  static std::optional<std::string>
+  loadGrantRecord(const ServiceController& controller, const ndn::Name& identity,
+                  const ControllerVersion& version)
+  {
+    return controller.m_generationStore->loadGrant(identity.toUri(ndn::name::UriFormat::CANONICAL),
+        version.controllerGenerationTimestamp, version.controllerEpoch);
   }
 
   static size_t
   originalReplyCount(const ServiceController& controller)
   {
     return controller.m_originalControlReplies.size();
+  }
+
+  static std::optional<ControllerVersion>
+  durableVersion(const ServiceController& controller)
+  {
+    return controller.m_generationStore->load();
   }
 
   static std::shared_ptr<const ndn::Data>
@@ -126,6 +188,27 @@ struct ServiceControllerTestAccess
     // cannot run against this fixture. That boundary has its own standalone
     // readiness negative cases and real-NFD test; never mark it ready here.
     controller.registerInterestHandlers();
+  }
+
+  static void
+  receiptFetchInterest(ServiceController& controller, const ndn::Interest& interest)
+  {
+    controller.serveHistoricalReceipt(interest);
+  }
+
+  static void
+  publicationReceiptInterest(ServiceController& controller, const ndn::Interest& interest)
+  {
+    // Same reason as historicalKeyInterest: the RPC filter does not dispatch in this fixture.
+    controller.onHistoricalPublicationInterest(interest);
+  }
+
+  static void
+  historicalKeyInterest(ServiceController& controller, const ndn::Interest& interest)
+  {
+    // The DKEY handler is not reachable through a DummyFace filter in this fixture; call the
+    // private entry point the way the permission cases call theirs.
+    controller.serveHistoricalKeyRequest(interest);
   }
 
   static ndn::security::Certificate
@@ -186,6 +269,13 @@ struct ServiceControllerTestAccess
                        const ndn::Interest& interest)
   {
     controller.onPolicyStatusInterest(ndn::InterestFilter("/"), interest);
+  }
+
+  static void
+  archivedPublicParametersInterest(ServiceController& controller, const ndn::Name& index,
+                                   const ndn::Interest& interest)
+  {
+    controller.onArchivedPublicParametersInterest(index, interest);
   }
 
   static void
@@ -257,6 +347,12 @@ struct ServiceControllerTestAccess
   abePublicParametersName(const ServiceController& controller)
   {
     return controller.m_abePublicParametersName;
+  }
+
+  static ControllerVersion
+  abeMaterialVersion(const ServiceController& controller)
+  {
+    return controller.m_abeMaterialVersion;
   }
 
   static bool reconcilePendingAbeRotation(ServiceController& controller)
@@ -396,7 +492,7 @@ struct PortableRecipientFixture
   std::unique_ptr<ServiceController> controller;
   std::optional<std::string> previousState;
 
-  PortableRecipientFixture()
+  explicit PortableRecipientFixture(const char* secondUserService = "")
   {
     if (const auto* value = ::getenv("NDNSF_CONTROLLER_GENERATION_STATE"))
       previousState = value;
@@ -410,7 +506,10 @@ struct PortableRecipientFixture
            << "\n  allow\n  {\n   /HELLO\n  }\n }\n}\n"
            << "user-policies\n{\n user-policy\n {\n  for "
            << subject.toUri()
-           << "\n  allow\n  {\n   /HELLO\n  }\n }\n}\n";
+           << "\n  allow\n  {\n   /HELLO\n";
+    if (*secondUserService != '\0')
+      policy << "   " << secondUserService << '\n';
+    policy << "  }\n }\n}\n";
     policy.close();
     controller = std::make_unique<ServiceController>(face, certificate, validator,
                                                     (root / "policy").string());
@@ -432,6 +531,14 @@ struct PortableRecipientFixture
   {
     validator.loadAnchor(certificate.getName().toUri(),
                          ndn::security::Certificate(certificate));
+  }
+};
+
+struct MultiServiceRecipientFixture : PortableRecipientFixture
+{
+  MultiServiceRecipientFixture()
+    : PortableRecipientFixture("/OTHER")
+  {
   }
 };
 
@@ -464,7 +571,7 @@ liveStatusFor(const ControllerVersion& version,
   // Runtime installControllerStatus validates against the actual wall clock;
   // keep this helper independent from the deterministic 900..5000 test
   // window used by the state-only cases above.
-  status.setValidity(now - 1000, now + 60000);
+  status.setValidity(now - 1000, now + 59000);
   return status;
 }
 
@@ -479,7 +586,7 @@ liveStatusForService(const ndn::Name& serviceName,
   PolicyStatusData status;
   status.setServiceName(serviceName);
   status.setControllerVersion(version);
-  status.setValidity(now - 1000, now + 60000);
+  status.setValidity(now - 1000, now + 59000);
   status.setPolicyDigest(
       "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
   status.setControllerCertificate(ndn::Name("/controller/KEY/signing/v=1"));
@@ -577,7 +684,8 @@ struct TerminalLedger
 
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(ControllerRevocationFlow)
+BOOST_AUTO_TEST_SUITE(ControllerRevocationFlow,
+  *boost::unit_test::fixture<ndn_service_framework::test::ControllerSealFixture>())
 
 // Selected explicitly by the bounded mount-namespace fixture, never on a shared /tmp.
 BOOST_AUTO_TEST_CASE(DefaultControllersWithoutOverrideRemainIndependent,
@@ -654,22 +762,26 @@ BOOST_FIXTURE_TEST_CASE(PortableRecipientPublicAnchorSupportsPermissionAndDkey,
   face.sentData.clear();
   const auto dkey = ServiceControllerTestAccess::dkeyInterestPrefix(
       ndn::Name(subject).append("controller"), certificate);
-  ServiceControllerTestAccess::requestDkey(*controller, ndn::Interest(dkey));
+  ServiceControllerTestAccess::requestDkey(*controller, ndn::Interest(dkey).setCanBePrefix(true));
   face.processEvents(ndn::time::milliseconds(1));
   BOOST_REQUIRE(!face.sentData.empty());
   BOOST_CHECK(dkey.isPrefixOf(face.sentData.back().getName()));
   BOOST_CHECK_NE(face.sentData.back().getContent().value_size(), 0U);
   controller->setControllerPrefix(ndn::Name(subject).append("controller"));
   ServiceControllerTestAccess::registerHandlersForDummyFace(*controller);
-  const auto parameters = encodeControlQueryParameters({subject, ndn::Name(), 0, 0});
+  const auto parameters = encodeControlQueryParameters(
+    {subject, ndn::Name(), 0, 0, certificate.getFullName()});
   ndn::Interest query(makeControlRpcName(ndn::Name(subject).append("controller"),
       "USER-PERMISSIONS", parameters, makeControlQueryNonce()));
   query.setApplicationParameters(parameters);
   query.setCanBePrefix(false);
   face.sentData.clear();
+  face.sentInterests.clear();
   ServiceControllerTestAccess::userPermissionsInterest(*controller, query);
   face.processEvents(ndn::time::milliseconds(1));
   BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+  BOOST_CHECK(std::none_of(face.sentInterests.begin(), face.sentInterests.end(),
+    [&](const auto& outgoing) { return outgoing.getName() == certificate.getFullName(); }));
   const auto& content = face.sentData.back().getContent();
   auto [decoded, block] = ndn::Block::fromBuffer(
       ndn::span<const uint8_t>(content.value(), content.value_size()));
@@ -686,6 +798,1425 @@ BOOST_FIXTURE_TEST_CASE(PortableRecipientPublicAnchorSupportsPermissionAndDkey,
       .getDefaultKey().getDefaultCertificate());
   BOOST_CHECK(ServiceControllerTestAccess::userPermissions(*controller, stranger)
       .getEntries().empty());
+}
+
+BOOST_AUTO_TEST_CASE(CurrentApplicationReadUsesIdentityDkeyAndRejectsReplacedOriginalCk)
+{
+  // ServiceController owns its default KeyChain. Scope that on-disk PIB/TPM before
+  // constructing the fixture; the application has only its independent in-memory keys.
+  const auto home = test::trust_detail::makeTestTrustDirectory();
+  std::map<std::string, std::optional<std::string>> previous;
+  const auto restore = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previous) {
+      if (value) ::setenv(name.c_str(), value->c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(home, ec);
+  });
+  for (const auto& [name, value] : std::map<std::string, std::string>{
+         {"HOME", home.string()}, {"NDN_CLIENT_PIB", "pib-sqlite3:"},
+         {"NDN_CLIENT_TPM", "tpm-file:"}}) {
+    if (const auto* old = ::getenv(name.c_str())) previous[name] = std::string(old);
+    else previous[name] = std::nullopt;
+    ::setenv(name.c_str(), value.c_str(), 1);
+  }
+
+  PortableRecipientFixture fixture;
+  auto& controller = *fixture.controller;
+  const auto issuer = ServiceControllerTestAccess::ensureInternalControllerSigner(controller);
+  const auto producer = fixture.remoteKeys.createIdentity(ndn::Name(fixture.subject).append("provider"),
+    ndn::RsaKeyParams(2048)).getDefaultKey().getDefaultCertificate();
+  const auto reader = fixture.remoteKeys.createIdentity(fixture.subject, ndn::RsaKeyParams(2048))
+                        .getDefaultKey().getDefaultCertificate();
+  test::IsolatedTestTrust trust({issuer, producer, reader});
+  fixture.validator.load(trust.schemaPath());
+  controller.setControllerPrefix(issuer.getIdentity());
+  ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+  ServiceControllerTestAccess::refreshAbeIdentityPolicies(controller);
+  auto& io = fixture.face.getIoContext();
+  ndn::DummyClientFace::Options options;
+  options.processEventsOverride = [&io] (auto) {
+    if (io.stopped()) io.restart();
+    io.poll();
+  };
+  ndn::DummyClientFace actor(io, fixture.remoteKeys, options);
+  const auto reply = fixture.face.onSendData.connect([&] (const ndn::Data& data) { actor.receive(data); });
+  const auto rpc = ndn::Name(issuer.getIdentity()).append("NDNSF").append("RPC");
+  const auto params = ndn::Name(issuer.getIdentity()).append(ndn::nacabe::PUBLIC_PARAMS);
+  const auto dkey = ServiceControllerTestAccess::dkeyInterestPrefix(issuer.getIdentity(), reader);
+  std::map<ndn::Name, ndn::Data> originals;
+  size_t statusRequests = 0;
+  size_t dkeyRequests = 0;
+  size_t ckReads = 0;
+  ndn::Name ckName;
+  // Dispatch to the production handlers. The map is the only storage stand-in and serves exact originals.
+  const auto interests = actor.onSendInterest.connect([&] (const ndn::Interest& query) {
+    const auto& name = query.getName();
+    if (ndn::Name(rpc).append("POLICY-STATUS").isPrefixOf(name)) {
+      ++statusRequests;
+      ServiceControllerTestAccess::policyStatusInterest(controller, query);
+    }
+    else if (ndn::Name(rpc).append("USER-PERMISSIONS").isPrefixOf(name))
+      ServiceControllerTestAccess::userPermissionsInterest(controller, query);
+    else if (ndn::Name(rpc).append("PUBLISH-HISTORY").isPrefixOf(name))
+      ServiceControllerTestAccess::publicationReceiptInterest(controller, query);
+    else if (params.isPrefixOf(name))
+      ServiceControllerTestAccess::requestAbeParameters(controller, query);
+    else if (dkey.isPrefixOf(name)) {
+      ++dkeyRequests;
+      ServiceControllerTestAccess::requestDkey(controller, query);
+    }
+    else if (const auto found = originals.find(name); found != originals.end()) {
+      if (name == ckName) ++ckReads;
+      actor.receive(found->second);
+    }
+  });
+
+  const ndn::Name service("/HELLO");
+  const ndn::Buffer input(8000, 0x57);
+  HistoricalReadRequest read;
+  publishHistoricalObject(actor, fixture.remoteKeys, producer, issuer, service,
+    ndn::Name(producer.getIdentity()).append("objects"), input, [&] (const auto& publication) {
+      const auto decoded = decodeHistoricalPublication(publication.mapping);
+      BOOST_REQUIRE(decoded);
+      BOOST_REQUIRE_GT(publication.segments.size(), 1U);
+      read.controllerPrefix = issuer.getIdentity();
+      read.controllerCertificate = issuer;
+      read.recipientCertificate = reader;
+      read.producerCertificate = producer;
+      read.producerName = producer.getIdentity();
+      read.serviceName = service;
+      read.publicationName = publication.mapping.getName();
+      read.ckName = ckName = publication.ck.getName();
+      read.objectName = read.payloadName = decoded->objectName;
+      read.generation = decoded->generation;
+      read.epoch = decoded->epoch;
+      read.policy = decoded->policy;
+      originals.emplace(read.publicationName, publication.mapping);
+      originals.emplace(ckName, publication.ck);
+      for (const auto& segment : publication.segments)
+        originals.emplace(segment->getName(), *segment);
+    });
+  const auto recovered = detail::readCurrentNacObject(actor, fixture.remoteKeys, read, trust.schemaPath());
+  BOOST_REQUIRE(recovered);
+  BOOST_CHECK_EQUAL(*recovered, std::string(input.begin(), input.end()));
+  BOOST_REQUIRE_GT(dkeyRequests, 0U);
+  BOOST_REQUIRE_EQUAL(ckReads, 1U);
+
+  auto& replacement = originals.at(ckName);
+  const auto originalFullName = replacement.getFullName();
+  replacement.setFreshnessPeriod(ndn::time::milliseconds(17));
+  fixture.remoteKeys.sign(replacement, ndn::security::signingByCertificate(producer));
+  BOOST_REQUIRE(replacement.getFullName() != originalFullName);
+  BOOST_REQUIRE(ndn::security::verifySignature(replacement, producer));
+  const auto priorDkeyRequests = dkeyRequests;
+  BOOST_CHECK(!detail::readCurrentNacObject(actor, fixture.remoteKeys, read, trust.schemaPath()));
+  BOOST_CHECK_EQUAL(ckReads, 2U);
+  BOOST_CHECK_EQUAL(dkeyRequests, priorDkeyRequests);
+
+  const auto priorStatusRequests = statusRequests;
+  read.totalTimeoutMs = 0;
+  BOOST_CHECK(!detail::readCurrentNacObject(actor, fixture.remoteKeys, read, trust.schemaPath()));
+  if (io.stopped()) io.restart();
+  io.poll();
+  BOOST_CHECK_EQUAL(statusRequests, priorStatusRequests);
+}
+
+/** Accept Interests, reject every Data packet.
+ *
+ * The DKEY handler validates the request and the CK evidence through one validator, so the only way
+ * to exercise the evidence-signature branch is a policy that treats the two packet kinds differently.
+ */
+/** Build a CK name that carries the producer locator the publication check requires.
+ *
+ * Mirrors the attribute-scoped naming used by the historical publication path; the same construction
+ * exists in the unit-test file, where it is private, so the integration case needs its own copy.
+ */
+ndn::Name
+makeHistoricalCkNameForTest(const ndn::Name& producer, const ndn::Name& service,
+                            const std::string& attribute)
+{
+  const auto bytes = [] (const ndn::Name& value) {
+    const auto& wire = value.wireEncode();
+    return std::vector<uint8_t>(wire.data(), wire.data() + wire.size());
+  };
+  const auto scope = makeNamingDigestComponent(computeNamingDigest(
+    "ndnsf-naming/hybrid-key-scope",
+    {{1, 1, bytes(service)}, {2, 1, bytes(producer)},
+     {3, 2, std::vector<uint8_t>(attribute.begin(), attribute.end())}}));
+  ndn::Name name = makeProducerDataPrefix(producer, "KEY");
+  name.append("kind=HYBRID-MESSAGE").append("SCOPE").append("SERVICE").append(scope)
+    .append("EPOCH")
+    .append(makeNamingDigestComponent(computeNamingDigest(
+      "ndnsf-naming/opaque/protection-epoch", {{1, 4, std::vector<uint8_t>{'e', '1'}}})))
+    .append("OBJECT").append(makeNamingDigestComponent(std::string(64, 'a')));
+  return name;
+}
+
+class RejectEvidenceDataPolicy : public ndn::security::ValidationPolicy
+{
+public:
+  void
+  checkPolicy(const ndn::Data&, const std::shared_ptr<ndn::security::ValidationState>& state,
+              const ValidationContinuation&) override
+  {
+    state->fail({ndn::security::ValidationError::INVALID_SIGNATURE,
+                 "evidence rejected by the test policy"});
+  }
+
+  void
+  checkPolicy(const ndn::Interest&, const std::shared_ptr<ndn::security::ValidationState>& state,
+              const ValidationContinuation& continueValidation) override
+  {
+    continueValidation(nullptr, state);
+  }
+};
+
+BOOST_AUTO_TEST_CASE(ControllerAcceptsCommittedSignerHandoff)
+{
+  // A committed signer handoff is accepted only when the successor certificate is the identity's
+  // default key and the key chain holds that key. Witness-backed receipt acceptance after a handoff
+  // is already covered by the existing handoff/restart cases; this case only pins the startup gate.
+  const auto root = test::trust_detail::makeTestTrustDirectory();
+  std::map<std::string, std::optional<std::string>> previous;
+  const auto restore = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previous) {
+      if (value) ::setenv(name.c_str(), value->c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  for (const auto* name : {"HOME", "NDN_CLIENT_PIB", "NDN_CLIENT_TPM",
+                           "NDNSF_CONTROLLER_GENERATION_STATE", "NDNSF_CONTROLLER_HANDOFF"}) {
+    const auto* old = ::getenv(name);
+    previous[name] = old ? std::optional<std::string>(old) : std::nullopt;
+  }
+  ::setenv("HOME", root.c_str(), 1);
+  ::setenv("NDN_CLIENT_PIB", "pib-sqlite3:", 1);
+  ::setenv("NDN_CLIENT_TPM", "tpm-file:", 1);
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", (root / "state").c_str(), 1);
+  const auto policy = root / "policy";
+  std::ofstream(policy) <<
+    "provider-policies { provider-policy { for /spec243/producer allow { /spec243/service } } }\n"
+    "user-policies { user-policy { for /spec243/user allow { /spec243/service } } }\n";
+  ndn::KeyChain keys;
+  const auto identity = keys.createIdentity(ndn::Name("/spec243/controller"),
+                                            ndn::RsaKeyParams(2048));
+  const auto predecessorCert = identity.getDefaultKey().getDefaultCertificate();
+  ControllerVersion materialVersion;
+  {
+    ndn::DummyClientFace face(keys);
+    ndn::security::ValidatorNull validator;
+    ServiceController controller(face, predecessorCert, validator, policy.string());
+    BOOST_REQUIRE(controller.getControllerVersion().isValid());
+    controller.setControllerPrefix(predecessorCert.getIdentity());
+    materialVersion = controller.getPolicyStatus(ndn::Name("/spec243/service")).getAbeMaterialVersion();
+    BOOST_REQUIRE(materialVersion.isValid());
+  }
+
+  const auto successorKey = keys.createKey(identity, ndn::RsaKeyParams(2048));
+  keys.setDefaultKey(identity, successorKey);
+  const auto successorCert = successorKey.getDefaultCertificate();
+  const auto handoff = makeControllerSignerHandoff(predecessorCert, successorCert,
+                                                   materialVersion, keys);
+  const auto handoffPath = root / "handoff.bin";
+  {
+    const auto& wire = handoff.wireEncode();
+    std::ofstream(handoffPath, std::ios::binary)
+      .write(reinterpret_cast<const char*>(wire.data()), wire.size());
+  }
+  ::setenv("NDNSF_CONTROLLER_HANDOFF", handoffPath.c_str(), 1);
+
+  ndn::DummyClientFace face(keys);
+  ndn::security::ValidatorNull validator;
+  ServiceController successor(face, successorCert, validator, policy.string());
+  BOOST_CHECK_MESSAGE(successor.getControllerVersion().isValid(),
+                      "the successor did not accept the committed handoff");
+}
+
+BOOST_AUTO_TEST_CASE(ControllerRecordsHistoricalGrantForAuthorisedUser)
+{
+  const auto root = test::trust_detail::makeTestTrustDirectory();
+  std::map<std::string, std::optional<std::string>> previous;
+  const auto restore = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previous) {
+      if (value) ::setenv(name.c_str(), value->c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  for (const auto* name : {"HOME", "NDN_CLIENT_PIB", "NDN_CLIENT_TPM",
+                           "NDNSF_CONTROLLER_GENERATION_STATE"}) {
+    const auto* old = ::getenv(name);
+    previous[name] = old ? std::optional<std::string>(old) : std::nullopt;
+  }
+  ::setenv("HOME", root.c_str(), 1);
+  ::setenv("NDN_CLIENT_PIB", "pib-sqlite3:", 1);
+  ::setenv("NDN_CLIENT_TPM", "tpm-file:", 1);
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", (root / "state").c_str(), 1);
+  const auto policy = root / "policy";
+  std::ofstream(policy) <<
+    "provider-policies { provider-policy { for /spec243/producer allow { /spec243/service } } }\n"
+    "user-policies { user-policy { for /spec243/user allow { /spec243/service } } }\n";
+  ndn::KeyChain keys;
+  const auto controllerCert = keys.createIdentity(ndn::Name("/spec243/controller"),
+                                                  ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto userCert = keys.createIdentity(ndn::Name("/spec243/user"), ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace face(keys);
+  ndn::security::ValidatorNull validator;
+  ServiceController controller(face, controllerCert, validator, policy.string());
+  BOOST_REQUIRE(controller.getControllerVersion().isValid());
+  const auto authority = controllerCert.getIdentity();
+  controller.setControllerPrefix(authority);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+  const auto version = controller.getControllerVersion();
+
+  const auto parameters = encodeControlQueryParameters(
+    {userCert.getIdentity(), ndn::Name(), 0, 0, userCert.getFullName()});
+  ndn::Interest query(makeControlRpcName(authority, "USER-PERMISSIONS", parameters,
+                                         makeControlQueryNonce()));
+  query.setApplicationParameters(parameters);
+  query.setCanBePrefix(false);
+  face.sentData.clear();
+  ServiceControllerTestAccess::userPermissionsInterest(controller, query);
+  for (int i = 0; i < 100 && face.sentData.empty(); ++i)
+    face.processEvents(ndn::time::milliseconds(5));
+  BOOST_REQUIRE_MESSAGE(!face.sentData.empty(), "the controller answered no permission query");
+
+  const auto granted = ServiceControllerTestAccess::hasHistoricalGrant(
+    controller, userCert.getIdentity(), version, "/PERMISSION/spec243/service");
+  BOOST_CHECK_MESSAGE(granted, "no historical grant covers /spec243/service for the user");
+  const auto record = ServiceControllerTestAccess::loadGrantRecord(controller, userCert.getIdentity(),
+                                                                  version);
+  BOOST_REQUIRE(record.has_value());
+  for (int i = 0; i < 50; ++i)
+    face.processEvents(ndn::time::milliseconds(2));
+  face.sentData.clear();
+}
+
+BOOST_AUTO_TEST_CASE(ControllerStoresPublicationReceiptForOrdinaryPublication)
+{
+  const auto root = test::trust_detail::makeTestTrustDirectory();
+  std::map<std::string, std::optional<std::string>> previous;
+  const auto restore = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previous) {
+      if (value) ::setenv(name.c_str(), value->c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  for (const auto* name : {"HOME", "NDN_CLIENT_PIB", "NDN_CLIENT_TPM",
+                           "NDNSF_CONTROLLER_GENERATION_STATE"}) {
+    const auto* old = ::getenv(name);
+    previous[name] = old ? std::optional<std::string>(old) : std::nullopt;
+  }
+  ::setenv("HOME", root.c_str(), 1);
+  ::setenv("NDN_CLIENT_PIB", "pib-sqlite3:", 1);
+  ::setenv("NDN_CLIENT_TPM", "tpm-file:", 1);
+  const auto stateFile = root / "controller-generation.state";
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", stateFile.c_str(), 1);
+  const auto policy = root / "policy";
+  std::ofstream(policy) <<
+    "provider-policies { provider-policy { for /spec243/producer allow { /spec243/service } } }\n"
+    "user-policies { user-policy { for /spec243/user allow { /HELLO } } }\n";
+  ndn::KeyChain keys;
+  const auto controllerCert = keys.createIdentity(ndn::Name("/spec243/controller"),
+                                                  ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto producerCert = keys.createIdentity(ndn::Name("/spec243/producer"),
+                                                ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace face(keys);
+  ndn::security::ValidatorNull validator;
+  ServiceController controller(face, controllerCert, validator, policy.string());
+  BOOST_REQUIRE(controller.getControllerVersion().isValid());
+  const auto authority = controllerCert.getIdentity();
+  controller.setControllerPrefix(authority);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+  const auto version = controller.getControllerVersion();
+
+  HistoricalPublication publication;
+  publication.controller = authority;
+  publication.producer = producerCert.getIdentity();
+  publication.service = ndn::Name("/spec243/service");
+  publication.objectName = ndn::Name("/spec243/producer").append("objects").append("1");
+  publication.policyGeneration = version.controllerGenerationTimestamp;
+  publication.policyEpoch = version.controllerEpoch;
+  publication.segments = 1;
+  publication.policy = "/PERMISSION/spec243/service";
+  publication.objectDigest = "sha256:" + std::string(64, 'b');
+  const auto status = controller.getPolicyStatus(publication.service);
+  publication.publicParametersName = status.getAbePublicParametersName();
+  // The status advertises an uppercase digest; the publication format and its builder require the
+  // canonical lowercase form, while the receipt comparison is case-insensitive.
+  auto parametersDigest = status.getAbePublicParametersDigest();
+  std::transform(parametersDigest.begin(), parametersDigest.end(), parametersDigest.begin(),
+                 [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  publication.publicParametersDigest = parametersDigest;
+  const auto material = status.getAbeMaterialVersion();
+  publication.generation = material.controllerGenerationTimestamp;
+  publication.epoch = material.controllerEpoch;
+  const auto ckBasis = makeHistoricalCkNameForTest(publication.producer, publication.service,
+                                                   publication.policy).getPrefix(-1);
+  publication.ckFullName = ndn::Name(ckBasis);
+  publication.ckFullName.appendImplicitSha256Digest(std::vector<uint8_t>(32, 0x11));
+  const auto publicationData = makeHistoricalPublicationData(
+    publication, keys, ndn::security::signingByCertificate(producerCert));
+
+  const auto& wire = publicationData.wireEncode();
+  const ndn::Block parameters(wire);
+  ndn::Interest interest(makeControlRpcName(authority, "PUBLISH-HISTORY", parameters,
+                                            makeControlQueryNonce()));
+  interest.setApplicationParameters(parameters);
+  ndn::security::InterestSigner signer(keys);
+  signer.makeSignedInterest(interest, ndn::security::signingByCertificate(producerCert));
+  face.sentData.clear();
+  ServiceControllerTestAccess::publicationReceiptInterest(controller, interest);
+  for (int i = 0; i < 100 && face.sentData.empty(); ++i)
+    face.processEvents(ndn::time::milliseconds(5));
+  const auto receiptDir = stateFile.string() + ".historical-publications";
+  BOOST_CHECK_MESSAGE(std::filesystem::exists(receiptDir) &&
+                      !std::filesystem::is_empty(receiptDir),
+                      "no publication receipt was persisted");
+  for (int i = 0; i < 50; ++i)
+    face.processEvents(ndn::time::milliseconds(2));
+  face.sentData.clear();
+}
+
+BOOST_AUTO_TEST_CASE(ControllerServesHistoricalKeyAfterRotation)
+{
+  // Restored case: a grant, a committed publication receipt, then a revocation that advances the
+  // controller epoch, then a historical DKEY request for the pre-rotation publication. The controller
+  // must answer with the retired material rather than a denial.
+  const auto root = test::trust_detail::makeTestTrustDirectory();
+  std::map<std::string, std::optional<std::string>> previous;
+  const auto restore = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previous) {
+      if (value) ::setenv(name.c_str(), value->c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  for (const auto* name : {"HOME", "NDN_CLIENT_PIB", "NDN_CLIENT_TPM",
+                           "NDNSF_CONTROLLER_GENERATION_STATE"}) {
+    const auto* old = ::getenv(name);
+    previous[name] = old ? std::optional<std::string>(old) : std::nullopt;
+  }
+  ::setenv("HOME", root.c_str(), 1);
+  ::setenv("NDN_CLIENT_PIB", "pib-sqlite3:", 1);
+  ::setenv("NDN_CLIENT_TPM", "tpm-file:", 1);
+  const auto stateFile = root / "controller-generation.state";
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", stateFile.c_str(), 1);
+  const auto policy = root / "policy";
+  std::ofstream(policy) <<
+    "provider-policies { provider-policy { for /spec243/producer allow { /spec243/service } } }\n"
+    "user-policies { user-policy { for /spec243/user allow { /spec243/service } } }\n";
+  ndn::KeyChain keys;
+  const auto controllerCert = keys.createIdentity(ndn::Name("/spec243/controller"),
+                                                  ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto producerCert = keys.createIdentity(ndn::Name("/spec243/producer"),
+                                                ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto userCert = keys.createIdentity(ndn::Name("/spec243/user"), ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace face(keys);
+  ndn::security::ValidatorNull validator;
+  ServiceController controller(face, controllerCert, validator, policy.string());
+  BOOST_REQUIRE(controller.getControllerVersion().isValid());
+  const auto authority = controllerCert.getIdentity();
+  controller.setControllerPrefix(authority);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+
+  // The user's grant is what authorizes the historical read.
+  const auto permissionParameters = encodeControlQueryParameters(
+    {userCert.getIdentity(), ndn::Name(), 0, 0, userCert.getFullName()});
+  ndn::Interest permissionQuery(makeControlRpcName(authority, "USER-PERMISSIONS",
+                                                   permissionParameters, makeControlQueryNonce()));
+  permissionQuery.setApplicationParameters(permissionParameters);
+  permissionQuery.setCanBePrefix(false);
+  face.sentData.clear();
+  ServiceControllerTestAccess::userPermissionsInterest(controller, permissionQuery);
+  for (int i = 0; i < 100 && face.sentData.empty(); ++i)
+    face.processEvents(ndn::time::milliseconds(5));
+  BOOST_REQUIRE(!face.sentData.empty());
+
+  const auto version = controller.getControllerVersion();
+  HistoricalPublication publication;
+  publication.controller = authority;
+  publication.producer = producerCert.getIdentity();
+  publication.service = ndn::Name("/spec243/service");
+  publication.objectName = ndn::Name("/spec243/producer").append("objects").append("1");
+  publication.policyGeneration = version.controllerGenerationTimestamp;
+  publication.policyEpoch = version.controllerEpoch;
+  publication.segments = 1;
+  publication.policy = "/PERMISSION/spec243/service";
+  publication.objectDigest = "sha256:" + std::string(64, 'b');
+  const auto status = controller.getPolicyStatus(publication.service);
+  publication.publicParametersName = status.getAbePublicParametersName();
+  auto parametersDigest = status.getAbePublicParametersDigest();
+  std::transform(parametersDigest.begin(), parametersDigest.end(), parametersDigest.begin(),
+                 [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  publication.publicParametersDigest = parametersDigest;
+  const auto material = status.getAbeMaterialVersion();
+  publication.generation = material.controllerGenerationTimestamp;
+  publication.epoch = material.controllerEpoch;
+  const auto ckBasis = makeHistoricalCkNameForTest(publication.producer, publication.service,
+                                                   publication.policy).getPrefix(-1);
+  ndn::Data ck = ndn::Data(ndn::Name(ckBasis));
+  keys.sign(ck, ndn::security::signingByCertificate(producerCert));
+  publication.ckFullName = ck.getFullName();
+  const auto publicationData = makeHistoricalPublicationData(
+    publication, keys, ndn::security::signingByCertificate(producerCert));
+  const auto& publicationWire = publicationData.wireEncode();
+  const ndn::Block publicationParameters(publicationWire);
+  ndn::Interest receiptInterest(makeControlRpcName(authority, "PUBLISH-HISTORY",
+                                                   publicationParameters,
+                                                   makeControlQueryNonce()));
+  receiptInterest.setApplicationParameters(publicationParameters);
+  ndn::security::InterestSigner signer(keys);
+  signer.makeSignedInterest(receiptInterest, ndn::security::signingByCertificate(producerCert));
+  face.sentData.clear();
+  ServiceControllerTestAccess::publicationReceiptInterest(controller, receiptInterest);
+  for (int i = 0; i < 100 && face.sentData.empty(); ++i)
+    face.processEvents(ndn::time::milliseconds(5));
+  BOOST_REQUIRE_MESSAGE(!face.sentData.empty(), "the controller stored no receipt");
+
+  // A revocation of an unrelated identity advances the epoch without withdrawing the user's grant.
+  const auto revoked = controller.revoke(makeServiceRevocation("/spec243/unrelated"));
+  BOOST_REQUIRE(revoked);
+  const auto rotatedVersion = controller.getControllerVersion();
+  BOOST_REQUIRE_MESSAGE(rotatedVersion.compare(version) > 0,
+                        "the controller epoch did not advance");
+
+  HistoricalKeyRequest request;
+  request.controllerPrefix = authority;
+  request.generation = publication.generation;
+  request.epoch = publication.epoch;
+  request.objectName = publication.objectName;
+  request.producerName = publication.producer;
+  request.serviceName = publication.service;
+  request.ckName = ck.getName();
+  request.policy = publication.policy;
+  request.recipientCertificate = userCert.getFullName();
+  const auto nowMs = static_cast<uint64_t>(ndn::time::toUnixTimestamp(
+    ndn::time::system_clock::now()).count());
+  request.mintedAtMs = nowMs;
+  request.expiresAtMs = request.mintedAtMs + 10000;
+  request.currentControllerVersion = rotatedVersion;
+  const auto ckWire = ck.wireEncode();
+  request.ckEvidence.assign(ckWire.begin(), ckWire.end());
+  request.publicationEvidence.assign(publicationWire.begin(), publicationWire.end());
+
+  ndn::Interest requestInterest(makeHistoricalKeyRequestName(authority, request));
+  requestInterest.setApplicationParameters(ndn::makeStringBlock(
+    ndn::tlv::ApplicationParameters, encodeHistoricalKeyRequest(request)));
+  signHistoricalKeyRequest(requestInterest, request, keys,
+                           ndn::security::signingByCertificate(userCert));
+  face.sentData.clear();
+  ServiceControllerTestAccess::historicalKeyInterest(controller, requestInterest);
+  for (int i = 0; i < 100 && face.sentData.empty(); ++i)
+    face.processEvents(ndn::time::milliseconds(5));
+  BOOST_REQUIRE_MESSAGE(!face.sentData.empty(), "the controller answered nothing");
+
+  const auto& reply = face.sentData.back();
+  const auto content = reply.getContent();
+  const std::string body(reinterpret_cast<const char*>(content.value()), content.value_size());
+  BOOST_CHECK_MESSAGE(body.find("NDNSF-HISTORICAL-DKEY-DENIED-v1") == std::string::npos,
+                      "the controller denied: " + body.substr(0, 120));
+  BOOST_CHECK_EQUAL(reply.getName(), requestInterest.getName());
+  BOOST_CHECK(ndn::security::verifySignature(reply, controllerCert.getPublicKey()));
+  for (int i = 0; i < 50; ++i)
+    face.processEvents(ndn::time::milliseconds(2));
+  face.sentData.clear();
+}
+
+BOOST_AUTO_TEST_CASE(ControllerIssuesGrantReceiptForGrantProtectedPublication)
+{
+  const auto root = test::trust_detail::makeTestTrustDirectory();
+  std::map<std::string, std::optional<std::string>> previous;
+  const auto restore = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previous) {
+      if (value) ::setenv(name.c_str(), value->c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  for (const auto* name : {"HOME", "NDN_CLIENT_PIB", "NDN_CLIENT_TPM",
+                           "NDNSF_CONTROLLER_GENERATION_STATE"}) {
+    const auto* old = ::getenv(name);
+    previous[name] = old ? std::optional<std::string>(old) : std::nullopt;
+  }
+  ::setenv("HOME", root.c_str(), 1);
+  ::setenv("NDN_CLIENT_PIB", "pib-sqlite3:", 1);
+  ::setenv("NDN_CLIENT_TPM", "tpm-file:", 1);
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", (root / "controller-generation.state").c_str(), 1);
+  const auto policy = root / "policy";
+  std::ofstream(policy) <<
+    "provider-policies { provider-policy { for /spec243/producer allow { /spec243/service } } }\n"
+    "user-policies { user-policy { for /spec243/user allow { /spec243/service } } }\n";
+  ndn::KeyChain keys;
+  const auto controllerCert = keys.createIdentity(ndn::Name("/spec243/controller"),
+                                                  ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto producerCert = keys.createIdentity(ndn::Name("/spec243/producer"),
+                                                ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace face(keys);
+  ndn::security::ValidatorNull validator;
+  ServiceController controller(face, controllerCert, validator, policy.string());
+  BOOST_REQUIRE(controller.getControllerVersion().isValid());
+  const auto authority = controllerCert.getIdentity();
+  controller.setControllerPrefix(authority);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+
+  ndn::Data publication = ndn::Data(ndn::Name("/spec243/producer")
+    .append("NDNSF").append("OBJECT").append("grant-object"));
+  publication.setContent(ndn::makeStringBlock(ndn::tlv::Content, std::string("payload")));
+  keys.sign(publication, ndn::security::signingByCertificate(producerCert));
+
+  HistoricalGrantReceiptRequest request;
+  request.controllerPrefix = authority;
+  request.publicationWire.assign(publication.wireEncode().begin(), publication.wireEncode().end());
+  request.grantDigest = "sha256:" + std::string(64, 'a');
+  request.recipient = ndn::Name("/spec243/user");
+  // Must be the service the Controller's policy actually grants this Producer.
+  request.service = "/spec243/service";
+  request.currentControllerVersion = controller.getControllerVersion();
+  const auto body = encodeHistoricalGrantReceiptRequest(request);
+  const ndn::Block parameters(ndn::makeStringBlock(ndn::tlv::ApplicationParameters, body));
+  ndn::Interest interest(makeControlRpcName(authority, "PUBLISH-HISTORY", parameters,
+                                            makeControlQueryNonce()));
+  interest.setApplicationParameters(parameters);
+  ndn::security::InterestSigner signer(keys);
+  signer.makeSignedInterest(interest, ndn::security::signingByCertificate(producerCert));
+  face.sentData.clear();
+  ServiceControllerTestAccess::publicationReceiptInterest(controller, interest);
+  for (int i = 0; i < 100 && face.sentData.empty(); ++i)
+    face.processEvents(ndn::time::milliseconds(5));
+  BOOST_REQUIRE_MESSAGE(!face.sentData.empty(), "the controller issued no grant receipt");
+  const auto& ack = face.sentData.back();
+  BOOST_CHECK_EQUAL(ack.getName(), interest.getName());
+  BOOST_CHECK(ndn::security::verifySignature(ack, controllerCert.getPublicKey()));
+  // The acknowledgement names the receipt; a reader must be able to fetch that exact object back.
+  const auto receiptName = ndn::Name(ndn::readString(ack.getContent()));
+  face.sentData.clear();
+  ServiceControllerTestAccess::receiptFetchInterest(controller, ndn::Interest(receiptName));
+  for (int i = 0; i < 50 && face.sentData.empty(); ++i)
+    face.processEvents(ndn::time::milliseconds(5));
+  BOOST_REQUIRE_MESSAGE(face.sentData.size() == 1,
+                        "the acknowledged receipt was not retrievable: replies="
+                          << face.sentData.size() << " expected=" << receiptName);
+  const auto fetched = face.sentData.back();
+  // The request named the FullName, so the reply must match it including the implicit digest.
+  BOOST_CHECK_EQUAL(fetched.getFullName(), receiptName);
+  const auto decodedReceipt = decodeHistoricalGrantReceipt(fetched, authority);
+  BOOST_REQUIRE(decodedReceipt);
+  BOOST_CHECK_EQUAL(decodedReceipt->service, "/spec243/service");
+  BOOST_CHECK(ndn::security::verifySignature(fetched, controllerCert.getPublicKey()));
+  for (int i = 0; i < 50; ++i)
+    face.processEvents(ndn::time::milliseconds(2));
+  face.sentData.clear();
+
+  // Admission is part of the receipt, not of the transport: a Producer may not be receipted for a
+  // namespace it does not own, nor for a service its permissions do not cover.
+  const auto askFor = [&](const ndn::Data& subject, const std::string& service) {
+    HistoricalGrantReceiptRequest attempt;
+    attempt.controllerPrefix = authority;
+    attempt.publicationWire.assign(subject.wireEncode().begin(), subject.wireEncode().end());
+    attempt.grantDigest = "sha256:" + std::string(64, 'a');
+    attempt.recipient = ndn::Name("/spec243/user");
+    attempt.service = service;
+    attempt.currentControllerVersion = controller.getControllerVersion();
+    const auto attemptBody = encodeHistoricalGrantReceiptRequest(attempt);
+    const ndn::Block attemptParameters(
+      ndn::makeStringBlock(ndn::tlv::ApplicationParameters, attemptBody));
+    ndn::Interest attemptInterest(makeControlRpcName(authority, "PUBLISH-HISTORY",
+                                                     attemptParameters,
+                                                     makeControlQueryNonce()));
+    attemptInterest.setApplicationParameters(attemptParameters);
+    ndn::security::InterestSigner attemptSigner(keys);
+    attemptSigner.makeSignedInterest(attemptInterest,
+                                     ndn::security::signingByCertificate(producerCert));
+    ServiceControllerTestAccess::publicationReceiptInterest(controller, attemptInterest);
+    for (int i = 0; i < 50; ++i)
+      face.processEvents(ndn::time::milliseconds(5));
+    const auto replies = face.sentData.size();
+    face.sentData.clear();
+    return replies;
+  };
+  {
+    // Signed by the Producer, but named inside another identity's namespace.
+    ndn::Data foreign(ndn::Name("/spec243/other").append("NDNSF").append("OBJECT").append("x"));
+    foreign.setContent(ndn::makeStringBlock(ndn::tlv::Content, std::string("payload")));
+    keys.sign(foreign, ndn::security::signingByCertificate(producerCert));
+    BOOST_CHECK_EQUAL(askFor(foreign, "/spec243/service"), 0U);
+  }
+  {
+    // The Producer owns the namespace but is not granted this service.
+    BOOST_CHECK_EQUAL(askFor(publication, "/spec243/unpermitted"), 0U);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ProviderBuildsAGrantReceiptRequestTheControllerCanParse)
+{
+  const auto root = test::trust_detail::makeTestTrustDirectory();
+  std::map<std::string, std::optional<std::string>> previous;
+  const auto restore = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previous) {
+      if (value) ::setenv(name.c_str(), value->c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  for (const auto* name : {"HOME", "NDN_CLIENT_PIB", "NDN_CLIENT_TPM"}) {
+    const auto* old = ::getenv(name);
+    previous[name] = old ? std::optional<std::string>(old) : std::nullopt;
+  }
+  ::setenv("HOME", root.c_str(), 1);
+  ::setenv("NDN_CLIENT_PIB", ("pib-sqlite3:" + (root / ".ndn").string()).c_str(), 1);
+  ::setenv("NDN_CLIENT_TPM", ("tpm-file:" + (root / ".ndn").string()).c_str(), 1);
+  ndn::KeyChain keys;
+  const auto controllerCert = keys.createIdentity(ndn::Name("/spec243/controller"),
+                                                  ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto producerCert = keys.createIdentity(ndn::Name("/spec243/producer"),
+                                                ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+
+  HistoricalGrantReceiptRequest request;
+  request.controllerPrefix = controllerCert.getIdentity();
+  request.publicationWire = "publication-wire-bytes";
+  request.grantDigest = "sha256:" + std::string(64, 'a');
+  request.recipient = ndn::Name("/spec243/user");
+  request.service = "/spec243/service";
+  request.currentControllerVersion = ControllerVersion{1000, 1};
+
+  const auto interest = makeHistoricalGrantReceiptRequestInterest(request, producerCert, keys);
+  BOOST_REQUIRE(interest.hasApplicationParameters());
+  const auto& parameters = interest.getApplicationParameters();
+  const std::string body(reinterpret_cast<const char*>(parameters.value()),
+                         parameters.value_size());
+  HistoricalGrantReceiptRequest decoded;
+  BOOST_REQUIRE(decodeHistoricalGrantReceiptRequest(body, decoded));
+  BOOST_CHECK_EQUAL(decoded.service, request.service);
+  BOOST_CHECK_EQUAL(decoded.grantDigest, request.grantDigest);
+  BOOST_CHECK(decoded.recipient == request.recipient);
+  BOOST_CHECK_EQUAL(decoded.publicationWire, request.publicationWire);
+  BOOST_CHECK(decoded.currentControllerVersion == request.currentControllerVersion);
+  // The Controller only accepts this under its control-RPC parser, so the name has to carry the
+  // operation and the parameters digest rather than being a free-form name.
+}
+
+BOOST_AUTO_TEST_CASE(HistoricalDkeyRefusesEvidenceSignedByAnotherProducer)
+{
+  // Same construction as the denial case, but the evidence validates (ValidatorNull) while its signer
+  // is not the producer the request names - the branch that remained open.
+  const auto root = test::trust_detail::makeTestTrustDirectory();
+  std::map<std::string, std::optional<std::string>> previous;
+  const auto restore = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previous) {
+      if (value) ::setenv(name.c_str(), value->c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  for (const auto* name : {"HOME", "NDN_CLIENT_PIB", "NDN_CLIENT_TPM", "NDNSF_FILE_KEYRING",
+                           "NDNSF_CONTROLLER_GENERATION_STATE"}) {
+    const auto* old = ::getenv(name);
+    previous[name] = old ? std::optional<std::string>(old) : std::nullopt;
+  }
+  ::setenv("HOME", root.c_str(), 1);
+  ::setenv("NDN_CLIENT_PIB", ("pib-sqlite3:" + (root / ".ndn").string()).c_str(), 1);
+  ::setenv("NDN_CLIENT_TPM", ("tpm-file:" + (root / ".ndn").string()).c_str(), 1);
+  const auto keyring = root / "file-keyring";
+  std::ofstream(keyring) << "controller-abe "
+    << "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n";
+  std::filesystem::permissions(keyring, std::filesystem::perms::owner_read |
+                                         std::filesystem::perms::owner_write);
+  ::setenv("NDNSF_FILE_KEYRING", keyring.c_str(), 1);
+  const auto stateFile = root / "controller-generation.state";
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", stateFile.c_str(), 1);
+  const auto policy = root / "policy";
+  std::ofstream(policy) <<
+    "provider-policies { provider-policy { for /spec243/producer allow { /HELLO } } }\n"
+    "user-policies { user-policy { for /spec243/user allow { /HELLO } } }\n";
+  ndn::KeyChain keys;
+  const auto controllerCert = keys.createIdentity(ndn::Name("/spec243/controller"),
+                                                  ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto requesterCert = keys.createIdentity(ndn::Name("/spec243/requester"),
+                                                 ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto otherCert = keys.createIdentity(ndn::Name("/spec243/other"),
+                                             ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace face(keys);
+  ndn::security::ValidatorNull validator;
+  ServiceController controller(face, controllerCert, validator, policy.string());
+  BOOST_REQUIRE(controller.getControllerVersion().isValid());
+  const auto authority = controllerCert.getIdentity();
+  controller.setControllerPrefix(authority);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+  const auto version = controller.getControllerVersion();
+  const auto nowMs = static_cast<uint64_t>(ndn::time::toUnixTimestamp(
+    ndn::time::system_clock::now()).count());
+
+  HistoricalKeyRequest request;
+  request.controllerPrefix = authority;
+  request.generation = version.controllerGenerationTimestamp;
+  request.epoch = version.controllerEpoch;
+  request.currentControllerVersion = version;
+  request.policy = "/PERMISSION/HELLO";
+  request.producerName = ndn::Name("/spec243/producer");
+  request.serviceName = ndn::Name("/spec243/service");
+  request.objectName = request.producerName;
+  request.objectName.append("objects").append("1");
+  request.ckName = makeHistoricalCkNameForTest(request.producerName, request.serviceName,
+                                               request.policy);
+  request.recipientCertificate = requesterCert.getName();
+  request.mintedAtMs = nowMs;
+  request.expiresAtMs = nowMs + 5000;
+
+  ndn::Data ck(ndn::Name(request.ckName));
+  keys.sign(ck, ndn::security::signingByCertificate(otherCert));   // not the named producer
+  const auto ckWire = ck.wireEncode();
+  request.ckEvidence.assign(ckWire.begin(), ckWire.end());
+
+  HistoricalPublication publication;
+  publication.controller = request.controllerPrefix;
+  publication.producer = request.producerName;
+  publication.service = request.serviceName;
+  publication.objectName = request.objectName;
+  publication.ckFullName = ck.getFullName();
+  publication.generation = request.generation;
+  publication.epoch = request.epoch;
+  publication.policyGeneration = version.controllerGenerationTimestamp;
+  publication.policyEpoch = version.controllerEpoch;
+  publication.segments = 1;
+  publication.policy = request.policy;
+  publication.objectDigest = "sha256:" + std::string(64, 'b');
+  publication.publicParametersName =
+    ndn::Name("/spec243/controller").append("NDNSF").append("ABE").append("PUBPARAMS").append("1");
+  publication.publicParametersDigest = "sha256:" + std::string(64, 'c');
+  const auto publicationData = makeHistoricalPublicationData(
+    publication, keys, ndn::security::signingByCertificate(requesterCert));
+  const auto publicationWire = publicationData.wireEncode();
+  request.publicationEvidence.assign(publicationWire.begin(), publicationWire.end());
+
+  ndn::Interest interest(makeHistoricalKeyRequestName(authority, request));
+  const auto parameters = encodeHistoricalKeyRequest(request);
+  interest.setApplicationParameters(
+    ndn::makeStringBlock(ndn::tlv::ApplicationParameters, parameters));
+  ndn::security::InterestSigner signer(keys);
+  signer.makeSignedInterest(interest, ndn::security::signingByCertificate(requesterCert));
+  face.sentData.clear();
+  ServiceControllerTestAccess::historicalKeyInterest(controller, interest);
+  for (int i = 0; i < 100 && face.sentData.empty(); ++i)
+    face.processEvents(ndn::time::milliseconds(5));
+  BOOST_REQUIRE(!face.sentData.empty());
+  const auto content = face.sentData.back().getContent();
+  const std::string denial(reinterpret_cast<const char*>(content.value()), content.value_size());
+  BOOST_CHECK(denial.find("ck-evidence-producer") != std::string::npos);
+  for (int i = 0; i < 50; ++i)
+    face.processEvents(ndn::time::milliseconds(2));
+  face.sentData.clear();
+}
+
+BOOST_AUTO_TEST_CASE(HistoricalDkeyRefusesAbsentAndMismatchedCkEvidence)
+{
+  // Self-contained: the trust schema of the deployment is what makes a DKEY request acceptable, and
+  // reproducing it here would test the schema rather than the conflict checks. ValidatorNull accepts
+  // the signature so the handler reaches the evidence checks under test.
+  const auto root = test::trust_detail::makeTestTrustDirectory();
+  std::map<std::string, std::optional<std::string>> previous;
+  const auto restore = ndn::make_scope_exit([&] {
+    for (const auto& [name, value] : previous) {
+      if (value) ::setenv(name.c_str(), value->c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  for (const auto* name : {"HOME", "NDN_CLIENT_PIB", "NDN_CLIENT_TPM", "NDNSF_FILE_KEYRING",
+                                    "NDNSF_CONTROLLER_GENERATION_STATE"}) {
+    const auto* old = ::getenv(name);
+    previous[name] = old ? std::optional<std::string>(old) : std::nullopt;
+  }
+  ::setenv("HOME", root.c_str(), 1);
+  ::setenv("NDN_CLIENT_PIB", ("pib-sqlite3:" + (root / ".ndn").string()).c_str(), 1);
+  ::setenv("NDN_CLIENT_TPM", ("tpm-file:" + (root / ".ndn").string()).c_str(), 1);
+  // The Controller seals its generation state with the "controller-abe" key ring entry, so a
+  // controller without one cannot become entitled; this case provides the ring it needs.
+  const auto keyring = root / "file-keyring";
+  std::ofstream(keyring) << "controller-abe "
+    << "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n";
+  std::filesystem::permissions(keyring, std::filesystem::perms::owner_read |
+                                          std::filesystem::perms::owner_write);
+  ::setenv("NDNSF_FILE_KEYRING", keyring.c_str(), 1);
+  // Without this the controller falls back to a fixed /tmp state file whose ownership it has to
+  // accept from a previous run, which makes entitlement depend on leftovers rather than the case.
+  const auto stateFile = root / "controller-generation.state";
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", stateFile.c_str(), 1);
+  const auto policy = root / "policy";
+  std::ofstream(policy) <<
+    "provider-policies { provider-policy { for /spec243/provider allow { /HELLO } } }\n"
+    "user-policies { user-policy { for /spec243/user allow { /HELLO } } }\n";
+  ndn::KeyChain keys;
+  const auto controllerCert = keys.createIdentity(ndn::Name("/spec243/controller"),
+                                                  ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  const auto requesterCert = keys.createIdentity(ndn::Name("/spec243/requester"),
+                                                 ndn::RsaKeyParams(2048))
+    .getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace face(keys);
+  // Accepts the request, rejects every evidence Data packet - what the signature branch needs.
+  ndn::security::Validator validator(std::make_unique<RejectEvidenceDataPolicy>(),
+                                     std::make_unique<ndn::security::CertificateFetcherOffline>());
+  ServiceController controller(face, controllerCert, validator, policy.string());
+  BOOST_REQUIRE(controller.getControllerVersion().isValid());
+  const auto authority = controllerCert.getIdentity();
+  controller.setControllerPrefix(authority);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+  const auto version = controller.getControllerVersion();
+
+  const auto nowMs = static_cast<uint64_t>(ndn::time::toUnixTimestamp(
+    ndn::time::system_clock::now()).count());
+  const auto makeRequest = [&] {
+    HistoricalKeyRequest request;
+    request.controllerPrefix = authority;
+    request.generation = version.controllerGenerationTimestamp;
+    request.epoch = version.controllerEpoch;
+    request.currentControllerVersion = version;
+    request.policy = "/PERMISSION/HELLO";
+    request.producerName = ndn::Name("/spec243/producer");
+    request.serviceName = ndn::Name("/spec243/service");
+    request.ckName = makeHistoricalCkNameForTest(request.producerName, request.serviceName,
+                                                 request.policy);
+    // The publication binding requires the object and the public parameters to live under their
+    // respective owners, so both names are derived from the producer and the controller.
+    request.objectName = ndn::Name("/spec243/producer").append("objects").append("1");
+    request.recipientCertificate = requesterCert.getName();
+    request.mintedAtMs = nowMs;
+    request.expiresAtMs = nowMs + 5000;
+    return request;
+  };
+  const auto denialFor = [&] (const HistoricalKeyRequest& request) {
+    ndn::Interest interest(makeHistoricalKeyRequestName(authority, request));
+    const auto parameters = encodeHistoricalKeyRequest(request);
+    interest.setApplicationParameters(
+      ndn::makeStringBlock(ndn::tlv::ApplicationParameters, parameters));
+    ndn::security::InterestSigner signer(keys);
+    signer.makeSignedInterest(interest, ndn::security::signingByCertificate(requesterCert));
+    face.sentData.clear();
+    ServiceControllerTestAccess::historicalKeyInterest(controller, interest);
+    for (int i = 0; i < 100 && face.sentData.empty(); ++i)
+      face.processEvents(ndn::time::milliseconds(5));
+    if (face.sentData.empty())
+      return std::string();
+    const auto content = face.sentData.back().getContent();
+    return std::string(reinterpret_cast<const char*>(content.value()), content.value_size());
+  };
+
+  const auto absentRequest = makeRequest();
+  const auto absent = denialFor(absentRequest);
+  BOOST_REQUIRE(!absent.empty());
+  BOOST_CHECK(absent.find("NDNSF-HISTORICAL-DKEY-DENIED-v1\nck-evidence-required") == 0);
+
+  // A replay of the same request re-publishes the *stored* denial rather than minting a new one
+  // (serveHistoricalTerminal replays the persisted reply), so the bytes must be identical.
+  const auto replayed = denialFor(absentRequest);
+  BOOST_REQUIRE(!replayed.empty());
+  BOOST_CHECK_EQUAL(replayed, absent);
+
+
+  auto malformed = makeRequest();
+  malformed.ckEvidence = {0x05, 0x01};
+  malformed.publicationEvidence = {0x05, 0x02};
+  const auto malformedDenial = denialFor(malformed);
+  BOOST_REQUIRE(!malformedDenial.empty());
+  BOOST_CHECK(malformedDenial.find("ck-evidence-malformed") != std::string::npos);
+
+  // Evidence that decodes but names a different CK than the request claims. The name check runs
+  // before any signature validation, so an unsigned packet is enough to reach it.
+  auto mismatched = makeRequest();
+  ndn::Data otherCk(ndn::Name("/spec243/other/CK"));
+  keys.sign(otherCk, ndn::security::signingByCertificate(requesterCert));
+  const auto otherCkWire = otherCk.wireEncode();
+  mismatched.ckEvidence.assign(otherCkWire.begin(), otherCkWire.end());
+  ndn::Data otherPublication(ndn::Name("/spec243/other/PUBLICATION"));
+  keys.sign(otherPublication, ndn::security::signingByCertificate(requesterCert));
+  const auto otherPublicationWire = otherPublication.wireEncode();
+  mismatched.publicationEvidence.assign(otherPublicationWire.begin(), otherPublicationWire.end());
+  const auto mismatchedDenial = denialFor(mismatched);
+  BOOST_REQUIRE(!mismatchedDenial.empty());
+  BOOST_CHECK(mismatchedDenial.find("ck-evidence-name") != std::string::npos);
+
+  // A well-formed CK and a publication mapping that names it: this passes the naming and binding
+  // checks and fails only when the evidence signature is validated, which the test policy rejects.
+  auto signedCase = makeRequest();
+  ndn::Data ck(ndn::Name(signedCase.ckName));
+  keys.sign(ck, ndn::security::signingByCertificate(requesterCert));
+  const auto ckWire = ck.wireEncode();
+  signedCase.ckEvidence.assign(ckWire.begin(), ckWire.end());
+  HistoricalPublication publication;
+  publication.controller = signedCase.controllerPrefix;
+  publication.producer = signedCase.producerName;
+  publication.service = signedCase.serviceName;
+  publication.objectName = signedCase.objectName;
+  publication.ckFullName = ck.getFullName();
+  publication.generation = signedCase.generation;
+  publication.epoch = signedCase.epoch;
+  publication.policyGeneration = signedCase.currentControllerVersion.controllerGenerationTimestamp;
+  publication.policyEpoch = signedCase.currentControllerVersion.controllerEpoch;
+  publication.segments = 1;
+  publication.policy = signedCase.policy;
+  publication.objectDigest = "sha256:" + std::string(64, 'b');
+  publication.publicParametersName =
+    ndn::Name("/spec243/controller").append("NDNSF").append("ABE").append("PUBPARAMS").append("1");
+  publication.publicParametersDigest = "sha256:" + std::string(64, 'c');
+  const auto publicationData = makeHistoricalPublicationData(
+    publication, keys, ndn::security::signingByCertificate(requesterCert));
+  const auto publicationWire = publicationData.wireEncode();
+  signedCase.publicationEvidence.assign(publicationWire.begin(), publicationWire.end());
+  const auto signedDenial = denialFor(signedCase);
+  BOOST_REQUIRE(!signedDenial.empty());
+  BOOST_CHECK(signedDenial.find("ck-evidence-signature") != std::string::npos);
+
+  // The handler validates the request through the face's IO context. Drain it before this case's
+  // controller and face are destroyed, otherwise a late callback can outlive them and abort an
+  // unrelated case later in the same binary.
+  for (int i = 0; i < 50; ++i)
+    face.processEvents(ndn::time::milliseconds(2));
+  face.sentData.clear();
+}
+
+BOOST_FIXTURE_TEST_CASE(PermissionRepliesBindExactRecipientAndPreserveEligibleGrant,
+                       PortableRecipientFixture)
+{
+  const auto authority = ndn::Name(subject).append("controller");
+  const auto authorityCert = localKeys.getPib().getIdentity(authority).getDefaultKey()
+                              .getDefaultCertificate();
+  controller->setControllerPrefix(authority);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(*controller);
+  for (const auto user : {true, false}) {
+    const auto target = user ? subject : ndn::Name(subject).append("provider");
+    const auto identity = localKeys.createIdentity(target, ndn::RsaKeyParams(2048));
+    const auto defaultKey = identity.getDefaultKey();
+    const auto oldCert = defaultKey.getDefaultCertificate();
+    const auto alternate = localKeys.createKey(identity, ndn::RsaKeyParams(2048))
+                             .getDefaultCertificate();
+    localKeys.setDefaultKey(identity, defaultKey);
+    const auto digest = ServiceControllerTestAccess::certificateDigest(oldCert);
+    BOOST_REQUIRE(controller->revoke(makeCertificateRevocation(target.toUri().c_str(),
+                                                               digest.c_str())));
+    const std::string operation = user ? "USER-PERMISSIONS" : "PROVIDER-PERMISSIONS";
+    const auto request = [&] (const ndn::Name& recipient) {
+      const auto parameters = encodeControlQueryParameters({target, {}, 0, 0, recipient});
+      ndn::Interest interest(makeControlRpcName(authority, operation, parameters,
+                                                makeControlQueryNonce()));
+      interest.setApplicationParameters(parameters);
+      face.sentData.clear();
+      if (user)
+        ServiceControllerTestAccess::userPermissionsInterest(*controller, interest);
+      else
+        ServiceControllerTestAccess::providerPermissionsInterest(*controller, interest);
+      face.processEvents(ndn::time::milliseconds(1));
+      return interest.getName();
+    };
+    const auto receive = [&] (const ndn::security::Certificate& cert) {
+      const auto expected = request(cert.getFullName());
+      BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+      const auto& data = face.sentData.front();
+      BOOST_CHECK_EQUAL(data.getName(), expected);
+      BOOST_CHECK(ndn::security::verifySignature(data, authorityCert.getPublicKey()));
+      EncryptedPermissionResponse encrypted;
+      BOOST_REQUIRE(encrypted.WireDecode(data.getContent().blockFromValue()));
+      BOOST_CHECK(ndn::Name(encrypted.getRecipientCertName()) == cert.getName());
+      return decryptPermissionResponseWithKeyChain(encrypted, localKeys);
+    };
+    const auto allowed = receive(alternate);
+    BOOST_REQUIRE_EQUAL(allowed.getEntries().size(), 1U);
+    BOOST_CHECK(ndn::Name(allowed.getEntries().front().getServiceName()) == ndn::Name("/HELLO"));
+    const auto record = user ? ServiceControllerTestAccess::loadGrantRecord(
+      *controller, target, allowed.getControllerVersion()) : std::nullopt;
+    if (user)
+      BOOST_REQUIRE(record);
+    BOOST_CHECK(receive(oldCert).getEntries().empty());
+    if (user)
+      BOOST_CHECK(ServiceControllerTestAccess::loadGrantRecord(
+        *controller, target, allowed.getControllerVersion()) == record);
+    std::array<uint8_t, 32> wrongDigest{};
+    request(ndn::Name(alternate.getName()).appendImplicitSha256Digest(wrongDigest));
+    BOOST_CHECK(face.sentData.empty());
+    BOOST_CHECK_THROW(encodeControlQueryParameters(
+      {authority, {}, 0, 0, alternate.getFullName()}), std::invalid_argument);
+  }
+}
+
+BOOST_FIXTURE_TEST_CASE(ColdPermissionCertificateFetchBindsDigestAndCurrentGeneration,
+                       PortableRecipientFixture)
+{
+  const auto authority = ndn::Name(subject).append("controller");
+  const auto authorityCert = localKeys.getPib().getIdentity(authority).getDefaultKey()
+                              .getDefaultCertificate();
+  test::trust_detail::writeTestTrustSchema(root, {authorityCert});
+  validator.load((root / "trust.conf").string());
+  controller->setControllerPrefix(authority);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(*controller);
+  const auto local = remoteKeys.createIdentity(subject, ndn::RsaKeyParams(2048))
+                       .getDefaultKey().getDefaultCertificate();
+  ndn::Data issued(local);
+  auto name = ndn::Name(local.getKeyName()).append("controller-issued");
+  name.appendVersion(local.getName().at(-1).toVersion());
+  issued.setName(name);
+  ndn::SignatureInfo info;
+  info.setValidityPeriod(local.getValidityPeriod());
+  auto signing = ndn::security::signingByCertificate(authorityCert);
+  signing.setSignatureInfo(info);
+  localKeys.sign(issued, signing);
+  const ndn::security::Certificate cert(issued);
+  const auto params = encodeControlQueryParameters({subject, {}, 0, 0, cert.getFullName()});
+  const auto request = [&] {
+    ndn::Interest interest(makeControlRpcName(authority, "USER-PERMISSIONS", params,
+                                              makeControlQueryNonce()));
+    interest.setApplicationParameters(params);
+    face.sentData.clear();
+    face.sentInterests.clear();
+    ServiceControllerTestAccess::userPermissionsInterest(*controller, interest);
+    face.processEvents(ndn::time::milliseconds(2));
+    return interest.getName();
+  };
+  request();
+  BOOST_REQUIRE_EQUAL(std::count_if(face.sentInterests.begin(), face.sentInterests.end(),
+    [&] (const auto& sent) {
+      return !sent.getCanBePrefix() && sent.getName() == cert.getFullName();
+    }), 1);
+  BOOST_CHECK(face.sentData.empty());
+  BOOST_REQUIRE(controller->revoke(makeIdentityRevocation("/unrelated/credential")));
+  face.receive(cert);
+  face.processEvents(ndn::time::milliseconds(2));
+  BOOST_CHECK(face.sentData.empty());
+
+  const auto replyName = request();
+  if (face.sentData.empty()) {
+    BOOST_REQUIRE_EQUAL(std::count_if(face.sentInterests.begin(), face.sentInterests.end(),
+      [&] (const auto& sent) { return sent.getName() == cert.getFullName(); }), 1);
+    face.receive(cert);
+    face.processEvents(ndn::time::milliseconds(2));
+  }
+  BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+  const auto& reply = face.sentData.front();
+  BOOST_CHECK_EQUAL(reply.getName(), replyName);
+  BOOST_CHECK(ndn::security::verifySignature(reply, authorityCert.getPublicKey()));
+  EncryptedPermissionResponse encrypted;
+  BOOST_REQUIRE(encrypted.WireDecode(reply.getContent().blockFromValue()));
+  BOOST_CHECK(ndn::Name(encrypted.getRecipientCertName()) == cert.getName());
+  const auto response = decryptPermissionResponseWithKeyChain(encrypted, remoteKeys);
+  BOOST_CHECK_EQUAL(response.getEntries().size(), 1U);
+}
+
+BOOST_FIXTURE_TEST_CASE(PolicyStatusRenewsOnlyForAUniqueQuery, PortableRecipientFixture)
+{
+  const auto authority = ndn::Name(subject).append("controller");
+  const auto authorityCert = localKeys.getPib().getIdentity(authority).getDefaultKey()
+                              .getDefaultCertificate();
+  const ndn::Name service("/HELLO");
+  controller->setControllerPrefix(authority);
+  ServiceControllerTestAccess::registerHandlersForDummyFace(*controller);
+  const auto fetch = [&] (const ndn::Interest& query) {
+    face.sentData.clear();
+    ServiceControllerTestAccess::policyStatusInterest(*controller, query);
+    face.processEvents(ndn::time::milliseconds(2));
+    BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+    const auto data = face.sentData.back();
+    BOOST_CHECK(data.getName() == query.getName());
+    BOOST_CHECK(ndn::security::verifySignature(data, authorityCert.getPublicKey()));
+    return data;
+  };
+  const auto query = ServiceControllerTestAccess::statusQuery(authority, service);
+  const auto first = fetch(query);
+  std::this_thread::sleep_for(std::chrono::milliseconds(3));
+  BOOST_CHECK(fetch(query).wireEncode() == first.wireEncode());
+  const auto next = fetch(ServiceControllerTestAccess::statusQuery(authority, service));
+  PolicyStatusData before, after;
+  BOOST_REQUIRE(before.wireDecode(first.getContent().blockFromValue()));
+  BOOST_REQUIRE(after.wireDecode(next.getContent().blockFromValue()));
+  BOOST_CHECK_EQUAL(before.getValidUntilMs() - before.getValidFromMs(), 60000U);
+  BOOST_CHECK_GT(after.getValidUntilMs(), before.getValidUntilMs());
+  BOOST_CHECK(after.canReplaceSameVersion(before, true));
+  BOOST_CHECK(!after.canReplaceSameVersion(before, false));
+}
+
+BOOST_FIXTURE_TEST_CASE(ControllerRequiresDedicatedSealAndPinnedLegacyImport,
+                       PortableRecipientFixture)
+{
+  const auto authority = ndn::Name(subject).append("controller");
+  const auto certificate = localKeys.getPib().getIdentity(authority).getDefaultKey()
+                            .getDefaultCertificate();
+  const auto* configuredRing = std::getenv("NDNSF_FILE_KEYRING");
+  BOOST_REQUIRE(configuredRing);
+  const std::string ring(configuredRing);
+  auto restore = ndn::make_scope_exit([&] {
+    ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+    ::unsetenv("NDNSF_CONTROLLER_RECOVERY_CHECKPOINT");
+    ::unsetenv("NDNSF_CONTROLLER_RECOVERY_IMPORT_SHA256");
+    ::unsetenv("NDNSF_CONTROLLER_RECOVERY_IMPORT_WITNESS_SHA256");
+    ::unsetenv("NDNSF_CONTROLLER_RECOVERY_BOOTSTRAP");
+  });
+  controller.reset();
+  const auto stateDirectory = root / "state";
+  const auto checkpointDirectory = root / "checkpoint";
+  for (const auto& directory : {stateDirectory, checkpointDirectory}) {
+    std::filesystem::create_directory(directory);
+    std::filesystem::permissions(directory, std::filesystem::perms::owner_all);
+  }
+  const auto state = stateDirectory / "generation";
+  const auto checkpoint = checkpointDirectory / "current";
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", state.c_str(), 1);
+  const auto wrongRing = root / "wrong-id.ring";
+  std::ofstream(wrongRing) << "requester-only " << std::string(64, 'c') << '\n';
+  std::filesystem::permissions(wrongRing, std::filesystem::perms::owner_read |
+                                          std::filesystem::perms::owner_write);
+  ::unsetenv("NDNSF_FILE_KEYRING");
+  {
+    ServiceController withoutRing(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(!withoutRing.getControllerVersion().isValid());
+    BOOST_CHECK(!std::filesystem::exists(state));
+    BOOST_CHECK(!std::filesystem::exists(state.string() + ".lock"));
+  }
+  ::setenv("NDNSF_FILE_KEYRING", wrongRing.c_str(), 1);
+  {
+    ServiceController wrongId(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(!wrongId.getControllerVersion().isValid());
+    BOOST_CHECK(!std::filesystem::exists(state));
+    BOOST_CHECK(!std::filesystem::exists(state.string() + ".lock"));
+  }
+  const auto readState = [&] {
+    std::ifstream input(state, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), {});
+  };
+  {
+    ControllerGenerationStore legacy(state);
+    BOOST_REQUIRE(legacy.acquireWriter(authority.toUri(ndn::name::UriFormat::CANONICAL)));
+    legacy.startGeneration(1000);
+  }
+  const auto previous = readState();
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  {
+    ServiceController unpinned(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(!unpinned.getControllerVersion().isValid());
+    BOOST_CHECK_EQUAL(readState(), previous);
+  }
+  ndn::util::Sha256 sha;
+  sha << previous;
+  const auto importDigest = "sha256:" + sha.toString();
+  ::setenv("NDNSF_CONTROLLER_RECOVERY_CHECKPOINT", checkpoint.c_str(), 1);
+  ::setenv("NDNSF_CONTROLLER_RECOVERY_IMPORT_SHA256", importDigest.c_str(), 1);
+  {
+    ServiceController migrated(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(migrated.getControllerVersion().isValid());
+    BOOST_CHECK_EQUAL(readState().substr(0, 8), "NDNSFCS9");
+    BOOST_CHECK(std::filesystem::exists(checkpoint));
+  }
+  ::unsetenv("NDNSF_CONTROLLER_RECOVERY_IMPORT_SHA256");
+  {
+    ServiceController reopened(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(reopened.getControllerVersion().isValid());
+  }
+  std::filesystem::rename(state, stateDirectory / "saved-generation");
+  std::filesystem::rename(checkpoint, checkpointDirectory / "saved-current");
+  {
+    ServiceController missing(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(!missing.getControllerVersion().isValid());
+    BOOST_CHECK(!std::filesystem::exists(state));
+    BOOST_CHECK(!std::filesystem::exists(checkpoint));
+  }
+  ::setenv("NDNSF_CONTROLLER_RECOVERY_IMPORT_SHA256", importDigest.c_str(), 1);
+  {
+    ServiceController missingImport(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(!missingImport.getControllerVersion().isValid());
+    BOOST_CHECK(!std::filesystem::exists(state));
+    BOOST_CHECK(!std::filesystem::exists(checkpoint));
+  }
+  ::unsetenv("NDNSF_CONTROLLER_RECOVERY_IMPORT_SHA256");
+  const auto freshState = stateDirectory / "new-generation";
+  const auto freshCheckpoint = checkpointDirectory / "new-current";
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", freshState.c_str(), 1);
+  ::setenv("NDNSF_CONTROLLER_RECOVERY_CHECKPOINT", freshCheckpoint.c_str(), 1);
+  ::setenv("NDNSF_CONTROLLER_RECOVERY_BOOTSTRAP", "1", 1);
+  {
+    ServiceController fresh(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(fresh.getControllerVersion().isValid());
+    BOOST_CHECK(std::filesystem::exists(freshState));
+    BOOST_CHECK(std::filesystem::exists(freshCheckpoint));
+  }
+  ::unsetenv("NDNSF_CONTROLLER_RECOVERY_BOOTSTRAP");
+  ControllerVersion warmVersion;
+  {
+    ServiceController warm(face, certificate, validator, (root / "policy").string());
+    warmVersion = warm.getControllerVersion();
+    BOOST_REQUIRE(warmVersion.isValid());
+  }
+
+  std::array<uint8_t, 32> grantDigest{};
+  grantDigest.fill(0x56);
+  const ndn::span<const uint8_t> body(grantDigest.data(), grantDigest.size());
+  ndn::util::Sha256 bodyHash;
+  bodyHash << body;
+  const auto nameDigest = bodyHash.computeDigest();
+  auto name = makeProducerDataPrefix(authority, "HISTORICAL-GRANT-WITNESS");
+  name.appendVersion(warmVersion.controllerGenerationTimestamp)
+      .appendVersion(warmVersion.controllerEpoch)
+      .append(ndn::name::Component(ndn::span<const uint8_t>(nameDigest->data(),
+                                                          nameDigest->size())));
+  ndn::Data witness(name);
+  witness.setContent(body);
+  localKeys.sign(witness, ndn::security::signingByCertificate(certificate));
+  const auto& wire = witness.wireEncode();
+  ndn::util::Sha256 signerHash;
+  signerHash << certificate.getPublicKey();
+  const auto oldWitness = freshState.string() + ".grant-witness." + signerHash.toString();
+  std::ofstream(oldWitness, std::ios::binary)
+    .write(reinterpret_cast<const char*>(wire.data()), wire.size());
+  std::filesystem::permissions(oldWitness, std::filesystem::perms::owner_read |
+                                            std::filesystem::perms::owner_write);
+  {
+    ServiceController unpinned(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(!unpinned.getControllerVersion().isValid());
+  }
+  const auto wrongDigest = "sha256:" + std::string(64, '0');
+  ::setenv("NDNSF_CONTROLLER_RECOVERY_IMPORT_WITNESS_SHA256", wrongDigest.c_str(), 1);
+  {
+    ServiceController wrongWitness(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(!wrongWitness.getControllerVersion().isValid());
+  }
+  ndn::util::Sha256 wireHash;
+  wireHash << ndn::span<const uint8_t>(wire.data(), wire.size());
+  const auto witnessDigest = "sha256:" + wireHash.toString();
+  ::setenv("NDNSF_CONTROLLER_RECOVERY_IMPORT_WITNESS_SHA256", witnessDigest.c_str(), 1);
+  {
+    ServiceController migrated(face, certificate, validator, (root / "policy").string());
+    BOOST_CHECK(migrated.getControllerVersion().compare(warmVersion) > 0);
+  }
+  ::unsetenv("NDNSF_CONTROLLER_RECOVERY_IMPORT_WITNESS_SHA256");
+  std::filesystem::remove(oldWitness);
+  ServiceController restored(face, certificate, validator, (root / "policy").string());
+  BOOST_CHECK(restored.getControllerVersion().isValid());
+}
+
+BOOST_FIXTURE_TEST_CASE(DkeyRevocationChecksActualRecipientAndCommittedAttributes,
+                       MultiServiceRecipientFixture)
+{
+  const auto recipient = localKeys.createIdentity(subject, ndn::RsaKeyParams(2048));
+  const auto oldKey = recipient.getDefaultKey();
+  const auto revoked = oldKey.getDefaultCertificate();
+  const auto replacement = localKeys.createKey(recipient, ndn::RsaKeyParams(2048))
+                           .getDefaultCertificate();
+  localKeys.setDefaultKey(recipient, oldKey);
+  const auto authority = ndn::Name(subject).append("controller");
+  const auto authorityCertificate = localKeys.getPib().getIdentity(authority).getDefaultKey()
+                                    .getDefaultCertificate();
+  const auto queryFor = [&] (const auto& certificate) {
+    return ndn::Interest(ServiceControllerTestAccess::dkeyInterestPrefix(authority, certificate))
+      .setCanBePrefix(true);
+  };
+  const auto request = [&] (const ndn::Interest& interest) {
+    face.sentData.clear();
+    ServiceControllerTestAccess::requestDkey(*controller, interest);
+    face.processEvents(ndn::time::milliseconds(1));
+  };
+  const auto originalQuery = queryFor(revoked);
+  request(originalQuery);
+  BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+  const ndn::Interest oldContinuation(face.sentData.front().getName());
+  const auto digest = ServiceControllerTestAccess::certificateDigest(revoked);
+  BOOST_REQUIRE(controller->revoke(makeCertificateRevocation(subject.toUri().c_str(),
+                                                              digest.c_str())));
+  BOOST_REQUIRE(localKeys.getPib().getIdentity(subject).getDefaultKey().getName() ==
+                revoked.getKeyName());
+  request(originalQuery);
+  BOOST_CHECK(face.sentData.empty());
+  request(oldContinuation);
+  BOOST_CHECK(face.sentData.empty());
+
+  const auto readReplacementBundle = [&] {
+    const auto replacementQuery = queryFor(replacement);
+    request(replacementQuery);
+    BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+    const auto first = face.sentData.front();
+    BOOST_CHECK(replacementQuery.getName().isPrefixOf(first.getName()));
+    BOOST_CHECK(ndn::security::verifySignature(first, authorityCertificate.getPublicKey()));
+    const auto last = first.getFinalBlock();
+    BOOST_REQUIRE(last && last->isSegment());
+    const auto bundle = first.getName().getPrefix(-1);
+    ndn::Buffer encrypted(first.getContent().value_begin(), first.getContent().value_end());
+    for (uint64_t segment = 1; segment <= last->toSegment(); ++segment) {
+      const auto name = ndn::Name(bundle).appendSegment(segment);
+      request(ndn::Interest(name));
+      BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+      const auto& packet = face.sentData.front();
+      BOOST_CHECK_EQUAL(packet.getName(), name);
+      BOOST_CHECK(ndn::security::verifySignature(packet, authorityCertificate.getPublicKey()));
+      encrypted.insert(encrypted.end(), packet.getContent().value_begin(),
+                       packet.getContent().value_end());
+    }
+    return ndn::Block(ndn::span<const uint8_t>(encrypted.data(), encrypted.size()));
+  };
+  const auto sealed = readReplacementBundle();
+  const auto decoded = ndn::nacabe::decryptDataContent(sealed, localKeys.getTpm(),
+                                                     replacement.getName());
+  BOOST_REQUIRE(!decoded.empty());
+  auto oldRecipientOpened = false;
+  try {
+    oldRecipientOpened = !ndn::nacabe::decryptDataContent(sealed, localKeys.getTpm(),
+                                                          revoked.getName()).empty();
+  }
+  catch (const std::exception&) {
+  }
+  BOOST_CHECK(!oldRecipientOpened);
+  ndn::nacabe::algo::PrivateKey key;
+  key.fromBuffer(decoded);
+  const auto ciphertext = ServiceControllerTestAccess::abeEncrypt(
+    *controller, ndn::Name("/PERMISSION/HELLO"), "replacement-recipient");
+  const auto plaintext = ServiceControllerTestAccess::abeDecrypt(*controller, key, ciphertext);
+  BOOST_CHECK_EQUAL(std::string(plaintext.begin(), plaintext.end()), "replacement-recipient");
+
+  RevocationTarget service;
+  service.kind = RevocationKind::SERVICE_AUTHORIZATION;
+  service.targetIdentity = subject;
+  service.serviceName = ndn::Name("/HELLO");
+  service.authorizationAttribute = ndn::Name("/PERMISSION/HELLO");
+  BOOST_REQUIRE(controller->revoke(service));
+  controller.reset();
+  controller = std::make_unique<ServiceController>(face, authorityCertificate, validator,
+                                                    (root / "policy").string());
+  request(originalQuery);
+  BOOST_CHECK(face.sentData.empty());
+  const auto cold = readReplacementBundle();
+  const auto coldKey = ndn::nacabe::decryptDataContent(cold, localKeys.getTpm(),
+                                                      replacement.getName());
+  BOOST_REQUIRE(!coldKey.empty());
+  key.fromBuffer(coldKey);
+  const auto blocked = ServiceControllerTestAccess::abeEncrypt(
+    *controller, ndn::Name("/PERMISSION/HELLO"), "withdrawn-service");
+  BOOST_CHECK(ServiceControllerTestAccess::decryptFailsClosed(
+    ServiceControllerTestAccess::abePublicParameters(*controller), key, blocked,
+    "withdrawn-service"));
+  const auto allowed = ServiceControllerTestAccess::abeEncrypt(
+    *controller, ndn::Name("/PERMISSION/OTHER"), "remaining-service");
+  const auto retained = ServiceControllerTestAccess::abeDecrypt(*controller, key, allowed);
+  BOOST_CHECK_EQUAL(std::string(retained.begin(), retained.end()), "remaining-service");
 }
 
 BOOST_FIXTURE_TEST_CASE(PortableRecipientRejectsMissingExpiredEcAndWrongIdentity,
@@ -824,7 +2355,7 @@ BOOST_AUTO_TEST_CASE(PolicyStatusOriginalReplyCapacityExpiresWithoutRenamingOldR
       std::filesystem::remove(path.string() + ".lock", ignored);
     }
   } state;
-  ndn::KeyChain keys("pib-memory:spec205-capacity", "tpm-memory:spec205-capacity");
+  ndn::KeyChain keys;
   const auto certificate = keys.createIdentity(ndn::Name("/controller/spec205-capacity"),
       ndn::RsaKeyParams(2048)).getDefaultKey().getDefaultCertificate();
   ndn::DummyClientFace face(keys);
@@ -897,7 +2428,7 @@ BOOST_AUTO_TEST_CASE(PolicyStatusRetryChangesNetworkNonceAndPreservesOriginalRep
   environment.set("NDNSF_PERMISSION_FETCH_LIFETIME_MS", "500");
   environment.set("NDNSF_PERMISSION_FETCH_RETRY_BACKOFF_MS", "0");
   environment.set("NDNSF_PERMISSION_FETCH_MAX_ATTEMPTS", "2");
-  ndn::KeyChain keys("pib-memory:spec205-status-retry", "tpm-memory:spec205-status-retry");
+  ndn::KeyChain keys;
   const auto controllerCert = keys.createIdentity(ndn::Name("/controller/spec205-retry"),
       ndn::RsaKeyParams(2048)).getDefaultKey().getDefaultCertificate();
   ndn::DummyClientFace::Options options;
@@ -1363,6 +2894,9 @@ BOOST_AUTO_TEST_CASE(ServiceControllerMutatesTypedRevocationAndAdvancesEpoch)
 
   ServiceController serviceController(face, controllerCert, validator,
                                       ndnsf::test::testFixturePath("controller-policies.conf").string());
+  // The grant record is signed with the Controller's AA certificate through the Controller's own signer; without it the
+  // record cannot be written and, now, the reply is withheld.
+  ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
   const auto initial = serviceController.getControllerVersion();
   BOOST_REQUIRE(initial.isValid());
 
@@ -1443,6 +2977,43 @@ BOOST_AUTO_TEST_CASE(ServiceControllerMutatesTypedRevocationAndAdvancesEpoch)
   ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
   std::filesystem::remove(statePath);
   std::filesystem::remove(statePath.string() + ".lock");
+}
+
+BOOST_AUTO_TEST_CASE(HistoricalGrantCapturesEligibilityBeforeFirstPublicParametersQuery)
+{
+  const auto root = test::trust_detail::makeTestTrustDirectory();
+  const auto state = root / "history-first-grant.bin";
+  const auto previousState = std::getenv("NDNSF_CONTROLLER_GENERATION_STATE");
+  const auto oldState = previousState ? std::optional<std::string>(previousState) : std::nullopt;
+  const auto restore = ndn::make_scope_exit([&] {
+    if (oldState)
+      ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", oldState->c_str(), 1);
+    else
+      ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  BOOST_REQUIRE_EQUAL(::setenv("NDNSF_CONTROLLER_GENERATION_STATE", state.c_str(), 1), 0);
+  ndn::KeyChain keys;
+  const auto identity = keys.createIdentity(ndn::Name("/controller/history-first-grant"),
+                                            ndn::RsaKeyParams(2048));
+  const auto certificate = identity.getDefaultKey().getDefaultCertificate();
+  ndn::DummyClientFace face(keys);
+  ndn::ValidatorConfig validator(face);
+  ServiceController controller(face, certificate, validator,
+    ndnsf::test::testFixturePath("controller-policies.conf").string());
+  const auto birth = ServiceControllerTestAccess::abeMaterialVersion(controller);
+  BOOST_REQUIRE(birth.isValid());
+  BOOST_REQUIRE(birth == controller.getControllerVersion());
+  const auto original = ndn::Name("/example/hello/user");
+  const auto late = ndn::Name("/example/hello/user/history-late");
+  const auto scope = std::string("/PERMISSION/HELLO");
+  BOOST_REQUIRE(controller.grant(late, ndn::Name("/HELLO"), ndn::Name(scope)));
+  BOOST_CHECK(controller.getControllerVersion().compare(birth) > 0);
+  BOOST_CHECK(ServiceControllerTestAccess::abeMaterialVersion(controller) == birth);
+  BOOST_CHECK(ServiceControllerTestAccess::hasHistoricalGrant(controller, original, birth, scope));
+  BOOST_CHECK(!ServiceControllerTestAccess::hasHistoricalGrant(controller, late, birth, scope));
+  BOOST_CHECK(ServiceControllerTestAccess::abePolicy(controller, late).find(scope) != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(ServiceControllerGrantOnlyKeepsAbeGenerationAndReplacesTargetPolicy)
@@ -1730,8 +3301,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPublishesStableTimestampedRevocationSnapsh
   std::filesystem::remove(statePath.string() + ".lock");
   ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
 
-  ndn::KeyChain keyChain("pib-memory:spec179-controller-timestamped-status",
-                         "tpm-memory:spec179-controller-timestamped-status");
+  ndn::KeyChain keyChain;
   const auto controller = keyChain.createIdentity(
       ndn::Name("/controller/spec179-timestamped-status"), ndn::RsaKeyParams(2048));
   const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
@@ -1819,8 +3389,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerRejectsStaleExactStatusAfterRevocation)
   std::filesystem::remove(statePath.string() + ".lock");
   ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
 
-  ndn::KeyChain keyChain("pib-memory:spec179-controller-stale-status",
-                         "tpm-memory:spec179-controller-stale-status");
+  ndn::KeyChain keyChain;
   const auto controller = keyChain.createIdentity(
       ndn::Name("/controller/spec179-stale-status"), ndn::RsaKeyParams(2048));
   const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
@@ -2365,8 +3934,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusHandlerPublishesSignedCurrentStatus)
   std::filesystem::remove(statePath.string() + ".lock");
   ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
 
-  ndn::KeyChain keyChain("pib-memory:spec179-controller-status-valid",
-                         "tpm-memory:spec179-controller-status-valid");
+  ndn::KeyChain keyChain;
   const auto controller = keyChain.createIdentity(
       ndn::Name("/controller/spec179-status-valid"), ndn::RsaKeyParams(2048));
   const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
@@ -2481,8 +4049,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusHandlerPreservesParametersDigestAndR
   std::filesystem::remove(statePath.string() + ".lock");
   ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
 
-  ndn::KeyChain keyChain("pib-memory:spec179-controller-status-normalization",
-                         "tpm-memory:spec179-controller-status-normalization");
+  ndn::KeyChain keyChain;
   const auto controller = keyChain.createIdentity(
       ndn::Name("/controller/spec179-status-normalization"), ndn::RsaKeyParams(2048));
   const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
@@ -2612,19 +4179,54 @@ BOOST_AUTO_TEST_CASE(ServiceControllerReusesAbePairAcrossRestartAndAfterRevocati
   std::filesystem::remove(statePath);
   std::filesystem::remove(statePath.string() + ".lock");
   ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
-  ndn::KeyChain keys("pib-memory:spec220-abe-persistence", "tpm-memory:spec220-abe-persistence");
+  ndn::KeyChain keys;
   const auto certificate = keys.createIdentity(ndn::Name("/controller/spec220-abe"),
                                                 ndn::RsaKeyParams(2048))
                              .getDefaultKey().getDefaultCertificate();
   std::string originalDigest;
   std::string revokedDigest;
+  ndn::Name originalName;
+  ndn::Block originalWire;
+  ndn::Name revokedName;
+  ndn::Block revokedWire;
+  const auto fetch = [] (ServiceController& controller, ndn::DummyClientFace& face,
+                         const ndn::Name& name) {
+    face.sentData.clear();
+    ServiceControllerTestAccess::requestAbeParameters(controller, ndn::Interest(name));
+    face.processEvents(ndn::time::milliseconds(-1));
+    BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+    return face.sentData.front().wireEncode();
+  };
+  constexpr uint64_t highArchivedVersion = std::numeric_limits<uint64_t>::max() - 2;
   {
     boost::asio::io_context io;
     ndn::DummyClientFace face(io, keys);
     ndn::ValidatorConfig validator(face);
     ServiceController controller(face, certificate, validator, ndnsf::test::testFixturePath("controller-policies.conf").string());
-    originalDigest = controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest();
+    const auto status = controller.getPolicyStatus(ndn::Name(SERVICE));
+    originalDigest = status.getAbePublicParametersDigest();
+    originalName = status.getAbePublicParametersName();
+    originalWire = fetch(controller, face, originalName);
     BOOST_REQUIRE(!originalDigest.empty());
+  }
+  {
+    ControllerGenerationStore store(statePath);
+    auto seal = loadFileKeyRingEntry("controller-abe");
+    BOOST_REQUIRE(seal);
+    store.setSecretSeal(std::move(seal->key), seal->keyId);
+    BOOST_REQUIRE(store.acquireWriter(certificate.getIdentity().toUri(ndn::name::UriFormat::CANONICAL)));
+    const auto current = store.loadAbeMaterial();
+    BOOST_REQUIRE(current);
+    ControllerGenerationStore::AbeHistoryEntry legacy;
+    legacy.generationTimestamp = 1000;
+    legacy.epoch = 2001;
+    legacy.publicParameters = current->publicParameters;
+    legacy.masterSecret = current->masterSecret;
+    legacy.publicParametersName = originalName.getPrefix(-1).appendVersion(highArchivedVersion)
+      .toUri(ndn::name::UriFormat::CANONICAL);
+    legacy.publicParametersWireDigest = originalDigest;
+    legacy.reason = "fixture-high-legacy-version";
+    store.recordAbeHistory(legacy);
   }
   {
     boost::asio::io_context io;
@@ -2634,8 +4236,21 @@ BOOST_AUTO_TEST_CASE(ServiceControllerReusesAbePairAcrossRestartAndAfterRevocati
     BOOST_REQUIRE(controller.getControllerVersion().isValid());
     BOOST_CHECK_EQUAL(controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest(),
                       originalDigest);
+    BOOST_CHECK(fetch(controller, face, originalName) == originalWire);
     BOOST_REQUIRE(controller.revoke(makeIdentityRevocation("/example/hello/user")));
-    revokedDigest = controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest();
+    const auto status = controller.getPolicyStatus(ndn::Name(SERVICE));
+    revokedDigest = status.getAbePublicParametersDigest();
+    revokedName = status.getAbePublicParametersName();
+    BOOST_CHECK_EQUAL(revokedName.at(-1).toVersion(), highArchivedVersion + 1);
+    revokedWire = fetch(controller, face, revokedName);
+    BOOST_CHECK(fetch(controller, face, originalName) == originalWire);
+    face.sentData.clear();
+    auto discovery = ndn::Interest(originalName.getPrefix(-1));
+    discovery.setCanBePrefix(true);
+    ServiceControllerTestAccess::requestAbeParameters(controller, discovery);
+    face.processEvents(ndn::time::milliseconds(-1));
+    BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+    BOOST_CHECK(face.sentData.front().wireEncode() == revokedWire);
     BOOST_CHECK_NE(revokedDigest, originalDigest);
   }
   {
@@ -2646,6 +4261,8 @@ BOOST_AUTO_TEST_CASE(ServiceControllerReusesAbePairAcrossRestartAndAfterRevocati
     BOOST_REQUIRE(controller.getControllerVersion().isValid());
     BOOST_CHECK_EQUAL(controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest(),
                       revokedDigest);
+    BOOST_CHECK(fetch(controller, face, revokedName) == revokedWire);
+    BOOST_CHECK(fetch(controller, face, ndn::Data(originalWire).getFullName()) == originalWire);
     BOOST_CHECK(controller.isRevoked(ndn::Name("/example/hello/user"), ndn::Name(SERVICE)));
   }
   ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
@@ -2801,8 +4418,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusVersionIsMonotonicAcrossRestarts)
   std::filesystem::remove(statePath.string() + ".lock");
   ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
 
-  ndn::KeyChain keyChain("pib-memory:spec179-controller-status-restart",
-                         "tpm-memory:spec179-controller-status-restart");
+  ndn::KeyChain keyChain;
   const auto controller = keyChain.createIdentity(
       ndn::Name("/controller/spec179-status-restart"), ndn::RsaKeyParams(2048));
   const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
@@ -2811,6 +4427,8 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusVersionIsMonotonicAcrossRestarts)
   ControllerVersion firstVersion;
   ndn::Name firstStatusName;
   ndn::Interest firstStatusQuery;
+  ndn::Name firstParametersName;
+  std::string firstParametersDigest;
 
   {
     boost::asio::io_context io;
@@ -2822,6 +4440,9 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusVersionIsMonotonicAcrossRestarts)
     ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
     BOOST_REQUIRE(serviceController.revoke(target));
     firstVersion = serviceController.getControllerVersion();
+    const auto firstStatus = serviceController.getPolicyStatus(ndn::Name(SERVICE));
+    firstParametersName = firstStatus.getAbePublicParametersName();
+    firstParametersDigest = firstStatus.getAbePublicParametersDigest();
     ServiceControllerTestAccess::registerHandlersForDummyFace(serviceController);
 
     const auto exactQuery = ServiceControllerTestAccess::statusQuery(
@@ -2884,6 +4505,9 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusVersionIsMonotonicAcrossRestarts)
                 firstVersion.controllerGenerationTimestamp);
     BOOST_CHECK_EQUAL(secondVersion.controllerEpoch, 1);
     BOOST_CHECK(restarted.isRevoked(target.targetIdentity, ndn::Name(SERVICE)));
+    const auto secondStatus = restarted.getPolicyStatus(ndn::Name(SERVICE));
+    BOOST_CHECK_EQUAL(secondStatus.getAbePublicParametersName(), firstParametersName);
+    BOOST_CHECK_EQUAL(secondStatus.getAbePublicParametersDigest(), firstParametersDigest);
     ServiceControllerTestAccess::registerHandlersForDummyFace(restarted);
 
     // A cached packet from the previous generation is not an authority
@@ -2929,8 +4553,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPermissionHandlersEncryptCurrentRevocation
   std::filesystem::remove(statePath.string() + ".lock");
   ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
 
-  ndn::KeyChain keyChain("pib-memory:spec179-controller-permission-wire",
-                         "tpm-memory:spec179-controller-permission-wire");
+  ndn::KeyChain keyChain;
   const auto controller = keyChain.createIdentity(
       ndn::Name("/controller/spec179-permission-wire"), ndn::RsaKeyParams(2048));
   const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
@@ -3190,8 +4813,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusSignatureRejectsWrongSignerAndTamper
   std::filesystem::remove(statePath.string() + ".lock");
   ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
 
-  ndn::KeyChain keyChain("pib-memory:spec179-controller-status-signature",
-                         "tpm-memory:spec179-controller-status-signature");
+  ndn::KeyChain keyChain;
   const auto controller = keyChain.createIdentity(
       ndn::Name("/controller/spec179-status-signature"), ndn::RsaKeyParams(2048));
   const auto controllerCert = controller.getDefaultKey().getDefaultCertificate();
@@ -3600,7 +5222,29 @@ BOOST_AUTO_TEST_CASE(RealControllerStatusDrivesUserAndProviderRevocation)
     return version;
   };
 
-  const auto initialVersion = installCurrentControllerStatus();
+  const auto coldStatus = serviceController.getPolicyStatus(serviceName);
+  auto futureFloor = coldStatus.getControllerVersion();
+  ++futureFloor.controllerEpoch;
+  {
+    const auto* configured = std::getenv("NDNSF_CONTROLLER_MIN_VERSION");
+    const auto previous = configured ? std::optional<std::string>(configured) : std::nullopt;
+    auto clear = ndn::make_scope_exit([&] {
+      if (previous)
+        ::setenv("NDNSF_CONTROLLER_MIN_VERSION", previous->c_str(), 1);
+      else
+        ::unsetenv("NDNSF_CONTROLLER_MIN_VERSION");
+    });
+    for (const auto& floor : {futureFloor.toString(), std::string("1:overflow")}) {
+      ::setenv("NDNSF_CONTROLLER_MIN_VERSION", floor.c_str(), 1);
+      BOOST_CHECK(!user.installControllerStatus(coldStatus));
+      BOOST_CHECK(!provider.installControllerStatus(coldStatus));
+      BOOST_CHECK(!user.getControllerVersion());
+      BOOST_CHECK(!provider.getControllerVersion());
+    }
+    ::setenv("NDNSF_CONTROLLER_MIN_VERSION", coldStatus.getControllerVersion().toString().c_str(), 1);
+    BOOST_CHECK(installCurrentControllerStatus() == coldStatus.getControllerVersion());
+  }
+  const auto initialVersion = coldStatus.getControllerVersion();
   BOOST_REQUIRE(initialVersion.isValid());
 
   // Runtime status installation must fail closed when the authenticated
@@ -3924,24 +5568,41 @@ BOOST_AUTO_TEST_CASE(GrantOnlyRefreshIssuesOneTargetFetchWithZeroFanOut)
       serviceController, grantedUser);
   const auto providerCert = ServiceControllerTestAccess::ensureInternalIdentity(
       serviceController, unaffectedProvider);
+  const auto userEncryptionCert =
+      ServiceControllerTestAccess::rsaEncryptionCertificate(serviceController, userCert);
+  const auto providerEncryptionCert =
+      ServiceControllerTestAccess::rsaEncryptionCertificate(serviceController, providerCert);
 
   ndn::KeyChain runtimeKeys;
   ndn::DummyClientFace runtimeFace(runtimeKeys);
   ndn_service_framework::test::IsolatedTestTrust fixedTrust7{
-    controllerCert, runtimeAaCert, userCert, providerCert};
+    controllerCert, runtimeAaCert, userCert, providerCert, userEncryptionCert, providerEncryptionCert};
   ServiceUser user(ServiceUser::LocalMockTag{}, runtimeFace,
-                   ndn::Name("/spec179/grant-fetch"), userCert,
+                   ndn::Name("/spec179/grant-fetch"), userEncryptionCert, userCert,
                    runtimeAaCert, fixedTrust7.schemaPath());
   ndn_service_framework::test::IsolatedTestTrust fixedTrust8{
-    controllerCert, runtimeAaCert, userCert, providerCert};
+    controllerCert, runtimeAaCert, userCert, providerCert, userEncryptionCert, providerEncryptionCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, runtimeFace,
-                           ndn::Name("/spec179/grant-fetch"), providerCert,
+                           ndn::Name("/spec179/grant-fetch"), providerEncryptionCert, providerCert,
                            runtimeAaCert, fixedTrust8.schemaPath());
   user.setUseTokens(false);
   provider.setUseTokens(false);
 
+  size_t boundUserQueries = 0;
+  size_t boundProviderQueries = 0;
   auto interestRelay = runtimeFace.onSendInterest.connect(
       [&] (const ndn::Interest& interest) {
+        for (const bool isUser : {true, false}) {
+          const auto operation = isUser ? "USER-PERMISSIONS" : "PROVIDER-PERMISSIONS";
+          if (!parseControlRpcName(interest, controllerPrefix, operation))
+            continue;
+          const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
+          BOOST_REQUIRE(query);
+          BOOST_CHECK(query->recipientCertificate ==
+                      (isUser ? userEncryptionCert.getFullName() :
+                                providerEncryptionCert.getFullName()));
+          ++(isUser ? boundUserQueries : boundProviderQueries);
+        }
         controllerFace.receive(interest);
       });
   auto dataRelay = controllerFace.onSendData.connect(
@@ -3988,7 +5649,10 @@ BOOST_AUTO_TEST_CASE(GrantOnlyRefreshIssuesOneTargetFetchWithZeroFanOut)
   // install performs a generation-change DKEY fetch that must not be
   // attributed to the later grant-only advance.
   user.fetchPermissionsFromController(controllerPrefix);
+  provider.fetchPermissionsFromController(controllerPrefix);
   pump();
+  BOOST_CHECK_GT(boundUserQueries, 0U);
+  BOOST_CHECK_GT(boundProviderQueries, 0U);
   BOOST_CHECK(user.isNacConsumerReadyForTest());
 
   size_t grantedUserDkeyFetches = 0;
@@ -4206,6 +5870,493 @@ BOOST_AUTO_TEST_CASE(GrantOnlyRefreshSurvivesReverseOrderStatusFirstInstall)
   std::filesystem::remove(statePath.string() + ".lock");
 }
 
+BOOST_AUTO_TEST_CASE(ControllerVersionFloorRejectsAnAuthenticPreRevocationBackup)
+{
+  const auto root = std::filesystem::temp_directory_path() /
+                    ("ndnsf-controller-version-floor-" + std::to_string(::getpid()));
+  BOOST_REQUIRE(std::filesystem::create_directory(root));
+  std::filesystem::permissions(root, std::filesystem::perms::owner_all);
+  const auto state = root / "authority.state";
+  const auto backup = root / "backup.state";
+  const auto current = root / "current.state";
+  auto cleanup = ndn::make_scope_exit([&] {
+    ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+    ::unsetenv("NDNSF_CONTROLLER_MIN_VERSION");
+    std::filesystem::remove_all(root);
+  });
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", state.c_str(), 1);
+  ::unsetenv("NDNSF_CONTROLLER_MIN_VERSION");
+  ndn::KeyChain keys;
+  const auto identity = keys.createIdentity(ndn::Name("/controller/spec243-floor"),
+                                           ndn::RsaKeyParams(2048));
+  const auto cert = identity.getDefaultKey().getDefaultCertificate();
+  const auto policy = ndnsf::test::testFixturePath("controller-policies.conf").string();
+  const auto target = makeServiceRevocation("/spec243/version-floor/revoked");
+  ControllerVersion floor;
+  {
+    ndn::DummyClientFace face(keys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController authority(face, cert, validator, policy);
+    BOOST_REQUIRE(authority.getControllerVersion().isValid());
+    std::filesystem::copy_file(state, backup);
+    BOOST_REQUIRE(authority.revoke(target));
+    floor = authority.getControllerVersion();
+    BOOST_CHECK(authority.isRevoked(target.targetIdentity, ndn::Name(SERVICE)));
+  }
+  std::filesystem::copy_file(state, current);
+  std::filesystem::copy_file(backup, state, std::filesystem::copy_options::overwrite_existing);
+  ::setenv("NDNSF_CONTROLLER_MIN_VERSION", floor.toString().c_str(), 1);
+  {
+    ndn::DummyClientFace face(keys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController refused(face, cert, validator, policy);
+    BOOST_CHECK(!refused.getControllerVersion().isValid());
+    BOOST_CHECK_THROW(refused.getPolicyStatus(ndn::Name(SERVICE)), std::runtime_error);
+    ServiceControllerTestAccess::policyStatusInterest(refused,
+        ServiceControllerTestAccess::statusQuery(identity.getName(), ndn::Name(SERVICE), floor));
+    face.processEvents(ndn::time::milliseconds(-1));
+    BOOST_CHECK(face.sentData.empty());
+  }
+  const auto bytes = [] (const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), {});
+  };
+  BOOST_CHECK(bytes(state) == bytes(backup));
+  std::filesystem::copy_file(current, state, std::filesystem::copy_options::overwrite_existing);
+  {
+    ndn::DummyClientFace face(keys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController recovered(face, cert, validator, policy);
+    BOOST_CHECK(recovered.getControllerVersion().compare(floor) > 0);
+    BOOST_CHECK(recovered.isRevoked(target.targetIdentity, ndn::Name(SERVICE)));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ControllerSignerHandoffRequiresCurrentPredecessorAndExactSuccessor)
+{
+  const auto root = std::filesystem::temp_directory_path() /
+                    ("ndnsf-controller-handoff-" + std::to_string(::getpid()));
+  BOOST_REQUIRE(std::filesystem::create_directory(root));
+  std::filesystem::permissions(root, std::filesystem::perms::owner_all);
+  const char* configuredCertificate = std::getenv("NDNSF_CONTROLLER_CERT_FILE");
+  const auto previousCertificate = configuredCertificate ?
+    std::optional<std::string>(configuredCertificate) : std::nullopt;
+  auto cleanup = ndn::make_scope_exit([&] {
+    ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+    ::unsetenv("NDNSF_CONTROLLER_HANDOFF");
+    if (previousCertificate)
+      ::setenv("NDNSF_CONTROLLER_CERT_FILE", previousCertificate->c_str(), 1);
+    else
+      ::unsetenv("NDNSF_CONTROLLER_CERT_FILE");
+    std::filesystem::remove_all(root);
+  });
+  const auto state = root / "authority.state";
+  const auto proof = root / "handoff.ndn";
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", state.c_str(), 1);
+  ::unsetenv("NDNSF_CONTROLLER_HANDOFF");
+
+  ndn::KeyChain keys;
+  const auto identity = keys.createIdentity(ndn::Name("/controller/spec243-handoff"),
+                                             ndn::RsaKeyParams(2048));
+  const auto predecessorKey = identity.getDefaultKey();
+  const auto predecessor = predecessorKey.getDefaultCertificate();
+  const auto successorKey = keys.createKey(identity, ndn::RsaKeyParams(2048));
+  const auto successor = successorKey.getDefaultCertificate();
+  const auto policy = ndnsf::test::testFixturePath("controller-policies.conf").string();
+  const auto revoked = makeServiceRevocation("/spec179/handoff/revoked");
+  ControllerVersion original;
+  ControllerVersion originalMaterial;
+  ndn::Name originalParameters;
+  std::string originalGrant;
+  std::optional<ndn::Data> archivedProofBeforeRestart;
+  ndn::Data witnessedPublication, unwitnessedPublication, unwitnessedReceipt;
+  const ndn::Name reader("/example/hello/user");
+  keys.setDefaultKey(identity, predecessorKey);
+  {
+    ndn::DummyClientFace face(keys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController controller(face, predecessor, validator, policy);
+    BOOST_REQUIRE(controller.revoke(revoked));
+    original = controller.getControllerVersion();
+    originalMaterial = ServiceControllerTestAccess::abeMaterialVersion(controller);
+    originalParameters = controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersName();
+    ServiceControllerTestAccess::ensureInternalIdentity(controller, reader);
+    ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+    const auto parameters = encodeControlQueryParameters({reader, ndn::Name(), 0, 0});
+    ndn::Interest query(makeControlRpcName(identity.getName(), "USER-PERMISSIONS",
+                                          parameters, makeControlQueryNonce()));
+    query.setApplicationParameters(parameters);
+    ServiceControllerTestAccess::userPermissionsInterest(controller, query);
+    face.processEvents(ndn::time::milliseconds(-1));
+    BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+    const auto record = ServiceControllerTestAccess::loadGrantRecord(controller, reader, original);
+    BOOST_REQUIRE(record);
+    originalGrant = *record;
+    BOOST_CHECK(ServiceControllerTestAccess::acceptsHistoricalGrantWire(controller, originalGrant));
+    const ndn::Name service("/HELLO");
+    const auto status = controller.getPolicyStatus(service);
+    const auto producer = keys.createIdentity(ndn::Name("/example/hello/provider"),
+                                               ndn::RsaKeyParams()).getDefaultKey()
+                          .getDefaultCertificate();
+    auto digest = status.getAbePublicParametersDigest();
+    std::transform(digest.begin(), digest.end(), digest.begin(), [] (unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    const auto makeReceipt = [&] (const std::string& id) {
+      ndn::Data ck(makeHybridMessageKeyDataName(service, producer.getIdentity(),
+                                                "/PERMISSION/HELLO", id));
+      ck.setContent("test CK");
+      const auto signing = ndn::security::signingByCertificate(producer);
+      keys.sign(ck, signing);
+      auto publication = makeHistoricalPublicationData({
+        identity.getName(), producer.getIdentity(), service,
+        ndn::Name(producer.getIdentity()).append("OBJECT").append(id), ck.getFullName(),
+        status.getAbePublicParametersName(), originalMaterial.controllerGenerationTimestamp,
+        originalMaterial.controllerEpoch, original.controllerGenerationTimestamp,
+        original.controllerEpoch, 1, "/PERMISSION/HELLO", "sha256:" + std::string(64, 'a'),
+        digest}, keys, signing);
+      auto receipt = makeHistoricalPublicationReceipt(publication, producer, status, predecessor,
+                                                       keys, status.getValidFromMs());
+      return std::pair{std::move(publication), std::move(receipt)};
+    };
+    auto [publication, receipt] = makeReceipt("recorded");
+    witnessedPublication = std::move(publication);
+    ServiceControllerTestAccess::storeHistoricalReceipt(controller, witnessedPublication, receipt);
+    BOOST_CHECK(ServiceControllerTestAccess::acceptsHistoricalPublication(controller,
+                                                                          witnessedPublication));
+    std::tie(unwitnessedPublication, unwitnessedReceipt) = makeReceipt("unrecorded");
+  }
+  std::string legacyGrant;
+  std::vector<std::string> rejectedGrants;
+  {
+    ControllerGenerationStore store(state);
+    BOOST_REQUIRE(store.acquireWriter(identity.getName().toUri(ndn::name::UriFormat::CANONICAL)));
+    const auto add = [&] (const ndn::Name& subject, ControllerVersion version,
+                          const ndn::Name& name, const ndn::Name& slot,
+                          std::string suffix = {}) {
+      ndn::Data data(name);
+      data.setContent(makeHistoricalGrantRecordHeader(subject,
+        version.controllerGenerationTimestamp, version.controllerEpoch) +
+        "granted /HELLO\n" + suffix);
+      keys.sign(data, ndn::security::signingByCertificate(predecessor));
+      const auto& wire = data.wireEncode();
+      std::string bytes(reinterpret_cast<const char*>(wire.data()), wire.size());
+      store.recordGrant(slot.toUri(ndn::name::UriFormat::CANONICAL),
+                        version.controllerGenerationTimestamp, version.controllerEpoch, bytes);
+      return bytes;
+    };
+    const ndn::Name legacyReader("/history/legacy");
+    legacyGrant = add(legacyReader, original, {}, legacyReader);
+    const ndn::Name futureReader("/history/future");
+    auto futureVersion = original;
+    ++futureVersion.controllerEpoch;
+    rejectedGrants.push_back(add(futureReader, futureVersion, {}, futureReader));
+    rejectedGrants.push_back(add(ndn::Name("/history/moved"), original, {},
+                                 ndn::Name("/history/wrong-slot")));
+    const ndn::Name badPurpose("/history/bad-purpose");
+    rejectedGrants.push_back(add(badPurpose, original, ndn::Name("/other/packet"), badPurpose));
+    const ndn::Name malformed("/history/malformed");
+    rejectedGrants.push_back(add(malformed, original, {}, malformed, "unexpected data\n"));
+  }
+  const auto stateBytes = [&] {
+    std::ifstream in(state, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
+  const auto originalBytes = stateBytes();
+  BOOST_REQUIRE(!originalBytes.empty());
+  const auto storeProof = [&] (const ndn::Data& data) {
+    const auto& wire = data.wireEncode();
+    std::ofstream output(proof, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(wire.data()), wire.size());
+    output.close();
+    BOOST_REQUIRE(output);
+    ::setenv("NDNSF_CONTROLLER_HANDOFF", proof.c_str(), 1);
+  };
+  const auto verifyRefusal = [&] (const ndn::security::Certificate& cert) {
+    ndn::DummyClientFace face(keys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController refused(face, cert, validator, policy);
+    BOOST_CHECK(!refused.getControllerVersion().isValid());
+    BOOST_CHECK_THROW(refused.getPolicyStatus(ndn::Name(SERVICE)), std::runtime_error);
+  };
+
+  keys.setDefaultKey(identity, successorKey);
+  verifyRefusal(successor);
+  BOOST_CHECK(stateBytes() == originalBytes);
+
+  const auto handoff = makeControllerSignerHandoff(predecessor, successor, originalMaterial, keys);
+  auto forged = handoff;
+  keys.sign(forged, ndn::security::signingByCertificate(successor));
+  storeProof(forged);
+  verifyRefusal(successor);
+  BOOST_CHECK(stateBytes() == originalBytes);
+
+  auto stale = originalMaterial;
+  ++stale.controllerEpoch;
+  storeProof(makeControllerSignerHandoff(predecessor, successor, stale, keys));
+  verifyRefusal(successor);
+  BOOST_CHECK(stateBytes() == originalBytes);
+
+  storeProof(handoff);
+  std::string laterRecord;
+  {
+    ndn::DummyClientFace face(keys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController controller(face, successor, validator, policy);
+    const auto status = controller.getPolicyStatus(ndn::Name(SERVICE));
+    BOOST_CHECK(status.getControllerVersion().compare(original) > 0);
+    BOOST_CHECK_EQUAL(status.getControllerCertificate(), successor.getName());
+    BOOST_CHECK(status.getAbePublicParametersName() != originalParameters);
+    BOOST_REQUIRE_EQUAL(status.getRevocations().size(), 1U);
+    BOOST_CHECK_EQUAL(status.getRevocations().front().targetIdentity, revoked.targetIdentity);
+    ndn::Data laterGrant(ndn::Name(identity.getName()).append("HISTORICAL-GRANT"));
+    laterGrant.setContent(makeHistoricalGrantRecordHeader(reader,
+      original.controllerGenerationTimestamp, original.controllerEpoch) + "granted /HELLO\n");
+    keys.sign(laterGrant, ndn::security::signingByCertificate(predecessor));
+    BOOST_CHECK(ndn::security::verifySignature(laterGrant, predecessor.getPublicKey()));
+    const auto& laterWire = laterGrant.wireEncode();
+    laterRecord.assign(reinterpret_cast<const char*>(laterWire.data()), laterWire.size());
+    BOOST_CHECK(ServiceControllerTestAccess::acceptsHistoricalGrantWire(controller, originalGrant));
+    BOOST_CHECK(ServiceControllerTestAccess::acceptsHistoricalGrantWire(controller, legacyGrant));
+    for (const auto& wire : rejectedGrants)
+      BOOST_CHECK(!ServiceControllerTestAccess::acceptsHistoricalGrantWire(controller, wire));
+    BOOST_CHECK(!ServiceControllerTestAccess::acceptsHistoricalGrantWire(controller, laterRecord));
+    BOOST_CHECK(ServiceControllerTestAccess::acceptsHistoricalPublication(controller,
+                                                                          witnessedPublication));
+    ServiceControllerTestAccess::storeHistoricalReceipt(controller, unwitnessedPublication,
+                                                        unwitnessedReceipt);
+    BOOST_CHECK(!ServiceControllerTestAccess::acceptsHistoricalPublication(controller,
+                                                                           unwitnessedPublication));
+
+    const auto pin = root / "current-controller.cert";
+    ndn::io::save(successor, pin.string());
+    ::setenv("NDNSF_CONTROLLER_CERT_FILE", pin.c_str(), 1);
+    const auto version = status.getControllerVersion();
+    const auto alternate = ServiceControllerTestAccess::addAlternateSigningCertificate(
+      controller, identity.getName());
+    BOOST_REQUIRE(alternate.getKeyName() != successor.getKeyName());
+    ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+    const auto statusQuery = ServiceControllerTestAccess::statusQuery(
+      identity.getName(), ndn::Name(SERVICE), version);
+    face.sentData.clear();
+    ServiceControllerTestAccess::policyStatusInterest(controller, statusQuery);
+    face.processEvents(ndn::time::milliseconds(-1));
+    BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+    const auto current = face.sentData.front();
+    BOOST_CHECK_EQUAL(current.getName(), statusQuery.getName());
+    BOOST_CHECK(!ndn::security::verifySignature(current, alternate.getPublicKey()));
+    BOOST_CHECK(matchesConfiguredControllerSigner(current, identity.getName(),
+                                                   &status.getControllerCertificate()));
+    BOOST_CHECK(!matchesConfiguredControllerSigner(current, identity.getName(),
+                                                    &predecessor.getName()));
+
+    ServiceControllerTestAccess::ensureInternalIdentity(controller, reader);
+    const auto parameters = encodeControlQueryParameters({reader, ndn::Name(), 0, 0});
+    ndn::Interest permission(makeControlRpcName(identity.getName(), "USER-PERMISSIONS",
+                                               parameters, makeControlQueryNonce()));
+    permission.setApplicationParameters(parameters);
+    face.sentData.clear();
+    ServiceControllerTestAccess::userPermissionsInterest(controller, permission);
+    face.processEvents(ndn::time::milliseconds(-1));
+    BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+    BOOST_CHECK_EQUAL(face.sentData.front().getName(), permission.getName());
+    BOOST_CHECK(matchesConfiguredControllerSigner(face.sentData.front(), identity.getName(),
+                                                  &successor.getName()));
+
+    auto claimedFuture = status;
+    claimedFuture.setControllerVersion({version.controllerGenerationTimestamp + 1, 1});
+    ndn::Data retired(statusQuery.getName());
+    retired.setContent(claimedFuture.wireEncode());
+    keys.sign(retired, ndn::security::signingByCertificate(predecessor));
+    BOOST_CHECK(ndn::security::verifySignature(retired, predecessor.getPublicKey()));
+    BOOST_CHECK(!matchesConfiguredControllerSigner(retired, identity.getName(),
+                                                    &status.getControllerCertificate()));
+    BOOST_CHECK(!matchesConfiguredControllerSigner(retired, identity.getName()));
+
+    const auto indexName = ndn::Name(identity.getName()).append("NDNSF").append("HISTORY")
+                           .append("PUBPARAMS");
+    const auto readPublic = [&] (const ndn::Name& name) {
+      face.sentData.clear();
+      ServiceControllerTestAccess::archivedPublicParametersInterest(
+        controller, indexName, ndn::Interest(name));
+      face.processEvents(ndn::time::milliseconds(-1));
+      BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+      const auto packet = face.sentData.front();
+      BOOST_CHECK_EQUAL(packet.getName(), name);
+      BOOST_CHECK(ndn::security::verifySignature(packet, successor.getPublicKey()));
+      return packet;
+    };
+    const auto versionedIndex = historicalPublicParametersIndexName(identity.getName(),
+      version.controllerGenerationTimestamp,
+      ServiceControllerTestAccess::abeMaterialVersion(controller));
+    const auto indexPacket = readPublic(versionedIndex);
+    const auto& content = indexPacket.getContent();
+    std::vector<std::tuple<uint64_t, uint64_t, std::string, std::string>> entries;
+    BOOST_REQUIRE(parseHistoricalPublicParametersIndex(
+      std::string(content.value_begin(), content.value_end()), entries));
+    BOOST_REQUIRE(!entries.empty());
+    const auto& [generation, epoch, digest, originalName] = entries.front();
+    const auto proofName = historicalPublicParametersName(identity.getName(), generation,
+      epoch, digest, version.controllerGenerationTimestamp);
+    const auto proofPacket = readPublic(proofName);
+    archivedProofBeforeRestart = proofPacket;
+    {
+      const auto hidden = state.string() + ".unavailable";
+      std::filesystem::rename(state, hidden);
+      auto restore = ndn::make_scope_exit([&] { std::filesystem::rename(hidden, state); });
+      BOOST_CHECK(readPublic(versionedIndex).wireEncode() == indexPacket.wireEncode());
+      BOOST_CHECK(readPublic(proofName).wireEncode() == proofPacket.wireEncode());
+    }
+  }
+  BOOST_CHECK(stateBytes().find(originalParameters.toUri(ndn::name::UriFormat::CANONICAL)) !=
+              std::string::npos);
+  ::unsetenv("NDNSF_CONTROLLER_HANDOFF");
+  {
+    ndn::DummyClientFace face(keys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController restarted(face, successor, validator, policy);
+    BOOST_REQUIRE(restarted.getControllerVersion().isValid());
+    BOOST_REQUIRE(archivedProofBeforeRestart);
+    const auto previousName = archivedProofBeforeRestart->getName();
+    const auto changedName = ndn::Name(previousName.getPrefix(-1)).appendVersion(
+      restarted.getControllerVersion().controllerGenerationTimestamp);
+    BOOST_CHECK(changedName != previousName);
+    const auto archivePrefix = ndn::Name(identity.getName()).append("NDNSF").append("HISTORY")
+      .append("PUBPARAMS");
+    ServiceControllerTestAccess::archivedPublicParametersInterest(
+      restarted, archivePrefix, ndn::Interest(previousName));
+    face.processEvents(ndn::time::milliseconds(-1));
+    BOOST_CHECK(face.sentData.empty());
+    ServiceControllerTestAccess::archivedPublicParametersInterest(
+      restarted, archivePrefix, ndn::Interest(changedName));
+    face.processEvents(ndn::time::milliseconds(-1));
+    BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+    BOOST_CHECK(face.sentData.front().getContent() == archivedProofBeforeRestart->getContent());
+    BOOST_CHECK(ndn::security::verifySignature(face.sentData.front(), successor.getPublicKey()));
+    BOOST_CHECK(ServiceControllerTestAccess::acceptsHistoricalGrantWire(restarted, originalGrant));
+    BOOST_CHECK(ServiceControllerTestAccess::acceptsHistoricalGrantWire(restarted, legacyGrant));
+    for (const auto& wire : rejectedGrants)
+      BOOST_CHECK(!ServiceControllerTestAccess::acceptsHistoricalGrantWire(restarted, wire));
+    BOOST_CHECK(!ServiceControllerTestAccess::acceptsHistoricalGrantWire(restarted, laterRecord));
+    BOOST_CHECK(ServiceControllerTestAccess::acceptsHistoricalPublication(restarted,
+                                                                          witnessedPublication));
+    BOOST_CHECK(!ServiceControllerTestAccess::acceptsHistoricalPublication(restarted,
+                                                                           unwitnessedPublication));
+  }
+  const auto updated = stateBytes();
+  const auto witness = std::find_if(std::filesystem::directory_iterator(root),
+    std::filesystem::directory_iterator{}, [] (const auto& file) {
+      return file.path().filename().string().find("authority.state.grant-witness.") == 0;
+    });
+  BOOST_REQUIRE(witness != std::filesystem::directory_iterator{});
+  const auto witnessPath = witness->path();
+  std::ifstream witnessInput(witnessPath, std::ios::binary);
+  std::string witnessWire(std::istreambuf_iterator<char>(witnessInput), {});
+  BOOST_REQUIRE(!witnessWire.empty());
+  witnessWire.back() ^= 1;
+  {
+    std::ofstream out(witnessPath, std::ios::binary | std::ios::trunc);
+    out.write(witnessWire.data(), witnessWire.size());
+    BOOST_REQUIRE(out);
+  }
+  verifyRefusal(successor);
+  BOOST_CHECK(stateBytes() == updated);
+  keys.setDefaultKey(identity, predecessorKey);
+  storeProof(handoff);
+  verifyRefusal(predecessor);
+  BOOST_CHECK(stateBytes() == updated);
+}
+
+/** The commit boundary across a restart: a revocation whose rotation failed is durable, so the next controller
+ *  must recover by completing the rotation - not by advertising an epoch whose material never existed, and not by
+ *  rejecting its own stored material. */
+BOOST_AUTO_TEST_CASE(PersistedRotationFailureRecoversInANewController)
+{
+  const auto statePath = std::filesystem::temp_directory_path() /
+                         ("ndnsf-controller-recover-" + std::to_string(::getpid()) + ".bin");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
+
+  ndn::KeyChain controllerKeys;
+  const auto identity = controllerKeys.createIdentity(
+      ndn::Name("/controller/spec243-recover"), ndn::RsaKeyParams(2048));
+  const auto certificate = identity.getDefaultKey().getDefaultCertificate();
+  const auto policies = ndnsf::test::testFixturePath("controller-policies.conf").string();
+
+  ndn::Name paramsNameBefore;
+  std::string paramsDigestBefore;
+  {
+    ndn::DummyClientFace face(controllerKeys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController controller(face, certificate, validator, policies);
+    ServiceControllerTestAccess::ensureInternalControllerSigner(controller);
+    ServiceControllerTestAccess::ensureInternalIdentity(controller,
+      ndn::Name("/spec179/rotate-fail/user"));
+    paramsNameBefore = ServiceControllerTestAccess::abePublicParametersName(controller);
+    paramsDigestBefore = ServiceControllerTestAccess::abePublicParametersDigest(controller);
+
+    // The revocation is accepted and made durable, then the rotation behind it fails.
+    ::setenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE", "1", 1);
+    BOOST_CHECK(!controller.revoke(makeServiceRevocation("/spec179/rotate-fail/user")));
+    ::unsetenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE");
+
+    // Fail-closed: the status still describes the material that exists, never the advanced epoch.
+    const auto status = controller.getPolicyStatus(ndn::Name(SERVICE));
+    BOOST_REQUIRE_EQUAL(status.getRevocations().size(), 1U);
+    BOOST_CHECK_EQUAL(ServiceControllerTestAccess::abePublicParametersName(controller),
+                      paramsNameBefore);
+    BOOST_CHECK_EQUAL(ServiceControllerTestAccess::abePublicParametersDigest(controller),
+                      paramsDigestBefore);
+  }
+
+  {
+    ndn::DummyClientFace face(controllerKeys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController recovered(face, certificate, validator, policies);
+    // Starting is the first assertion: the stored material belongs to the same identity and must not be
+    // rejected as a changed signing key.
+    const auto status = recovered.getPolicyStatus(ndn::Name(SERVICE));
+    BOOST_REQUIRE_EQUAL(status.getRevocations().size(), 1U);
+
+    // Recovery completed the rotation, so the parameters are no longer the ones the failed controller served.
+    const auto paramsNameAfter = ServiceControllerTestAccess::abePublicParametersName(recovered);
+    const auto paramsDigestAfter = ServiceControllerTestAccess::abePublicParametersDigest(recovered);
+    BOOST_CHECK(paramsNameAfter != paramsNameBefore || paramsDigestAfter != paramsDigestBefore);
+
+    // The retired generation stayed readable: the store records why it was archived.
+    std::ifstream state(statePath, std::ios::binary);
+    const std::string bytes{std::istreambuf_iterator<char>(state),
+                            std::istreambuf_iterator<char>()};
+    BOOST_CHECK(bytes.find("revocation-rotation") != std::string::npos);
+    BOOST_CHECK(bytes.find(paramsNameBefore.toUri(ndn::name::UriFormat::CANONICAL)) !=
+                std::string::npos);
+    // The material's version survives the restart. Without it a reloaded Controller cannot tell which version its keys
+    // were generated for, and the check that refuses a version without material is skipped exactly when it matters.
+    BOOST_CHECK(bytes.find("NDNSFCSA") != std::string::npos);
+    const auto materialVersion = ServiceControllerTestAccess::abeMaterialVersion(recovered);
+    BOOST_REQUIRE(materialVersion.isValid());
+    BOOST_CHECK_EQUAL(materialVersion.controllerGenerationTimestamp,
+                      recovered.getPolicyStatus(ndn::Name(SERVICE))
+                        .getControllerVersion().controllerGenerationTimestamp);
+    // Material may lag the served version (a grant moves the policy, not the keys) but never lead it.
+    BOOST_CHECK(materialVersion.compare(
+      recovered.getPolicyStatus(ndn::Name(SERVICE)).getControllerVersion()) <= 0);
+
+    // The same revocation is now a duplicate and must stay a no-op: recovery already finished the work.
+    BOOST_CHECK(!recovered.revoke(makeServiceRevocation("/spec179/rotate-fail/user")));
+    BOOST_CHECK_EQUAL(recovered.getPolicyStatus(ndn::Name(SERVICE)).getRevocations().size(), 1U);
+    // New work is accepted under the rotated generation.
+    ServiceControllerTestAccess::ensureInternalIdentity(recovered,
+      ndn::Name("/spec179/rotate-fail/second-provider"));
+    BOOST_CHECK(recovered.revoke(makeServiceRevocation("/spec179/rotate-fail/second-provider")));
+  }
+
+  ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+}
+
 BOOST_AUTO_TEST_CASE(ControllerRevokeRotationFailureRecordsPendingAndReconciles)
 {
   // RV-U24 (R1, 2026-09-05): a revocation whose ABE rotation throws still
@@ -4302,6 +6453,27 @@ BOOST_AUTO_TEST_CASE(PendingRotationFencesGrantAndPreservesImmutableStatus)
       BOOST_REQUIRE(controller.grant(user, ndn::Name(SERVICE),
                                      ndn::Name("/PERMISSION").append(ndn::Name(SERVICE))));
       const auto before = controller.getPolicyStatus(ndn::Name(SERVICE));
+      ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
+      const auto latestStatus = [&] {
+        return ServiceControllerTestAccess::statusQuery(identity.getName(), ndn::Name(SERVICE));
+      };
+      const auto admitted = latestStatus();
+      const auto params = ndn::Interest(before.getAbePublicParametersName());
+      const auto cert = ServiceControllerTestAccess::recipientCertificate(controller, user);
+      ndn::Interest dkey(ServiceControllerTestAccess::dkeyInterestPrefix(identity.getName(), cert));
+      dkey.setCanBePrefix(true);
+      ServiceControllerTestAccess::policyStatusInterest(controller, admitted);
+      face.processEvents(ndn::time::milliseconds(-1));
+      BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+      face.sentData.clear();
+      ServiceControllerTestAccess::requestAbeParameters(controller, params);
+      ServiceControllerTestAccess::requestDkey(controller, dkey);
+      face.processEvents(ndn::time::milliseconds(-1));
+      BOOST_REQUIRE_EQUAL(face.sentData.size(), 2U);
+      BOOST_CHECK_EQUAL(face.sentData.front().getName(), params.getName());
+      const ndn::Interest oldSegment(face.sentData.back().getName());
+      BOOST_CHECK(dkey.getName().isPrefixOf(oldSegment.getName()));
+      face.sentData.clear();
       const auto retainedKey = ServiceControllerTestAccess::abePrivateKey(controller, user);
       const auto target = makeUserServiceRevocation(user.toUri().c_str());
       ::setenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE", "1", 1);
@@ -4318,23 +6490,51 @@ BOOST_AUTO_TEST_CASE(PendingRotationFencesGrantAndPreservesImmutableStatus)
       };
       // A still-failing retry must not remove the durable withdrawal.
       BOOST_CHECK(!recover());
+      BOOST_CHECK(controller.getControllerVersion() == before.getControllerVersion());
+      const auto written = ServiceControllerTestAccess::durableVersion(controller);
+      BOOST_REQUIRE(written);
+      BOOST_CHECK(*written == before.getControllerVersion());
       BOOST_CHECK_EQUAL(controller.getPolicyStatus(ndn::Name(SERVICE))
                             .getRevocations().size(), 1U);
+      // Neither a retry of an already-issued query nor a fresh query may
+      // receive positive authority while the rotation is pending.
+      ServiceControllerTestAccess::policyStatusInterest(controller, admitted);
+      ServiceControllerTestAccess::policyStatusInterest(controller, latestStatus());
+      ServiceControllerTestAccess::requestAbeParameters(controller, params);
+      ServiceControllerTestAccess::requestDkey(controller, dkey);
+      ServiceControllerTestAccess::requestDkey(controller, oldSegment);
+      face.processEvents(ndn::time::milliseconds(-1));
+      BOOST_CHECK(face.sentData.empty());
       ::unsetenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE");
-      const auto publishedBeforeRecovery = controller.getPolicyStatus(ndn::Name(SERVICE));
       BOOST_CHECK(recover());
       const auto recovered = controller.getPolicyStatus(ndn::Name(SERVICE));
       BOOST_CHECK(recovered.getAbePublicParametersDigest() !=
                   before.getAbePublicParametersDigest());
-      // Peers may have accepted the failure status. New parameter identity
-      // at the same version is conflicting immutable authority, not recovery.
-      BOOST_CHECK(recovered.getControllerVersion().compare(
-                      publishedBeforeRecovery.getControllerVersion()) > 0);
+      const auto committed = ServiceControllerTestAccess::durableVersion(controller);
+      BOOST_REQUIRE(committed);
+      BOOST_CHECK(*committed == recovered.getControllerVersion());
+      BOOST_CHECK_EQUAL(recovered.getControllerVersion().controllerGenerationTimestamp,
+                        before.getControllerVersion().controllerGenerationTimestamp);
+      BOOST_CHECK_EQUAL(recovered.getControllerVersion().controllerEpoch,
+                        before.getControllerVersion().controllerEpoch + (entry == "grant" ? 2 : 1));
+      ServiceControllerTestAccess::policyStatusInterest(controller, latestStatus());
+      face.processEvents(ndn::time::milliseconds(-1));
+      BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+      PolicyStatusData received;
+      BOOST_REQUIRE(received.wireDecode(face.sentData.back().getContent().blockFromValue()));
+      BOOST_CHECK(received.getControllerVersion() == recovered.getControllerVersion());
+      face.sentData.clear();
+      ServiceControllerTestAccess::requestAbeParameters(
+        controller, ndn::Interest(recovered.getAbePublicParametersName()));
+      ServiceControllerTestAccess::requestDkey(controller, oldSegment);
+      face.processEvents(ndn::time::milliseconds(-1));
+      BOOST_REQUIRE_EQUAL(face.sentData.size(), 1U);
+      BOOST_CHECK_EQUAL(face.sentData.front().getName(), recovered.getAbePublicParametersName());
       RevocationState runtime{ndn::Name(SERVICE)};
       const auto now = static_cast<uint64_t>(std::chrono::duration_cast<
           std::chrono::milliseconds>(std::chrono::system_clock::now()
                                         .time_since_epoch()).count());
-      BOOST_CHECK(runtime.acceptStatus(publishedBeforeRecovery, now));
+      BOOST_CHECK(runtime.acceptStatus(before, now));
       BOOST_CHECK(runtime.acceptStatus(recovered, now));
       BOOST_CHECK_EQUAL(recovered.getRevocations().size(), entry == "grant" ? 0U : 1U);
       if (entry == "grant") {
@@ -4463,6 +6663,61 @@ BOOST_AUTO_TEST_CASE(RealControllerStatusRevokesEveryTargetKindAtEveryCutPoint)
   ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
   std::filesystem::remove(statePath);
   std::filesystem::remove(statePath.string() + ".lock");
+}
+
+BOOST_AUTO_TEST_CASE(RuntimePolicyLeaseExpiresWithoutTraffic)
+{
+  ndn::KeyChain keys("pib-memory:runtime-lease", "tpm-memory:runtime-lease");
+  ndn::DummyClientFace face(keys);
+  const ndn::Name userName("/rollover/lease/user"), providerName("/rollover/lease/provider");
+  const auto makeCertificate = [&] (const ndn::Name& name) {
+    return keys.createIdentity(name, ndn::RsaKeyParams(2048)).getDefaultKey()
+               .getDefaultCertificate();
+  };
+  const auto userCertificate = makeCertificate(userName);
+  const auto providerCertificate = makeCertificate(providerName);
+  const auto controllerCertificate = makeCertificate(ndn::Name("/rollover/lease/controller"));
+  ndn_service_framework::test::IsolatedTestTrust trust{
+    userCertificate, providerCertificate, controllerCertificate};
+  ServiceUser user(ServiceUser::LocalMockTag{}, face, ndn::Name("/rollover/lease"),
+                   userCertificate, controllerCertificate, trust.schemaPath());
+  ServiceProvider provider(ServiceProvider::LocalMockTag{}, face, ndn::Name("/rollover/lease"),
+                           providerCertificate, controllerCertificate, trust.schemaPath());
+  const ndn::Name service(SERVICE);
+  const ControllerVersion version{9700, 1};
+  user.applyPermissionResponse(runtimePermission(
+      userName, tlv::UserPermission, providerName, service, version));
+  provider.applyPermissionResponse(runtimePermission(
+      providerName, tlv::ProviderPermission, providerName, service, version));
+  auto status = liveStatusFor(version);
+  const auto start = status.getValidFromMs() + 1000;
+  status.setValidity(status.getValidFromMs(), start + 200);
+  BOOST_REQUIRE(user.installControllerStatus(status));
+  BOOST_REQUIRE(provider.installControllerStatus(status));
+  RequestMessage request;
+  ndn::Name publishedName;
+  RequestMessage publishedMessage;
+  size_t terminal = 0;
+  user.setRequestPublisher([&] (const ndn::Name&, const ndn::Name& name,
+      const std::vector<ndn::Name>&, const ndn::Name&, const RequestMessage& message, size_t) {
+    publishedName = name;
+    publishedMessage = message;
+  });
+  const auto invoke = [&] {
+    return user.RequestService({providerName}, service, request, 10000,
+      [&] (const ndn::Name&) { ++terminal; }, [] (const ResponseMessage&) {},
+      tlv::FirstResponding);
+  };
+  BOOST_REQUIRE(!invoke().empty());
+  BOOST_REQUIRE(!publishedName.empty());
+  BOOST_CHECK_EQUAL(user.getPendingCallCount(), 1U);
+  face.processEvents(ndn::time::milliseconds(400));
+  BOOST_CHECK_EQUAL(terminal, 1U);
+  BOOST_CHECK_EQUAL(user.getPendingCallCount(), 0U);
+  BOOST_CHECK(invoke().empty());
+  BOOST_CHECK(!provider.handleDecryptedRequestByName(publishedName, publishedMessage).getStatus());
+  face.processEvents(ndn::time::milliseconds(2));
+  BOOST_CHECK_EQUAL(terminal, 1U);
 }
 
 BOOST_AUTO_TEST_CASE(RealUserAndProviderEnforceControllerRevocationAtRuntime)
@@ -4757,23 +7012,24 @@ BOOST_AUTO_TEST_CASE(RealRuntimeEnforcesCertificateAndServiceRevocation)
   const ndn::Name providerName("/spec179/runtime-scope/provider");
   const ndn::Name aaName("/spec179/runtime-scope/aa");
   const ndn::Name serviceName(SERVICE);
-  const auto userCert = keyChain.createIdentity(userName, ndn::RsaKeyParams(2048))
-                          .getDefaultKey().getDefaultCertificate();
-  const auto providerCert =
-      keyChain.createIdentity(providerName, ndn::RsaKeyParams(2048))
-          .getDefaultKey().getDefaultCertificate();
+  const auto userIdentity = keyChain.createIdentity(userName, ndn::RsaKeyParams(2048));
+  const auto providerIdentity = keyChain.createIdentity(providerName, ndn::RsaKeyParams(2048));
+  const auto userCert = userIdentity.getDefaultKey().getDefaultCertificate();
+  const auto providerCert = providerIdentity.getDefaultKey().getDefaultCertificate();
+  const auto userSigningCert = keyChain.createKey(userIdentity, ndn::EcKeyParams())
+                                 .getDefaultCertificate();
+  const auto providerSigningCert = keyChain.createKey(providerIdentity, ndn::EcKeyParams())
+                                     .getDefaultCertificate();
   const auto aaCert = keyChain.createIdentity(aaName, ndn::RsaKeyParams(2048))
                          .getDefaultKey().getDefaultCertificate();
 
-  ndn_service_framework::test::IsolatedTestTrust fixedTrust16{
-    userCert, providerCert, aaCert};
+  test::IsolatedTestTrust trust{userCert, userSigningCert, providerCert, providerSigningCert, aaCert};
+  std::vector<StreamedInvocationError> streamErrors;
   ServiceUser user(ServiceUser::LocalMockTag{}, face, ndn::Name("/spec179/runtime-scope"),
-                   userCert, aaCert, fixedTrust16.schemaPath());
-  ndn_service_framework::test::IsolatedTestTrust fixedTrust17{
-    userCert, providerCert, aaCert};
+                   userCert, userSigningCert, aaCert, trust.schemaPath());
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, face,
-                           ndn::Name("/spec179/runtime-scope"), providerCert, aaCert,
-                           fixedTrust17.schemaPath());
+                           ndn::Name("/spec179/runtime-scope"), providerCert, providerSigningCert,
+                           aaCert, trust.schemaPath());
   size_t published = 0;
   size_t executions = 0;
   RequestMessage lastRequest;
@@ -4921,6 +7177,74 @@ BOOST_AUTO_TEST_CASE(RealRuntimeEnforcesCertificateAndServiceRevocation)
       [] (const ndn::Name&) {}, [] (const ResponseMessage&) {});
   BOOST_CHECK(targetedDenied.empty());
   BOOST_CHECK_EQUAL(published, 8);
+  const auto userSigner = ServiceControllerTestAccess::certificateDigest(userSigningCert);
+  const auto providerSigner = ServiceControllerTestAccess::certificateDigest(providerSigningCert);
+  BOOST_REQUIRE_NE(userDigest, userSigner);
+  BOOST_REQUIRE_NE(providerDigest, providerSigner);
+  install({9200, 10}, {makeCertificateRevocation(userName.toUri().c_str(), userSigner.c_str())}, {});
+  BOOST_CHECK(!invoke(false));
+  BOOST_CHECK_EQUAL(executions, executionsBeforeStale);
+  install({9200, 11}, {},
+          {makeCertificateRevocation(providerName.toUri().c_str(), providerSigner.c_str())});
+  BOOST_CHECK(!invoke());
+  BOOST_CHECK_EQUAL(executions, executionsBeforeStale);
+  install({9200, 12}, {}, {});
+  BOOST_CHECK(invoke());
+  BOOST_CHECK_EQUAL(executions, executionsBeforeStale + 1);
+  const ndn::Name otherProvider("/spec179/runtime-scope/other-provider");
+  auto twoProviders = runtimePermission(userName, tlv::UserPermission, providerName, serviceName,
+                                        {9200, 12});
+  twoProviders.addEntry(runtimePermission(userName, tlv::UserPermission, otherProvider, serviceName,
+                                         {9200, 12}).getEntries().front());
+  user.applyPermissionResponse(twoProviders);
+  StreamedInvocationOptions streamOptions;
+  streamOptions.mode = InvocationMode::Targeted;
+  streamOptions.maxEventWireBytes = 4096;
+  const auto active = user.RequestServiceStreaming<ndn::Buffer, ndn::Buffer, ndn::Buffer>(
+      providerName, serviceName, targetedBytes, streamOptions,
+      [](const ndn::Buffer&) {}, [](const ndn::Buffer&) {},
+      [&](const StreamedInvocationError& error) { streamErrors.push_back(error); });
+  BOOST_REQUIRE(active);
+  BOOST_REQUIRE(streamErrors.empty());
+  std::vector<StreamedInvocationError> otherErrors, discoveryErrors;
+  const auto other = user.RequestServiceStreaming<ndn::Buffer, ndn::Buffer, ndn::Buffer>(
+      otherProvider, serviceName, targetedBytes, streamOptions,
+      [](const ndn::Buffer&) {}, [](const ndn::Buffer&) {},
+      [&](const StreamedInvocationError& error) {
+        otherErrors.push_back(error);
+        BOOST_CHECK(!user.hasStreamStateForTest(error.requestId));
+        user.cancelStreamRequest(error.requestId);
+      });
+  BOOST_REQUIRE(other);
+  streamOptions.mode = InvocationMode::Normal;
+  const auto discovery = user.RequestServiceStreaming<ndn::Buffer, ndn::Buffer, ndn::Buffer>(
+      serviceName, targetedBytes, streamOptions, [](const ndn::Buffer&) {},
+      [](const ndn::Buffer&) {}, [&](const auto& error) { discoveryErrors.push_back(error); });
+  BOOST_REQUIRE(discovery);
+  BOOST_REQUIRE(user.installControllerStatus(liveStatusFor(
+      {9200, 13}, {makeServiceRevocation(otherProvider.toUri().c_str())})));
+  BOOST_REQUIRE_EQUAL(otherErrors.size(), 1U);
+  BOOST_CHECK(otherErrors.front().code == StreamedInvocationErrorCode::Unauthorized);
+  BOOST_CHECK_EQUAL(otherErrors.front().requestId, other->requestId());
+  BOOST_CHECK(other->status() == StreamedInvocationStatus::Failed);
+  BOOST_CHECK(streamErrors.empty());
+  BOOST_CHECK(discoveryErrors.empty());
+  BOOST_CHECK(user.hasStreamStateForTest(active->requestId()));
+  BOOST_CHECK(user.hasStreamStateForTest(discovery->requestId()));
+
+  RevocationTarget recipientRevoked;
+  recipientRevoked.kind = RevocationKind::CERTIFICATE;
+  recipientRevoked.certificateDigest = userDigest;
+  install({9200, 14}, {recipientRevoked}, {});
+  BOOST_REQUIRE_EQUAL(streamErrors.size(), 1U);
+  BOOST_CHECK(streamErrors.front().code == StreamedInvocationErrorCode::Unauthorized);
+  BOOST_CHECK(active->status() == StreamedInvocationStatus::Failed);
+  BOOST_REQUIRE_EQUAL(discoveryErrors.size(), 1U);
+  BOOST_CHECK(discoveryErrors.front().code == StreamedInvocationErrorCode::Unauthorized);
+  BOOST_REQUIRE(user.installControllerStatus(liveStatusFor({9200, 15}, {recipientRevoked})));
+  BOOST_CHECK_EQUAL(streamErrors.size(), 1U);
+  BOOST_CHECK_EQUAL(otherErrors.size(), 1U);
+  BOOST_CHECK_EQUAL(discoveryErrors.size(), 1U);
   BOOST_TEST_MESSAGE(
       "NDNSF_REVOCATION_RUNTIME provider_certificate_only=deny"
       " provider_service_scope=deny user_certificate_only=deny"
@@ -5114,11 +7438,13 @@ BOOST_AUTO_TEST_CASE(UnprovisionedRuntimesConstructAndRemainUnauthorized,
   };
   const auto aa = cert(ndn::Name("/spec179/unprovisioned/controller"));
   const auto userCertificate = cert(userName);
+  const auto signingCertificate = keys.createKey(keys.getPib().getIdentity(userName),
+                                                 ndn::EcKeyParams()).getDefaultCertificate();
   const auto providerCertificate = cert(providerName);
   ndn_service_framework::test::IsolatedTestTrust fixedTrust21{
-    aa, userCertificate, providerCertificate};
+    aa, userCertificate, signingCertificate, providerCertificate};
   ServiceUser user(face, ndn::Name("/spec179/unprovisioned/group"),
-                   userCertificate, aa, fixedTrust21.schemaPath());
+                   userCertificate, signingCertificate, aa, fixedTrust21.schemaPath());
   ndn_service_framework::test::IsolatedTestTrust fixedTrust22{
     aa, userCertificate, providerCertificate};
   ServiceProvider provider(face, ndn::Name("/spec179/unprovisioned/group"),
@@ -5152,6 +7478,21 @@ BOOST_AUTO_TEST_CASE(UnprovisionedRuntimesConstructAndRemainUnauthorized,
       makeRequestNameV2(userName, ndn::Name(SERVICE), ndn::Name("no-dkey")), request)
       .getStatus());
   BOOST_CHECK_EQUAL(executed, 0U);
+
+  const auto service = ndn::Name(SERVICE);
+  BOOST_REQUIRE(user.installControllerStatus(liveStatusFor({9850, 1})));
+  BOOST_CHECK(user.checkRequestBootstrap(service, {providerName}, false) ==
+              ServiceUser::RequestBootstrapState::WAITING);
+  const auto revoke = [&](const ndn::security::Certificate& certificate, uint64_t epoch) {
+    const auto fingerprint = ServiceControllerTestAccess::certificateDigest(certificate);
+    BOOST_REQUIRE(user.installControllerStatus(liveStatusFor({9850, epoch},
+        {makeCertificateRevocation(userName.toUri().c_str(), fingerprint.c_str())})));
+    BOOST_CHECK(user.checkRequestBootstrap(service, {providerName}, false) ==
+                ServiceUser::RequestBootstrapState::REVOKED);
+  };
+  revoke(signingCertificate, 2);
+  revoke(userCertificate, 3);
+  BOOST_CHECK_EQUAL(published, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(OnlineGrantWaitsForInitialDkeyAndReportsUnwrapFailure,
@@ -5433,7 +7774,7 @@ BOOST_AUTO_TEST_CASE(Spec201CurrentPermissionRpcPreservesOriginalAndRefreshesAft
   std::filesystem::remove(statePath.string() + ".lock");
   ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
 
-  ndn::KeyChain keys("pib-memory:spec201-controller-rpc", "tpm-memory:spec201-controller-rpc");
+  ndn::KeyChain keys;
   const ndn::Name producer("/controller/spec201/final"), user("/example/hello/user"),
                   provider("/spec201/controller-rpc/provider"),
                   granted("/spec201/service");

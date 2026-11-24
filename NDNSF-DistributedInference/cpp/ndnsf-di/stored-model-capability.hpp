@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -42,9 +43,51 @@ void
 nativeExportStoredModelHandle(const NativeStoredModelHandle& handle,
                               const std::filesystem::path& destination);
 
+/** Dedicated file-protection key, addressed by the ID recorded in a sealed envelope. */
+struct NativeFileProtectionKey
+{
+  std::string keyId;
+  std::vector<std::uint8_t> key;
+};
+
+/** Resolve a recorded key ID to its key. An empty result means "unknown" and must be
+ * rejected rather than falling back to a plaintext read. */
+using NativeFileKeyResolver =
+  std::function<std::optional<std::vector<std::uint8_t>>(const std::string& keyId)>;
+
+/** Seal the handle so no key material is written in the clear. */
+void
+nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
+                                    const std::filesystem::path& destination,
+                                    const NativeFileProtectionKey& protection);
+
+/** Open a sealed handle with the key its envelope names. */
+NativeStoredModelHandle
+nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
+                                  const NativeFileKeyResolver& resolve);
+
+/** Read the active write key from the private file named by `NDNSF_FILE_KEYRING`. */
+std::optional<NativeFileProtectionKey>
+nativeFileProtectionKeyFromEnvironment();
+
+/** Resolve any recorded key ID from the same ring, so a rotation can still open old material. */
+NativeFileKeyResolver
+nativeFileKeyResolverFromKeyRing();
+
+/** Open a sealed handle by its recorded key ID. Legacy files require explicit import. */
+NativeStoredModelHandle
+nativeOpenStoredModelHandle(const std::filesystem::path& source,
+                            const NativeFileKeyResolver& resolve);
+
 /** Load a bounded, current-user-owned regular 0600 file without following a final symlink. */
 NativeStoredModelHandle
 nativeLoadStoredModelHandle(const std::filesystem::path& source);
+
+/** Seal a legacy handle only when it matches the caller's verified publication identity. */
+void
+nativeImportLegacyStoredModelHandle(const std::filesystem::path& source,
+  const std::filesystem::path& destination, const ndn::Name& expectedRoot,
+  const std::string& expectedWireDigest, const NativeFileProtectionKey& protection);
 
 /** Public root points to one segmented logical-object index, not all segment Names. */
 struct NativeStoredModelRoot
@@ -57,7 +100,7 @@ struct NativeStoredModelRoot
   std::uint32_t segmentCount = 0;
 };
 
-/** Pin exact root wire and Producer before admitting any public object references. */
+/** Verify the pinned root wire. Producer signer authority is checked separately. */
 NativeStoredModelRoot
 nativeAdmitStoredModelRoot(const NativeStoredModelReference& reference, const ndn::Data& root);
 

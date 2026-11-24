@@ -5,6 +5,7 @@
 #include "NDNSF-UAV-APP/shared/UavDigest.hpp"
 #include "NDNSF-UAV-APP/shared/UavObservationRefVerifier.hpp"
 #include "ndnsf-integration-fixture.hpp"
+#include "tests/fixtures/service-provider-test-access.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndn-service-framework/utils.hpp"
 
@@ -943,6 +944,19 @@ BOOST_AUTO_TEST_CASE(ImmutableStaticPublicationReusesOriginalPacketsAcrossReques
     return firstSource.publishImmutableProtectedData(semanticPrefix, plaintext);
   });
   BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+  // The object is sealed under a content key the provider minted for this service. The CK name is
+  // <producer>/CK/<id>/ENC-BY/<AA key>/SERVICE%2F<service>/seg=0: the public parameters appear only
+  // indirectly, as the AA key the CK is encrypted to, so the checks below pin the parts that exist.
+  const auto ckNames =
+    ndn_service_framework::ServiceProviderTestAccess::lastPublishedCkNames(producer);
+  BOOST_REQUIRE_MESSAGE(ckNames.size() == 1, "expected exactly one CK for one publication");
+  const ndn::Name& ckName = ckNames.front();
+  BOOST_CHECK_EQUAL(ckName.getPrefix(producerName.size()).toUri(), producerName.toUri());
+  bool hasEnvelope = false;
+  for (size_t i = 0; i + 1 < ckName.size(); ++i)
+    if (ckName[i].toUri() == "ENC-BY") hasEnvelope = true;
+  BOOST_CHECK_MESSAGE(hasEnvelope, "the CK is not sealed to an attribute-authority key");
+  BOOST_CHECK_EQUAL(ckName[-1].toUri(), "seg=0");
   BOOST_CHECK_EQUAL(first.dataName.size(), semanticPrefix.size() + 1);
   BOOST_CHECK(first.dataName.getPrefix(-1) == semanticPrefix);
   BOOST_CHECK(first.dataName[-1].isVersion());

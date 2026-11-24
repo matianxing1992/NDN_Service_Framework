@@ -380,6 +380,39 @@ def test_operator_stop_observation_honors_declared_grace_and_caller_timeout(
             cluster._stop_provider(tmp_path, state, 'source', timeout)
 
 
+@pytest.mark.parametrize('failed_by_signal,matching_pid', [(False, True), (True, True), (False, False)])
+def test_close_keeps_actual_reaped_requester_exit(ops, tmp_path, failed_by_signal, matching_pid):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    bindings = dict(NDNSF_DEPLOYMENT_ACTOR_ID='requester', NDNSF_DEPLOYMENT_BOOT_ID='cleanup-boot',
+                    NDNSF_DEPLOYMENT_CONFIG_SHA256='a' * 64)
+    script = "import sys; print('ready', flush=True); sys.stdin.readline(); sys.exit(1)"
+    with subprocess.Popen([sys.executable, '-c', script], env=dict(os.environ, **bindings),
+                          start_new_session=True, stdin=subprocess.PIPE,
+                          stdout=subprocess.PIPE, text=True) as child:
+        try:
+            assert child.stdout.readline().strip() == 'ready'
+            proof = cluster.process_identity(child.pid)
+            if failed_by_signal:
+                child.terminate()
+            else:
+                child.stdin.write('\n')
+                child.stdin.flush()
+            code = child.wait(timeout=5)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+    assert code == (-signal.SIGTERM if failed_by_signal else 1)
+    row = dict(id='requester', kind='requester', bindings=bindings, proof=proof, expected_exe=proof['exe'])
+    state = dict(schema='ndnsf-di-host-operation-v1', deployment_id='cleanup-fixture',
+                 status='REQUEST_RUNNING', boot_id='cleanup-boot', configuration_sha256='a' * 64,
+                 evidence_root=str(tmp_path), launches=[row],
+                 requester=dict(pid=child.pid if matching_pid else child.pid + 1,
+                                exit_code=code, completion='EXITED'))
+    cluster._close(state, tmp_path)
+    assert state['cleanup'][0].get('exitCode') == (code if matching_pid else None)
+
+
 def test_close_keeps_repo_and_transport_alive_until_providers_exit(ops, tmp_path):
     cluster = importlib.import_module('_spec217_ops.cluster')
     children = {}
@@ -2685,12 +2718,168 @@ def test_controller_generation_path_is_stable_private_and_native_owned(
     actor = next(a for a in native['actors'] if a['kind'] == 'controller')
     cluster = importlib.import_module('_spec217_ops.cluster')
     monkeypatch.setenv('NDNSF_CONTROLLER_GENERATION_STATE', '/tmp/unrelated-generation')
+    monkeypatch.setenv('NDNSF_CONTROLLER_HANDOFF', '/tmp/unrelated-handoff')
+    monkeypatch.setenv('NDNSF_CONTROLLER_MIN_VERSION', '999:1')
     expected = str(Path(actor['credential_home']) / '.ndn/controller-generation.state')
     for boot in ('a' * 32, 'b' * 32):
         state = {'boot_id': boot, 'configuration_sha256': 'c' * 64}
         _, env = cluster._native_launch(native, actor, base, state)
         assert env['NDNSF_CONTROLLER_GENERATION_STATE'] == expected
+        assert 'NDNSF_CONTROLLER_HANDOFF' not in env
+        assert 'NDNSF_CONTROLLER_MIN_VERSION' not in env
     assert not Path(expected).exists()  # The native Controller owns its state writes.
+    handoff = base / 'controller-signer-handoff.ndn'
+    handoff.write_bytes(b'opaque-native-handoff')
+    controller = next(a for a in config['actors'] if a['kind'] == 'controller')
+    controller.setdefault('parameters', {})['signer-handoff-file'] = str(handoff)
+    providers = [a for a in config['actors'] if a['kind'] == 'provider']
+    (base / 'trust-root-registry-v1.json').write_text('{}')
+    (base / 'recipients.json').write_text(json.dumps({a['identity']: 'key.pem' for a in providers}))
+    for provider in providers:
+        provider.setdefault('parameters', {}).update({
+            'grant-authority-public-key': 'key.pem', 'recipient-key-map': 'recipients.json'})
+    config['security']['controller_min_version'] = '18446744073709551615:1'
+    native = parser.load_deployment(write_config(base, config))
+    for actor in native['actors']:
+        _, env = cluster._native_launch(native, actor, base, state)
+        assert env.get('NDNSF_CONTROLLER_HANDOFF') == (
+            str(handoff) if actor['kind'] == 'controller' else None)
+        assert env['NDNSF_CONTROLLER_MIN_VERSION'] == '18446744073709551615:1'
+
+
+@pytest.mark.parametrize('value', ['0:1', '1:0', '01:1', '1:1:1', '18446744073709551616:1', 1])
+def test_controller_minimum_version_must_have_two_nonzero_uint64_fields(ops, deployment, value):
+    parser, _ = ops
+    base, config = deployment
+    config['security']['controller_min_version'] = value
+    with pytest.raises(parser.DeploymentConfigError, match='security.controller_min_version'):
+        parser.load_deployment(write_config(base, config))
+
+
+def test_controller_checkpoint_is_private_native_runtime_state(ops, deployment, monkeypatch):
+    parser, _ = ops
+    base, config = deployment
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    controller = next(a for a in config['actors'] if a['kind'] == 'controller')
+    ring = base / 'controller.ring'
+    ring.write_text('controller-abe ' + 'a' * 64 + '\n')
+    ring.chmod(0o600)
+    controller['file_keyring'] = str(ring)
+    directory = base / 'independent-recovery'
+    directory.mkdir(mode=0o700)
+    checkpoint = directory / 'controller.checkpoint'
+    security = config['security']
+    security['controller_recovery_checkpoint'] = str(checkpoint)
+    security['controller_recovery_import_sha256'] = 'sha256:' + 'b' * 64
+    security['controller_recovery_import_witness_sha256'] = 'sha256:' + 'c' * 64
+    security['controller_policy_lease_ms'] = 12000
+    security['controller_policy_max_lease_ms'] = 15000
+    security['controller_policy_clock_skew_ms'] = 125
+    providers = [a for a in config['actors'] if a['kind'] == 'provider']
+    (base / 'trust-root-registry-v1.json').write_text('{}')
+    (base / 'recipients.json').write_text(json.dumps({a['identity']: 'key.pem' for a in providers}))
+    for provider in providers:
+        provider.setdefault('parameters', {}).update({
+            'grant-authority-public-key': 'key.pem', 'recipient-key-map': 'recipients.json'})
+    monkeypatch.setenv('NDNSF_CONTROLLER_RECOVERY_CHECKPOINT', '/tmp/unrelated-checkpoint')
+    native = parser.load_deployment(write_config(base, config))
+    state = {'boot_id': 'a' * 32, 'configuration_sha256': 'c' * 64}
+    for actor in native['actors']:
+        _, env = cluster._native_launch(native, actor, base, state)
+        owns_checkpoint = actor['kind'] == 'controller'
+        assert env.get('NDNSF_CONTROLLER_RECOVERY_CHECKPOINT') == (
+            str(checkpoint) if owns_checkpoint else None)
+        assert env.get('NDNSF_CONTROLLER_RECOVERY_IMPORT_SHA256') == (
+            security['controller_recovery_import_sha256'] if owns_checkpoint else None)
+        assert env.get('NDNSF_CONTROLLER_RECOVERY_IMPORT_WITNESS_SHA256') == (
+            security['controller_recovery_import_witness_sha256'] if owns_checkpoint else None)
+        assert env.get('NDNSF_CONTROLLER_POLICY_LEASE_MS') == (
+            '12000' if owns_checkpoint else None)
+        receives_leases = actor['kind'] in ('requester', 'provider')
+        assert env.get('NDNSF_CONTROLLER_POLICY_MAX_LEASE_MS') == (
+            '15000' if receives_leases else None)
+        assert env.get('NDNSF_CONTROLLER_POLICY_CLOCK_SKEW_MS') == (
+            '125' if receives_leases else None)
+    assert not checkpoint.exists()
+
+    for invalid_lease in (True, 4999, 300001):
+        security['controller_policy_lease_ms'] = invalid_lease
+        with pytest.raises(parser.DeploymentConfigError, match='security.controller_policy_lease_ms'):
+            parser.load_deployment(write_config(base, config))
+    security['controller_policy_lease_ms'] = 12000
+    for key, value in (('controller_policy_max_lease_ms', 11999),
+                       ('controller_policy_max_lease_ms', 300001),
+                       ('controller_policy_clock_skew_ms', -1),
+                       ('controller_policy_clock_skew_ms', 1001)):
+        restore = security[key]
+        security[key] = value
+        with pytest.raises(parser.DeploymentConfigError, match='security.' + key):
+            parser.load_deployment(write_config(base, config))
+        security[key] = restore
+
+    security['controller_recovery_bootstrap'] = True
+    with pytest.raises(parser.DeploymentConfigError, match='security.controller_recovery_bootstrap'):
+        parser.load_deployment(write_config(base, config))
+    digest = security.pop('controller_recovery_import_sha256')
+    with pytest.raises(parser.DeploymentConfigError, match='security.controller_recovery_bootstrap'):
+        parser.load_deployment(write_config(base, config))
+    witness_digest = security.pop('controller_recovery_import_witness_sha256')
+    native = parser.load_deployment(write_config(base, config))
+    for actor in native['actors']:
+        _, env = cluster._native_launch(native, actor, base, state)
+        assert env.get('NDNSF_CONTROLLER_RECOVERY_BOOTSTRAP') == (
+            '1' if actor['kind'] == 'controller' else None)
+    security.pop('controller_recovery_bootstrap')
+    security['controller_recovery_import_sha256'] = digest
+    security['controller_recovery_import_witness_sha256'] = witness_digest
+
+    security['controller_recovery_checkpoint'] = str(Path(controller['credential_home']) /
+                                                     'copied-with-state')
+    with pytest.raises(parser.DeploymentConfigError, match='checkpoint directory overlaps'):
+        parser.load_deployment(write_config(base, config))
+    security.pop('controller_recovery_checkpoint')
+    with pytest.raises(parser.DeploymentConfigError, match='security.controller_recovery_import'):
+        parser.load_deployment(write_config(base, config))
+
+
+def test_file_keyrings_are_bound_only_to_their_native_owners(ops, deployment, monkeypatch):
+    parser, _ = ops
+    base, config = deployment
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    rings = {}
+    for kind in ('controller', 'requester'):
+        ring = base / (kind + '.ring')
+        ring.write_text('test path fixture')
+        ring.chmod(0o600)
+        rings[kind] = str(ring)
+        next(a for a in config['actors'] if a['kind'] == kind)['file_keyring'] = str(ring)
+    providers = [a for a in config['actors'] if a['kind'] == 'provider']
+    (base / 'trust-root-registry-v1.json').write_text('{}')
+    (base / 'recipients.json').write_text(json.dumps({a['identity']: 'key.pem' for a in providers}))
+    for provider in providers:
+        provider.setdefault('parameters', {}).update({
+            'grant-authority-public-key': 'key.pem', 'recipient-key-map': 'recipients.json'})
+    monkeypatch.setenv('NDNSF_FILE_KEYRING', '/unrelated-ring')
+    normalized = parser.load_deployment(write_config(base, config))
+    state = {'boot_id': 'a' * 32, 'configuration_sha256': 'b' * 64}
+    for actor in normalized['actors']:
+        _, env = cluster._native_launch(normalized, actor, base, state)
+        assert env.get('NDNSF_FILE_KEYRING') == rings.get(actor['kind'])
+    assert 'NDNSF_FILE_KEYRING' not in cluster._environment(base, '/unused.sock', 'nfd', state)
+
+    requester = next(a for a in config['actors'] if a['kind'] == 'requester')
+    requester['file_keyring'] = rings['controller']
+    with pytest.raises(parser.DeploymentConfigError, match='require distinct files'):
+        parser.load_deployment(write_config(base, config))
+
+    for actor in config['actors']:
+        actor.pop('file_keyring', None)
+    config['security']['file_keyring'] = rings['controller']
+    normalized = parser.load_deployment(write_config(base, config))
+    for actor in normalized['actors']:
+        _, env = cluster._native_launch(normalized, actor, base, state)
+        expected = rings['controller'] if actor['kind'] in rings else None
+        assert env.get('NDNSF_FILE_KEYRING') == expected
 
 
 def test_cluster_cancellation_after_intent_does_not_spawn_requester(ops, deployment, monkeypatch):
@@ -3553,6 +3742,43 @@ def test_stored_model_private_paths_have_only_requester_mounts(node_container, m
     assert not any(container._contains(path, handle) for path in provider_mounts)
 
 
+def test_container_mounts_only_the_current_actors_file_keyring(node_container):
+    config, container, frozen, _, _ = node_container
+    rings = {}
+    for kind in ('controller', 'requester'):
+        ring = frozen.parent.parent / (kind + '.ring')
+        ring.write_text('test path fixture')
+        ring.chmod(0o600)
+        rings[kind] = ring
+        next(a for a in config['actors'] if a['kind'] == kind)['file_keyring'] = str(ring)
+    container.cluster.write_json(frozen, config)
+    for kind in ('controller', 'requester', 'provider'):
+        actor = next(a for a in config['actors'] if a['kind'] == kind)
+        mounts = container.role_mounts(config, frozen, actor)[3]
+        for owner, ring in rings.items():
+            if owner == kind:
+                assert mounts[ring] == 'ro'
+            else:
+                assert not any(container._contains(path, ring) for path in mounts)
+
+
+def test_container_mounts_recovery_directory_only_for_controller(node_container):
+    config, container, frozen, _, _ = node_container
+    directory = frozen.parent.parent / 'controller-recovery'
+    directory.mkdir(mode=0o700)
+    checkpoint = directory / 'pending.record'
+    config['security']['controller_recovery_checkpoint'] = str(checkpoint)
+    container.cluster.write_json(frozen, config)
+    for role in ('controller', 'requester', 'provider', 'repo'):
+        actor = next(a for a in config['actors'] if a['kind'] == role)
+        mounts = container.role_mounts(config, frozen, actor)[3]
+        if role == 'controller':
+            assert mounts[directory] == 'rw'
+        else:
+            assert not any(container._contains(path, checkpoint) for path in mounts)
+    assert not checkpoint.exists()
+
+
 def test_source_ready_mounts_do_not_require_absent_native_source(node_container):
     config, container, frozen, _, _ = node_container
     source = config['requester']['catalog']['source']
@@ -3563,6 +3789,20 @@ def test_source_ready_mounts_do_not_require_absent_native_source(node_container)
     mounts = container.role_mounts(config, frozen, actor)[3]
     assert absent not in mounts
     assert not absent.exists()
+
+
+def test_controller_signer_handoff_is_mounted_read_only_for_controller(node_container):
+    config, container, frozen, _, _ = node_container
+    handoff = frozen.parent.parent / 'controller-signer-handoff.ndn'
+    handoff.write_bytes(b'opaque-native-handoff')
+    controller = next(a for a in config['actors'] if a['kind'] == 'controller')
+    controller.setdefault('parameters', {})['signer-handoff-file'] = str(handoff)
+    container.cluster.write_json(frozen, config)
+    assert container.role_mounts(config, frozen, controller)[3][handoff] == 'ro'
+    for kind in ('requester', 'provider', 'repo'):
+        actor = next(a for a in config['actors'] if a['kind'] == kind)
+        mounts = container.role_mounts(config, frozen, actor)[3]
+        assert not any(container._contains(path, handoff) for path in mounts)
 
 
 def test_authority_mounts_each_registered_requester_public_key(node_container):
@@ -6087,3 +6327,17 @@ raise SystemExit(cli.main(['cluster', 'check', '--config', sys.argv[2]]))
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["status"] == "CONFIGURATION_CHECKED"
     assert not (root / "state_root").exists()
+
+def test_security_role_lease_must_cover_issuer_lease(ops, deployment):
+    # A role limit below the issuer window makes the native side reject every signed status, so the
+    # schema must refuse that configuration rather than ship one that only works on paper.
+    parser, _ = ops
+    root, config = deployment
+    security = config['security']
+    security['controller_policy_lease_ms'] = 20000
+    security['provider_policy_max_lease_ms'] = 6000
+    with pytest.raises(parser.DeploymentConfigError):
+        parser.load_deployment(write_config(root, config))
+    security['provider_policy_max_lease_ms'] = 20000
+    security['requester_policy_max_lease_ms'] = 20000
+    parser.load_deployment(write_config(root, config))

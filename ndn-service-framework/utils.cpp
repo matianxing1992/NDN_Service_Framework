@@ -64,6 +64,14 @@ namespace ndn_service_framework
           .append(makeReversibleNameComponent(query.service))
           .append(makeNamingDecimalComponent(query.generation))
           .append(makeNamingDecimalComponent(query.epoch));
+        if (!query.recipientCertificate.empty()) {
+            const auto& fullName = query.recipientCertificate;
+            if (!fullName.at(-1).isImplicitSha256Digest() ||
+                !ndn::security::Certificate::isValidName(fullName.getPrefix(-1)) ||
+                ndn::security::extractIdentityFromCertName(fullName.getPrefix(-1)) != query.subject)
+                throw std::invalid_argument("permission recipient must identify the subject's certificate");
+            carrier.append(makeReversibleNameComponent(fullName));
+        }
         return carrier.wireEncode();
     }
 
@@ -79,7 +87,8 @@ namespace ndn_service_framework
             }
             if (block.type() != ndn::tlv::Name) return std::nullopt;
             const ndn::Name carrier(block);
-            if (carrier.size() != 5 || carrier[0] != ndn::name::Component("CONTROL-QUERY"))
+            if ((carrier.size() != 5 && carrier.size() != 6) ||
+                carrier[0] != ndn::name::Component("CONTROL-QUERY"))
                 return std::nullopt;
             const auto subject = parseReversibleNameComponent(carrier[1]);
             const auto service = parseReversibleNameComponent(carrier[2]);
@@ -95,6 +104,11 @@ namespace ndn_service_framework
                 return result;
             };
             ControlQueryParameters query{*subject, *service, decimal(carrier[3]), decimal(carrier[4])};
+            if (carrier.size() == 6) {
+                const auto recipient = parseReversibleNameComponent(carrier[5]);
+                if (!recipient || recipient->empty()) return std::nullopt;
+                query.recipientCertificate = *recipient;
+            }
             if (!(encodeControlQueryParameters(query) == block)) return std::nullopt;
             return query;
         }
@@ -108,7 +122,7 @@ namespace ndn_service_framework
         static const std::set<std::string> operations{
             "PROVIDER-READY", "EXECUTION-ACTIVATE", "SELECTION-STATUS", "USER-PERMISSIONS",
             "PROVIDER-PERMISSIONS", "POLICY-MANIFEST", "POLICY-STATUS", "SERVICEACCESS",
-            "SERVICEPROVISION", "CERTBOOTSTRAP", "AA-READY", "FRONTIER"};
+            "SERVICEPROVISION", "CERTBOOTSTRAP", "AA-READY", "FRONTIER", "PUBLISH-HISTORY"};
         if (!operations.count(operation) || nonce.empty() || nonce.size() > 128 ||
             !parameters.isValid())
             throw std::invalid_argument("invalid control RPC context");

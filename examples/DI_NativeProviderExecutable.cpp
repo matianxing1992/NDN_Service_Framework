@@ -2757,6 +2757,44 @@ main(int argc, char** argv)
         return hostDrained && sessionsDrained && residentsDrained;
       };
 
+      provider->setAuthorityWithdrawnHook([&] (const std::vector<std::string>& lost) {
+        // Only the service this process advertises matters here; other services in the record belong to other
+        // roles and losing them must not stop this one.
+        // The record carries canonical URIs whose components keep their type; the advertised service is plain.
+        const auto plain = [] (std::string text) {
+          std::string out;
+          std::size_t index = 0;
+          while (index < text.size()) {
+            if (text[index] != '/') {
+              out += text[index++];
+              continue;
+            }
+            out += '/';
+            ++index;
+            const auto equals = text.find('=', index);
+            const auto slash = text.find('/', index);
+            if (equals != std::string::npos && (slash == std::string::npos || equals < slash) &&
+                equals > index &&
+                std::all_of(text.begin() + static_cast<std::ptrdiff_t>(index),
+                            text.begin() + static_cast<std::ptrdiff_t>(equals),
+                            [] (char c) { return c >= '0' && c <= '9'; })) {
+              index = equals + 1;
+            }
+          }
+          return out;
+        };
+        const auto mine = std::any_of(lost.begin(), lost.end(),
+          [&] (const std::string& name) { return plain(name) == plain(options.serviceName); });
+        if (!mine)
+          return;
+        std::ostringstream record;
+        record << "NDNSF_DI_NATIVE_PROVIDER_AUTHORITY_WITHDRAWN provider=" << options.providerName
+               << " service=" << options.serviceName;
+        logRuntimeEvidence(record.str());
+        // Deliberately no process exit: the Provider already refuses requests it may no longer serve (the
+        // permission gate rejects each one), and tearing the deployment down would make the withdrawal
+        // unobservable to everything else in the run - including the reads that must still succeed.
+      });
       provider->fetchPermissionsFromController(controllerIdentity);
       if (handoffWriter) {
         handoffWriter->fetchPermissionsFromController(controllerIdentity);

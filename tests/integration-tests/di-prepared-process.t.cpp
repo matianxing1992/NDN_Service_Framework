@@ -276,7 +276,12 @@ requireStoredProcessOracle(const std::filesystem::path& runRoot, const std::stri
   }
   BOOST_REQUIRE(foundRepoRoute);
 
-  const auto firstHandle = nativeLoadStoredModelHandle(runRoot / "consumer-b/stored-handle.json");
+  // The handle may be sealed with the deployment's file key; the format is not what this case
+  // is about, so it opens whatever generation is on disk.
+  const auto openHandle = [] (const std::filesystem::path& path) {
+    return nativeOpenStoredModelHandle(path, nativeFileKeyResolverFromKeyRing());
+  };
+  const auto firstHandle = openHandle(runRoot / "consumer-b/stored-handle.json");
   BOOST_CHECK(firstHandle.producer == producer);
   BOOST_CHECK(firstHandle.repository == repoNode);
   const ndn::Name packageStem(
@@ -295,7 +300,7 @@ requireStoredProcessOracle(const std::filesystem::path& runRoot, const std::stri
     requireLogMarker(runRoot, log, "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN");
     requireLogAbsentMarker(runRoot, log, "ndnsf-di-stored-model-preparation");
     BOOST_REQUIRE(std::filesystem::file_size(directory / "output.bin") > 0);
-    const auto handle = nativeLoadStoredModelHandle(directory / "stored-handle.json");
+    const auto handle = openHandle(directory / "stored-handle.json");
     BOOST_CHECK(handle.producer == firstHandle.producer);
     BOOST_CHECK(handle.repository == firstHandle.repository);
     BOOST_CHECK(handle.rootName == firstHandle.rootName);

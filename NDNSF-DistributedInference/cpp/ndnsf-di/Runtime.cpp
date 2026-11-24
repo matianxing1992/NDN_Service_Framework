@@ -31,6 +31,7 @@
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/logger.hpp>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -1823,7 +1824,7 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
   const std::string& modelKey,
   const ndnsf_distributed_repo::RepoArtifactTarget& repository,
   const std::filesystem::path& preparationState,
-  const std::filesystem::path& privateHandleFile) const
+  const std::filesystem::path& privateHandleFile, const ndn::Name& legacyJournalPrefix) const
 {
   const auto [statePath, handlePath] = detail::storedModelPrivatePaths(
     preparationState, privateHandleFile);
@@ -1845,6 +1846,13 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
       throw DiError("MODEL_PUBLICATION_CANCELLED", "local", "model-publication",
                     "Runtime owner closed, Core failed, or publication deadline expired");
   };
+
+  // Reject missing protection before starting Core transport or publishing anything.
+  current();
+  const auto fileProtection = nativeFileProtectionKeyFromEnvironment();
+  if (!fileProtection)
+    throw DiError("MODEL_PROTECTION_REQUIRED", "local", "model-publication",
+                  "NDNSF_FILE_KEYRING is required for stored model publication");
 
   ensureRuntimeCoreTransport(state);
   std::shared_ptr<ndn_service_framework::ServiceUser> serviceUser;
@@ -1874,20 +1882,51 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
     control.requireActive();
     return NativeRequestCatalog::load(spec.catalogConfigurationJson, std::move(source), control);
   };
-    const auto acquireOperationLifetime = [weakOwner =
-      std::weak_ptr<detail::CoreRuntimeOwner>(owner)] {
-      auto currentOwner = weakOwner.lock();
-      if (!currentOwner)
-        throw std::runtime_error("MODEL_REPO_CORE_OWNER_UNAVAILABLE");
-      return detail::makeCoreIoOperationLifetime(std::move(currentOwner));
-    };
-    auto io = nativeStoredModelRepositoryIo(serviceUser, repository, deadline, current, true,
-                                           acquireOperationLifetime);
+  const auto acquireOperationLifetime = [weakOwner =
+    std::weak_ptr<detail::CoreRuntimeOwner>(owner)] {
+    auto currentOwner = weakOwner.lock();
+    if (!currentOwner)
+      throw std::runtime_error("MODEL_REPO_CORE_OWNER_UNAVAILABLE");
+    return detail::makeCoreIoOperationLifetime(std::move(currentOwner));
+  };
+  auto io = nativeStoredModelRepositoryIo(serviceUser, repository, deadline, current, true,
+                                         acquireOperationLifetime);
+  io.signProducerProof = [owner, serviceUser, current, deadline,
+                          repoName = ndn::Name(repository.repoNode)](
+    const ndn::Name& name, const std::vector<std::uint8_t>& content) {
+    current();
+    if (serviceUser->isOnIoThread() || content.size() > ndn::MAX_NDN_PACKET_SIZE)
+      throw std::runtime_error("MODEL_REPO_PRODUCER_PROOF_SIGNING_INVALID");
+    ndn::Data proof(name);
+    proof.setContent(ndn::span<const std::uint8_t>(content));
+    if (!nativeIsStoredModelProducerProof(serviceUser->getName(), repoName, proof) ||
+        owner->requesterCertificate.getIdentity() != serviceUser->getName())
+      throw std::runtime_error("MODEL_REPO_PRODUCER_PROOF_SIGNING_INVALID");
+    using Wire = std::vector<std::uint8_t>;
+    auto task = std::make_shared<std::packaged_task<Wire()>>(
+      [owner, current, proof = std::move(proof)]() mutable {
+        current();
+        if (!owner->requesterCertificate.getValidityPeriod().isValid())
+          throw std::runtime_error("MODEL_REPO_PRODUCER_PROOF_CERTIFICATE_EXPIRED");
+        const auto signer = ndn::security::signingByCertificate(owner->requesterCertificate);
+        owner->keyChain->sign(proof, signer);
+        const auto& wire = proof.wireEncode();
+        if (wire.size() > ndn::MAX_NDN_PACKET_SIZE)
+          throw std::runtime_error("MODEL_REPO_PRODUCER_PROOF_WIRE_BUDGET");
+        return Wire(wire.begin(), wire.end());
+      });
+    auto signedWire = task->get_future();
+    const auto lease = serviceUser->postToIoWithFace(
+      [task, lifetime = detail::makeCoreIoOperationLifetime(owner)](ndn::Face&) { (*task)(); });
+    if (signedWire.wait_until(deadline) != std::future_status::ready)
+      throw std::runtime_error("MODEL_REPO_PRODUCER_PROOF_SIGNING_DEADLINE");
+    current();
+    return signedWire.get();
+  };
+  const NativeStoredModelHandleOutput output{handlePath, *fileProtection};
   const auto publication = nativePublishStoredPreparedModel(*owner->keyChain,
-    serviceUser->getName(), ndn::Name(repository.repoNode), ndn::Name{}, loadCatalog,
-    spec.catalogConfigurationJson, io, statePath);
-  current();
-  nativeExportStoredModelHandle(publication.handle, handlePath);
+    serviceUser->getName(), ndn::Name(repository.repoNode), legacyJournalPrefix, loadCatalog,
+    spec.catalogConfigurationJson, io, statePath, !legacyJournalPrefix.empty(), &output);
   current();
 
   NativeStoredModelPreparationReceipt receipt;
@@ -1918,7 +1957,9 @@ User::openStoredModelImpl(detail::StoredModelPreparationOperation& operation,
   const auto deadline = operation.deadline;
   NativeStoredModelHandle loadedHandle;
   try {
-    loadedHandle = nativeLoadStoredModelHandle(privateHandleFile);
+    // Any generation still in the ring can be opened, which is what a rotation must allow.
+    loadedHandle = nativeOpenStoredModelHandle(privateHandleFile,
+                                               nativeFileKeyResolverFromKeyRing());
     nativeValidateModelRepositoryTarget(repository, loadedHandle.producer);
     if (ndn::Name(repository.repoNode) != loadedHandle.repository)
       throw DiError("STORED_MODEL_REPOSITORY_MISMATCH", "local", "stored-model-open",
@@ -2055,6 +2096,22 @@ User::publishStoredModel(const std::string& modelKey,
   detail::StoredModelPreparationOperation operation(m_state, modelKey, "publish-stored", timeout,
                                             "model-publication");
   return publishStoredModelImpl(operation, modelKey, repository, preparationState, privateHandleFile);
+}
+
+NativeStoredModelPreparationReceipt
+User::publishStoredModel(const std::string& modelKey,
+  const ndnsf_distributed_repo::RepoArtifactTarget& repository,
+  const std::filesystem::path& preparationState,
+  const std::filesystem::path& privateHandleFile, Milliseconds timeout,
+  const ndn::Name& legacyJournalPrefix) const
+{
+  if (legacyJournalPrefix.empty())
+    throw DiError("LEGACY_JOURNAL_PREFIX_REQUIRED", "local", "model-publication",
+                  "legacy journal import requires the original publication prefix");
+  detail::StoredModelPreparationOperation operation(m_state, modelKey, "publish-stored", timeout,
+                                            "model-publication");
+  return publishStoredModelImpl(operation, modelKey, repository, preparationState,
+                                privateHandleFile, legacyJournalPrefix);
 }
 
 PreparedModel

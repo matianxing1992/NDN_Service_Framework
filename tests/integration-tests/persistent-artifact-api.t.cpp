@@ -2778,7 +2778,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   environment.bootstrap();
   BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
   auto sourceWriter = makeRepoPublisherUser(environment, 0, servicePrefix, operations, true);
-  auto secondOwner = makeRepoPublisherUser(environment, 2, servicePrefix, operations);
+  auto secondOwner = makeRepoPublisherUser(environment, 2, servicePrefix, operations, true);
   environment.provider(1).setHandlerThreads(2);
   // The full packet index requires Core's protected segmented response path.
   // Model the configured Controller state through maintained admission APIs;
@@ -3819,8 +3819,21 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   std::size_t modelPosition = 0;
   std::size_t sourceReads = 0;
   const auto storedPublication = runWithFacePump(environment, [&] {
-    const auto transport = di::nativeStoredModelRepositoryIo(sourceWriter, target,
+    auto transport = di::nativeStoredModelRepositoryIo(sourceWriter, target,
       storedDeadline, active, true);
+    transport.signProducerProof = [&](const ndn::Name& name, const std::vector<uint8_t>& content) {
+      auto sign = std::make_shared<std::packaged_task<std::vector<uint8_t>()>>(
+        [&, name, content] {
+          ndn::Data proof(name);
+          proof.setContent(ndn::span<const uint8_t>(content));
+          environment.keyChain().sign(proof, ndn::security::signingByCertificate(producer));
+          const auto& wire = proof.wireEncode();
+          return std::vector<uint8_t>(wire.begin(), wire.end());
+        });
+      auto result = sign->get_future();
+      const auto lease = sourceWriter->postToIoWithFace([sign](ndn::Face&) { (*sign)(); });
+      return result.get();
+    };
     return di::nativePublishStoredModel(digestKeys, sourceIdentity,
       ndn::Name(target.providerIdentity), modelPrefix, di::nativePlanningDigest("stored-model"),
       "catalog", "manifest", [&]() -> std::optional<di::NativeStoredModelInput> {
@@ -3833,6 +3846,12 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_CHECK_EQUAL(storedPublication.objectCount, 3U);
   const auto storedRootWire = node->core().getDataPacket(
     storedPublication.handle.rootName.toUri(ndn::name::UriFormat::CANONICAL));
+  const auto proofName = di::nativeStoredModelProducerProofName(storedPublication.handle);
+  const auto storedProofWire = node->core().getDataPacket(
+    proofName.toUri(ndn::name::UriFormat::CANONICAL));
+  const ndn::Data storedProof{ndn::Block(ndn::span<const uint8_t>(storedProofWire))};
+  BOOST_REQUIRE(storedProof.getName() == proofName);
+  BOOST_REQUIRE(ndn::security::verifySignature(storedProof, producer));
   runWithFacePump(environment, [&] {
     const auto transport = di::nativeStoredModelRepositoryIo(sourceWriter, target,
       storedDeadline, active, true);
@@ -3860,6 +3879,12 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
       storedDeadline, active);
     BOOST_CHECK(!transport.commit);
     BOOST_CHECK(!transport.requireCommitted);
+    BOOST_REQUIRE(transport.fetchProducerProof);
+    BOOST_CHECK(transport.fetchProducerProof(proofName, sourceIdentity) == storedProofWire);
+    BOOST_CHECK_EXCEPTION(transport.fetchProducerProof(proofName, secondOwner->getName()),
+      std::runtime_error, [](const auto& error) {
+        return std::string(error.what()) == "repo-original-packet-verification-failed";
+      });
     const auto catalog = di::nativeLoadStoredModelCatalog(storedPublication.handle, transport);
     BOOST_CHECK(di::nativeReadStoredModelObject(storedPublication.handle, catalog, "layer",
                                                transport) == expectedLayer);

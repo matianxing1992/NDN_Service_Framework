@@ -4,8 +4,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-symmetric-crypto.hpp"
 
+#include "ndn-service-framework/SealedField.hpp"
+
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include <openssl/sha.h>
 #include <boost/test/unit_test.hpp>
 
@@ -19,6 +22,7 @@
 #include <mutex>
 #include <thread>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <type_traits>
 #include <unistd.h>
 
@@ -129,6 +133,7 @@ struct PacketRepository
   std::vector<ndn::Name> reads;
   std::size_t sourceReads = 0;
   std::size_t confirmations = 0;
+  bool hasProducerProof = false;
   std::vector<NativeStoredModelInput> source{
     {"catalog", Bytes{'c', 'a', 't'}}, {"manifest", Bytes{'r', 'o', 'o', 't'}},
     {"layer0", Bytes(20000, 0x73)}};
@@ -149,7 +154,10 @@ struct PacketRepository
         for (const auto& wire : wires) {
           const ndn::Data data{ndn::Block(ndn::span<const std::uint8_t>(wire))};
           names += data.getName().toUri(ndn::name::UriFormat::CANONICAL).size();
-          BOOST_CHECK_EQUAL(data.getSignatureType(), ndn::tlv::DigestSha256);
+          if (!hasProducerProof || !nativeIsStoredModelProducerProof(
+                ndn::Name("/preparer"), ndn::Name("/repo"), data)) {
+            BOOST_CHECK_EQUAL(data.getSignatureType(), ndn::tlv::DigestSha256);
+          }
           BOOST_CHECK_LE(wire.size(), ndn::MAX_NDN_PACKET_SIZE);
           const auto existing = packets.find(data.getName());
           if (existing != packets.end() && existing->second != wire)
@@ -201,7 +209,8 @@ struct PacketRepository
   NativeStoredModelPublication
   publish(const NativeStoredModelPacketIo* custom = nullptr,
           const std::filesystem::path& state = {},
-          const ndn::Name& prefix = ndn::Name("/preparer/models/v=1"))
+          const ndn::Name& prefix = ndn::Name("/preparer/models/v=1"),
+          bool importLegacyJournal = false, const NativeStoredModelHandleOutput* output = nullptr)
   {
     ndn::KeyChain keys{"pib-memory:", "tpm-memory:"};
     auto port = custom ? *custom : io();
@@ -213,7 +222,7 @@ struct PacketRepository
           return std::nullopt;
         ++sourceReads;
         return source[next++];
-      }, port, state);
+      }, port, state, {}, importLegacyJournal, output);
   }
 
   void
@@ -283,6 +292,236 @@ BOOST_AUTO_TEST_CASE(LegacyJournalResumesWhenCoordinatesAreSupplied)
     BOOST_CHECK(item.second.object.name ==
                 ndn::Name(legacyPrefix).append("objects").append(item.first).appendVersion(0));
   }
+}
+
+namespace {
+
+/** Write a ring file holding exactly these (id, key) pairs, newest first. */
+void
+writeKeyRing(const std::filesystem::path& path,
+             const std::vector<std::pair<std::string, std::string>>& entries)
+{
+  std::ofstream ring(path, std::ios::trunc);
+  for (const auto& [id, key] : entries)
+    ring << id << ' ' << key << '\n';
+  ring.close();
+  std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+}
+
+std::string
+journalHeader(const std::filesystem::path& path)
+{
+  std::ifstream input(path, std::ios::binary);
+  std::string line;
+  std::getline(input, line);
+  return line;
+}
+
+} // namespace
+
+/** A journal sealed with one ring entry stays readable after the ring gains a newer entry, and is rewritten
+ *  with the newer one: a rotation must never orphan work already on disk. */
+BOOST_AUTO_TEST_CASE(PreparationJournalSurvivesKeyRotation)
+{
+  PrivateFile fixture;
+  const auto ring = fixture.directory / "ring";
+  const auto journal = fixture.directory / "state.json";
+  const std::string keyA(64, 'a');
+  const std::string keyB(64, 'b');
+  ::unsetenv("NDNSF_FILE_KEYRING");
+  PacketRepository repository;
+  const auto original = repository.publish(nullptr, journal);
+  BOOST_REQUIRE_EQUAL(journalHeader(journal), "NDNSF-DI-MODEL-PREPARATION-v1");
+  writeKeyRing(ring, {{"key-a", keyA}});
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  struct RingCleanup
+  {
+    ~RingCleanup() { ::unsetenv("NDNSF_FILE_KEYRING"); }
+  } cleanup;
+  BOOST_CHECK_THROW(repository.publish(nullptr, journal), std::runtime_error);
+  BOOST_REQUIRE_EQUAL(journalHeader(journal), "NDNSF-DI-MODEL-PREPARATION-v1");
+  const auto prefix = original.handle.rootName.getPrefix(-1);
+  const auto writes = repository.writes.size();
+  const auto importedPath = fixture.directory / "imported.json";
+  BOOST_CHECK_THROW(repository.publish(nullptr, importedPath, prefix, true), std::runtime_error);
+  BOOST_CHECK(!std::filesystem::exists(importedPath));
+  std::filesystem::copy_file(journal, importedPath);
+  BOOST_CHECK_THROW(repository.publish(nullptr, importedPath,
+                    ndn::Name("/preparer/models/v=2"), true), std::runtime_error);
+  BOOST_CHECK_EQUAL(journalHeader(importedPath), "NDNSF-DI-MODEL-PREPARATION-v1");
+  const auto imported = repository.publish(nullptr, importedPath, prefix, true);
+  BOOST_CHECK(imported.handle.masterKey == original.handle.masterKey);
+  BOOST_CHECK(imported.handle.rootName == original.handle.rootName);
+  BOOST_CHECK_EQUAL(imported.handle.rootWireDigest, original.handle.rootWireDigest);
+  BOOST_CHECK_EQUAL(journalHeader(importedPath), "NDNSF-DI-MODEL-PREPARATION-v4");
+  BOOST_CHECK_EQUAL(repository.writes.size(), writes);
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(importedPath, nativeFileKeyResolverFromKeyRing()),
+                    std::runtime_error);
+  const auto sealedHandle = fixture.directory / "sealed.handle";
+  const auto protection = nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(protection);
+  nativeExportSealedStoredModelHandle(original.handle, sealedHandle, *protection);
+  const auto confirmed = repository.confirmations;
+  BOOST_CHECK_THROW(repository.publish(nullptr, sealedHandle), std::runtime_error);
+  BOOST_CHECK_EQUAL(repository.confirmations, confirmed);
+  // Recreate the previous on-disk format with its original AAD and exact state.
+  {
+    std::ifstream input(journal, std::ios::binary);
+    std::string header;
+    std::getline(input, header);
+    std::string metadata{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    BOOST_REQUIRE_GT(metadata.size(), 32U + 71U);
+    metadata.resize(metadata.size() - 32U - 71U);
+    const auto sealed = ndn_service_framework::sealField(std::vector<std::uint8_t>(32, 0xaa),
+      std::string(original.handle.masterKey.begin(), original.handle.masterKey.end()),
+      "ndnsf-di/model-preparation-journal");
+    BOOST_REQUIRE_EQUAL(sealed.size(), 95U);
+    std::string legacy = "NDNSF-DI-MODEL-PREPARATION-v3\nkey-a\n" + metadata + sealed;
+    legacy += hash(reinterpret_cast<const std::uint8_t*>(legacy.data()), legacy.size());
+    std::ofstream(journal, std::ios::binary | std::ios::trunc) << legacy;
+  }
+  // A newer entry becomes the write key; the older one still has to open the journal above.
+  writeKeyRing(ring, {{"key-b", keyB}, {"key-a", keyA}});
+  const auto nextProtection = nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(nextProtection);
+  const NativeStoredModelHandleOutput output{sealedHandle, *nextProtection};
+  const auto missingJournal = fixture.directory / "missing-journal";
+  BOOST_CHECK_EXCEPTION(repository.publish(nullptr, missingJournal, prefix, false, &output),
+    std::runtime_error, [] (const std::runtime_error& error) {
+      return std::string_view(error.what()) == "DI_STORED_MODEL_HANDLE_WITHOUT_JOURNAL";
+    });
+  BOOST_CHECK(!std::filesystem::exists(missingJournal));
+  auto wrongHandle = original.handle;
+  wrongHandle.masterKey.front() ^= 1;
+  nativeExportSealedStoredModelHandle(wrongHandle, sealedHandle, *protection);
+  BOOST_CHECK_EXCEPTION(repository.publish(nullptr, journal, prefix, false, &output),
+    std::runtime_error, [] (const std::runtime_error& error) {
+      return std::string_view(error.what()) == "DI_STORED_MODEL_HANDLE_JOURNAL_MISMATCH";
+    });
+  BOOST_CHECK_EQUAL(repository.confirmations, confirmed);
+  BOOST_CHECK_EQUAL(repository.writes.size(), writes);
+  BOOST_CHECK_EQUAL(journalHeader(journal), "NDNSF-DI-MODEL-PREPARATION-v3");
+  BOOST_CHECK(nativeOpenStoredModelHandle(sealedHandle, nativeFileKeyResolverFromKeyRing())
+    .masterKey == wrongHandle.masterKey);
+  nativeExportSealedStoredModelHandle(original.handle, sealedHandle, *protection);
+  auto missingReceipts = repository.io();
+  missingReceipts.requireCommitted = [] (const auto&, const auto&, auto) {
+    throw std::runtime_error("missing receipt");
+  };
+  BOOST_CHECK_THROW(repository.publish(&missingReceipts, journal, prefix, false, &output),
+                    std::runtime_error);
+  {
+    std::ifstream input(journal, std::ios::binary);
+    std::string magicLine;
+    std::string idLine;
+    std::getline(input, magicLine);
+    std::getline(input, idLine);
+    BOOST_CHECK_EQUAL(magicLine, "NDNSF-DI-MODEL-PREPARATION-v3");
+    BOOST_CHECK_EQUAL(idLine, "key-a");
+  }
+  const auto unavailableParent = fixture.directory / "unavailable-handle-parent";
+  const auto unavailableHandle = unavailableParent / "model.handle";
+  const NativeStoredModelHandleOutput unavailableOutput{unavailableHandle, *nextProtection};
+  BOOST_CHECK_THROW(repository.publish(nullptr, journal, prefix, false, &unavailableOutput),
+                    std::runtime_error);
+  BOOST_CHECK(!std::filesystem::exists(unavailableHandle));
+  BOOST_CHECK_EQUAL(journalHeader(journal), "NDNSF-DI-MODEL-PREPARATION-v3");
+  BOOST_CHECK_EQUAL(repository.writes.size(), writes);
+  const auto readHandleWire = [&] {
+    std::ifstream input(sealedHandle, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), {});
+  };
+  const auto previousWire = readHandleWire();
+  BOOST_REQUIRE(!previousWire.empty());
+  auto interrupted = repository.io();
+  interrupted.requireCurrent = [&] {
+    if (journalHeader(journal) == "NDNSF-DI-MODEL-PREPARATION-v4")
+      ::_exit(73);
+  };
+  interrupted.commit = [] (auto, const auto&) { ::_exit(74); };
+  const auto child = ::fork();
+  BOOST_REQUIRE_GE(child, 0);
+  if (child == 0) {
+    try {
+      repository.publish(&interrupted, journal, prefix, false, &output);
+    }
+    catch (...) {
+      ::_exit(75);
+    }
+    ::_exit(76);
+  }
+  int status = 0;
+  BOOST_REQUIRE_EQUAL(::waitpid(child, &status, 0), child);
+  BOOST_REQUIRE(WIFEXITED(status));
+  BOOST_REQUIRE_EQUAL(WEXITSTATUS(status), 73);
+  BOOST_CHECK_EQUAL(journalHeader(journal), "NDNSF-DI-MODEL-PREPARATION-v4");
+  BOOST_CHECK(readHandleWire() == previousWire);
+  const auto recovered = repository.publish(nullptr, journal, prefix, false, &output);
+  BOOST_CHECK(recovered.handle.masterKey == original.handle.masterKey);
+  BOOST_CHECK(recovered.handle.rootName == original.handle.rootName);
+  BOOST_CHECK_EQUAL(recovered.handle.rootWireDigest, original.handle.rootWireDigest);
+  writeKeyRing(ring, {{"key-b", keyB}});
+  BOOST_CHECK_NO_THROW(repository.publish(nullptr, journal, prefix, false, &output));
+  BOOST_CHECK(nativeOpenStoredModelHandle(sealedHandle, nativeFileKeyResolverFromKeyRing())
+    .masterKey == original.handle.masterKey);
+  BOOST_CHECK_EQUAL(repository.writes.size(), writes);
+  {
+    std::ifstream input(journal, std::ios::binary);
+    std::string magicLine;
+    std::string idLine;
+    std::getline(input, magicLine);
+    std::getline(input, idLine);
+    BOOST_CHECK_EQUAL(magicLine, "NDNSF-DI-MODEL-PREPARATION-v4");
+    BOOST_CHECK_EQUAL(idLine, "key-b");
+  }
+
+  // The publication context is encrypted, and a changed ciphertext fails before Repo access.
+  std::string tampered;
+  {
+    std::ifstream input(journal, std::ios::binary);
+    tampered.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }
+  BOOST_REQUIRE(!tampered.empty());
+  BOOST_CHECK(tampered.find("tailUploadGroupingVersion") == std::string::npos);
+  BOOST_CHECK(tampered.find(original.handle.rootWireDigest) == std::string::npos);
+  tampered.back() ^= 1;
+  std::ofstream(journal, std::ios::binary | std::ios::trunc) << tampered;
+  const auto confirmations = repository.confirmations;
+  BOOST_CHECK_THROW(repository.publish(nullptr, journal), std::runtime_error);
+  BOOST_CHECK_EQUAL(repository.confirmations, confirmations);
+
+  // Exercise the bounded key ID search with a keyed header shorter than 256 bytes.
+  std::ofstream(journal, std::ios::binary | std::ios::trunc)
+    << "NDNSF-DI-MODEL-PREPARATION-v4\n" << std::string(170, 'x');
+  BOOST_CHECK_THROW(repository.publish(nullptr, journal), std::runtime_error);
+  BOOST_CHECK_EQUAL(repository.confirmations, confirmations);
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedJournalDoesNotDowngradeAfterLosingItsKeyRing)
+{
+  PrivateFile fixture;
+  const auto ring = fixture.directory / "ring";
+  const std::string key(64, 'a');
+  writeKeyRing(ring, {{"active", key}});
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  struct RingCleanup
+  {
+    ~RingCleanup() { ::unsetenv("NDNSF_FILE_KEYRING"); }
+  } cleanup;
+  PacketRepository repository;
+  auto interrupted = repository.io();
+  const auto commit = interrupted.commit;
+  interrupted.commit = [&] (auto wires, const auto& digest) {
+    commit(std::move(wires), digest);
+    ::unsetenv("NDNSF_FILE_KEYRING");
+  };
+  BOOST_CHECK_THROW(repository.publish(&interrupted, fixture.path), std::runtime_error);
+  BOOST_CHECK_EQUAL(journalHeader(fixture.path), "NDNSF-DI-MODEL-PREPARATION-v4");
+  BOOST_REQUIRE(!repository.writes.empty());
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  BOOST_CHECK_NO_THROW(repository.publish(nullptr, fixture.path));
+  BOOST_CHECK_EQUAL(journalHeader(fixture.path), "NDNSF-DI-MODEL-PREPARATION-v4");
 }
 
 BOOST_AUTO_TEST_CASE(CommitPipelineBackpressurePreventsWorkerBeyondCapacity)
@@ -825,6 +1064,37 @@ BOOST_FIXTURE_TEST_CASE(PrivateHandleRoundtripRejectsPublicPermissionsAndSymlink
   BOOST_CHECK_THROW(nativeLoadStoredModelHandle(file.path), std::runtime_error);
 }
 
+BOOST_FIXTURE_TEST_CASE(LegacyHandleRequiresExplicitImportWithPublicationIdentity, Fixture)
+{
+  PrivateFile file;
+  PrivateFile sealed;
+  nativeExportStoredModelHandle(handle, file.path);
+
+  const NativeFileProtectionKey protection{"import-key", std::vector<std::uint8_t>(32, 0x55)};
+  const auto resolver = [&protection] (const std::string& keyId)
+    -> std::optional<std::vector<std::uint8_t>> {
+    if (keyId == protection.keyId)
+      return protection.key;
+    return std::nullopt;
+  };
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(file.path, resolver), std::runtime_error);
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(file.path, {}), std::runtime_error);
+  BOOST_CHECK_THROW(nativeImportLegacyStoredModelHandle(file.path, sealed.path,
+                    ndn::Name("/wrong-root"), handle.rootWireDigest, protection),
+                    std::runtime_error);
+  BOOST_CHECK_THROW(nativeImportLegacyStoredModelHandle(file.path, sealed.path,
+                    handle.rootName, "sha256:" + std::string(64, '0'), protection),
+                    std::runtime_error);
+  BOOST_CHECK(!std::filesystem::exists(sealed.path));
+  nativeImportLegacyStoredModelHandle(file.path, sealed.path, handle.rootName,
+                                    handle.rootWireDigest, protection);
+  BOOST_CHECK(nativeLoadStoredModelHandle(file.path).masterKey == handle.masterKey);
+  const auto reopened = nativeOpenStoredModelHandle(sealed.path, resolver);
+  BOOST_CHECK(reopened.masterKey == handle.masterKey);
+  BOOST_CHECK(reopened.rootName == handle.rootName);
+  BOOST_CHECK_EQUAL(reopened.rootWireDigest, handle.rootWireDigest);
+}
+
 BOOST_AUTO_TEST_CASE(PublishThenReadWithoutPreparationOrWriteCapability)
 {
   PacketRepository repository;
@@ -1106,6 +1376,116 @@ BOOST_AUTO_TEST_CASE(PreparationResumesRootReplyLossWithoutRepublishingCompleted
   BOOST_CHECK_EQUAL(repository.sourceReads, sourceReads);
 }
 
+BOOST_AUTO_TEST_CASE(ProducerProofRetryAndExplicitAttestationOfOldJournal)
+{
+  PacketRepository repository;
+  PrivateFile file;
+  const auto original = repository.publish(nullptr, file.path);
+  const auto originalPackets = repository.packets;
+  repository.hasProducerProof = true;
+  const ndn::Name owner("/preparer");
+  ndn::KeyChain keys{"pib-memory:", "tpm-memory:"};
+  const auto cert = keys.createIdentity(owner).getDefaultKey().getDefaultCertificate();
+  const auto other = keys.createIdentity(ndn::Name("/other")).getDefaultKey().getDefaultCertificate();
+  const auto proofName = nativeStoredModelProducerProofName(original.handle);
+  auto signingCert = cert;
+  unsigned signatures = 0;
+  auto port = repository.io();
+  port.signProducerProof = [&] (const ndn::Name& name, const Bytes& content) {
+    ndn::Data proof(name);
+    proof.setContent(ndn::span<const std::uint8_t>(content));
+    keys.sign(proof, ndn::security::signingByCertificate(signingCert));
+    ++signatures;
+    const auto& wire = proof.wireEncode();
+    return Bytes(wire.begin(), wire.end());
+  };
+  port.fetchProducerProof = [&] (const ndn::Name& name, const ndn::Name& producer) -> Bytes {
+    BOOST_CHECK(producer == owner);
+    const auto it = repository.packets.find(name);
+    if (it == repository.packets.end())
+      return {};
+    const ndn::Data proof{ndn::Block(ndn::span<const std::uint8_t>(it->second))};
+    if (!ndn::security::verifySignature(proof, cert))
+      throw std::runtime_error("untrusted Producer proof");
+    return it->second;
+  };
+  BOOST_CHECK_THROW(nativeLoadStoredModelCatalog(original.handle, port), std::runtime_error);
+  BOOST_CHECK(repository.reads.empty());
+  BOOST_CHECK_THROW(repository.publish(&port, file.path), std::runtime_error);
+  BOOST_CHECK_EQUAL(signatures, 0);
+
+  const auto ring = file.directory / "ring";
+  writeKeyRing(ring, {{"active", std::string(64, 'a')}});
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  struct RingCleanup { ~RingCleanup() { ::unsetenv("NDNSF_FILE_KEYRING"); } } cleanup;
+  auto loseReply = port;
+  loseReply.commit = [&](NativeStoredModelPacketIo::PacketWires wires, const std::string& digest) {
+    port.commit(std::move(wires), digest);
+    throw std::runtime_error("lost proof reply");
+  };
+  const auto sourceReads = repository.sourceReads;
+  BOOST_CHECK_THROW(repository.publish(&loseReply, file.path, "/preparer/models/v=1", true),
+                    std::runtime_error);
+  BOOST_CHECK_EQUAL(signatures, 1);
+  const auto migrated = repository.publish(&port, file.path, "/preparer/models/v=1", true);
+  BOOST_CHECK_EQUAL(signatures, 1);
+  BOOST_CHECK_EQUAL(repository.sourceReads, sourceReads);
+  BOOST_CHECK_EQUAL(migrated.handle.rootWireDigest, original.handle.rootWireDigest);
+  BOOST_CHECK(migrated.handle.masterKey == original.handle.masterKey);
+  BOOST_CHECK_EQUAL(repository.packets.size(), originalPackets.size() + 1);
+  for (const auto& [name, wire] : originalPackets)
+    BOOST_CHECK(repository.packets.at(name) == wire);
+  const auto catalog = nativeLoadStoredModelCatalog(original.handle, port);
+  BOOST_CHECK_EQUAL(catalog.objects().size(), 3);
+
+  const auto admittedProof = repository.packets.at(proofName);
+  signingCert = other;
+  const std::string_view marker(NATIVE_STORED_MODEL_PRODUCER_PROOF_CONTENT);
+  repository.packets[proofName] = port.signProducerProof(proofName, Bytes(marker.begin(),
+                                                                        marker.end()));
+  repository.reads.clear();
+  BOOST_CHECK_THROW(nativeLoadStoredModelCatalog(original.handle, port), std::runtime_error);
+  BOOST_CHECK(repository.reads.empty());
+  signingCert = cert;
+  repository.packets[proofName] = port.signProducerProof(
+    ndn::Name(proofName).append("foreign"), Bytes(marker.begin(), marker.end()));
+  BOOST_CHECK_THROW(nativeLoadStoredModelCatalog(original.handle, port), std::runtime_error);
+  BOOST_CHECK(repository.reads.empty());
+  repository.packets[proofName] = admittedProof;
+  const auto priorWrites = repository.writes.size();
+  const auto reopened = repository.publish(&port, file.path);
+  BOOST_CHECK_EQUAL(reopened.handle.rootWireDigest, original.handle.rootWireDigest);
+  BOOST_CHECK_EQUAL(repository.writes.size(), priorWrites);
+}
+
+BOOST_AUTO_TEST_CASE(NewModelCommitsSignedProducerProofBeforeRoot)
+{
+  PacketRepository repository;
+  repository.hasProducerProof = true;
+  auto port = repository.io();
+  ndn::KeyChain keys{"pib-memory:", "tpm-memory:"};
+  const auto cert = keys.createIdentity(ndn::Name("/preparer")).getDefaultKey().getDefaultCertificate();
+  port.signProducerProof = [&](const ndn::Name& name, const Bytes& content) {
+    ndn::Data proof(name);
+    proof.setContent(ndn::span<const std::uint8_t>(content));
+    keys.sign(proof, ndn::security::signingByCertificate(cert));
+    const auto& wire = proof.wireEncode();
+    return Bytes(wire.begin(), wire.end());
+  };
+  port.fetchProducerProof = [&](const ndn::Name& name, const ndn::Name&) {
+    const auto& wire = repository.packets.at(name);
+    const ndn::Data proof{ndn::Block(ndn::span<const std::uint8_t>(wire))};
+    BOOST_REQUIRE(ndn::security::verifySignature(proof, cert));
+    return wire;
+  };
+  const auto published = repository.publish(&port);
+  BOOST_REQUIRE_GE(repository.writes.size(), 2);
+  BOOST_CHECK(repository.writes[repository.writes.size() - 2] ==
+              nativeStoredModelProducerProofName(published.handle));
+  BOOST_CHECK(repository.writes.back() == published.handle.rootName);
+  BOOST_CHECK_EQUAL(nativeLoadStoredModelCatalog(published.handle, port).objects().size(), 3);
+}
+
 BOOST_AUTO_TEST_CASE(PreparationRejectsChangedSourcePrivateStateAndMissingSpool)
 {
   PrivateFile file;
@@ -1191,6 +1571,55 @@ BOOST_AUTO_TEST_CASE(PreparationOwnsItsWriterLockAndRecoversBeforeJournalCommit)
   }
 }
 
+BOOST_AUTO_TEST_CASE(DifferentJournalsCannotPublishToTheSameHandle)
+{
+  PrivateFile fixture;
+  const auto ring = fixture.directory / "ring";
+  writeKeyRing(ring, {{"key-a", std::string(64, 'a')}});
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  struct RingCleanup { ~RingCleanup() { ::unsetenv("NDNSF_FILE_KEYRING"); } } cleanup;
+  const auto protection = nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(protection);
+  const NativeStoredModelHandleOutput output{fixture.directory / "model.handle", *protection};
+  const auto first = fixture.directory / "first.journal";
+  const auto second = fixture.directory / "second.journal";
+  const auto legacy = fixture.directory / "legacy.handle";
+  PacketRepository source;
+  const auto legacyModel = source.publish();
+  nativeExportStoredModelHandle(legacyModel.handle, legacy);
+  PacketRepository winner, competitor;
+  const auto linkedParent = fixture.directory / "linked-parent";
+  std::filesystem::create_directory_symlink(fixture.directory, linkedParent);
+  const NativeStoredModelHandleOutput linked{linkedParent / "model.handle", *protection};
+  BOOST_CHECK_THROW(competitor.publish(nullptr, second, {}, false, &linked), std::runtime_error);
+  BOOST_CHECK(competitor.writes.empty());
+  BOOST_CHECK_EQUAL(competitor.sourceReads, 0U);
+  BOOST_CHECK(!std::filesystem::exists(second));
+  auto port = winner.io();
+  bool attempted = false;
+  port.requireCurrent = [&] {
+    if (!attempted && std::filesystem::exists(first)) {
+      attempted = true;
+      BOOST_CHECK(!std::filesystem::exists(output.path));
+      const auto outputBusy = [] (const std::runtime_error& error) {
+        return std::string_view(error.what()) == "DI_STORED_MODEL_HANDLE_OUTPUT_BUSY";
+      };
+      BOOST_CHECK_EXCEPTION(competitor.publish(nullptr, second, {}, false, &output),
+                            std::runtime_error, outputBusy);
+      BOOST_CHECK_EXCEPTION(nativeImportLegacyStoredModelHandle(legacy, output.path,
+        legacyModel.handle.rootName, legacyModel.handle.rootWireDigest, *protection),
+        std::runtime_error, outputBusy);
+    }
+  };
+  const auto result = winner.publish(&port, first, {}, false, &output);
+  BOOST_CHECK(attempted);
+  BOOST_CHECK(competitor.writes.empty());
+  BOOST_CHECK_EQUAL(competitor.sourceReads, 0U);
+  BOOST_CHECK(!std::filesystem::exists(second));
+  BOOST_CHECK(nativeOpenStoredModelHandle(output.path, nativeFileKeyResolverFromKeyRing())
+    .rootName == result.handle.rootName);
+}
+
 BOOST_AUTO_TEST_CASE(PreparationRejectsSymlinkStateAndLockBeforeSourceReads)
 {
   PrivateFile file;
@@ -1261,6 +1690,230 @@ BOOST_AUTO_TEST_CASE(CloseAfterFetchOrSourceReadDoesNotAdmitWork)
       return NativeStoredModelInput{"catalog", Bytes(100, 0x13)};
     }, write), std::runtime_error);
   BOOST_CHECK(interrupted.writes.empty());
+}
+
+BOOST_FIXTURE_TEST_CASE(SealedHandleRoundtripRequiresTheNamedKey, Fixture)
+{
+  PrivateFile file;
+  const std::vector<std::uint8_t> key(32, 0x5A);
+  nativeExportSealedStoredModelHandle(handle, file.path,
+                                      NativeFileProtectionKey{"file-key-7", key});
+  struct stat status{};
+  BOOST_REQUIRE_EQUAL(::stat(file.path.c_str(), &status), 0);
+  BOOST_CHECK_EQUAL(status.st_mode & 07777, 0600);
+
+  // Nothing identifying the model may survive in the clear.
+  {
+    std::ifstream input(file.path, std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(input)),
+                            std::istreambuf_iterator<char>());
+    BOOST_CHECK(bytes.find(handle.rootName.toUri(ndn::name::UriFormat::CANONICAL)) ==
+                std::string::npos);
+    BOOST_CHECK(bytes.find(std::string(reinterpret_cast<const char*>(key.data()), 32)) ==
+                std::string::npos);
+  }
+
+  const auto resolve = [&key] (const std::string& keyId) -> std::optional<std::vector<std::uint8_t>> {
+    if (keyId == "file-key-7")
+      return key;
+    return std::nullopt;
+  };
+  const auto loaded = nativeLoadSealedStoredModelHandle(file.path, resolve);
+  BOOST_CHECK(loaded.masterKey == handle.masterKey);
+  BOOST_CHECK(loaded.rootName == handle.rootName);
+  BOOST_CHECK_EQUAL(loaded.rootWireDigest, handle.rootWireDigest);
+
+  // An unknown key ID is a rejection, never a plaintext fallback.
+  BOOST_CHECK_THROW(nativeLoadSealedStoredModelHandle(file.path,
+    [] (const std::string&) { return std::optional<std::vector<std::uint8_t>>{}; }),
+    std::runtime_error);
+
+  // A v1 file stays an explicit import; the sealed loader must not read it.
+  PrivateFile legacy;
+  nativeExportStoredModelHandle(handle, legacy.path);
+  BOOST_CHECK_THROW(nativeLoadSealedStoredModelHandle(legacy.path, resolve), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(FileProtectionKeyComesFromTheKeyRing)
+{
+  PrivateFile file;
+  const auto ring = file.directory / "ring";
+  ::unsetenv("NDNSF_FILE_KEYRING");
+  BOOST_CHECK(!nativeFileProtectionKeyFromEnvironment());
+
+  {
+    std::ofstream out(ring);
+    out << "old-key " << std::string(64, 'a') << "\n"
+        << "new-key " << std::string(64, 'b') << "\n";
+  }
+  std::filesystem::permissions(ring, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  // The first line is the write key; older lines remain resolvable for reading.
+  const auto configured = nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(configured);
+  BOOST_CHECK_EQUAL(configured->keyId, std::string("old-key"));
+  const auto resolver = nativeFileKeyResolverFromKeyRing();
+  const auto old = resolver("old-key");
+  const auto fresh = resolver("new-key");
+  BOOST_REQUIRE(old);
+  BOOST_REQUIRE(fresh);
+  BOOST_CHECK_EQUAL(old->at(0), 0xaa);
+  BOOST_CHECK_EQUAL(fresh->at(0), 0xbb);
+  BOOST_CHECK(!resolver("absent-key"));
+
+  // A readable-by-group ring is not a private key store.
+  std::filesystem::permissions(ring, std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::add);
+  BOOST_CHECK_THROW(nativeFileProtectionKeyFromEnvironment(), std::runtime_error);
+  std::filesystem::permissions(ring, std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::remove);
+
+  const auto symlink = file.directory / "ring-link";
+  std::filesystem::create_symlink(ring, symlink);
+  ::setenv("NDNSF_FILE_KEYRING", symlink.c_str(), 1);
+  BOOST_CHECK_THROW(nativeFileProtectionKeyFromEnvironment(), std::runtime_error);
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+
+  {
+    std::ofstream out(ring, std::ios::trunc);
+    out << '#' << std::string(64 * 1024, 'x') << '\n';
+  }
+  BOOST_CHECK_EXCEPTION(nativeFileProtectionKeyFromEnvironment(), std::runtime_error,
+    [] (const auto& error) {
+      return std::string_view(error.what()).find("key ring exceeds size limit") !=
+             std::string_view::npos;
+    });
+
+  // A malformed line rejects the ring instead of being skipped.
+  {
+    std::ofstream out(ring, std::ios::trunc);
+    out << "old-key nothex\n";
+  }
+  BOOST_CHECK_THROW(nativeFileProtectionKeyFromEnvironment(), std::runtime_error);
+  ::unsetenv("NDNSF_FILE_KEYRING");
+}
+
+BOOST_FIXTURE_TEST_CASE(OpenDispatchesByEnvelopeGeneration, Fixture)
+{
+  const std::vector<std::uint8_t> key(32, 0x3C);
+  const NativeFileProtectionKey protection{"file-key-3", key};
+
+  PrivateFile sealed;
+  nativeExportSealedStoredModelHandle(handle, sealed.path, protection);
+  const auto resolver = [&protection] (const std::string& keyId)
+      -> std::optional<std::vector<std::uint8_t>> {
+    if (protection.keyId == keyId)
+      return protection.key;
+    return std::nullopt;
+  };
+  const auto opened = nativeOpenStoredModelHandle(sealed.path, resolver);
+  BOOST_CHECK(opened.masterKey == handle.masterKey);
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(sealed.path, NativeFileKeyResolver{}),
+                    std::runtime_error);
+  const auto unknownOnly = [] (const std::string&) -> std::optional<std::vector<std::uint8_t>> {
+    return std::nullopt;
+  };
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(sealed.path, unknownOnly), std::runtime_error);
+
+  {
+    std::fstream file(sealed.path, std::ios::in | std::ios::out | std::ios::binary);
+    BOOST_REQUIRE(file.good());
+    file.seekg(-1, std::ios::end);
+    const auto last = file.get();
+    BOOST_REQUIRE(last != std::char_traits<char>::eof());
+    file.seekp(-1, std::ios::end);
+    file.put(static_cast<char>(last ^ 1));
+    BOOST_REQUIRE(file.good());
+  }
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(sealed.path, resolver), std::runtime_error);
+
+  PrivateFile legacy;
+  nativeExportStoredModelHandle(handle, legacy.path);
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(legacy.path, NativeFileKeyResolver{}),
+                    std::runtime_error);
+}
+
+BOOST_FIXTURE_TEST_CASE(HandleWrittenBeforeAKeyRotationStillOpens, Fixture)
+{
+  // The exact wiring Runtime uses: seal with the ring's write key, open through the ring.
+  PrivateFile file;
+  const auto ring = file.directory / "ring";
+  {
+    std::ofstream out(ring);
+    out << "key-1 " << std::string(64, 'a') << "\n";
+  }
+  std::filesystem::permissions(ring, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  const auto writeKey = nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(writeKey);
+  BOOST_CHECK_EQUAL(writeKey->keyId, std::string("key-1"));
+  nativeExportSealedStoredModelHandle(handle, file.path, *writeKey);
+
+  // Rotate: key-2 becomes the write key and key-1 survives only for reading.
+  {
+    std::ofstream out(ring, std::ios::trunc);
+    out << "key-2 " << std::string(64, 'b') << "\n"
+        << "key-1 " << std::string(64, 'a') << "\n";
+  }
+  BOOST_REQUIRE_EQUAL(nativeFileProtectionKeyFromEnvironment()->keyId, std::string("key-2"));
+  const auto reopened = nativeOpenStoredModelHandle(file.path, nativeFileKeyResolverFromKeyRing());
+  BOOST_CHECK(reopened.masterKey == handle.masterKey);
+  BOOST_CHECK(reopened.rootName == handle.rootName);
+
+  // The same handle opened with a resolver that lost the old key must fail, not fall back.
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  {
+    std::ofstream out(ring, std::ios::trunc);
+    out << "key-2 " << std::string(64, 'b') << "\n";
+  }
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(file.path, nativeFileKeyResolverFromKeyRing()),
+                    std::runtime_error);
+  ::unsetenv("NDNSF_FILE_KEYRING");
+}
+
+BOOST_AUTO_TEST_CASE(ChildOpensTheSealedHandleWrittenByItsParent)
+{
+  const char* handlePath = ::getenv("SPEC243_HANDLE_PATH");
+  if (handlePath == nullptr || *handlePath == '\0')
+    return;  // not the child invocation
+  const auto opened = nativeOpenStoredModelHandle(handlePath, nativeFileKeyResolverFromKeyRing());
+  BOOST_CHECK_EQUAL(opened.masterKey.size(), 32u);
+  // The property under test is that a fresh process recovers a usable handle from the sealed
+  // file; field equality is covered in-process, where the fixture is known.
+  BOOST_CHECK(!opened.rootName.empty());
+}
+
+BOOST_FIXTURE_TEST_CASE(SealedHandleReopensInAFreshProcess, Fixture)
+{
+  // The child invocation must never spawn again: without this guard the parent case would run
+  // inside the child and recurse.
+  if (::getenv("SPEC243_HANDLE_PATH") != nullptr)
+    return;
+  // A separate process must recover the same model from the sealed file alone; an in-process
+  // reopen would not exercise the on-disk form a restart actually sees.
+  PrivateFile file;
+  const auto ring = file.directory / "ring";
+  {
+    std::ofstream out(ring);
+    out << "key-1 " << std::string(64, 'a') << "\n";
+  }
+  std::filesystem::permissions(ring, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  const auto protection = nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(protection);
+  nativeExportSealedStoredModelHandle(handle, file.path, *protection);
+
+  const auto self = std::filesystem::read_symlink("/proc/self/exe").string();
+  ::setenv("SPEC243_HANDLE_PATH", file.path.c_str(), 1);
+  const auto command = self +
+    " --run_test=StoredModelCapability/ChildOpensTheSealedHandleWrittenByItsParent --log_level=message > /tmp/spec243-child.log 2>&1";
+  const int status = std::system(command.c_str());
+  ::unsetenv("SPEC243_HANDLE_PATH");
+  ::unsetenv("NDNSF_FILE_KEYRING");
+  BOOST_REQUIRE_EQUAL(status, 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

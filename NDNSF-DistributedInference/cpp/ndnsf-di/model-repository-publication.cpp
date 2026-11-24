@@ -103,11 +103,10 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
     static_cast<std::uint64_t>(timeout);
   const auto grantStarted = std::chrono::steady_clock::now();
   const auto encoded = request.toJson();
-  const auto replyWire = repo::RepoClientCompat::requestSelectedService(writer,
+  const auto replyWire = repo::RepoClientCompat::requestTargeted(writer,
     ndn::Name(target.providerIdentity), repo::makeRepoServiceName(
       ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
-    std::vector<std::uint8_t>(encoded.begin(), encoded.end()),
-    std::min(MAX_ACK_COLLECTION_MS, std::max(1, timeout / 2)), timeout, {}, current);
+    std::vector<std::uint8_t>(encoded.begin(), encoded.end()), timeout);
   const auto reply = repo::RepoUserStorageGrantReply::fromJson(
     std::string(replyWire.begin(), replyWire.end()));
   reply.validateExpected(target, request.writerIdentity, request);
@@ -237,8 +236,9 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
   io.commitPipeline = std::make_shared<ndnsf_distributed_repo::RepoCommitPipeline>(
     io.requireCurrent, io.publicationGroupWireBytes != 0
       ? io.publicationGroupWireBytes : NATIVE_STORED_MODEL_UPLOAD_WIRE);
-  io.fetch = [user, target, budget, current, verify, acquireOperationLifetime] (
-    const std::vector<ndn::Name>& names) {
+  using WireVerifier = std::function<bool(const std::vector<uint8_t>&)>;
+  const auto fetch = [user, target, budget, current, acquireOperationLifetime] (
+    const std::vector<ndn::Name>& names, std::uint64_t maxWireBytes, WireVerifier verifyWire) {
     // The facade is created for this call only: it borrows the caller's Face and
     // ServiceUser, so holding one across the io lifetime outlives them.
     auto config = repo::PersistentRepoClientConfig{};
@@ -252,13 +252,9 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
     request.packetNames.reserve(names.size());
     for (const auto& name : names)
       request.packetNames.push_back(name.toUri());
-    request.maxWireBytes = NATIVE_STORED_MODEL_UPLOAD_WIRE;
+    request.maxWireBytes = maxWireBytes;
     request.target = {target.repoNode, target.providerIdentity, target.servicePrefix};
-    request.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
-      [verify](const std::vector<uint8_t>& wire) {
-        const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))};
-        return verify(packet);
-      });
+    request.verifyWire = std::make_shared<const WireVerifier>(std::move(verifyWire));
     repo::RepoOperationOptions options;
     options.deadline = std::chrono::steady_clock::now() +
       std::chrono::milliseconds(std::max(1, budget()));
@@ -271,6 +267,32 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
         throw std::runtime_error("DI_NATIVE_PREPARATION_TIMEOUT");
       throw;
     }
+  };
+  io.fetch = [fetch, verify](const std::vector<ndn::Name>& names) {
+    return fetch(names, NATIVE_STORED_MODEL_UPLOAD_WIRE, [verify](const auto& wire) {
+      return verify(ndn::Data{ndn::Block(ndn::span<const uint8_t>(wire))});
+    });
+  };
+  const auto verifyProof = [user, deadline, repoName = ndn::Name(target.repoNode)](
+    const ndn::Data& packet, const ndn::Name& producer) {
+    const auto signature = packet.getSignatureType();
+    if ((signature != ndn::tlv::SignatureSha256WithRsa &&
+         signature != ndn::tlv::SignatureSha256WithEcdsa &&
+         signature != ndn::tlv::SignatureEd25519) ||
+        !nativeIsStoredModelProducerProof(producer, repoName, packet) ||
+        !packet.getSignatureInfo().hasKeyLocator())
+      return false;
+    const auto& wire = packet.wireEncode();
+    return user->validateProducerPacketWireUntil({wire.begin(), wire.end()}, producer, deadline);
+  };
+  io.fetchProducerProof = [fetch, verifyProof](const ndn::Name& name, const ndn::Name& producer) {
+    const auto validate = [name, producer, verifyProof](const auto& wire) {
+      const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire))};
+      return packet.getName() == name && verifyProof(packet, producer);
+    };
+    auto wires = fetch({name}, ndn::MAX_NDN_PACKET_SIZE, validate);
+    require(wires.size() == 1, "MODEL_REPO_PRODUCER_PROOF_MISSING");
+    return std::move(wires.front());
   };
   if (allowPublication) {
     io.requireCommitted = [user, target, budget, current](const ndn::Name& name,
@@ -300,7 +322,8 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
         "MODEL_REPO_RECOVERY_COMMIT_MISMATCH");
       current();
     };
-    const auto commit = [user, target, deadline, current, verify, acquireOperationLifetime](
+    const auto commit = [user, target, deadline, current, verify, verifyProof,
+                         acquireOperationLifetime](
       NativeStoredModelPacketIo::PacketWires wires, const std::string& expectedDigest,
       const std::function<void()>& additionalCurrent) {
       const auto callCurrent = [current, additionalCurrent] {
@@ -357,7 +380,15 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       commitConfig.ackCollectionTimeMs = 2000;
       auto commitFacade = std::make_shared<repo::RepoClient>(
         repo::RepoClient::makePersistent(user, std::move(commitConfig)));
-      commitPacketGroup(*user, target, group, verify, callBudget, callCurrent, 2,
+      const auto verifyOriginal = [verify, verifyProof, producer, repoName = ndn::Name(target.repoNode)](
+        const ndn::Data& packet) {
+        if (packet.getSignatureType() == ndn::tlv::DigestSha256) {
+          return (!packet.getName()[-1].isGeneric() ||
+                  !nativeIsStoredModelProducerProof(producer, repoName, packet)) && verify(packet);
+        }
+        return verifyProof(packet, producer);
+      };
+      commitPacketGroup(*user, target, group, verifyOriginal, callBudget, callCurrent, 2,
                         expectedDigest.substr(7), commitFacade);
       callCurrent();
     };

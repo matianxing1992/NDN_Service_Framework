@@ -155,6 +155,17 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
   const std::function<NativeRequestCatalog()>& loadCatalog, const std::string& configurationJson,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState)
 {
+  return nativePublishStoredPreparedModel(keyChain, producer, repository, publicationPrefix,
+    loadCatalog, configurationJson, io, preparationState, false, nullptr);
+}
+
+NativeStoredModelPublication
+nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
+  const ndn::Name& repository, const ndn::Name& publicationPrefix,
+  const std::function<NativeRequestCatalog()>& loadCatalog, const std::string& configurationJson,
+  const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
+  bool importLegacyJournal, const NativeStoredModelHandleOutput* output)
+{
   require(loadCatalog && io.requireCurrent && configurationJson.size() <= MAX_CATALOG_BYTES);
   io.requireCurrent();
   const auto configuration = sourceFreeConfiguration(configurationJson);
@@ -322,7 +333,7 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
   }
   return nativePublishStoredModel(keyChain, producer, repository, publicationPrefix,
     model.modelDigest(), catalogId, "business-root", next, io, preparationState, bindPrefix,
-    semantic);
+    semantic, importLegacyJournal, output);
 }
 
 NativeStoredPreparedModel

@@ -17,7 +17,8 @@ import uuid
 
 from .deployment_config import (REPO_MANIFEST_BENCHMARK_OPTIONS, REPO_MANIFEST_SERVER_OPTIONS,
                                 _identifier, _object, _read_json, _string, _name,
-                                load_deployment, provider_cache_path, provider_recipient_map)
+                                actor_file_keyring, load_deployment, provider_cache_path,
+                                provider_recipient_map)
 from .processes import process_identity, owned_state, stop_owned, write_json
 
 
@@ -232,7 +233,12 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
     controller = next(a['identity'] for a in config['actors'] if a['kind'] == 'controller')
     node = next(n for n in config['nodes'] if n['id'] == actor['node'])
     env = _environment(actor['credential_home'], node['nfd']['socket'], actor['id'], state)
+    keyring = actor_file_keyring(config, actor)
+    if keyring:
+        env['NDNSF_FILE_KEYRING'] = keyring
     env['NDNSF_CONTROLLER_CERT_FILE'] = security['controller_certificate']
+    if 'controller_min_version' in security:
+        env['NDNSF_CONTROLLER_MIN_VERSION'] = security['controller_min_version']
     cpus = str(actor['resources']['cpus'])
     env.update(OMP_NUM_THREADS=cpus, OPENBLAS_NUM_THREADS=cpus, MKL_NUM_THREADS=cpus,
                CUDA_DEVICE_ORDER='PCI_BUS_ID',
@@ -245,12 +251,49 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
     periodic = params.pop('core-svs-periodic-sync-ms', None)
     if periodic is not None:
         env['NDNSF_SVS_PERIODIC_SYNC_MS'] = str(periodic)
+    # A short revalidation period lets a qualification run observe a Controller-side revocation inside
+    # a bounded window instead of waiting for a status to near its expiry.
+    revalidation = config.get('requester', {}).get('request', {}).get(
+        'policy_revalidation_period_ms')
+    # A rollover fixture has to let the Provider notice a revocation while the Requester keeps using
+    # its cached policy, so each role may carry its own revalidation period.
+    if kind in ('requester', 'provider'):
+        role_period = security.get(kind + '_policy_revalidation_period_ms')
+        if role_period is not None:
+            revalidation = role_period
+    if revalidation is not None and kind in ('requester', 'provider'):
+        env['NDNSF_POLICY_REVALIDATION_PERIOD_MS'] = str(revalidation)
+    if kind in ('requester', 'provider'):
+        maximum_lease = security.get(kind + '_policy_max_lease_ms',
+                                     security.get('controller_policy_max_lease_ms',
+                                                  security.get('controller_policy_lease_ms', 60000)))
+        env['NDNSF_CONTROLLER_POLICY_MAX_LEASE_MS'] = str(maximum_lease)
+        env['NDNSF_CONTROLLER_POLICY_CLOCK_SKEW_MS'] = str(
+            security.get('controller_policy_clock_skew_ms', 250))
     if kind == 'controller':
         env['NDNSF_CONTROLLER_GENERATION_STATE'] = str(
             Path(actor['credential_home']) / '.ndn' / 'controller-generation.state')
+        for key in ('controller_recovery_checkpoint', 'controller_recovery_import_sha256',
+                    'controller_recovery_import_witness_sha256'):
+            if key in security:
+                env['NDNSF_' + key.upper()] = security[key]
+        if security.get('controller_recovery_bootstrap', False):
+            env['NDNSF_CONTROLLER_RECOVERY_BOOTSTRAP'] = '1'
+        if 'controller_policy_lease_ms' in security:
+            env['NDNSF_CONTROLLER_POLICY_LEASE_MS'] = str(security['controller_policy_lease_ms'])
+        if params.get('signer-handoff-file'):
+            env['NDNSF_CONTROLLER_HANDOFF'] = params['signer-handoff-file']
         argv = [str(prefix / 'App_ServiceController'), '--controller-prefix', actor['identity'],
                 '--no-demo-identities', '--policy-file', security['controller_policy'],
                 '--trust-schema', security['trust_schema']]
+        # A run-scoped revocation is the qualification trigger for a real rollover; it is declared
+        # per controller actor and forwarded only when configured.
+        for option in ('revoke-trigger-file', 'revoke-kind', 'revoke-identity', 'revoke-service',
+                       'revoke-attribute'):
+            value = params.get(option)
+            if value is None:
+                continue
+            argv += ['--' + option, str(value)]
     elif kind in ('requester', 'artifact-authority'):
         native = dict(config['requester' if kind == 'requester' else 'artifact_authority'])
         # The native applications require their schema marker in the written config.
@@ -508,6 +551,13 @@ def _close(state, root, facility=None):
         for key in ('exitCode', 'reaped'):
             if key not in result and key in old:
                 result[key] = old[key]
+        requester = state.get('requester') or {}
+        if (row.get('kind') == 'requester' and result['status'] == 'ZERO' and
+                result.get('exitCode') is None and type(requester.get('exit_code')) is int and
+                row.get('proof') and requester.get('pid') == row['proof']['pid']):
+            # Popen.poll() already reaped this launch. A later group cleanup can only
+            # observe its absence; retain the owner's actual wait status, including signals.
+            result['exitCode'] = requester['exit_code']
         record = dict(result, id=actor_id)
         cleanup_by_id[actor_id] = record
         state['cleanup'] = [cleanup_by_id[key] for key in actor_ids if key in cleanup_by_id]
@@ -696,7 +746,11 @@ def _cancelled(root, state):
 def _nfd_config(socket, port):
     if any(char in str(socket) for char in ('"', '\\', '\n', '\r')):
         raise ClusterError('NFD socket contains unsupported configuration characters')
-    return (f'general {{}}\nlog {{ default_level NONE }}\n'
+    # Diagnostic only: the generated configuration logs nothing, which makes "the forwarder never saw it"
+    # indistinguishable from "the forwarder does not log". Set NDNSF_NFD_DEBUG=1 to record Interests.
+    import os as _os
+    level = 'DEBUG' if _os.environ.get('NDNSF_NFD_DEBUG') == '1' else 'NONE'
+    return (f'general {{}}\nlog {{ default_level {level} }}\n'
             f'tables {{ cs_max_packets 0 }}\n'
             f'face_system {{ unix {{ path "{socket}" }} '
             f'tcp {{ listen yes port {port} enable_v4 yes enable_v6 no }} '
@@ -1140,6 +1194,7 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
                                       'started_unix_seconds': time.time(), 'oracle': 'NOT_RUN'}
                 child, row = spawn(actor['id'], actor['kind'], argv, env, actor['node'])
                 request_child = child
+                state['requester']['pid'] = child.pid
                 children.append((actor, child, row))
                 state['status'] = 'PREPARING' if prepare_only else 'REQUEST_RUNNING'
                 write_json(root / 'state.json', state)

@@ -1019,7 +1019,8 @@ deployment start with `ServiceController`-integrated signing for simple NDNSF
 experiments and later move the same token inventory to a standalone NDNCERT CA
 when a full certificate-management service is needed.
 
-Minimal C++ example flags:
+Provision the Controller's private keyring before starting the native examples.
+See [the Controller setup in examples/README.md](examples/README.md#run-on-one-real-machine).
 
 ```bash
 ./build/examples/App_ServiceController \
