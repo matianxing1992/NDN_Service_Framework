@@ -53,6 +53,10 @@ def installed_ledger(prefix, file_digest, capture_fixture_trace, local_model_cac
 def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_disk_mib,
             capture_fixture_trace, tile_dit=False, tensor_segment_bytes=None,
             checkpoint_workload=None, local_model_cache=False, vae_no_progress_ms=None):
+    if exact_packet_disk_mib is None:
+        exact_packet_disk_mib = 0
+        if checkpoint_workload and mode != 'single':
+            exact_packet_disk_mib = 65537 if mode == 'pp' else 128 << 10
     sys.path.insert(0, str(CHECKOUT / 'Experiments'))
     deployment = runpy.run_path(str(CHECKOUT / 'Experiments/prepare-native-deployment.py'))
     credentials = runpy.run_path(str(CHECKOUT / 'tests/fixtures/spec242/prepare-deployment.py'))
@@ -165,6 +169,7 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
             'roles': ','.join(provider_roles[name]), 'grant-authority-public-key': str(hint),
             'recipient-key-map': str(mapping), 'selection-offer-key-file': str(offer),
             'offer-backend': 'onnxruntime-cpu', 'offer-can-provision': True,
+            'enable-segment-manifest': True,
             'assembly-timeout-ms': 120000, 'permission-wait-ms': 30000,
             'repo-fetch-timeout-ms': 60000,
         })
@@ -346,6 +351,9 @@ def prepare_warm(cold_path):
         raise ValueError('warm preparation requires a generated Wan fixture')
     if not (Path(generation['output_directory']) / 'manifest.json').is_file():
         raise ValueError('warm preparation requires a completed cold clip')
+    for actor in cold['actors']:
+        if actor['kind'] == 'provider':
+            actor['parameters']['enable-segment-manifest'] = True
 
     def bind_handle(config):
         model = config['model_input']
@@ -401,7 +409,9 @@ def main():
     parser.add_argument('--namespace', default='/ndnsf-test/wan')
     parser.add_argument('--mode', choices=('single', 'tp', 'pp', 'pp-tp', 'tp-pp'))
     parser.add_argument('--inline-limit-bytes', type=int, default=4096)
-    parser.add_argument('--exact-packet-disk-mib', type=int, default=0)
+    parser.add_argument('--exact-packet-disk-mib', type=int,
+                        help='original packet retention quota (checkpoint defaults: PP 65537 MiB, '
+                             'TP and Hybrid 128 GiB)')
     parser.add_argument('--tensor-segment-bytes', type=int)
     parser.add_argument('--vae-no-progress-ms', type=int,
                         help='override the checkpoint decoder request no-progress interval')
@@ -411,7 +421,7 @@ def main():
     args = parser.parse_args()
     if args.inline_limit_bytes <= 0:
         parser.error('--inline-limit-bytes must be positive')
-    if args.exact_packet_disk_mib < 0:
+    if args.exact_packet_disk_mib is not None and args.exact_packet_disk_mib < 0:
         parser.error('--exact-packet-disk-mib must be nonnegative')
     if args.tensor_segment_bytes is not None and args.tensor_segment_bytes <= 0:
         parser.error('--tensor-segment-bytes must be positive')
@@ -420,7 +430,8 @@ def main():
             parser.error('--vae-no-progress-ms requires a checkpoint and must be in [1, 3600000]')
     os.umask(0o077)
     if args.warm_from:
-        if any((args.prefix, args.builder, args.output, args.mode, args.exact_packet_disk_mib,
+        if args.exact_packet_disk_mib is not None or any((
+                args.prefix, args.builder, args.output, args.mode,
                 args.capture_fixture_trace, args.tile_dit, args.local_model_cache,
                 args.tensor_segment_bytes,
                 args.checkpoint_workload)):

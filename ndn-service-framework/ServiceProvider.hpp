@@ -1201,6 +1201,7 @@ namespace ndn_service_framework{
                     ndn::Name m_request;
                     KeyScope m_scope;
                     std::vector<std::shared_ptr<const ndn::Data>> m_packets;
+                    ndn::Name m_retainedRoot;
                 };
 
                 std::shared_ptr<const ExactManifestPublication>
@@ -1209,7 +1210,7 @@ namespace ndn_service_framework{
                     const SegmentManifestLimits& limits,
                     ndn::span<const ndn::ConstBufferPtr> contents,
                     ndn::span<const uint8_t> applicationManifest, int freshnessMs,
-                    CollaborationTransferMetrics* metrics);
+                    CollaborationTransferMetrics* metrics, std::uint64_t maxRetainedDiskBytes = 0);
 
                 ExactDataFetchOperation
                 startVerifiedManifestAuthenticatedExactData(
@@ -1225,6 +1226,10 @@ namespace ndn_service_framework{
                 replayManifestAuthenticatedExactData(
                     const KeyScope& keyScope, const ExactManifestPublication& publication,
                     CollaborationTransferMetrics* metrics);
+
+                bool commitManifestAuthenticatedExactData(
+                    const KeyScope& keyScope, const ExactManifestPublication& publication,
+                    CollaborationTransferMetrics* metrics, std::uint64_t maxRetainedDiskBytes);
 
                 bool hasRetainedExactData(const ndn::Name& name);
                 std::weak_ptr<RetainedPackets> m_retainedExactPacketSet;

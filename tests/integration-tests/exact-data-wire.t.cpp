@@ -27,7 +27,7 @@ struct ExactPublicationOracle
 {
   static auto
   publishManifest(ServiceProvider::CollaborationContext& context, const SegmentManifestScope& scope,
-                  uint32_t count = 2, ndn::span<const uint8_t> app = {})
+                  uint32_t count = 2, ndn::span<const uint8_t> app = {}, uint64_t diskLimit = 0)
   {
     std::vector<ndn::ConstBufferPtr> contents;
     contents.reserve(count);
@@ -36,7 +36,7 @@ struct ExactPublicationOracle
         static_cast<uint8_t>(2 * i + 1), static_cast<uint8_t>(2 * i + 2)}));
     }
     return context.publishManifestAuthenticatedExactData("manifest-authority", scope,
-      {4096, 65536, count}, contents, app, 60000, nullptr);
+      {4096, 65536, count}, contents, app, 60000, nullptr, diskLimit);
   }
 
   static ServiceProvider::ExactDataFetchOperation
@@ -179,7 +179,15 @@ BOOST_AUTO_TEST_CASE(ManifestReadAdmitsRootBeforeSchedulingProvenMembers)
     ndn::Name(provider.getName()).append("NDNSF").append("TP").appendVersion(2)};
   const ndn::Buffer metadata{0, 1, 2, 3};
   constexpr uint32_t sourceCount = 129;
-  BOOST_REQUIRE(ExactPublicationOracle::publishManifest(producer, scope, sourceCount, metadata));
+  BOOST_CHECK_EXCEPTION(ExactPublicationOracle::publishManifest(producer, scope, sourceCount,
+                        metadata, 1), std::runtime_error, [] (const std::runtime_error& error) {
+    return std::string_view(error.what()) == "ORIGINAL_PACKET_STORAGE_BUDGET_EXCEEDED";
+  });
+  const auto original = ExactPublicationOracle::publishManifest(producer, scope, sourceCount,
+                                                                 metadata, 65536);
+  BOOST_REQUIRE(original);
+  BOOST_CHECK_EQUAL(provider.evictImsPrefixForTest(scope.objectPrefix), 0U);
+  BOOST_CHECK(ExactPublicationOracle::replayManifest(producer, *original));
 
   bool holdFirstPage = true;
   bool holdRoot = false;

@@ -576,8 +576,8 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
         auto bytes = fixedBundleBytes(core.roleContracts().at(e.producerRole), e.bundleTensorNames);
         // Proof geometry is frozen from the source contract and this request's ACKs.
         // Runtime or placement estimates only feed the legacy prefetch hint.
-        if (bytes != 0 && !context.segmentManifestDependencyId.empty() &&
-            context.segmentManifestDependencyId == e.dependencyId &&
+        if (bytes != 0 && (context.segmentManifestDependencyId.empty() ||
+             context.segmentManifestDependencyId == e.dependencyId) &&
             e.sourceKind == "ROLE" && !core.generationContract.enabled && !feedback &&
             e.consumerRoles.size() == 1) {
           const auto& consumer = core.assignment.providerByRole.at(e.consumerRoles.front());

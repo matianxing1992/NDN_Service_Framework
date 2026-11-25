@@ -1567,7 +1567,7 @@ NativePlannedRequest planNativeRequestImpl(
         if (bytes != 0) {
           const auto& provider = offers.back().observation().provider;
           authenticatedTransportByProvider.emplace(provider, bytes);
-          if (stateless && !runtime.segmentManifestDependencyId.empty() &&
+          if (stateless &&
               fields.hasField(NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD) &&
               fields.getField(NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD) ==
                 NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_VALUE) {

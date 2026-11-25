@@ -1776,8 +1776,6 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
         const auto chunk = std::max<std::size_t>(1, actualBundleBytes / 34);
         auto manifestContext = prefetchContext;
         manifestContext.inlineFirstSegment = true;
-        manifestContext.segmentManifestDependencyId =
-          prefetchGroups.at(execution.roles.front()).dataflow.mayPublish.front().dependencyId;
         manifestContext.tensorSegmentBytesByProvider[sourceProvider] = chunk;
         manifestContext.manifestSegmentBytesByProvider = {{sourceProvider, chunk},
                                                          {targetProvider, 4000}};
@@ -1795,6 +1793,9 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
         BOOST_CHECK_EQUAL(publishedManifest.segmentManifest->segmentPayloadBytes, chunk);
         BOOST_CHECK(!publishedManifest.inlineFirstSegment);
         BOOST_CHECK_EQUAL(publishedManifest.prefetchBundleBytes, 0U);
+        for (const auto& endpoint : manifestGroups.at(execution.roles.front()).dataflow.mayPublish) {
+          BOOST_CHECK(endpoint.segmentManifest.has_value());
+        }
         for (const auto& role : execution.roles) {
           const auto projection = NativePlanSealer::project(prefetchSealed, original.at(role),
             manifestGroups.at(role));
@@ -1811,6 +1812,13 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
           BOOST_CHECK(*endpoint.segmentManifest == *publishedManifest.segmentManifest);
           BOOST_CHECK(!endpoint.inlineFirstSegment);
         }
+
+        auto scopedManifestContext = manifestContext;
+        scopedManifestContext.segmentManifestDependencyId = "different-dependency";
+        const auto scopedManifestGroups = NativeGroupProjectionBuilder::build(
+          prefetchSealed, input.split, keys, scopedManifestContext, 2U << 20);
+        BOOST_CHECK(!scopedManifestGroups.at(execution.roles.front())
+                       .dataflow.mayPublish.front().segmentManifest);
 
         // The legacy sizing declaration alone cannot opt a consumer into proof mode.
         manifestContext.manifestSegmentBytesByProvider.erase(targetProvider);

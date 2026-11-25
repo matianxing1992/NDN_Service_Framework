@@ -7634,7 +7634,7 @@ namespace ndn_service_framework
         KeyScope keyScope, const SegmentManifestScope& scope, const SegmentManifestLimits& limits,
         ndn::span<const ndn::ConstBufferPtr> contents,
         ndn::span<const uint8_t> applicationManifest, int freshnessMs,
-        CollaborationTransferMetrics* metrics)
+        CollaborationTransferMetrics* metrics, std::uint64_t maxRetainedDiskBytes)
     {
         if (scope.producer != m_provider.identity ||
             m_assignment.dependencyTransport.redundancy != DependencyRedundancy::None ||
@@ -7658,10 +7658,17 @@ namespace ndn_service_framework
         for (const auto& packet : original.packets()) {
             packets.push_back(std::make_shared<const ndn::Data>(packet));
         }
-        std::shared_ptr<const ExactManifestPublication> publication(new ExactManifestPublication(
+        std::shared_ptr<ExactManifestPublication> publication(new ExactManifestPublication(
             m_provider.m_fetchStopping, m_requesterName, m_requestId, keyScope, std::move(packets)));
-        if (!replayManifestAuthenticatedExactData(keyScope, *publication, metrics)) {
+        if (maxRetainedDiskBytes) {
+            publication->m_retainedRoot = scope.rootName();
+        }
+        if (!commitManifestAuthenticatedExactData(keyScope, *publication, metrics,
+                                                  maxRetainedDiskBytes)) {
             return {};
+        }
+        if (maxRetainedDiskBytes) {
+            publication->m_packets.clear();
         }
         if (metrics) {
             metrics->manifestCertificateSignatures = 1;
@@ -7713,6 +7720,14 @@ namespace ndn_service_framework
         const KeyScope& keyScope, const ExactManifestPublication& publication,
         CollaborationTransferMetrics* metrics)
     {
+        return commitManifestAuthenticatedExactData(keyScope, publication, metrics, 0);
+    }
+
+    bool
+    ServiceProvider::CollaborationContext::commitManifestAuthenticatedExactData(
+        const KeyScope& keyScope, const ExactManifestPublication& publication,
+        CollaborationTransferMetrics* metrics, std::uint64_t maxRetainedDiskBytes)
+    {
         if (publication.m_owner.lock() != m_provider.m_fetchStopping ||
             publication.m_requester != m_requesterName ||
             publication.m_request != m_requestId || publication.m_scope != keyScope ||
@@ -7723,6 +7738,10 @@ namespace ndn_service_framework
         const auto current = currentExactPublicationPredicate();
         if (m_provider.m_fetchStopping->load() || !current()) {
             return false;
+        }
+        if (publication.m_packets.empty()) {
+            return !publication.m_retainedRoot.empty() &&
+                   hasRetainedExactData(publication.m_retainedRoot);
         }
         const auto& root = *publication.m_packets.front();
         if (!m_provider.validator ||
@@ -7738,6 +7757,9 @@ namespace ndn_service_framework
         size_t contentBytes = 0;
         size_t controlWireBytes = 0;
         for (const auto& packet : publication.m_packets) {
+            if (m_provider.findRetainedExactPacket(packet->getName()).first) {
+                throw std::invalid_argument("immutable manifest Data name is already retained");
+            }
             wireBytes += packet->wireEncode().size();
             if (packet->getFinalBlock()) {
                 contentBytes += packet->getContent().value_size();
@@ -7763,24 +7785,30 @@ namespace ndn_service_framework
             }
         }
         // A rejected batch must never evict previously published packets.
-        if (missing.size() > ims.getLimit() - ims.size()) {
+        if (!maxRetainedDiskBytes && missing.size() > ims.getLimit() - ims.size()) {
             return false;
         }
         std::unique_lock<std::mutex> authorityLock(*m_workAuthorityCommitMutex);
         if (m_provider.m_fetchStopping->load() || !current()) {
             return false;
         }
-        try {
-            // Cache readers share the lock. Insert members before the root.
-            for (auto packet = missing.rbegin(); packet != missing.rend(); ++packet) {
-                ims.insert(**packet);
-            }
+        if (maxRetainedDiskBytes) {
+            m_provider.retainExactPackets(m_retainedExactPacketSet, m_assignment.workDeadline,
+                maxRetainedDiskBytes, publication.m_packets, current);
         }
-        catch (...) {
-            for (const auto* packet : missing) {
-                ims.erase(packet->getFullName(), false);
+        else {
+            try {
+                // Cache readers share the lock. Insert members before the root.
+                for (auto packet = missing.rbegin(); packet != missing.rend(); ++packet) {
+                    ims.insert(**packet);
+                }
             }
-            throw;
+            catch (...) {
+                for (const auto* packet : missing) {
+                    ims.erase(packet->getFullName(), false);
+                }
+                throw;
+            }
         }
         authorityLock.unlock();
         for (const auto& packet : publication.m_packets) {

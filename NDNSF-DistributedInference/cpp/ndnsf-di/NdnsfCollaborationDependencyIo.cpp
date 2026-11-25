@@ -1810,7 +1810,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         if (cached->second.fingerprint != fingerprint)
           throw std::invalid_argument("immutable tensor publication conflict");
         if (cached->second.retainedMetrics) {
-          if (!m_ctx.hasRetainedExactData(ndn::Name(edge.manifestDataName)))
+          if (!m_ctx.hasRetainedExactData(ndn::Name(cached->second.retainedMetrics->actualDataName)))
             throw std::runtime_error("failed to reopen signed tensor originals");
           attachTransferObservation(edge, bundle, "send", *cached->second.retainedMetrics);
           if (!m_groupCoordinator->recordProgress(nowEpochMs()))
@@ -1837,8 +1837,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       else {
         if (m_tensorPublications.size() >= MAX_ORIGINAL_OBJECTS)
           throw std::length_error("tensor original cache entry capacity");
-        if ((m_exactPacketDiskBudget == 0 || edge.segmentManifest) &&
-            m_tensorPublicationBytes >= MAX_ORIGINAL_BYTES)
+        if (m_exactPacketDiskBudget == 0 && m_tensorPublicationBytes >= MAX_ORIGINAL_BYTES)
           throw std::length_error("tensor original cache byte capacity");
         cached = m_tensorPublications.emplace(
           objectName, CachedTensorPublication{fingerprint, {}, 0, {}, {}}).first;
@@ -1964,17 +1963,18 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         for (std::size_t i = 1; i < publications.size(); ++i) {
           contents.push_back(std::make_shared<const ndn::Buffer>(std::move(publications[i].second)));
         }
-        const auto limit = std::min<std::uint64_t>(capability.maxInflightBytes,
-          MAX_ORIGINAL_BYTES - m_tensorPublicationBytes);
+        const auto limit = std::min<std::uint64_t>(capability.maxInflightBytes, batchWireBudget);
         cachedPublication.manifest = m_ctx.publishManifestAuthenticatedExactData(
           edge.transportScope.empty() ? edge.scope : edge.transportScope,
           tensorManifestScope(edge, m_ctx.localProvider()), {count, limit, count}, contents,
-          manifestWire, m_freshnessMs, &transportMetrics);
+          manifestWire, m_freshnessMs, &transportMetrics, m_exactPacketDiskBudget);
         if (!cachedPublication.manifest) {
           throw std::runtime_error("failed to publish manifest-authenticated tensor object");
         }
-        cachedPublication.wireBytes = transportMetrics.wireBytes.value();
-        m_tensorPublicationBytes += cachedPublication.wireBytes;
+        if (m_exactPacketDiskBudget == 0) {
+          cachedPublication.wireBytes = transportMetrics.wireBytes.value();
+          m_tensorPublicationBytes += cachedPublication.wireBytes;
+        }
         published = true;
       }
       else if (edge.inlineFirstSegment) {
@@ -2010,10 +2010,11 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       catch (...) { accountOriginals(); throw; }
       accountOriginals();
       const auto publishedPacketCount = cachedPublication.originals.size();
-      if (m_exactPacketDiskBudget != 0 && !edge.segmentManifest) {
+      if (m_exactPacketDiskBudget != 0) {
         cachedPublication.retainedMetrics = transportMetrics;
         cachedPublication.retainedMetrics->localWorkObserver = {};
         cachedPublication.originals.clear();
+        cachedPublication.manifest.reset();
       }
       if (m_workStatistics && m_workStatistics->epochProfilingEnabled()) {
         NativeWorkScope profileWork(m_workStatistics, "profile-tensor-envelope",
