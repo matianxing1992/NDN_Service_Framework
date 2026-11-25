@@ -377,6 +377,9 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
                 '--tokenizer-json', config['model']['tokenizer']]
         if 'repo_service' in network:
             argv += ['--repo-service', network['repo_service']]
+        if params.get('enable-segment-manifest') is False:
+            params.pop('enable-segment-manifest')
+            argv.append('--disable-segment-manifest')
         for key, value in sorted(params.items()):
             if type(value) is bool:
                 if value:

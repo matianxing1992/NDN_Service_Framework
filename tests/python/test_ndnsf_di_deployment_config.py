@@ -2749,6 +2749,8 @@ def test_provider_native_launch_passes_exact_transport_parameters(ops, deploymen
     argv, _ = cluster._native_launch(native, native['actors'][-1], directory, state)
     assert argv[argv.index('--exact-packet-disk-mib') + 1] == '1024'
     assert argv[argv.index('--tensor-segment-bytes') + 1] == '7600'
+    assert '--enable-segment-manifest' not in argv
+    assert '--disable-segment-manifest' not in argv
 
 
 @pytest.mark.parametrize('debug', (False, True))
@@ -2805,6 +2807,7 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     assert argv[argv.index('--artifact-cache-max-mib') + 1] == '131072'
     assert '--enable-admission-lease' not in argv
     assert ('--enable-segment-manifest' in argv) is timing
+    assert ('--disable-segment-manifest' in argv) is (not timing)
     assert '--recipient-key-map' not in argv
     assert '--grant-authority-public-key' not in argv
     assert '--core-work-timeout-ms' not in argv

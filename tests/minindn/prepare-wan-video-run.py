@@ -169,7 +169,6 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
             'roles': ','.join(provider_roles[name]), 'grant-authority-public-key': str(hint),
             'recipient-key-map': str(mapping), 'selection-offer-key-file': str(offer),
             'offer-backend': 'onnxruntime-cpu', 'offer-can-provision': True,
-            'enable-segment-manifest': True,
             'assembly-timeout-ms': 120000, 'permission-wait-ms': 30000,
             'repo-fetch-timeout-ms': 60000,
         })
@@ -351,10 +350,6 @@ def prepare_warm(cold_path):
         raise ValueError('warm preparation requires a generated Wan fixture')
     if not (Path(generation['output_directory']) / 'manifest.json').is_file():
         raise ValueError('warm preparation requires a completed cold clip')
-    for actor in cold['actors']:
-        if actor['kind'] == 'provider':
-            actor['parameters']['enable-segment-manifest'] = True
-
     def bind_handle(config):
         model = config['model_input']
         handle = Path(model['private_handle_file'])

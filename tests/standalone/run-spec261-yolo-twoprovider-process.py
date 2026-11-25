@@ -479,6 +479,9 @@ try:
    pm += ['--statistics-file', str(run_root/(tag+'-statistics.jsonl'))]
   if args.segment_manifest_dependency:
    pm.append('--enable-segment-manifest')
+  elif args.frozen_fixtures and not args.whole_model_tp:
+   # Preserve the explicitly compared per-packet authentication baseline.
+   pm.append('--disable-segment-manifest')
   if wan:
    pm += ['--artifact-cache-max-mib',str(wan_cache_mib),'--repo-fetch-timeout-ms','120000',
           '--assembly-timeout-ms','480000']

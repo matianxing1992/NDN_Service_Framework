@@ -255,7 +255,7 @@ struct Options
   bool allowPreassembledDiagnostic = false;
   bool enableAdmissionLease = false;
   bool allowSelectionGenerationOptions = false;
-  bool segmentManifestEnabled = false;
+  bool segmentManifestEnabled = true;
   bool requireExecutionLease = false;
   std::string executionPolicy;
   int admissionLeaseTtlMs = 60000;
@@ -952,6 +952,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--enable-segment-manifest") {
       options.segmentManifestEnabled = true;
     }
+    else if (arg == "--disable-segment-manifest") {
+      options.segmentManifestEnabled = false;
+    }
     else if (arg == "--enable-admission-lease") {
       options.enableAdmissionLease = true;
     }
@@ -1283,7 +1286,7 @@ printUsage(const char* program)
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
     << "[--permission-wait-ms <ms>] "
     << "[--kv-handoff-config <operator-json>] [--check-kv-handoff-config] "
-    << "[--tracer-deterministic-runner] [--enable-admission-lease] [--enable-segment-manifest] "
+    << "[--tracer-deterministic-runner] [--enable-admission-lease] [--disable-segment-manifest] "
     << "[--allow-preassembled-diagnostic] [--allow-selection-generation-options] "
     << "[--require-execution-lease] "
     << "[--execution-policy DATA_DRIVEN_V2|LEGACY_READY_SET_V1] "

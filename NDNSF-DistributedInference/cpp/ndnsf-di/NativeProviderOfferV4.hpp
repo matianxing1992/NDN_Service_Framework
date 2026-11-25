@@ -45,7 +45,7 @@ struct NativeProviderOfferV4Config
   std::uint64_t telemetryMaxAgeMs = 5000;
   // Observation freshness only; does not limit the base ACK execution lifetime.
   std::uint64_t offerTtlMs = 5000;
-  bool segmentManifestEnabled = false;
+  bool segmentManifestEnabled = true;
 };
 
 struct NativeProviderOfferV4Decision

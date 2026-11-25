@@ -248,7 +248,7 @@ struct NativeProviderHandlerConfig
   // request/plan/role/tensor bindings, so the signed wire packet needs room
   // beyond the plaintext segment payload.
   std::size_t maxSegmentSize = 7000;
-  bool segmentManifestEnabled = false;
+  bool segmentManifestEnabled = true;
   int freshnessMs = 60000;
   // Optional per-request reservation for exact signed original packet files.
   std::uint64_t exactPacketDiskBudget = 0;
