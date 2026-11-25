@@ -151,9 +151,11 @@ def main():
                          if row['file'] == 'google/umt5-xxl/tokenizer.json')
     tokenizer_path = root / tokenizer_row['file']
     network.verify(tokenizer_path, tokenizer_row)
-    if (generation['tokenizer']['digest'] != 'sha256:' + tokenizer_row['sha256'] or
-            Path(generation['tokenizer']['file']).resolve(strict=True) != tokenizer_path):
+    if generation['tokenizer']['digest'] != 'sha256:' + tokenizer_row['sha256']:
         raise ValueError('workload tokenizer differs from the pinned source')
+    workload_tokenizer = Path(generation['tokenizer']['file']).resolve(strict=True)
+    if workload_tokenizer != tokenizer_path:
+        network.verify(workload_tokenizer, tokenizer_row)
     clean = network.source_module(root, 'tokenizers')
     tokenizer = Tokenizer.from_file(str(tokenizer_path))
     tokenizer.enable_truncation(max_length=512)
