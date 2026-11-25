@@ -2541,8 +2541,7 @@ void commitConversationTurn(
   }
 }
 
-void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
-                      bool queryMissingStatus = true);
+void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation);
 
 bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
                       std::uint64_t sourceAttempt,
@@ -2660,12 +2659,13 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
   return true;
 }
 
-void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
-                      bool queryMissingStatus)
+void
+awaitCoreRequestBootstrap(
+  const std::shared_ptr<NativeInferenceHandle::Operation>& operation, std::uint64_t sourceAttempt,
+  bool requireProducer, std::function<void()> ready, bool queryMissingStatus = true)
 {
-  const auto sourceAttempt = operation->attempt;
-  const auto coreRequestId = operation->coreRequestId;
-  operation->user->postToIo([operation, sourceAttempt, coreRequestId, queryMissingStatus] {
+  operation->user->postToIo([operation, sourceAttempt, requireProducer,
+                             ready = std::move(ready), queryMissingStatus] () mutable {
     try {
       {
         std::lock_guard<std::mutex> lock(operation->mutex);
@@ -2675,14 +2675,14 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       }
       // ServiceUser starts NAC-ABE and Controller permission discovery
       // asynchronously. Do not invoke BeginCollaboration until the
-      // protected requester can pass its admission checks: doing so would
-      // turn a normal bootstrap race into a misleading begin failure. Retry
+      // protected requester can pass its admission checks. The same wait
+      // applies to protected input publication before request discovery. Retry
       // through the operation owner rather than sleeping or blocking the Face
       // I/O thread. The original request deadline remains the only budget.
       using BootstrapState = ndn_service_framework::ServiceUser::RequestBootstrapState;
       const auto bootstrap = operation->runtime ? operation->user->checkRequestBootstrap(
         ndn::Name(operation->runtime->contract.serviceName), operation->options.providerNames,
-        queryMissingStatus) : BootstrapState::READY;
+        queryMissingStatus, requireProducer) : BootstrapState::READY;
       if (bootstrap == BootstrapState::REVOKED)
         throw NativeDiError("NATIVE_REQUEST_AUTHORITY_WITHDRAWN", "authorization", "bootstrap",
           "Controller withdrew Requester authority for " + operation->runtime->contract.serviceName,
@@ -2696,7 +2696,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         auto ticket = operation->operationRuntime->acquire();
         auto cancelRetry = operation->operationRuntime->scheduleAt(
           ticket, std::min(operation->deadline, now + std::chrono::milliseconds(20)),
-          [operation, sourceAttempt] {
+          [operation, sourceAttempt, requireProducer, ready = std::move(ready)] () mutable {
             {
               std::lock_guard<std::mutex> lock(operation->mutex);
               // The timer has fired and is no longer cancellable. Clear the
@@ -2706,7 +2706,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                   operation->attempt != sourceAttempt)
                 return;
             }
-            beginCoreRequest(operation, false);
+            awaitCoreRequestBootstrap(operation, sourceAttempt, requireProducer,
+                                      std::move(ready), false);
           });
         bool retainRetry = false;
         {
@@ -2721,6 +2722,23 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           cancelRetry();
         return;
       }
+      ready();
+    }
+    catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
+    catch (...) { failOperation(operation, NativeDiError(
+      "NATIVE_REQUEST_BEGIN_FAILED", "runtime", "bootstrap", "Core bootstrap wait failed",
+      operation->requestId, sourceAttempt), sourceAttempt); }
+  });
+}
+
+void
+beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operation)
+{
+  const auto sourceAttempt = operation->attempt;
+  const auto coreRequestId = operation->coreRequestId;
+  awaitCoreRequestBootstrap(operation, sourceAttempt, false,
+    [operation, sourceAttempt, coreRequestId] {
+    try {
       {
         std::lock_guard<std::mutex> lock(operation->mutex);
         if (operation->cancelled->load() || operation->attempt != sourceAttempt) return;
@@ -3236,16 +3254,22 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
 // this driver when a complete NativeRequestRuntime is configured.  The
 // constructor used by compatibility/component tests has no runtime and keeps
 // the structured not-ready failure instead of claiming a synthetic success.
-std::shared_ptr<void>
-publishRequestInput(const NativeInferenceHandle::Operation& operation, NativePreparedInput& input)
+bool
+needsProtectedInputPublication(const NativeInferenceHandle::Operation& operation,
+                               const NativePreparedInput& input)
 {
   const auto limit = operation.options.maxInlineInputBytes;
-  if (!limit) return {};
+  if (!limit) return false;
   if (*limit == 0 || operation.options.stream || operation.options.generation ||
       operation.options.conversation || !operation.runtime ||
       operation.runtime->automaticShapeSeedFactory || !input.repositoryReference.empty())
     throw std::invalid_argument("protected input offload requires an ordinary inline request");
-  if (input.payload.size() <= *limit) return {};
+  return input.payload.size() > *limit;
+}
+
+std::shared_ptr<void>
+publishRequestInput(const NativeInferenceHandle::Operation& operation, NativePreparedInput& input)
+{
   NativeRequestControl control{operation.coreRequestId, operation.attempt, operation.deadline,
     [cancelled = operation.cancelled] { return cancelled->load(); },
     operation.options.workStatistics};
@@ -3276,13 +3300,15 @@ publishRequestInput(const NativeInferenceHandle::Operation& operation, NativePre
 
 void
 dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
-                  const std::function<std::chrono::steady_clock::time_point()>& now)
+                  const std::function<std::chrono::steady_clock::time_point()>& now,
+                  std::shared_ptr<NativePreparedInput> pendingPublication = {})
 {
   bool expired = false;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
-    if (operation->cancelled->load() ||
-        operation->phase != DiRequestPhase::New) {
+    const auto expectedPhase = pendingPublication ? DiRequestPhase::PreparingInput
+                                                  : DiRequestPhase::New;
+    if (operation->cancelled->load() || operation->phase != expectedPhase) {
       // cancel/close won the race: consume the late dispatch, do not resurrect.
       ++operation->staleCallbacks;
       return;
@@ -3303,22 +3329,40 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     try {
       const auto& input = operation->input;
       const auto& options = operation->options;
-      if ((input.transportMode == NativeInputTransportMode::Inline &&
-           !input.repositoryReference.empty()) ||
-          (input.transportMode == NativeInputTransportMode::RepositoryReference &&
-           input.repositoryReference.empty()))
-        throw std::invalid_argument("native input transport and reference disagree");
-      if (input.transportMode != NativeInputTransportMode::Inline &&
-          input.transportMode != NativeInputTransportMode::RepositoryReference)
-        throw std::invalid_argument("native input transport is invalid");
-      if (!options.taskName.empty() && !input.taskName.empty() &&
-          options.taskName != input.taskName)
-        throw std::invalid_argument("request task names disagree");
-      prepared = operation->preparation->prepareInput(
-        operation->model, options.taskName.empty() ? input.taskName : options.taskName,
-        input.inputSchemaDigest, input.optionsSchemaDigest, input.payload,
-        input.repositoryReference, operation->deadline);
-      inputServingLease = publishRequestInput(*operation, prepared);
+      if (pendingPublication) {
+        prepared = std::move(*pendingPublication);
+        inputServingLease = publishRequestInput(*operation, prepared);
+      }
+      else {
+        if ((input.transportMode == NativeInputTransportMode::Inline &&
+             !input.repositoryReference.empty()) ||
+            (input.transportMode == NativeInputTransportMode::RepositoryReference &&
+             input.repositoryReference.empty()))
+          throw std::invalid_argument("native input transport and reference disagree");
+        if (input.transportMode != NativeInputTransportMode::Inline &&
+            input.transportMode != NativeInputTransportMode::RepositoryReference)
+          throw std::invalid_argument("native input transport is invalid");
+        if (!options.taskName.empty() && !input.taskName.empty() &&
+            options.taskName != input.taskName)
+          throw std::invalid_argument("request task names disagree");
+        prepared = operation->preparation->prepareInput(
+          operation->model, options.taskName.empty() ? input.taskName : options.taskName,
+          input.inputSchemaDigest, input.optionsSchemaDigest, input.payload,
+          input.repositoryReference, operation->deadline);
+        if (needsProtectedInputPublication(*operation, prepared)) {
+          // Prepare once on the worker, then wait on the Face for the matching
+          // authorization and Producer parameters before publishing.
+          auto inputToPublish = std::make_shared<NativePreparedInput>(std::move(prepared));
+          const auto attempt = operation->attempt;
+          awaitCoreRequestBootstrap(operation, attempt, true,
+            [operation, now, inputToPublish = std::move(inputToPublish), attempt] {
+              enqueueOperation(operation, [operation, now, inputToPublish] {
+                dispatchOperation(operation, now, inputToPublish);
+              }, "prepareInput", attempt);
+            });
+          return;
+        }
+      }
       if (operation->runtime && operation->runtime->automaticShapeSeedFactory) {
         if (!prepared.repositoryReference.empty())
           throw std::invalid_argument("automatic request has no shape binder or inline input");

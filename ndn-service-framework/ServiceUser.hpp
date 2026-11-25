@@ -618,6 +618,10 @@ namespace ndn_service_framework{
             RequestBootstrapState checkRequestBootstrap(
                 const ndn::Name& serviceName, const std::vector<ndn::Name>& providers,
                 bool queryMissingStatus);
+            /** Also wait for the NAC Producer binding used for protected input publication. */
+            RequestBootstrapState checkRequestBootstrap(
+                const ndn::Name& serviceName, const std::vector<ndn::Name>& providers,
+                bool queryMissingStatus, bool requireNacProducerBinding);
             void applyPermissionResponse(const PermissionResponse& response);
             /** Install a Controller-signed policy status after the enclosing
              * Data has passed the configured trust validator. */

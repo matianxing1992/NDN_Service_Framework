@@ -5732,6 +5732,14 @@ namespace ndn_service_framework
                                        const std::vector<ndn::Name>& providers,
                                        bool queryMissingStatus)
     {
+        return checkRequestBootstrap(serviceName, providers, queryMissingStatus, false);
+    }
+
+    ServiceUser::RequestBootstrapState
+    ServiceUser::checkRequestBootstrap(const ndn::Name& serviceName,
+                                       const std::vector<ndn::Name>& providers,
+                                       bool queryMissingStatus, bool requireNacProducerBinding)
+    {
         if (serviceName.empty())
             return RequestBootstrapState::WAITING;
         if (m_isLocalMock)
@@ -5760,6 +5768,9 @@ namespace ndn_service_framework
                 fetchPolicyStatusFromController(controller, serviceName);
             return RequestBootstrapState::WAITING;
         }
+        if (requireNacProducerBinding &&
+            !authorizeControllerTransition(serviceName, ProtectedTransition::DISCOVERY, true))
+            return RequestBootstrapState::WAITING;
         return activeNacConsumer().readyForDecryption() &&
                hasUserPermissionForRequest(providers, serviceName) ?
             RequestBootstrapState::READY : RequestBootstrapState::WAITING;
