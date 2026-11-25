@@ -1260,6 +1260,72 @@ BOOST_AUTO_TEST_CASE(ExactReadWorkerDestructionDrainsSuccessAndCancellation)
   }
 }
 
+BOOST_AUTO_TEST_CASE(SpeculativeBatchBacksOffUnpublishedReadinessRenewals)
+{
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+  auto& producer = environment.provider(0);
+  auto& consumer = environment.provider(1);
+  auto& producerFace = environment.providerFace(0);
+  auto& consumerFace = environment.providerFace(1);
+  const auto prefix = ndn::Name(producer.getName()).append("delayed-batch");
+  const std::vector<ndn::Name> names{ndn::Name(prefix).appendSegment(0),
+                                   ndn::Name(prefix).appendSegment(1)};
+  using Clock = std::chrono::steady_clock;
+  std::array<std::vector<Clock::time_point>, 2> sends;
+  ndn::signal::ScopedConnection interests = consumerFace.onSendInterest.connect(
+    [&](const ndn::Interest& interest) {
+      for (std::size_t i = 0; i < names.size(); ++i) {
+        if (interest.getName() == names[i]) {
+          sends[i].push_back(Clock::now());
+          producerFace.receive(interest);
+          return;
+        }
+      }
+    });
+  ndn::signal::ScopedConnection data = producerFace.onSendData.connect(
+    [&](const ndn::Data& packet) { consumerFace.receive(packet); });
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "readiness";
+  assignment.service = profile.serviceName;
+  assignment.workDeadline = Clock::now() + 30s;
+  assignment.workCurrent = [] { return true; };
+  const ndn::Name requestId("/filesystem/readiness-batch");
+  ServiceProvider::CollaborationContext publisher(
+    producer, profile.userIdentity, requestId, RequestMessage(), assignment);
+  ServiceProvider::CollaborationContext receiver(
+    consumer, profile.userIdentity, requestId, RequestMessage(), assignment);
+  auto batch = receiver.startSignedExactDataBatch(
+    "exact-authority", names, producer.getName(), 4500, {}, {},
+    ServiceProvider::ExactDataFetchPhase::AwaitPublication);
+  environment.pumpUntil([&] {
+    return (sends[0].size() >= 3 && sends[1].size() >= 3) ||
+           batch.wait_for(0ms) == std::future_status::ready;
+  });
+  for (const auto& times : sends) {
+    BOOST_REQUIRE_GE(times.size(), 3U);
+    const auto first = times[1] - times[0];
+    const auto second = times[2] - times[1];
+    BOOST_CHECK(second >= first + first / 2);
+  }
+  const std::vector<std::pair<ndn::Name, ndn::Buffer>> objects{
+    {names[0], {'a'}}, {names[1], {'b'}}};
+  std::vector<std::shared_ptr<const ndn::Data>> originals;
+  BOOST_REQUIRE(ExactPublicationOracle::publishBatch(publisher, objects, originals));
+  batch.confirmPublication();
+  environment.pumpUntil([&] { return batch.wait_for(0ms) == std::future_status::ready; });
+  BOOST_REQUIRE(batch.wait_for(0ms) == std::future_status::ready);
+  const auto result = batch.get();
+  BOOST_REQUIRE(result);
+  BOOST_REQUIRE_EQUAL(result->contents.size(), names.size());
+  BOOST_CHECK(result->contents[0] == objects[0].second);
+  BOOST_CHECK(result->contents[1] == objects[1].second);
+}
+
 BOOST_AUTO_TEST_CASE(AwaitPublicationSurvivesMoreThanSixReadinessNacks)
 {
   BootstrapProfile profile;

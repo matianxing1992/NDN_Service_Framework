@@ -14053,7 +14053,8 @@ namespace ndn_service_framework
         const auto initialRtoMs = std::min(timeoutMs, interestLifetimeMs);
         const bool canConfirmPublication = phase == ExactDataFetchPhase::AwaitPublication &&
             !retainOriginalWire && !manifestRead;
-        // Allow two backoff steps after a matching manifest proves publication.
+        const bool backsOffReadiness = canConfirmPublication && dataNames.size() > 1;
+        // Bound both speculative readiness probes and confirmed transport recovery.
         // The exact operation still owns its original cancellation and deadlines.
         const auto maximumRtoMs = canConfirmPublication
             ? std::min<std::int64_t>(timeoutMs, 4LL * initialRtoMs) : initialRtoMs;
@@ -15079,7 +15080,8 @@ namespace ndn_service_framework
                 }
             };
             *express = [this, state, slot, finish, retry, dataName, expectedProducer,
-                        requestId, keyScope, interestLifetimeMs, shouldCancel,
+                        requestId, keyScope, interestLifetimeMs, backsOffReadiness,
+                        maximumRtoMs, shouldCancel,
                         reportFirstRead, cancelPending, slotPhase, weakRetry, onValidatedData,
                         localWorkObserver, retainOriginalWire, signatureRejected,
                         recoverMissing, hybridKeyBootstrap, inBandRecovery, index] {
@@ -15150,6 +15152,10 @@ namespace ndn_service_framework
                 }
                 const bool awaitsPublication = slotPhase == ExactDataFetchPhase::AwaitPublication &&
                     !publicationConfirmed;
+                const auto readinessIntervalMs = awaitsPublication && backsOffReadiness
+                    ? std::min<std::int64_t>(maximumRtoMs,
+                        std::int64_t{retryIntervalMs} << std::min<std::size_t>(2, attempt - 1))
+                    : retryIntervalMs;
                 int issuedLifetimeMs = awaitsPublication
                     ? static_cast<int>(std::max<std::int64_t>(1,
                         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -15569,12 +15575,13 @@ namespace ndn_service_framework
 
                 try {
                     if (awaitsPublication &&
-                        issuedLifetimeMs > retryIntervalMs && (!state->strict || attempt < 6)) {
+                        issuedLifetimeMs > readinessIntervalMs && (!state->strict || attempt < 6)) {
                         // Renew a long-lived readiness Interest before it expires.
+                        // Back off bulk probes while the same names remain pending.
                         // After publication, the replacement uses the published RTO.
                         // This timer is not a loss signal. The Face reports timeout
                         // if the replacement actually expires.
-                        m_scheduler.schedule(ndn::time::milliseconds(retryIntervalMs),
+                        m_scheduler.schedule(ndn::time::milliseconds(readinessIntervalMs),
                             [state, slot, weakRetry, attempt, finish, dataName] {
                                 if (!state->completed.load() && !slot->completed.load() &&
                                     !slot->networkExhausted.load(std::memory_order_acquire) &&
