@@ -1430,8 +1430,17 @@ BOOST_AUTO_TEST_CASE(AdmittedManifestSwitchesSpeculativeBatchToPublishedRetry)
         consumerFace.receive(data);
       }
     });
+  auto losses = std::make_shared<std::uint64_t>(0);
+  CollaborationLocalWorkObserver observer;
+  observer.owner = losses;
+  observer.addCount = [](const std::shared_ptr<void>& owner, std::string_view name,
+                         std::uint64_t count) {
+    if (name == "core.exact-data.congestion.losses") {
+      *std::static_pointer_cast<std::uint64_t>(owner) += count;
+    }
+  };
   auto read = receiver.startSignedExactDataBatch("input", names, producer.getName(), 4000,
-    {}, {}, ServiceProvider::ExactDataFetchPhase::AwaitPublication, {}, 1);
+    {}, {}, ServiceProvider::ExactDataFetchPhase::AwaitPublication, {}, 1, observer);
   const auto deadline = std::chrono::steady_clock::now() + 3s;
   const auto pump = [&] {
     producerFace.processEvents(ndn::time::milliseconds(5));
@@ -1463,6 +1472,8 @@ BOOST_AUTO_TEST_CASE(AdmittedManifestSwitchesSpeculativeBatchToPublishedRetry)
   BOOST_CHECK_GT(firstLifetimes[2].count(), firstLifetimes[1].count());
   BOOST_CHECK_LT(firstLifetimes[2].count(), firstLifetimes[0].count());
   BOOST_CHECK_LT(secondLifetimes.front().count(), firstLifetimes[0].count());
+  // Only the post-publication Interest expires. Renewing readiness is not loss.
+  BOOST_CHECK_EQUAL(*losses, 1);
 }
 
 BOOST_AUTO_TEST_CASE(ExactInterestRenewalKeepsOtherPendingNames)

@@ -15570,9 +15570,10 @@ namespace ndn_service_framework
                 try {
                     if (awaitsPublication &&
                         issuedLifetimeMs > retryIntervalMs && (!state->strict || attempt < 6)) {
-                        // Keep the producer's pending Interest alive while retaining
-                        // normal same-name recovery if an Interest or Data is lost.
-                        // A newer Nack/timeout attempt makes this timer obsolete.
+                        // Renew a long-lived readiness Interest before it expires.
+                        // After publication, the replacement uses the published RTO.
+                        // This timer is not a loss signal. The Face reports timeout
+                        // if the replacement actually expires.
                         m_scheduler.schedule(ndn::time::milliseconds(retryIntervalMs),
                             [state, slot, weakRetry, attempt, finish, dataName] {
                                 if (!state->completed.load() && !slot->completed.load() &&
@@ -15580,10 +15581,7 @@ namespace ndn_service_framework
                                     slot->attempts.load(std::memory_order_relaxed) == attempt) {
                                     if (const auto renew = weakRetry.lock()) {
                                         try {
-                                            const auto confirmed = state->publicationConfirmed.load(
-                                                std::memory_order_acquire);
-                                            (*renew)(confirmed ? "timeout" : "publication-refresh",
-                                                     attempt);
+                                            (*renew)("publication-refresh", attempt);
                                         }
                                         catch (...) {
                                             finish({}, "exact readiness renewal failed for " +
