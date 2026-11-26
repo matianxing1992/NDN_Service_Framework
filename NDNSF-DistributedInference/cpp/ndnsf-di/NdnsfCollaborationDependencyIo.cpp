@@ -1877,7 +1877,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         exactNames);
 
       NativeWorkScope encodeWork(m_workStatistics, "tensor-segment-encode", NativeWorkKind::LOCAL);
-      const auto encodedSegments = ProviderGroupCoordinator::encodeSegmentsCompact(sealed);
+      auto encodedSegments = ProviderGroupCoordinator::encodeSegmentsCompact(sealed);
       encodeWork.finish();
 
       std::uint64_t numericProducerRank = 0;
@@ -1915,11 +1915,13 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       manifest.unpackedBytes = unpackedBytes;
       manifest.segmentSize = 0;
       manifest.segmentCount = encodedSegments.size();
+      std::uint64_t cryptoSegmentBytes = 0;
       for (std::size_t index = 0; index < encodedSegments.size(); ++index) {
         manifest.segmentSize = std::max<std::uint64_t>(
           manifest.segmentSize, chunks[index].size());
-        manifest.orderedSegmentDigests.push_back(
-          sha256TensorBytes(encodedSegments[index]));
+        const auto& segment = encodedSegments[index];
+        cryptoSegmentBytes += segment.size();
+        manifest.orderedSegmentDigests.push_back(sha256TensorBytes(segment));
       }
       manifest.createdAtMs = createdAtMs;
       manifest.noProgressMs = edge.noProgressDeadlineMs;
@@ -1937,15 +1939,17 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
       }
 
       std::vector<std::pair<ndn::Name, ndn::Buffer>> publications;
-      publications.reserve(encodedSegments.size() + 1);
-      publications.emplace_back(
-        ndn::Name(edge.manifestDataName),
-        ndn::Buffer(manifestWire.begin(), manifestWire.end()));
-      for (std::size_t index = 0; index < encodedSegments.size(); ++index) {
+      if (!edge.segmentManifest) {
+        publications.reserve(encodedSegments.size() + 1);
         publications.emplace_back(
-          ndn::Name(exactNames[index]),
-          ndn::Buffer(encodedSegments[index].begin(),
-                      encodedSegments[index].end()));
+          ndn::Name(edge.manifestDataName),
+          ndn::Buffer(manifestWire.begin(), manifestWire.end()));
+        for (std::size_t index = 0; index < encodedSegments.size(); ++index) {
+          publications.emplace_back(
+            ndn::Name(exactNames[index]),
+            ndn::Buffer(encodedSegments[index].begin(),
+                        encodedSegments[index].end()));
+        }
       }
       // The protected batch is ready for Core signing. Keep the same hard
       // deadline and reject an expired group before exposing any exact Data.
@@ -1960,8 +1964,10 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         const auto count = edge.segmentManifest->sourceSegments;
         std::vector<ndn::ConstBufferPtr> contents;
         contents.reserve(count);
-        for (std::size_t i = 1; i < publications.size(); ++i) {
-          contents.push_back(std::make_shared<const ndn::Buffer>(std::move(publications[i].second)));
+        for (auto& segment : encodedSegments) {
+          auto content = std::make_shared<ndn::Buffer>();
+          content->swap(segment);
+          contents.push_back(std::move(content));
         }
         const auto limit = std::min<std::uint64_t>(capability.maxInflightBytes, batchWireBudget);
         cachedPublication.manifest = m_ctx.publishManifestAuthenticatedExactData(
@@ -2020,15 +2026,12 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         NativeWorkScope profileWork(m_workStatistics, "profile-tensor-envelope",
                                     NativeWorkKind::LOCAL);
         try {
-          std::uint64_t cryptoBytes = 0;
-          for (const auto& segment : encodedSegments)
-            cryptoBytes += segment.size();
           logRuntimeEvidence("NDNSF_DI_TENSOR_ENVELOPE " + nativeCanonicalJson(NativeJson{
             {"requestId", edge.requestId}, {"role", edge.producerRole},
             {"inferenceEpoch", inferenceEpochForEdge(edge)},
             {"producerInferenceEpoch", publicationInferenceEpochForEdge(edge)},
             {"operation", edge.operationKind}, {"dataName", edge.plannedDataName},
-            {"bundleBytes", bundleForWire.payload.size()}, {"cryptoSegmentBytes", cryptoBytes},
+            {"bundleBytes", bundleForWire.payload.size()}, {"cryptoSegmentBytes", cryptoSegmentBytes},
             {"manifestBytes", manifestWire.size()}, {"segments", encodedSegments.size()},
             {"publishedDataPackets", edge.segmentManifest ? 1 + encodedSegments.size() +
               ndn_service_framework::SegmentManifestVerifier::pageCountFor(
