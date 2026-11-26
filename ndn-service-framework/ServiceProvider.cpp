@@ -11087,6 +11087,23 @@ namespace ndn_service_framework
             }
         }
         const bool requestScopedResponse = requestScopedState.has_value();
+        const auto protectInlineResponse = [&](ResponseMessage& message) {
+            auto binding = requestScopedState->binding;
+            binding.segmentOrEventId = "response";
+            const auto payload = message.getPayloadBlock().value_bytes();
+            const auto envelope = encryptRequestContent(requestScopedState->keys.responseKey,
+                requestScopedState->keys.keyId, binding, payload);
+            ndn::Block emptyPayload(tlv::PayloadType);
+            emptyPayload.encode();
+            message.setPayloadBlock(emptyPayload);
+            message.setAeadEnvelope(envelope.wireEncode());
+            message.setControllerVersion(binding.controllerVersion);
+            NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_RESPONSE_ENCRYPTED requestId="
+                         << requestId.toUri()
+                         << " providerName=" << providerName.toUri()
+                         << " plaintextBytes=" << payload.size()
+                         << " keyId=" << requestScopedState->keys.keyId);
+        };
         LargeDataReferenceResponseResult optimizedResponse;
         if (requestScopedResponse) {
             auto binding = requestScopedState->binding;
@@ -11105,25 +11122,9 @@ namespace ndn_service_framework
                     std::move(binding));
             }
             else {
-                binding.segmentOrEventId = "response";
-                const auto envelope = encryptRequestContent(
-                    requestScopedState->keys.responseKey,
-                    requestScopedState->keys.keyId,
-                    binding,
-                    ndn::span<const uint8_t>(payload.data(), payload.size()));
-                const auto encoded = envelope.wireEncode();
-                ndn::Block emptyPayload(tlv::PayloadType);
-                emptyPayload.encode();
-                response.setPayloadBlock(emptyPayload);
-                response.setAeadEnvelope(encoded);
-                response.setControllerVersion(binding.controllerVersion);
+                protectInlineResponse(response);
                 optimizedResponse.success = true;
                 optimizedResponse.responseMessage = std::move(response);
-                NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_RESPONSE_ENCRYPTED requestId="
-                             << requestId.toUri()
-                             << " providerName=" << providerName.toUri()
-                             << " plaintextBytes=" << payload.size()
-                             << " keyId=" << requestScopedState->keys.keyId);
             }
         }
         else {
@@ -11157,6 +11158,9 @@ namespace ndn_service_framework
                                          optimizedResponse.errorMessage);
             if (m_useTokens) {
                 response.setUserToken(requestMessage.getUserToken());
+            }
+            if (requestScopedResponse && requestScopedState->keys.isValid(nowMilliseconds())) {
+                protectInlineResponse(response);
             }
         }
         else {
@@ -20583,6 +20587,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 nextPacket, requireCurrent);
             std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
             requireCurrent();
+            // Allow one fetch interval for notification and one for segment retrieval.
+            // Start this window after signing and staging the complete packet file.
+            owner->deadline = std::min(deadline, std::chrono::steady_clock::now() +
+                2 * REQUEST_SCOPED_RESPONSE_FETCH_TIMEOUT);
             scheduleRetainedPacketExpiry(owner);
             owner->responseFile = std::move(file);
         }

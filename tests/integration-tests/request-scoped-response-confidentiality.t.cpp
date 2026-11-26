@@ -12,13 +12,17 @@
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
+#include <ndn-cxx/util/scope.hpp>
+#include <ndn-cxx/util/time-unit-test-clock.hpp>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <iomanip>
 #include <openssl/sha.h>
+#include <optional>
 #include <sstream>
 #include <set>
 #include <string>
@@ -193,7 +197,10 @@ BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
   const auto now = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count());
-  const auto keys = generateRequestKeyBundle(now, now + 60000);
+  const auto keys = generateRequestKeyBundle(now, now + 120000);
+  const auto steady = std::make_shared<ndn::time::UnitTestSteadyClock>();
+  ndn::time::setCustomClocks(steady);
+  const auto restoreClock = ndn::make_scope_exit([] { ndn::time::setCustomClocks(); });
   const std::string plaintext(270 * 1024, 'r');
   ResponseMessage response;
   response.setStatus(true);
@@ -232,6 +239,7 @@ BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
       [&](const ndn::Interest&) { completed = true; });
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (!completed && std::chrono::steady_clock::now() < deadline) {
+      steady->advance(ndn::time::milliseconds(1));
       consumerFace.getIoContext().restart();
       consumerFace.getIoContext().poll();
       providerFace.getIoContext().restart();
@@ -281,10 +289,11 @@ BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
     BOOST_CHECK(ndn::security::verifySignature(data, providerCert));
   }
   for (size_t round = 0; round < 100 && validated + validationFailures < segments.size(); ++round) {
-    consumerFace.processEvents(ndn::time::milliseconds(5));
-    providerFace.processEvents(ndn::time::milliseconds(5));
+    steady->advance(ndn::time::milliseconds(5));
     consumerFace.getIoContext().restart();
     providerFace.getIoContext().restart();
+    consumerFace.getIoContext().poll();
+    providerFace.getIoContext().poll();
   }
   BOOST_CHECK_EQUAL(validated, segments.size());
   BOOST_CHECK_EQUAL(validationFailures, 0U);
@@ -337,6 +346,8 @@ BOOST_AUTO_TEST_CASE(LargeResponseUsesConfiguredTrustAndRequestBoundAead)
   BOOST_REQUIRE(!recovered.empty());
   BOOST_CHECK(std::equal(recovered.begin(), recovered.end(), plaintext.begin()));
   BOOST_CHECK_EQUAL(nonceKeys.size(), segments.size());
+  steady->advance(ndn::time::seconds(2 * REQUEST_SCOPED_RESPONSE_FETCH_TIMEOUT.count() + 1));
+  BOOST_CHECK(!fetch(discovery));
 }
 
 namespace {
@@ -371,7 +382,8 @@ publish(ndn::svs::SVSPubSub& pubSub, const ndn::Name& name,
 void
 runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = false,
                            std::string terminalDuringFetch = {},
-                           size_t largeResponseBytes = 9000)
+                           size_t largeResponseBytes = 9000,
+                           std::string expectedResponseError = {})
 {
   // Callback dependencies outlive the environment and all of its worker teardown.
   std::atomic<bool> releaseSegment{terminalDuringFetch.empty()};
@@ -659,13 +671,21 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   }
 
   environment.pumpUntil([&] {
-    return responseReceived.load() || requestTimedOut.load();
+    return responseReceived.load() || requestTimedOut.load() ||
+           (!expectedResponseError.empty() && responseCallbacks.load() != 0);
   });
 
   if (revokeAfterExecution) {
     BOOST_CHECK(requestTimedOut);
     BOOST_CHECK(!responseReceived);
     BOOST_CHECK_EQUAL(requestExecutions.load(), 1U);
+  }
+  else if (!expectedResponseError.empty()) {
+    BOOST_CHECK(!requestTimedOut);
+    BOOST_CHECK(!responseReceived);
+    BOOST_CHECK_EQUAL(responseCallbacks.load(), 1U);
+    BOOST_CHECK_EQUAL(responseError, expectedResponseError);
+    BOOST_CHECK_EQUAL(segmentInterests.load(), 0U);
   }
   else {
     BOOST_CHECK(!requestTimedOut);
@@ -701,6 +721,25 @@ BOOST_AUTO_TEST_CASE(RevokedUserCannotReceiveLargeResponseAfterProviderExecution
 BOOST_AUTO_TEST_CASE(LargeResponseAtActualFrameSizeCompletesWithZeroHandlerWorkers)
 {
   runFullRuntimeResponseCase(true, false, {}, 1259436);
+}
+
+BOOST_AUTO_TEST_CASE(LargeResponsePreparationFailureCompletesThroughProductionOnResponse)
+{
+  constexpr auto chunkVariable = "NDNSF_REQUEST_SCOPED_RESPONSE_CHUNK_BYTES";
+  const auto* value = std::getenv(chunkVariable);
+  const auto previous = value ? std::optional<std::string>(value) : std::nullopt;
+  BOOST_REQUIRE_EQUAL(::setenv(chunkVariable, "1", 1), 0);
+  const auto restore = ndn::make_scope_exit([&] {
+    if (previous) {
+      ::setenv(chunkVariable, previous->c_str(), 1);
+    }
+    else {
+      ::unsetenv(chunkVariable);
+    }
+  });
+  runFullRuntimeResponseCase(true, false, {}, MAX_REQUEST_RESPONSE_SEGMENTS + 1,
+                            "large response reference preparation failed: "
+                            "request-scoped response packet file capacity");
 }
 
 BOOST_AUTO_TEST_CASE(LargeResponseTimeoutStopsFetcherBeforeApplicationTerminalCallback)

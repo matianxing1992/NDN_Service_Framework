@@ -13077,9 +13077,9 @@ namespace ndn_service_framework
       }
       owner->keyId = keys->keyId;
       owner->expectedBytes = reference->plaintextSize;
-      owner->deadline = m_scheduler.schedule(ndn::time::seconds(30), [finish] {
-        finish("large response fetch timed out");
-      });
+      owner->deadline = m_scheduler.schedule(
+        ndn::time::seconds(REQUEST_SCOPED_RESPONSE_FETCH_TIMEOUT.count()),
+        [finish] { finish("large response fetch timed out"); });
 
       // Finish outside the validation/data slot: SegmentFetcher is still
       // updating this window when it emits those two signals.

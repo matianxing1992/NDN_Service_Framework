@@ -20,6 +20,7 @@ inline constexpr std::uint64_t REQUEST_RESPONSE_PACKET_FILE_CHARGE =
     ndn::MAX_NDN_PACKET_SIZE + 2 * sizeof(std::uint64_t);
 inline constexpr std::uint64_t MAX_REQUEST_RESPONSE_SEGMENTS =
     MAX_REQUEST_RESPONSE_PACKET_FILE_BYTES / REQUEST_RESPONSE_PACKET_FILE_CHARGE;
+inline constexpr auto REQUEST_SCOPED_RESPONSE_FETCH_TIMEOUT = std::chrono::seconds(30);
 
 /** Canonical, non-secret binding for one request attempt or stream event. */
 struct RequestSecurityBinding
