@@ -3526,9 +3526,9 @@ def _write_tiger_record(root, record):
     (root / 'build-record.json').write_text(json.dumps(record))
 
 
-@pytest.mark.parametrize("gpu_count", [0, 1])
+@pytest.mark.parametrize("gpu_count,gpu_type", [(0, "rtx_6000"), (1, "rtx_6000"), (1, None)])
 def test_prepared_two_node_source_cache_config_enters_installed_slurm_schema(
-        ops, deployment, monkeypatch, gpu_count):
+        ops, deployment, monkeypatch, gpu_count, gpu_type):
     parser, _ = ops
     root, config = deployment
     _tiger_config(root, config)
@@ -3541,7 +3541,10 @@ def test_prepared_two_node_source_cache_config_enters_installed_slurm_schema(
     (cache / "cache-identity.json").write_text("{}")
     config["requester"]["model_input"] = dict(mode="source-cache", source_directory=str(cache),
                                               source_namespace="sha256:" + "c" * 64)
-    config["platform"]["slurm"]["gpu"]["count"] = gpu_count
+    gpu = {"count": gpu_count}
+    if gpu_type is not None:
+        gpu["type"] = gpu_type
+    config["platform"]["slurm"]["gpu"] = gpu
     nodes = [dict(id=label, host="allocation-" + label, cpus=8, gpu_devices=["allocated:0"] * gpu_count,
                   nfd=dict(mode="managed", address="192.0.2." + str(index), port=16363,
                            socket="/remote/" + label + ".sock"))
@@ -3553,6 +3556,7 @@ def test_prepared_two_node_source_cache_config_enters_installed_slurm_schema(
     frozen = parser.load_deployment(write_config(root, config))
     providers = [actor for actor in frozen["actors"] if actor["kind"] == "provider"]
     assert frozen["platform"]["slurm"]["nodes"] == 2
+    assert frozen["platform"]["slurm"]["gpu"] == gpu
     assert [actor["node"] for actor in providers] == ["stage-a", "stage-b"]
     assert all(actor["parameters"]["cache-compatibility-source-dir"] == str(cache) for actor in providers)
     assert all(actor["resources"]["gpu_devices"] == ["allocated:0"] * gpu_count for actor in providers)

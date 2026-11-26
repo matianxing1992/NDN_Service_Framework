@@ -342,8 +342,9 @@ def load_deployment(path, *, prepare_only=False):
         for key in ("nodes", "tasksPerNode", "cpusPerTask"):
             if key in slurm:
                 _integer(slurm[key], "platform.slurm." + key)
-        gpu = _object(slurm["gpu"], "platform.slurm.gpu", {"type", "count"}, {"type", "count"})
-        _string(gpu["type"], "platform.slurm.gpu.type")
+        gpu = _object(slurm["gpu"], "platform.slurm.gpu", {"type", "count"}, {"count"})
+        if "type" in gpu:
+            _string(gpu["type"], "platform.slurm.gpu.type")
         _integer(gpu["count"], "platform.slurm.gpu.count", 0)
 
     release = _object(config["release"], "release", {"prefix", "manifest"}, {"prefix", "manifest"})

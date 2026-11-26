@@ -86,6 +86,18 @@ class DeploymentSchedulerTest(unittest.TestCase):
             self.adapter.submit_deployment(self.config, self.reference)
         self.assertEqual(self.calls, [])
 
+    def test_explicit_hosts_can_request_untyped_gpus(self):
+        self.config['nodes'].append(dict(host='node-b'))
+        scheduler = self.config['platform']['slurm']
+        scheduler['nodes'] = 2
+        del scheduler['gpu']['type']
+        reference = self.adapter.prepare_deployment(
+            self.config, self.script, boot_id='a' * 32, release_sha256='b' * 64)
+        self.adapter.submit_deployment(self.config, reference, timeout=1)
+        command, _ = self.calls[0]
+        self.assertIn('--nodelist=node-a,node-b', command)
+        self.assertIn('--gres=gpu:1', command)
+
     def test_unknown_submission_finds_one_bound_job_without_resubmit(self):
         self.queue = self.queue_row()
         value = self.adapter.deployment_status(self.reference)

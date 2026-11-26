@@ -239,8 +239,10 @@ class SlurmApptainerAdapter(Adapter):
                for host in hosts):
             raise SlurmAdapterError('SLURM_DEPLOYMENT_HOST_INVALID')
         options['nodelist'] = ','.join(hosts)
-        if slurm['gpu']['count']:
-            options['gres'] = 'gpu:' + _safe(slurm['gpu']['type'], 'GPU') + ':' + str(slurm['gpu']['count'])
+        gpu = slurm['gpu']
+        if gpu['count']:
+            gpu_type = _safe(gpu['type'], 'GPU') + ':' if 'type' in gpu else ''
+            options['gres'] = 'gpu:' + gpu_type + str(gpu['count'])
         command = ['sbatch', '--parsable'] + ['--' + key + '=' + str(value)
                                             for key, value in options.items()]
         try:
