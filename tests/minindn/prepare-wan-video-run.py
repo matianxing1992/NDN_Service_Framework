@@ -169,6 +169,7 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
             'roles': ','.join(provider_roles[name]), 'grant-authority-public-key': str(hint),
             'recipient-key-map': str(mapping), 'selection-offer-key-file': str(offer),
             'offer-backend': 'onnxruntime-cpu', 'offer-can-provision': True,
+            'enable-segment-manifest': True,
             'assembly-timeout-ms': 120000, 'permission-wait-ms': 30000,
             'repo-fetch-timeout-ms': 60000,
         })
@@ -345,8 +346,10 @@ def prepare_warm(cold_path):
     root = cold_path.parent
     cold = json.loads(cold_path.read_bytes())
     for actor in cold['actors']:
-        if (actor['kind'] == 'provider' and
-                actor['parameters'].get('enable-segment-manifest') is False):
+        if actor['kind'] != 'provider':
+            continue
+        parameters = actor.setdefault('parameters', {})
+        if parameters.setdefault('enable-segment-manifest', True) is not True:
             raise ValueError('warm Wan run requires a cold deployment with signed segment manifests')
     main = cold['requester']
     generation = main['wan_generation']

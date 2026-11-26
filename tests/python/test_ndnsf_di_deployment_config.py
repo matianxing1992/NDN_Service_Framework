@@ -1829,6 +1829,37 @@ def minindn_deployment(deployment):
     return base, config
 
 
+@pytest.mark.parametrize('option', [{}, {'enable-segment-manifest': True},
+                                    {'enable-segment-manifest': False},
+                                    {'enable-segment-manifest': 'true'}])
+def test_wan_warm_preparation_pins_signed_segment_manifests(tmp_path, option):
+    (tmp_path / 'workload').mkdir()
+    (tmp_path / 'workload/fixture.json').write_text('{}')
+    clip = tmp_path / 'clip'
+    clip.mkdir()
+    (clip / 'manifest.json').write_text('{}')
+    config = {
+        'actors': [{'kind': 'provider', 'parameters': option},
+                   {'kind': 'provider', 'parameters': {'tensor-segment-bytes': 7600}}],
+        'requester': {'model_input': {'mode': 'source-cache'},
+                      'wan_generation': {'output_directory': str(clip)}},
+    }
+    cold = tmp_path / 'deployment.json'
+    cold.write_text(json.dumps(config))
+    prepare_warm = runpy.run_path(str(ROOT / 'tests/minindn/prepare-wan-video-run.py'))[
+        'prepare_warm']
+    if option.get('enable-segment-manifest', True) is not True:
+        with pytest.raises(ValueError, match='requires .* signed segment manifests'):
+            prepare_warm(cold)
+        assert not (tmp_path / 'deployment-warm.json').exists()
+    else:
+        warm = json.loads(prepare_warm(cold).read_text())
+        assert all(actor['parameters']['enable-segment-manifest'] is True
+                   for actor in warm['actors'])
+        assert warm['actors'][1]['parameters']['tensor-segment-bytes'] == 7600
+    assert json.loads(cold.read_text()) == config
+
+
 @pytest.mark.parametrize('change, message', [
     ('normal', ''),
     ('local-cache', ''),
