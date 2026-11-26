@@ -11,6 +11,8 @@ import struct
 
 RECIPE = Path(__file__).resolve().parent / 'recipes/wan2.2-ti2v-5b-metadata.json'
 COMPONENTS = ('umt5', 'dit', 'vae')
+# Match SegmentManifestVerifier::MAX_SOURCE_PACKETS and the default Provider payload size.
+MAX_EXACT_BUNDLE_BYTES = 4096 * 7000
 
 
 def digest(value):
@@ -88,7 +90,8 @@ def make_request(args):
     source_identity = digest({str(path.relative_to(checkout)): digest(path.read_bytes())
                              for directory in closure for path in sorted(directory.rglob('*'))
                              if path.suffix in ('.hpp', '.cpp')})
-    preparation = digest(dict(model=binding, stages=stages, max_exact_bundle_bytes=32 << 20,
+    preparation = digest(dict(model=binding, stages=stages,
+                              max_exact_bundle_bytes=MAX_EXACT_BUNDLE_BYTES,
                               source=source_identity, generator=digest(Path(__file__).read_bytes())))
     adapter = dict(name='wan', version='1', abi='wan-onnx-source-v1',
                    state_digest=source_identity, model_formats=['onnx'], tasks=['video-generation'],
@@ -121,7 +124,7 @@ def make_request(args):
                                  resources_by_role=resources))
     request = dict(schema='ndnsf-di-wan-checkpoint-preparation-v1', component=component,
                    stages=stages, shards=shards, geometry=geometry, catalog=catalog,
-                   max_exact_bundle_bytes=32 << 20, timeout_ms=86400000)
+                   max_exact_bundle_bytes=MAX_EXACT_BUNDLE_BYTES, timeout_ms=86400000)
     if index is not None:
         request['index'] = index
     return request

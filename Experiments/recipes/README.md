@@ -370,6 +370,11 @@ also bind the stage layout, Exact budget and implementation. Converted UMT5
 uses the pinned `converted_umt5` file under the same asset root. Resource fields
 are conservative declared ceilings, not measured usage or proof of deployment capacity.
 
+The checkpoint recipe caps each inter-Provider tensor bundle at 28,672,000 B
+including framing. This allows at most 4,096 source segments at the default
+7,000 B payload size. The same bound fits the 7,600 B Tiger profile. The cap
+contributes to the immutable source identity.
+
 ```sh
 python3 Experiments/prepare-wan22-checkpoint-request.py \
   --asset-root "$asset_root" --component vae --layout single \
