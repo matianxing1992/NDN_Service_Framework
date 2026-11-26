@@ -6804,6 +6804,9 @@ BOOST_AUTO_TEST_CASE(GenerationTraceBudgetUsesEncodedBoundsWithoutModelWeights)
   const auto fullBound = planWanGenerationTraceBytes(options, 512, 512);
   BOOST_CHECK_GT(fullBound, 1ULL << 30);
   BOOST_CHECK_LE(fullBound, WAN_TRACE_HARD_MAX_BYTES);
+  options.latentShape = {48, 7, 44, 80};
+  BOOST_CHECK_EQUAL(planWanGenerationTraceBytes(options, 512, 512), 996757727ULL);
+  options.latentShape = {48, 91, 20, 20};
   options.traceMaxBytes = WAN_FIXTURE_TRACE_MAX_BYTES;
   BOOST_CHECK_THROW(planWanGenerationTraceBytes(options, 512, 512), std::invalid_argument);
 }
@@ -6878,6 +6881,15 @@ BOOST_AUTO_TEST_CASE(Wan22LongClipGeometryUsesItsVaeStride)
   const auto output = planWanClipOutput({48, 3, 2, 4}, 16);
   BOOST_REQUIRE(output.framesHeightWidth == (std::array<std::int64_t, 3>{9, 32, 64}));
   BOOST_CHECK_EQUAL(output.rgb24Bytes, 9U * 32 * 64 * 3);
+  const auto short720p = planWanClipOutput({48, 7, 44, 80}, 16);
+  BOOST_CHECK(short720p.framesHeightWidth == (std::array<std::int64_t, 3>{25, 704, 1280}));
+  BOOST_CHECK_EQUAL(short720p.rgb24Bytes, 67584000ULL);
+  BOOST_CHECK_EQUAL(short720p.responseBytes, 270336075ULL);
+  constexpr std::uint64_t responseChunkBytes = 4096;
+  const auto responseSegments = (short720p.responseBytes + responseChunkBytes - 1) /
+    responseChunkBytes;
+  BOOST_CHECK_EQUAL(responseSegments, 66001U);
+  BOOST_CHECK_LE(responseSegments, ndn_service_framework::MAX_REQUEST_RESPONSE_SEGMENTS);
   BOOST_CHECK_THROW(planWanClipOutput({48, 91, 44, 80}, 16), std::invalid_argument);
   BOOST_CHECK_THROW(planWanClipOutput({48, 3, 2, 4}, 0), std::invalid_argument);
   BOOST_CHECK_THROW(planVideoGeometry(360, 704, 1280, 3072, 16), std::invalid_argument);
