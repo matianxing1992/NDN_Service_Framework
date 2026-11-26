@@ -748,6 +748,41 @@ writeWanClip(const std::filesystem::path& destination, std::uint32_t framesPerSe
   committed = true;
 }
 
+PreparedModel
+prepareWanComponent(const User& user, const std::string& key, const std::filesystem::path& path,
+                    const std::optional<ndnsf_distributed_repo::RepoArtifactTarget>& target,
+                    Milliseconds preparationTimeout,
+                    std::chrono::steady_clock::time_point deadline, Runtime& runtime,
+                    const std::function<void()>& current)
+{
+  current();
+  const auto modelInput = readJson(path).get_child("model_input");
+  const auto mode = modelInput.get<std::string>("mode");
+  const auto remaining = std::chrono::duration_cast<Milliseconds>(
+    deadline - std::chrono::steady_clock::now());
+  const auto budget = std::min(remaining, preparationTimeout);
+  if (budget.count() <= 0)
+    throw DiError("WAN_GENERATION_TIMEOUT", "local", "wan-prepare",
+                  "remaining generation deadline cannot cover preparation");
+  if (mode != "source" && mode != "stored")
+    throw std::invalid_argument("Wan secondary model must use source or stored mode");
+  return ndnsf::examples::runInterruptiblePreparation([&] {
+    if (!target) {
+      if (mode != "source" || modelInput.size() != 1)
+        throw std::invalid_argument("Wan local cache requires source-only component records");
+      PrepareOptions prepareOptions;
+      prepareOptions.timeout = budget;
+      return user.prepare(key, prepareOptions);
+    }
+    const auto handle = relativeTo(path.parent_path(),
+                                   modelInput.get<std::string>("private_handle_file"));
+    if (mode == "stored") return user.openStoredModel(key, handle, *target, budget);
+    return user.prepareStoredModel(key, *target,
+      relativeTo(path.parent_path(), modelInput.get<std::string>("preparation_state_file")),
+      handle, budget);
+  }, current, [&runtime] { runtime.close(); });
+}
+
 int
 runWanRequester(const ptree& config, const std::filesystem::path& base, Runtime& runtime,
                 const User& user, const PreparedModel& textEncoder,
@@ -805,37 +840,12 @@ runWanRequester(const ptree& config, const std::filesystem::path& base, Runtime&
     if (std::chrono::steady_clock::now() >= options.deadline)
       throw DiError("WAN_GENERATION_TIMEOUT", "local", "wan-generation", "deadline expired");
   };
-  const auto prepare = [&] (const std::string& key) {
-    current();
-    const auto& path = componentConfigs.at(key);
-    const auto modelInput = readJson(path).get_child("model_input");
-    const auto mode = modelInput.get<std::string>("mode");
-    const auto remaining = std::chrono::duration_cast<Milliseconds>(
-      options.deadline - std::chrono::steady_clock::now());
-    const auto budget = std::min(remaining, preparationTimeout);
-    if (budget.count() <= 0)
-      throw DiError("WAN_GENERATION_TIMEOUT", "local", "wan-prepare",
-                    "remaining generation deadline cannot cover preparation");
-    if (mode != "source" && mode != "stored")
-      throw std::invalid_argument("Wan secondary model must use source or stored mode");
-    return ndnsf::examples::runInterruptiblePreparation([&] {
-      if (!target) {
-        if (mode != "source" || modelInput.size() != 1)
-          throw std::invalid_argument("Wan local cache requires source-only component records");
-        PrepareOptions prepareOptions;
-        prepareOptions.timeout = budget;
-        return user.prepare(key, prepareOptions);
-      }
-      const auto handle = relativeTo(path.parent_path(),
-                                     modelInput.get<std::string>("private_handle_file"));
-      if (mode == "stored") return user.openStoredModel(key, handle, *target, budget);
-      return user.prepareStoredModel(key, *target,
-        relativeTo(path.parent_path(), modelInput.get<std::string>("preparation_state_file")),
-        handle, budget);
-    }, current, [&runtime] { runtime.close(); });
-  };
-  const auto denoiser = prepare("wan-denoiser");
-  const auto decoder = prepare("wan-decoder");
+  const auto denoiser = prepareWanComponent(user, "wan-denoiser",
+    componentConfigs.at("wan-denoiser"), target, preparationTimeout, options.deadline,
+    runtime, current);
+  const auto decoder = prepareWanComponent(user, "wan-decoder",
+    componentConfigs.at("wan-decoder"), target, preparationTimeout, options.deadline,
+    runtime, current);
   writeWanClip(destination, framesPerSecond, current, traceMaxBytes,
                [&](const wan::WanRgb24Sink& sink, const wan::WanTensorObserver& observe) {
     std::optional<wan::WanGenerationResult> result;
@@ -1160,7 +1170,8 @@ run(int argc, char** argv, bool& drainFailed)
     : 0;
   if (captureFixtureTrace && (traceMaxBytes == 0 || traceMaxBytes > wan::WAN_TRACE_HARD_MAX_BYTES))
     throw std::invalid_argument("Wan trace byte limit must be in [1,2147483648]");
-  if (wanConfig && (legacyArgs || prepareOnly || config.get_child_optional("turns") ||
+  if (wanConfig && (legacyArgs || (prepareOnly && !localWanCache) ||
+                   config.get_child_optional("turns") ||
                    config.get_child_optional("conversation") ||
                    !config.get_child_optional("fixed_placement")))
     throw std::invalid_argument("Wan generation requires fixed placement and its own clip options");
@@ -1432,6 +1443,25 @@ run(int argc, char** argv, bool& drainFailed)
     stored = user.storePreparedModel(*preparedView, *modelRepository, prepareOptions.timeout);
   if (prepareOnly) {
     const auto receipt = preparedView->receipt();
+    NativeJson components = NativeJson::object();
+    if (localWanCache) {
+      const auto deadline = std::chrono::steady_clock::now() +
+        Milliseconds(wanConfig->get<std::int64_t>("timeout_ms"));
+      const auto current = [&] {
+        if (interrupted)
+          throw DiError("WAN_GENERATION_CANCELLED", "local", "wan-prepare", "interrupted");
+        if (std::chrono::steady_clock::now() >= deadline)
+          throw DiError("PREPARATION_TIMEOUT", "local", "wan-prepare", "preparation expired");
+      };
+      for (const auto* key : {"wan-denoiser", "wan-decoder"}) {
+        const auto component = prepareWanComponent(user, key, wanComponentConfigs.at(key),
+          std::nullopt, prepareOptions.timeout, deadline, *runtime, current);
+        const auto evidence = component.receipt();
+        components[key] = NativeJson{{"preparationKeyDigest", evidence.preparationKeyDigest},
+                                     {"manifestDigest", evidence.manifestDigest},
+                                     {"elapsedMs", evidence.elapsed.count()}};
+      }
+    }
     preparedView.reset();
     if (!runtimeGuard.close(std::chrono::seconds(5)))
       throw std::runtime_error("NATIVE_PREPARATION_DRAIN_TIMEOUT");
@@ -1440,6 +1470,9 @@ run(int argc, char** argv, bool& drainFailed)
       {"preparationKeyDigest", receipt.preparationKeyDigest},
       {"manifestDigest", receipt.manifestDigest}, {"elapsedMs", receipt.elapsed.count()}
     };
+    if (!components.empty()) {
+      result["components"] = std::move(components);
+    }
     if (stored) {
       result["originalPacketRepository"] = NativeJson{
         {"repoNode", modelRepository->repoNode},
