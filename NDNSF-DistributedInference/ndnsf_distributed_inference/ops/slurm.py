@@ -478,7 +478,6 @@ def up(config, source, root, timeout, debug=False, timing=False, repo_benchmark=
         except (Exception, KeyboardInterrupt) as error:
             state['failure'] = str(error) or type(error).__name__
             state['status'] = 'UNKNOWN'
-            _save(root, state)
             # An unknown submission must be reconciled by the same reference;
             # never create a second intent or guess a numeric job to cancel.
             try:
@@ -486,7 +485,12 @@ def up(config, source, root, timeout, debug=False, timing=False, repo_benchmark=
                 state['job_reference'] = state['scheduler']['reference']
             except (SlurmAdapterError, OSError) as cleanup_error:
                 state['cleanup_failure'] = str(cleanup_error)
-            _save(root, state)
+            try:
+                _save(root, state)
+            except OSError:
+                # The durable submission intent still identifies the same boot.
+                # Preserve the original failure and return the scheduler observation.
+                pass
             return snapshot(state)
 
 

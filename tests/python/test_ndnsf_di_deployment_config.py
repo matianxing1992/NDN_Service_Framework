@@ -2,6 +2,7 @@
 
 import copy
 import contextlib
+import errno
 import io
 import hashlib
 import importlib
@@ -6474,6 +6475,67 @@ def test_installed_slurm_caller_persists_intent_and_never_resubmits(
     assert inspected['boot_id'] == closed['boot_id'] == boot
     assert closed['status'] == 'UNKNOWN' and closed['actor_cleanup'] == 'UNVERIFIED'
     assert not any(command[0] == 'scancel' for command in calls)
+
+
+def test_slurm_quota_failure_after_submission_still_closes_the_same_job(
+        ops, deployment, monkeypatch):
+    parser, _ = ops
+    root, config = deployment
+    config = _tiger_config(root, config)
+    for key in config['storage'].keys() - {'max_bytes'}:
+        config['storage'][key] = str(root / key)
+    path = write_config(root, config)
+    package = parser.__package__
+    manager = importlib.import_module(package + '.cluster')
+    backend = importlib.import_module(package + '.slurm')
+    save = backend._save
+    submitted = []
+    cancelled = []
+    operation = root / 'state_root' / config['deployment_id']
+
+    class Adapter:
+        def prepare_deployment(self, config, script, *, boot_id, release_sha256):
+            return dict(boot_id=boot_id, job_id=None,
+                        configuration_sha256=hashlib.sha256(
+                            json.dumps(config, sort_keys=True, separators=(',', ':')).encode()
+                        ).hexdigest())
+
+        def submit_deployment(self, config, reference, *, timeout):
+            state = json.loads((operation/'state.json').read_bytes())
+            assert state['status'] == 'SUBMITTING' and state['job_reference'] == reference
+            identity = dict(reference, job_id='42')
+            submitted.append(identity)
+            return identity
+
+        def cancel_deployment(self, reference, *, timeout):
+            assert reference == submitted[0]
+            cancelled.append(reference)
+            return self.deployment_status(reference, timeout=timeout)
+
+        def deployment_status(self, reference, *, timeout):
+            assert reference['boot_id'] == submitted[0]['boot_id']
+            assert reference['job_id'] in (None, submitted[0]['job_id'])
+            return dict(reference=submitted[0], terminal=bool(cancelled),
+                        never_allocated=bool(cancelled), live_verified=not cancelled,
+                        state='CANCELLED' if cancelled else 'PENDING')
+
+    def save_with_quota(operation_root, state):
+        if submitted:
+            raise OSError(errno.EDQUOT, 'controlled state filesystem quota')
+        save(operation_root, state)
+
+    monkeypatch.setattr(backend, 'SlurmApptainerAdapter', Adapter)
+    monkeypatch.setattr(backend, '_save', save_with_quota)
+    result = manager.run_cluster('up', path, timeout=5)
+    assert result['status'] == 'STOPPED' and result['actor_cleanup'] == 'ZERO'
+    assert result['job_reference'] == submitted[0]
+    assert 'controlled state filesystem quota' in result['failure']
+    assert cancelled == submitted
+    state = json.loads((operation/'state.json').read_bytes())
+    assert state['status'] == 'SUBMITTING' and state['boot_id'] == submitted[0]['boot_id']
+    repeated = manager.run_cluster('up', path, timeout=1)
+    assert repeated['job_reference'] == submitted[0]
+    assert len(submitted) == 1
 
 
 @pytest.mark.parametrize("change, message", [
