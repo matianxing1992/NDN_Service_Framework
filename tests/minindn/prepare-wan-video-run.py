@@ -344,6 +344,10 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
 def prepare_warm(cold_path):
     root = cold_path.parent
     cold = json.loads(cold_path.read_bytes())
+    for actor in cold['actors']:
+        if (actor['kind'] == 'provider' and
+                actor['parameters'].get('enable-segment-manifest') is False):
+            raise ValueError('warm Wan run requires a cold deployment with signed segment manifests')
     main = cold['requester']
     generation = main['wan_generation']
     if not (root / 'workload/fixture.json').is_file():
