@@ -857,6 +857,7 @@ NativeRequestOptions PreparedModel::projectOptions(const RequestOptions& options
   native.outputMode = options.outputMode.empty() ? "FULL" : options.outputMode;
   native.applicationRequestId = options.applicationRequestId;
   native.maxInlineInputBytes = options.maxInlineInputBytes;
+  native.requireTensorSegmentManifests = options.requireTensorSegmentManifests;
   for (const auto& providerName : options.providerNames) {
     try {
       const ndn::Name parsed(providerName);

@@ -1874,6 +1874,13 @@ def test_minindn_launches_wan_requester_with_isolated_component_paths(
         provider = next(actor for actor in config['actors'] if actor['kind'] == 'provider')
         provider.setdefault('parameters', {})['enable-segment-manifest'] = (
             change == 'manifest-enabled')
+    providers = [actor for actor in config['actors'] if actor['kind'] == 'provider']
+    (root / 'trust-root-registry-v1.json').write_text('{}')
+    (root / 'recipients.json').write_text(json.dumps(
+        {actor['identity']: 'key.pem' for actor in providers}))
+    for provider in providers:
+        provider.setdefault('parameters', {}).update({
+            'grant-authority-public-key': 'key.pem', 'recipient-key-map': 'recipients.json'})
     if change in ('trace', 'trace-not-opted-in', 'trace-wrong-type') or change.startswith('trace-limit'):
         requester['test_wan_fixture_trace'] = 'true' if change == 'trace-wrong-type' else True
         if change == 'trace' or change.startswith('trace-limit'):
@@ -1931,10 +1938,16 @@ def test_minindn_launches_wan_requester_with_isolated_component_paths(
     frozen = parser.load_deployment(deployment)
     assert not (root / 'clips').exists()
     assert not (models / 'private').exists()
+    assert all(actor['parameters']['enable-segment-manifest'] is True
+               for actor in frozen['actors'] if actor['kind'] == 'provider')
     cluster = importlib.import_module('_spec217_ops.cluster')
+    state = {'boot_id': 'wan-test', 'configuration_sha256': 'b' * 64}
+    for provider in (actor for actor in frozen['actors'] if actor['kind'] == 'provider'):
+        argv, _ = cluster._native_launch(frozen, provider, root, state)
+        assert argv.count('--enable-segment-manifest') == 1
+        assert '--disable-segment-manifest' not in argv
     actor = next(a for a in frozen['actors'] if a['kind'] == 'requester')
-    argv, _ = cluster._native_launch(frozen, actor, root,
-        {'boot_id': 'wan-test', 'configuration_sha256': 'b' * 64})
+    argv, _ = cluster._native_launch(frozen, actor, root, state)
     assert argv == [str(root / 'release/bin/DI_NativeRequester'), '--config',
                     str(root / 'requester.json')]
     native = json.loads((root / 'requester.json').read_text())

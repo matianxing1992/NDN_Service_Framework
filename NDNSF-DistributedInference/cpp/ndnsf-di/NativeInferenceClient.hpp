@@ -81,6 +81,7 @@ struct NativeRequestOptions
   std::function<void(const std::vector<std::uint8_t>&)> onGenerationEvent;
   std::shared_ptr<class NativeWorkStatistics> workStatistics;
   std::optional<std::size_t> maxInlineInputBytes;
+  bool requireTensorSegmentManifests = false;
 };
 
 /** Pinned service/task metadata supplied by the application's catalog owner.

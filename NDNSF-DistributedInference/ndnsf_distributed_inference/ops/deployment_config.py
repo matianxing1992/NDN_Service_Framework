@@ -812,10 +812,13 @@ def _translate_native(config, by_kind, resolve):
                         "capture-complete-kv-state"):
                 if key in parameters:
                     _boolean(parameters[key], "provider.parameters." + key)
-            if ('wan_generation' in requester and
-                    parameters.get("enable-segment-manifest") is False):
-                _fail("provider.parameters.enable-segment-manifest",
-                      "Wan generation requires signed segment manifests")
+            if "wan_generation" in requester:
+                if parameters.get("enable-segment-manifest") is False:
+                    _fail("provider.parameters.enable-segment-manifest",
+                          "Wan generation requires signed segment manifests")
+                # Freeze the effective setting in the managed launch rather than
+                # relying on the packaged Provider's compiled default.
+                parameters["enable-segment-manifest"] = True
             if parameters.get("sample-kv-state-values") and parameters.get("capture-complete-kv-state"):
                 _fail("provider.parameters", "choose one KV qualification mode")
             if "capture-logits-output" in parameters:

@@ -2206,6 +2206,7 @@ NativePlannedRequest planNativeRequestImpl(
     if (grantLease) projection.layoutOwner = &grantLease->projectionLayout;
     projection.tensorSegmentBytesByProvider = std::move(authenticatedTransportByProvider);
     projection.segmentManifestDependencyId = runtime.segmentManifestDependencyId;
+    projection.requireTensorSegmentManifests = options.requireTensorSegmentManifests;
     projection.manifestSegmentBytesByProvider = std::move(authenticatedManifestByProvider);
     if (context.placementObservationSnapshot.is_object() &&
         context.placementObservationSnapshot.contains("provider_offers")) {

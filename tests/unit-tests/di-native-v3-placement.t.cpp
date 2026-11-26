@@ -1774,6 +1774,7 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
         const auto chunk = std::max<std::size_t>(1, actualBundleBytes / 34);
         auto manifestContext = prefetchContext;
         manifestContext.inlineFirstSegment = true;
+        manifestContext.requireTensorSegmentManifests = true;
         manifestContext.tensorSegmentBytesByProvider[sourceProvider] = chunk;
         manifestContext.manifestSegmentBytesByProvider = {{sourceProvider, chunk},
                                                          {targetProvider, 4000}};
@@ -1826,16 +1827,31 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
         BOOST_CHECK_EQUAL(shortPublication.segmentManifest->sourceSegments, 2U);
         BOOST_CHECK(*shortRead.segmentManifest == *shortPublication.segmentManifest);
 
+        auto overLimitManifestContext = shortManifestContext;
+        overLimitManifestContext.maxSegments = 1;
+        BOOST_CHECK_THROW(NativeGroupProjectionBuilder::build(
+          prefetchSealed, input.split, keys, overLimitManifestContext, 2U << 20),
+          std::invalid_argument);
+
         auto singleSegmentContext = shortManifestContext;
         singleSegmentContext.tensorSegmentBytesByProvider[sourceProvider] = actualBundleBytes;
         singleSegmentContext.manifestSegmentBytesByProvider[sourceProvider] = actualBundleBytes;
         const auto singleSegmentGroups = NativeGroupProjectionBuilder::build(
           prefetchSealed, input.split, keys, singleSegmentContext, 2U << 20);
-        BOOST_CHECK(!singleSegmentGroups.at(execution.roles.front())
-                       .dataflow.mayPublish.front().segmentManifest);
+        const auto& singlePublication =
+          singleSegmentGroups.at(execution.roles.front()).dataflow.mayPublish.front();
+        const auto& singleRead =
+          singleSegmentGroups.at(execution.roles.back()).dataflow.mustFetch.front();
+        BOOST_CHECK(!singlePublication.segmentManifest);
+        BOOST_CHECK_EQUAL(singlePublication.segmentCount, 1U);
+        BOOST_CHECK_EQUAL(singleRead.segmentCount, 1U);
 
         auto scopedManifestContext = manifestContext;
         scopedManifestContext.segmentManifestDependencyId = "different-dependency";
+        BOOST_CHECK_THROW(NativeGroupProjectionBuilder::build(
+          prefetchSealed, input.split, keys, scopedManifestContext, 2U << 20),
+          std::invalid_argument);
+        scopedManifestContext.requireTensorSegmentManifests = false;
         const auto scopedManifestGroups = NativeGroupProjectionBuilder::build(
           prefetchSealed, input.split, keys, scopedManifestContext, 2U << 20);
         BOOST_CHECK(!scopedManifestGroups.at(execution.roles.front())
@@ -1843,6 +1859,10 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
 
         // The legacy sizing declaration alone cannot opt a consumer into proof mode.
         manifestContext.manifestSegmentBytesByProvider.erase(targetProvider);
+        BOOST_CHECK_THROW(NativeGroupProjectionBuilder::build(
+          prefetchSealed, input.split, keys, manifestContext, 2U << 20),
+          std::invalid_argument);
+        manifestContext.requireTensorSegmentManifests = false;
         const auto partialManifestGroups = NativeGroupProjectionBuilder::build(
           prefetchSealed, input.split, keys, manifestContext, 2U << 20);
         const auto& legacyEndpoint =

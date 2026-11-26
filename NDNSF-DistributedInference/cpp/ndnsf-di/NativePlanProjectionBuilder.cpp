@@ -562,6 +562,7 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
       e.segmentCount = context.maxSegments; e.inlineFirstSegment = context.inlineFirstSegment;
       e.prefetchBundleBytes = e.prefetchSegmentBytes = 0;
       const auto chunk = context.tensorSegmentBytesByProvider.find(provider);
+      bool authenticatedSingleSegment = false;
       if (!e.bundleTensorNames.empty() && dependency.redistributions.empty() && dependency.producers.size() == 1 &&
           dependency.consumers.size() == 1 &&
           (dependency.operationKind == "ACTIVATION" || dependency.operationKind == "PIPELINE" ||
@@ -588,6 +589,9 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
               consumerManifest != context.manifestSegmentBytesByProvider.end() &&
               producerManifest->second == chunk->second) {
             const auto count = 1 + (bytes - 1) / producerManifest->second;
+            authenticatedSingleSegment = count == 1;
+            if (context.requireTensorSegmentManifests && authenticatedSingleSegment)
+              e.segmentCount = 1;
             if (count >= 2 && count <= e.segmentCount &&
                 count <= ndn_service_framework::SegmentManifestVerifier::MAX_SOURCE_PACKETS) {
               e.segmentManifest = TensorSegmentManifestGeometry{
@@ -605,6 +609,14 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
             1 + (bytes - 1) / chunk->second <= e.segmentCount) {
           e.prefetchBundleBytes = bytes; e.prefetchSegmentBytes = chunk->second;
         }
+      }
+      if (context.requireTensorSegmentManifests && !e.segmentManifest &&
+          !authenticatedSingleSegment &&
+          std::any_of(e.consumerRoles.begin(), e.consumerRoles.end(), [&](const auto& consumer) {
+            return ndn::Name(core.assignment.providerByRole.at(consumer)) != ndn::Name(provider);
+          })) {
+        throw std::invalid_argument("signed segment manifest required for remote tensor " +
+                                    e.dependencyId);
       }
       e.consumerRole = e.consumerRoles.front();
       result.at(e.producerRole).dataflow.mayPublish.push_back(e);

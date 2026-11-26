@@ -38,6 +38,7 @@ struct NativeProjectionContext
   std::shared_ptr<NativeWorkStatistics> workStatistics;
   std::string publicRequestId;
   std::string segmentManifestDependencyId;
+  bool requireTensorSegmentManifests = false;
   // Both fields originate from the same authenticated ACK for this request.
   std::map<std::string, std::uint64_t> manifestSegmentBytesByProvider;
 };

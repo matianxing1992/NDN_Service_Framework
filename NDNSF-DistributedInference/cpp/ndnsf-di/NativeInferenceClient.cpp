@@ -3993,6 +3993,9 @@ NativeInferenceHandle NativeInferenceClient::requestImpl(
     }
     const NativeRequestContract* requestContract =
       m_runtime ? &m_runtime->contract : m_requestContract.get();
+    if (options.requireTensorSegmentManifests && !m_runtime)
+      throw NativeDiError("INVALID_CLIENT_CONFIGURATION", "local", "request",
+                          "signed tensor segment manifests require native request planning");
     if (requestContract) {
       const auto& contract = *requestContract;
       if (!contract.tokenizerDigest.empty() &&

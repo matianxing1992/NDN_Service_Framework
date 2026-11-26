@@ -129,6 +129,8 @@ struct RequestOptions
    * Applies to ordinary non-streaming requests using Input::inlineBytes.
    */
   std::optional<std::size_t> maxInlineInputBytes;
+  /** Require a signed segment manifest for every multi-segment remote tensor. */
+  bool requireTensorSegmentManifests = false;
 };
 
 struct Result

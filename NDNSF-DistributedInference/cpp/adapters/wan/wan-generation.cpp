@@ -249,6 +249,7 @@ runWanGeneration(const User& user, const PreparedModel& textEncoder,
     const auto identity = options.generationId + "/" + label + "/" + inputDigest.substr(7);
     auto request = options.childRequest;
     request.maxInlineInputBytes = options.inlineLimit;
+    request.requireTensorSegmentManifests = true;
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
       options.deadline - std::chrono::steady_clock::now());
     request.timeout = std::min(request.timeout, remaining);
