@@ -158,7 +158,7 @@ BOOST_AUTO_TEST_CASE(ExactPacketOwnerAppendsAtomicBatchesAndReplaysOriginalWire)
     return std::string(error.what()) == "fixture-cancelled";
   });
   BOOST_CHECK_EQUAL(file->storageBytes(), cost(manifest));
-  BOOST_CHECK_THROW(file->readExactPacket(1, segment->getName()), std::out_of_range);
+  BOOST_CHECK_THROW(file->readExactData(1, segment->getName()), std::out_of_range);
   const auto foreign = sign(ndn::Name("/foreign/provider/tensor"));
   BOOST_CHECK_THROW(file->appendExact({segment, foreign}), std::invalid_argument);
   BOOST_CHECK_EQUAL(file->storageBytes(), cost(manifest));
@@ -167,14 +167,16 @@ BOOST_AUTO_TEST_CASE(ExactPacketOwnerAppendsAtomicBatchesAndReplaysOriginalWire)
   const std::vector<std::shared_ptr<const ndn::Data>> packets{manifest, segment, repair};
   for (std::uint64_t index = 0; index < packets.size(); ++index) {
     const auto& original = *packets[index];
-    const auto bytes = file->readExactPacket(index, original.getName());
+    const auto packet = file->readExactData(index, original.getName());
+    const auto& bytes = packet.wireEncode();
+    BOOST_CHECK(packet.getFullName() == original.getFullName());
     const auto& wire = original.wireEncode();
     BOOST_CHECK_EQUAL_COLLECTIONS(bytes.begin(), bytes.end(), wire.begin(), wire.end());
   }
   BOOST_CHECK_THROW(file->appendExact({repair}), std::runtime_error);
-  BOOST_CHECK_THROW(file->readExactPacket(3, repair->getName()), std::out_of_range);
-  BOOST_CHECK_THROW(file->readExactPacket(1, manifest->getName()), std::runtime_error);
-  BOOST_CHECK_THROW(file->readExactPacket(0, foreign->getName()), std::invalid_argument);
+  BOOST_CHECK_THROW(file->readExactData(3, repair->getName()), std::out_of_range);
+  BOOST_CHECK_THROW(file->readExactData(1, manifest->getName()), std::runtime_error);
+  BOOST_CHECK_THROW(file->readExactData(0, foreign->getName()), std::invalid_argument);
   BOOST_CHECK_THROW(file->read(0), std::invalid_argument);
 }
 
@@ -214,11 +216,12 @@ BOOST_AUTO_TEST_CASE(TruncatedRetainedRepairRejectsPartialWireAndPreservesOtherP
   BOOST_REQUIRE_EQUAL(packetFiles.size(), 1);
   const auto& packets = packetFiles.front();
   std::filesystem::resize_file(packets, std::filesystem::file_size(packets) - 1);
-  BOOST_CHECK_EXCEPTION(file->readExactPacket(1, repair->getName()), std::runtime_error,
+  BOOST_CHECK_EXCEPTION(file->readExactData(1, repair->getName()), std::runtime_error,
     [](const auto& error) {
       return std::string_view(error.what()) == "ORIGINAL_PACKET_READ_FAILED";
     });
-  const auto intact = file->readExactPacket(0, segment->getName());
+  const auto packet = file->readExactData(0, segment->getName());
+  const auto& intact = packet.wireEncode();
   const auto& wire = segment->wireEncode();
   BOOST_CHECK_EQUAL_COLLECTIONS(intact.begin(), intact.end(), wire.begin(), wire.end());
 }

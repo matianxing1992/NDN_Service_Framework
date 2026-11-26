@@ -13573,9 +13573,8 @@ namespace ndn_service_framework
             auto existing = m_IMS.find(object.first);
             const auto [retained, index] = findRetainedExactPacket(object.first);
             if (retained) {
-                const auto wire = retained->file->readExactPacket(index, object.first);
                 auto original = std::make_shared<ndn::Data>(
-                    ndn::Block(ndn::span<const std::uint8_t>(wire)));
+                    retained->file->readExactData(index, object.first));
                 if (existing && existing->wireEncode() != original->wireEncode())
                     throw std::invalid_argument("immutable exact Data original wire conflict");
                 existing = std::move(original);
@@ -13715,7 +13714,8 @@ namespace ndn_service_framework
                 throw std::invalid_argument("duplicate exact original replay Name");
             const auto [retained, index] = findRetainedExactPacket(packet->getName());
             if (retained) {
-                const auto wire = retained->file->readExactPacket(index, packet->getName());
+                const auto original = retained->file->readExactData(index, packet->getName());
+                const auto& wire = original.wireEncode();
                 const auto& candidate = packet->wireEncode();
                 if (!std::equal(wire.begin(), wire.end(), candidate.begin(), candidate.end()))
                     throw std::invalid_argument("immutable exact original replay conflict");
@@ -20779,9 +20779,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             });
             if (m_fetchStopping->load() || !request->isCurrent()) return;
             try {
-                const auto wire = request->responseFile ? request->responseFile->read(index) :
-                    request->file->readExactPacket(index, name);
-                auto packet = ndn::Data(ndn::Block(ndn::span<const std::uint8_t>(wire)));
+                auto packet = request->responseFile ?
+                    ndn::Data(ndn::Block(ndn::span<const std::uint8_t>(
+                        request->responseFile->read(index)))) :
+                    request->file->readExactData(index, name);
                 if (!interest.matchesData(packet)) return;
                 boost::asio::post(*io, [registration, slot, request = std::weak_ptr(request),
                                        packet = std::move(packet)] {

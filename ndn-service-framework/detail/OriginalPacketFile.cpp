@@ -53,12 +53,10 @@ void seekExact(std::FILE* file, std::uint64_t offset)
       ::fseeko(file, static_cast<off_t>(offset), SEEK_SET) != 0)
     throw std::runtime_error("ORIGINAL_PACKET_SEEK_FAILED");
 }
-ndn::Data decodePacket(const std::vector<std::uint8_t>& wire, const ndn::Name& expected)
+ndn::Data
+decodePacket(const ndn::Block& block, std::size_t length, const ndn::Name& expected)
 {
-  if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE)
-    throw std::runtime_error("ORIGINAL_PACKET_SIZE_INVALID");
-  ndn::Block block(ndn::span<const std::uint8_t>(wire.data(), wire.size()));
-  if (block.size() != wire.size())
+  if (block.size() != length)
     throw std::runtime_error("ORIGINAL_PACKET_TRAILING_BYTES");
   const ndn::Data data(block);
   if (data.getName() != expected)
@@ -69,7 +67,10 @@ ndn::Data decodePacket(const std::vector<std::uint8_t>& wire, const ndn::Name& e
 void checkPacket(const std::vector<std::uint8_t>& wire, const ndn::Name& expected,
                  std::uint64_t finalSegment)
 {
-  const auto data = decodePacket(wire, expected);
+  if (wire.empty() || wire.size() > ndn::MAX_NDN_PACKET_SIZE)
+    throw std::runtime_error("ORIGINAL_PACKET_SIZE_INVALID");
+  const auto data = decodePacket(ndn::Block(ndn::span<const std::uint8_t>(wire)),
+                                 wire.size(), expected);
   if (!data.getFinalBlock() || !data.getFinalBlock()->isSegment() ||
       data.getFinalBlock()->toSegment() != finalSegment)
     throw std::runtime_error("ORIGINAL_PACKET_FINAL_BLOCK_MISMATCH");
@@ -241,14 +242,18 @@ OriginalPacketFile::read(std::uint64_t segment) const
   return wire;
 }
 
-std::vector<std::uint8_t>
-OriginalPacketFile::readExactPacket(std::uint64_t ordinal, const ndn::Name& expectedName) const
+ndn::Data
+OriginalPacketFile::readExactData(std::uint64_t ordinal, const ndn::Name& expectedName) const
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (m_exactBudget == 0 || expectedName == m_dataPrefix || !m_dataPrefix.isPrefixOf(expectedName))
     throw std::invalid_argument("ORIGINAL_EXACT_PACKET_PRODUCER_MISMATCH");
   auto wire = readWire(ordinal);
-  (void)decodePacket(wire, expectedName);
-  return wire;
+  auto buffer = std::make_shared<ndn::Buffer>();
+  buffer->swap(wire);
+  const auto [parsed, block] = ndn::Block::fromBuffer(buffer);
+  if (!parsed)
+    throw ndn::tlv::Error("ORIGINAL_PACKET_WIRE_INVALID");
+  return decodePacket(block, buffer->size(), expectedName);
 }
 } // namespace ndn_service_framework::detail

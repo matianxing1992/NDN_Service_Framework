@@ -40,8 +40,8 @@ public:
   std::uint64_t appendExact(
     const std::vector<std::shared_ptr<const ndn::Data>>& originals,
     const std::function<void()>& requireActive = {});
-  std::vector<std::uint8_t> readExactPacket(std::uint64_t ordinal,
-                                           const ndn::Name& expectedName) const;
+  /** Read the original wire once, checking its complete length and expected Name. */
+  ndn::Data readExactData(std::uint64_t ordinal, const ndn::Name& expectedName) const;
   ~OriginalPacketFile();
   OriginalPacketFile(const OriginalPacketFile&) = delete;
   OriginalPacketFile& operator=(const OriginalPacketFile&) = delete;
