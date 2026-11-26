@@ -587,9 +587,8 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
               producerManifest != context.manifestSegmentBytesByProvider.end() &&
               consumerManifest != context.manifestSegmentBytesByProvider.end() &&
               producerManifest->second == chunk->second) {
-            constexpr auto minimumSourceSegments = 33U;
             const auto count = 1 + (bytes - 1) / producerManifest->second;
-            if (count >= minimumSourceSegments && count <= e.segmentCount &&
+            if (count >= 2 && count <= e.segmentCount &&
                 count <= ndn_service_framework::SegmentManifestVerifier::MAX_SOURCE_PACKETS) {
               e.segmentManifest = TensorSegmentManifestGeometry{
                 static_cast<uint32_t>(count), static_cast<uint32_t>(producerManifest->second)};

@@ -1771,8 +1771,6 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
           BOOST_CHECK_EQUAL(endpoint.prefetchBundleBytes, actualBundleBytes);
           BOOST_CHECK_EQUAL(endpoint.prefetchSegmentBytes, 7000U);
         }
-        // A small chunk makes this fixed tensor fixture cross the production
-        // selection threshold without requiring a large tensor allocation.
         const auto chunk = std::max<std::size_t>(1, actualBundleBytes / 34);
         auto manifestContext = prefetchContext;
         manifestContext.inlineFirstSegment = true;
@@ -1812,6 +1810,29 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
           BOOST_CHECK(*endpoint.segmentManifest == *publishedManifest.segmentManifest);
           BOOST_CHECK(!endpoint.inlineFirstSegment);
         }
+
+        auto shortManifestContext = manifestContext;
+        const auto twoSegmentChunk = (actualBundleBytes + 1) / 2;
+        shortManifestContext.tensorSegmentBytesByProvider[sourceProvider] = twoSegmentChunk;
+        shortManifestContext.manifestSegmentBytesByProvider[sourceProvider] = twoSegmentChunk;
+        const auto shortManifestGroups = NativeGroupProjectionBuilder::build(
+          prefetchSealed, input.split, keys, shortManifestContext, 2U << 20);
+        const auto& shortPublication =
+          shortManifestGroups.at(execution.roles.front()).dataflow.mayPublish.front();
+        const auto& shortRead =
+          shortManifestGroups.at(execution.roles.back()).dataflow.mustFetch.front();
+        BOOST_REQUIRE(shortPublication.segmentManifest);
+        BOOST_REQUIRE(shortRead.segmentManifest);
+        BOOST_CHECK_EQUAL(shortPublication.segmentManifest->sourceSegments, 2U);
+        BOOST_CHECK(*shortRead.segmentManifest == *shortPublication.segmentManifest);
+
+        auto singleSegmentContext = shortManifestContext;
+        singleSegmentContext.tensorSegmentBytesByProvider[sourceProvider] = actualBundleBytes;
+        singleSegmentContext.manifestSegmentBytesByProvider[sourceProvider] = actualBundleBytes;
+        const auto singleSegmentGroups = NativeGroupProjectionBuilder::build(
+          prefetchSealed, input.split, keys, singleSegmentContext, 2U << 20);
+        BOOST_CHECK(!singleSegmentGroups.at(execution.roles.front())
+                       .dataflow.mayPublish.front().segmentManifest);
 
         auto scopedManifestContext = manifestContext;
         scopedManifestContext.segmentManifestDependencyId = "different-dependency";
