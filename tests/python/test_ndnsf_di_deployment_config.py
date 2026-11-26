@@ -1841,6 +1841,8 @@ def minindn_deployment(deployment):
     ('trace-limit-excess', 'exceeds native trace byte limit'),
     ('trace-not-opted-in', 'requires MiniNDN Wan generation and test_only=true'),
     ('trace-wrong-type', 'expected boolean'),
+    ('manifest-disabled', 'Wan generation requires signed segment manifests'),
+    ('manifest-enabled', ''),
     ('mixed', 'without turns'),
     ('same-model', 'distinct DiT and VAE'),
     ('tokenizer-output', 'output overlaps protected input'),
@@ -1868,6 +1870,10 @@ def test_minindn_launches_wan_requester_with_isolated_component_paths(
         'positive_prompt': 'lake',
         'negative_prompt': '',
     }
+    if change in ('manifest-disabled', 'manifest-enabled'):
+        provider = next(actor for actor in config['actors'] if actor['kind'] == 'provider')
+        provider.setdefault('parameters', {})['enable-segment-manifest'] = (
+            change == 'manifest-enabled')
     if change in ('trace', 'trace-not-opted-in', 'trace-wrong-type') or change.startswith('trace-limit'):
         requester['test_wan_fixture_trace'] = 'true' if change == 'trace-wrong-type' else True
         if change == 'trace' or change.startswith('trace-limit'):
