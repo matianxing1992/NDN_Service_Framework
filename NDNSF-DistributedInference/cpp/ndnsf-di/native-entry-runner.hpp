@@ -80,9 +80,9 @@ bindNativeOnnxEntryTable(const NativeSelectionProjectionV3& projection,
 
 /** Execute one admitted CALL; ProviderRoleWorker owns readiness, SUM and publication.
  *
- * Children are prepared once and owned for this runner's lifetime. Factories are consumed
- * synchronously during construction, never retained. Calls and state transitions follow the
- * existing owner's serialization; this class adds no thread, scheduler or mutable cache.
+ * Stateful children retain their sessions. Stateless CUDA entries may verify readiness
+ * serially and own each backend session only for its CALL. Calls and state transitions follow
+ * the existing owner's serialization.
  * Output views retain their child's storage owner. State transactions and opaque handle
  * spelling are shared with the legacy Qwen adapter.
  */
@@ -95,6 +95,8 @@ public:
 
   NativeEntryRunner(std::vector<NativeSubgraphEntryContract> entries,
                     ChildFactory childFactory, SpecFactory specFactory);
+  NativeEntryRunner(std::vector<NativeSubgraphEntryContract> entries,
+                    ChildFactory childFactory, SpecFactory specFactory, bool releaseAfterCall);
 
   std::map<std::string, TensorBundle> run(const RoleExecutionContext& ctx) override;
   const std::vector<NativeSubgraphEntryContract>& entryContracts() const { return m_entries; }
@@ -119,6 +121,14 @@ private:
 
   std::vector<NativeSubgraphEntryContract> m_entries;
   std::map<std::string, std::shared_ptr<NativeModelRunner>> m_children;
+  ChildFactory m_callFactory;
+  std::map<std::string, NativeModelRunnerSpec> m_callSpecs;
+  std::map<std::string, std::optional<ExecutionEvidence>> m_readiness;
+  std::map<std::string, std::optional<ExecutionEvidence>> m_callEvidence;
+  std::map<std::string, NativeRuntimeMetrics> m_callMetrics;
+  std::string m_requestId;
+  std::uint64_t m_attempt = 0;
+  std::uint64_t m_callSequence = 0;
 };
 
 } // namespace ndnsf::di

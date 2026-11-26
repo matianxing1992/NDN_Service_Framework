@@ -239,7 +239,14 @@ NativeSubgraphEntryContract::operator==(const NativeSubgraphEntryContract& other
 
 NativeEntryRunner::NativeEntryRunner(
   std::vector<NativeSubgraphEntryContract> entries, ChildFactory childFactory,
-  std::function<NativeModelRunnerSpec(const NativeSubgraphEntryContract&)> specFactory)
+  SpecFactory specFactory)
+  : NativeEntryRunner(std::move(entries), std::move(childFactory), std::move(specFactory), false)
+{
+}
+
+NativeEntryRunner::NativeEntryRunner(
+  std::vector<NativeSubgraphEntryContract> entries, ChildFactory childFactory,
+  SpecFactory specFactory, bool releaseAfterCall)
   : m_entries(std::move(entries))
 {
   if (!childFactory || !specFactory)
@@ -251,6 +258,8 @@ NativeEntryRunner::NativeEntryRunner(
     entry.validate();
     if (!ids.insert(entry.entryId).second)
       throw std::invalid_argument("entry runner entry ids are duplicated");
+    if (releaseAfterCall && !entry.stateSuccessorByInputGraphName.empty())
+      throw std::invalid_argument("a stateful entry needs a resident session");
   }
   // Prepare every entry once. A failure here happens before the first step, so a
   // partially assembled unit can never reach the reuse cache.
@@ -263,8 +272,32 @@ NativeEntryRunner::NativeEntryRunner(
       if (profile != spec.metadata.end() && !profile->second.empty())
         profile->second += "-entry-" + nativePlanningDigest(entry.entryId).substr(7);
     }
-    m_children.emplace(entry.entryId, childFactory(spec));
+    if (releaseAfterCall) {
+      auto preparation = spec;
+      // The profile option also controls the CUDA host-metadata inventory.
+      // Keep those checks identical to the options used by the actual CALL.
+      for (const auto* key : {"providerProfilePrefix", "provider_profile_prefix"}) {
+        const auto profile = preparation.metadata.find(key);
+        if (profile != preparation.metadata.end() && !profile->second.empty())
+          profile->second += "-readiness";
+      }
+      const auto runner = childFactory(preparation);
+      if (!runner) throw std::logic_error("entry preparation returned no child");
+      auto evidence = runner->executionEvidenceSnapshot();
+      if (evidence) {
+        evidence->providerProfilePath.clear();
+        evidence->profileRequestId.clear();
+        evidence->profileAttemptEpoch = 0;
+        evidence->setNodeProviderAssignments({});
+      }
+      m_readiness.emplace(entry.entryId, std::move(evidence));
+      m_callSpecs.emplace(entry.entryId, std::move(spec));
+    }
+    else {
+      m_children.emplace(entry.entryId, childFactory(spec));
+    }
   }
+  if (releaseAfterCall) m_callFactory = std::move(childFactory);
 }
 
 const NativeSubgraphEntryContract*
@@ -399,9 +432,17 @@ NativeEntryRunner::executionEvidenceSnapshot() const
   std::string artifactDigest;
   std::vector<ExecutionEvidence> cudaChildren;
   for (const auto& entry : m_entries) {
-    const auto child = m_children.find(entry.entryId);
-    if (child == m_children.end() || !child->second) return std::nullopt;
-    const auto evidence = child->second->executionEvidenceSnapshot();
+    std::optional<ExecutionEvidence> evidence;
+    if (m_callFactory) {
+      const auto execution = m_callEvidence.find(entry.entryId);
+      evidence = execution == m_callEvidence.end() ? m_readiness.at(entry.entryId)
+                                                   : execution->second;
+    }
+    else {
+      const auto child = m_children.find(entry.entryId);
+      if (child == m_children.end() || !child->second) return std::nullopt;
+      evidence = child->second->executionEvidenceSnapshot();
+    }
     if (!evidence || !evidence->loadCompleted || !evidence->realCompute ||
         evidence->cpuFallbackUsed ||
         !evidence->warmupReady() ||
@@ -484,9 +525,16 @@ NativeEntryRunner::runtimeMetricsSnapshot() const
   std::optional<NativeRuntimeMetrics> unit;
   std::optional<NativeBackendExecutionTiming> latest;
   for (const auto& entry : m_entries) {
-    const auto child = m_children.find(entry.entryId);
-    if (child == m_children.end() || !child->second) continue;
-    const auto metrics = child->second->runtimeMetricsSnapshot();
+    std::optional<NativeRuntimeMetrics> metrics;
+    if (m_callFactory) {
+      const auto observed = m_callMetrics.find(entry.entryId);
+      if (observed != m_callMetrics.end()) metrics = observed->second;
+    }
+    else {
+      const auto child = m_children.find(entry.entryId);
+      if (child != m_children.end() && child->second)
+        metrics = child->second->runtimeMetricsSnapshot();
+    }
     if (!metrics) continue;
     // The unit ran one backend call per step, so the latest of them is the unit's latest. Which
     // entry made it is an internal detail of this runner; a caller asking the unit what it last
@@ -830,16 +878,46 @@ NativeEntryRunner::run(const RoleExecutionContext& ctx)
     throw std::invalid_argument(
       "active step provides no input for this entry");
 
-  const auto childRunner = m_children.find(entry->entryId);
-  if (childRunner == m_children.end() || !childRunner->second)
+  std::shared_ptr<NativeModelRunner> runner;
+  if (m_callFactory) {
+    if (m_requestId != ctx.requestId || m_attempt != ctx.attemptEpoch) {
+      m_callEvidence.clear();
+      m_callMetrics.clear();
+      m_requestId = ctx.requestId;
+      m_attempt = ctx.attemptEpoch;
+    }
+    m_callEvidence[entry->entryId].reset();
+    m_callMetrics.erase(entry->entryId);
+    auto spec = m_callSpecs.at(entry->entryId);
+    const auto sequence = std::to_string(++m_callSequence);
+    for (const auto* key : {"providerProfilePrefix", "provider_profile_prefix"}) {
+      const auto profile = spec.metadata.find(key);
+      if (profile != spec.metadata.end() && !profile->second.empty())
+        profile->second += "-call-" + sequence;
+    }
+    runner = m_callFactory(spec);
+  }
+  else {
+    const auto found = m_children.find(entry->entryId);
+    if (found != m_children.end()) runner = found->second;
+  }
+  if (!runner)
     throw std::logic_error("entry runner lost a prepared child");
+  if (m_callFactory) {
+    const auto& ready = m_readiness.at(entry->entryId);
+    const auto current = runner->executionEvidenceSnapshot();
+    if (!ready || !current || current->runnerKind != ready->runnerKind ||
+        current->gpuUuid != ready->gpuUuid || current->deviceId != ready->deviceId ||
+        !current->loadCompleted || !current->warmupReady() || current->cpuFallbackUsed)
+      throw std::runtime_error("entry device differs from prepared runtime");
+  }
 
   // Ask the child for typed host values. This runner is about to read individual tensors out
   // of its result and hand them on unchanged, so an encoded bundle would be encoded here and
   // decoded immediately here. The preference is stated on the child context rather than read
   // from the child's activeStep, which this call deliberately clears.
   child.preferLocalTensorOutputs = true;
-  const auto produced = childRunner->second->run(child);
+  const auto produced = runner->run(child);
 
   // Resolve the child's outputs back onto the entry's declared boundary names.
   //
@@ -934,6 +1012,20 @@ NativeEntryRunner::run(const RoleExecutionContext& ctx)
   }
   if (outputs.empty())
     throw std::runtime_error("entry produced no bound output");
+  if (m_callFactory) {
+    auto evidence = runner->executionEvidenceSnapshot();
+    const auto& ready = m_readiness.at(entry->entryId);
+    if (!evidence || evidence->gpuUuid != ready->gpuUuid ||
+        evidence->deviceId != ready->deviceId || evidence->cpuFallbackUsed)
+      throw std::runtime_error("entry device differs from prepared runtime");
+    if (evidence && !evidence->providerProfilePath.empty() &&
+        (evidence->profileRequestId != ctx.requestId ||
+         evidence->profileAttemptEpoch != ctx.attemptEpoch))
+      throw std::runtime_error("entry profile differs from current request");
+    m_callEvidence[entry->entryId] = std::move(evidence);
+    if (auto metrics = runner->runtimeMetricsSnapshot())
+      m_callMetrics.insert_or_assign(entry->entryId, std::move(*metrics));
+  }
   return outputs;
 }
 

@@ -5999,4 +5999,128 @@ BOOST_AUTO_TEST_CASE(EntryRunnerKeepsCudaProofForAllSealedCalls)
   BOOST_CHECK(!snapshot(false, true, false));
 }
 
+BOOST_AUTO_TEST_CASE(StatelessCudaEntriesReleaseDeviceSessionsAndKeepCurrentProof)
+{
+  const std::array<std::string, 3> ids{"first", "second", "third"};
+  NativeJson table = NativeJson::array();
+  for (const auto& id : ids) {
+    const auto digest = nativePlanningDigest(id);
+    table.push_back({{"id", id}, {"digest", digest},
+      {"file", "entry-" + digest.substr(7) + ".onnx"},
+      {"inputs", {"x"}}, {"outputs", {"y"}}});
+  }
+  NativeModelRunnerSpec spec;
+  spec.role = "rank";
+  spec.backend = "onnxruntime-cuda";
+  spec.path = "model.onnx";
+  spec.metadata[NATIVE_ONNX_ENTRY_TABLE] = nativeCanonicalJson(table);
+  spec.metadata["providerProfilePrefix"] = "fixture-profile";
+  unsigned live = 0;
+  unsigned prepared = 0;
+  unsigned calls = 0;
+  bool rejectPreparation = true;
+  bool mismatchDevice = false;
+  std::string request = "request";
+  RegistryNativeModelRunnerFactory factory;
+  factory.registerBackend(spec.backend, [&] (const NativeModelRunnerSpec& entry) {
+    if (live != 0) throw std::runtime_error("device budget exhausted");
+    const auto profile = entry.metadata.find("providerProfilePrefix");
+    const bool preparation = profile != entry.metadata.end() &&
+      profile->second.find("-readiness") != std::string::npos;
+    if (preparation) {
+      ++prepared;
+      if (rejectPreparation && entry.role == "second")
+        throw std::runtime_error("prepare second entry failed");
+    }
+    ++live;
+    auto lease = std::shared_ptr<void>(nullptr, [&](void*) { --live; });
+    ExecutionEvidence evidence;
+    evidence.providerName = "/producer";
+    evidence.providerBootId = "boot";
+    evidence.runnerKind = RunnerKind::OnnxRuntimeCuda;
+    evidence.realCompute = true;
+    evidence.deviceKind = "cuda";
+    evidence.deviceId = "0";
+    evidence.gpuUuid = mismatchDevice ? "GPU-wrong" : "GPU-admitted";
+    evidence.gpuUuids = {evidence.gpuUuid};
+    evidence.runtimeVersion = "ort-fixture";
+    evidence.modelDigest = "sha256:model";
+    evidence.planDigest = "sha256:plan";
+    evidence.artifactDigests.emplace(entry.role, "sha256:rank");
+    evidence.roles = {entry.role};
+    evidence.loadCompleted = true;
+    evidence.warmupCompleted = true;
+    evidence.createdAtMs = 1;
+    if (!preparation && profile != entry.metadata.end()) {
+      evidence.providerProfilePath = profile->second + ".json";
+      evidence.profileRequestId = request;
+      evidence.profileAttemptEpoch = 1;
+      evidence.setNodeProviderAssignments({{entry.role, "kernel", "CUDAExecutionProvider", true}});
+    }
+    return makeNativeModelRunner([&, lease](const RoleExecutionContext&) {
+      ++calls;
+      auto owner = std::make_shared<std::vector<std::uint8_t>>(4, 7);
+      auto bundle = std::make_shared<LocalTensorBundle>();
+      bundle->owner = owner;
+      bundle->tensors.push_back({"y", TensorElementType::Float32, {1}, *owner});
+      TensorBundle output;
+      output.localTensors = std::move(bundle);
+      return std::map<std::string, TensorBundle>{{"y", std::move(output)}};
+    }, std::move(evidence));
+  });
+  BOOST_CHECK_EXCEPTION(factory.create(spec), std::runtime_error,
+    [](const auto& error) { return std::string(error.what()) == "prepare second entry failed"; });
+  BOOST_CHECK_EQUAL(live, 0U);
+  BOOST_CHECK_EQUAL(calls, 0U);
+  rejectPreparation = false;
+  const auto runner = factory.create(spec);
+  BOOST_CHECK_EQUAL(prepared, 5U);
+  BOOST_CHECK_EQUAL(live, 0U);
+  const auto ready = runner->executionEvidenceSnapshot();
+  BOOST_REQUIRE(ready);
+  BOOST_CHECK(ready->warmupReady());
+  BOOST_CHECK(ready->entryProfiles.empty());
+
+  RoleExecutionContext ctx;
+  ctx.role = spec.role;
+  ctx.requestId = request;
+  ctx.attemptEpoch = 1;
+  ctx.roleSteps = std::make_shared<std::vector<NativeExecutionStepSpec>>();
+  ctx.stepInputsBySlot["x"].payload = {0, 0, 0, 0};
+  const auto call = [&] (const std::string& id) {
+    NativeExecutionStepSpec step;
+    step.operation = "CALL_SUBGRAPH";
+    step.unitId = ctx.role;
+    step.artifactEntry = id;
+    ctx.activeStep = std::make_shared<NativeExecutionStepSpec>(std::move(step));
+    return runner->run(ctx);
+  };
+  const auto first = call(ids.front());
+  BOOST_CHECK_EQUAL(live, 0U);
+  const auto partial = runner->executionEvidenceSnapshot();
+  BOOST_REQUIRE(partial);
+  BOOST_CHECK(partial->entryProfiles.empty());
+  call(ids[1]);
+  call(ids[2]);
+  BOOST_CHECK_EQUAL(calls, 3U);
+  BOOST_CHECK_EQUAL(live, 0U);
+  const auto views = decodeTensorBundleViews(first.at("y"));
+  BOOST_REQUIRE_EQUAL(views.size(), 1U);
+  BOOST_CHECK_EQUAL(views.front().payload[0], 7);
+  const auto complete = runner->executionEvidenceSnapshot();
+  BOOST_REQUIRE(complete);
+  BOOST_CHECK_EQUAL(complete->entryProfiles.size(), ids.size());
+
+  request = "next-request";
+  ctx.requestId = request;
+  call(ids.front());
+  const auto next = runner->executionEvidenceSnapshot();
+  BOOST_REQUIRE(next);
+  BOOST_CHECK(next->entryProfiles.empty());
+  mismatchDevice = true;
+  BOOST_CHECK_THROW(call(ids[1]), std::runtime_error);
+  BOOST_CHECK_EQUAL(live, 0U);
+  BOOST_CHECK(!runner->executionEvidenceSnapshot());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

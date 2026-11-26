@@ -503,6 +503,13 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
       }
       return child;
     };
+    const auto resident = spec.metadata.find("residentSession");
+    const bool boundedCudaEntries = canonicalEntries && spec.backend == "onnxruntime-cuda" &&
+      entries.size() > 1 && !spec.protectedResidentUse &&
+      (resident == spec.metadata.end() || (resident->second != "1" && resident->second != "true")) &&
+      std::all_of(entries.begin(), entries.end(), [] (const auto& entry) {
+        return entry.stateSuccessorByInputGraphName.empty();
+      });
     runner = std::make_shared<NativeEntryRunner>(
       std::move(entries),
       [creator = found->second] (const NativeModelRunnerSpec& childSpec) {
@@ -511,7 +518,7 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
           throw std::logic_error("NativeModelRunner backend returned null: " + childSpec.backend);
         return childRunner;
       },
-      makeChild);
+      makeChild, boundedCudaEntries);
   }
   else {
     runner = found->second(spec);
