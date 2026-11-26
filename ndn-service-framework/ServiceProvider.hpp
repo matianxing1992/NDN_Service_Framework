@@ -67,7 +67,11 @@ namespace ndn_service_framework{
     using InputSemanticValidator = std::function<void(const std::vector<VerifiedInputObject>&)>;
     using DependencyPlanResolver = std::function<DependencyPacketPlan(
         const CollaborationInputSpec&, const ndn::Data&)>;
-    namespace detail { class CollaborationInputBudget; class NacConsumerTransport; }
+    namespace detail {
+        class CollaborationInputBudget;
+        class NacConsumerTransport;
+        class OriginalPacketFile;
+    }
 
     struct LargeDataPublishResult;
     class ScopedProtectedObjectKeys;
@@ -2730,6 +2734,22 @@ namespace ndn_service_framework{
                 ResponseMessage response,
                 std::string selectionDigest = "",
                 std::shared_ptr<RegistrationState> registrationState = nullptr);
+            struct RequestScopedInvocationState;
+            void commitExecutedRequestResponse(
+                const ndn::Name& requesterName, const ndn::Name& providerName,
+                const ndn::Name& serviceName, const ndn::Name& requestId,
+                const std::string& selectionDigest, const std::string& userToken,
+                const std::optional<RequestScopedInvocationState>& requestScopedState,
+                LargeDataReferenceResponseResult prepared);
+            std::optional<LargeDataReferenceResponseResult> prepareRequestScopedResponse(
+                const ndn::Name& requesterName, const ndn::Name& providerName,
+                const ndn::Name& serviceName, const ndn::Name& requestId,
+                ResponseMessage response, const RequestKeyBundle& keys,
+                RequestSecurityBinding binding, size_t thresholdBytes,
+                ndn::time::milliseconds freshness,
+                std::function<bool()> mayCommit = {},
+                std::function<void(LargeDataReferenceResponseResult)> onReady = {});
+            void postRequestScopedResponseBatch(std::function<bool()> batch);
             void fetchRequestScopedInputAndDispatch(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -2908,10 +2928,12 @@ namespace ndn_service_framework{
             bool retirePacketRetention(const std::shared_ptr<RetainedPackets>& request);
             void scheduleRetainedPacketExpiry(
                 const std::shared_ptr<RetainedPackets>& request);
-            void retainSegmentedResponse(
+            std::shared_ptr<RetainedPackets> reserveSegmentedResponse(
                 const ndn::Name& prefix, std::uint64_t segmentCount,
-                std::chrono::steady_clock::time_point deadline,
-                const std::function<std::vector<std::uint8_t>(std::uint64_t)>& nextPacket);
+                std::chrono::steady_clock::time_point deadline);
+            void commitSegmentedResponse(
+                const std::shared_ptr<RetainedPackets>& owner,
+                std::shared_ptr<const detail::OriginalPacketFile> file);
             std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
                 const ndn::Name& requestId,
                 const std::string& keyScope,

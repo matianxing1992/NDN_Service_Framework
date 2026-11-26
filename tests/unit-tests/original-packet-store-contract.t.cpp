@@ -109,6 +109,25 @@ BOOST_AUTO_TEST_CASE(LocalPacketOwnerPreservesSignedWireAndRejectsIncompleteSets
   BOOST_CHECK_THROW(detail::OriginalPacketFile::create(
     std::filesystem::temp_directory_path(), prefix, 13, 100000, next,
     [&] { if (++checks == 4) throw std::runtime_error("cancelled"); }), std::runtime_error);
+
+  const auto batched = detail::OriginalPacketFile::createSegmented(
+    std::filesystem::temp_directory_path(), prefix, 13, 100000);
+  BOOST_CHECK(!batched->appendSegments(8, next));
+  BOOST_CHECK_THROW(batched->read(0), std::invalid_argument);
+  BOOST_CHECK(batched->appendSegments(8, next));
+  BOOST_CHECK(batched->read(0) == first);
+  BOOST_CHECK(batched->read(12) == owner->read(12));
+
+  const auto interrupted = detail::OriginalPacketFile::createSegmented(
+    std::filesystem::temp_directory_path(), prefix, 13, 100000);
+  BOOST_CHECK(!interrupted->appendSegments(8, next));
+  BOOST_CHECK_EXCEPTION(interrupted->appendSegments(8, next, [] {
+    throw std::runtime_error("cancelled");
+  }), std::runtime_error, [](const auto& error) {
+    return std::string(error.what()) == "cancelled";
+  });
+  BOOST_CHECK_THROW(interrupted->read(0), std::invalid_argument);
+  BOOST_CHECK_THROW(interrupted->appendSegments(8, next), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(ExactPacketOwnerAppendsAtomicBatchesAndReplaysOriginalWire)

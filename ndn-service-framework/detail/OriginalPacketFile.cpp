@@ -2,6 +2,7 @@
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
+#include <algorithm>
 #include <cerrno>
 #include <fcntl.h>
 #include <limits>
@@ -86,34 +87,64 @@ std::shared_ptr<const OriginalPacketFile> OriginalPacketFile::create(
   std::uint64_t count, std::uint64_t budget, const NextPacket& next,
   const std::function<void()>& current)
 {
-  if (prefix.empty() || count == 0 || !next)
+  if (current) current();
+  auto owner = createSegmented(directory, prefix, count, budget);
+  owner->appendSegments(count, next, current);
+  return owner;
+}
+
+std::shared_ptr<OriginalPacketFile>
+OriginalPacketFile::createSegmented(const std::filesystem::path& directory,
+                                    const ndn::Name& prefix, std::uint64_t count,
+                                    std::uint64_t budget)
+{
+  if (prefix.empty() || count == 0)
     throw std::invalid_argument("ORIGINAL_PACKET_SET_INVALID");
   auto owner = std::shared_ptr<OriginalPacketFile>(new OriginalPacketFile);
   owner->m_dataPrefix = prefix;
-  owner->m_segmentCount = count;
-  if (current) current();
+  owner->m_expectedSegments = count;
+  owner->m_segmentedBudget = budget;
   owner->m_packets = openPrivateFile(directory);
   owner->m_index = openPrivateFile(directory);
-  std::uint64_t offset = 0;
-  for (std::uint64_t segment = 0; segment < count; ++segment) {
+  return owner;
+}
+
+bool
+OriginalPacketFile::appendSegments(std::uint64_t maxSegments, const NextPacket& next,
+                                    const std::function<void()>& current)
+{
+  const std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_expectedSegments == 0 || m_segmentsSealed || m_segmentsFailed || maxSegments == 0 || !next)
+    throw std::invalid_argument("ORIGINAL_PACKET_SET_INVALID");
+  // A failed append leaves an unsealed file. Disallow retrying partial writes.
+  m_segmentsFailed = true;
+  const auto end = m_segmentCount + std::min(maxSegments, m_expectedSegments - m_segmentCount);
+  for (; m_segmentCount < end; ++m_segmentCount) {
     if (current) current();
-    const auto wire = next(segment);
+    const auto wire = next(m_segmentCount);
     if (current) current();
-    checkPacket(wire, ndn::Name(prefix).appendSegment(segment), count - 1);
+    checkPacket(wire, ndn::Name(m_dataPrefix).appendSegment(m_segmentCount),
+                m_expectedSegments - 1);
     const std::uint64_t length = wire.size();
     const auto cost = length + 2 * sizeof(std::uint64_t);
-    if (owner->m_storageBytes > budget || cost > budget - owner->m_storageBytes)
+    if (cost > m_segmentedBudget - m_storageBytes)
       throw std::runtime_error("ORIGINAL_PACKET_STORAGE_BUDGET_EXCEEDED");
-    writeExact(owner->m_index, &offset, sizeof(offset));
-    writeExact(owner->m_packets, &length, sizeof(length));
-    writeExact(owner->m_packets, wire.data(), wire.size());
-    owner->m_storageBytes += cost;
-    offset += sizeof(length) + length;
+    const auto offset = m_storageBytes - m_segmentCount * sizeof(std::uint64_t);
+    writeExact(m_index, &offset, sizeof(offset));
+    writeExact(m_packets, &length, sizeof(length));
+    writeExact(m_packets, wire.data(), wire.size());
+    m_storageBytes += cost;
   }
-  if (std::fflush(owner->m_packets) != 0 || std::fflush(owner->m_index) != 0)
+  if (m_segmentCount != m_expectedSegments) {
+    m_segmentsFailed = false;
+    return false;
+  }
+  if (std::fflush(m_packets) != 0 || std::fflush(m_index) != 0)
     throw std::runtime_error("ORIGINAL_PACKET_FLUSH_FAILED");
   if (current) current();
-  return owner;
+  m_segmentsSealed = true;
+  m_segmentsFailed = false;
+  return true;
 }
 
 std::shared_ptr<OriginalPacketFile>
@@ -204,7 +235,7 @@ std::vector<std::uint8_t>
 OriginalPacketFile::read(std::uint64_t segment) const
 {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (m_exactBudget != 0) throw std::invalid_argument("ORIGINAL_PACKET_SET_INVALID");
+  if (!m_segmentsSealed) throw std::invalid_argument("ORIGINAL_PACKET_SET_INVALID");
   auto wire = readWire(segment);
   checkPacket(wire, ndn::Name(m_dataPrefix).appendSegment(segment), m_segmentCount - 1);
   return wire;

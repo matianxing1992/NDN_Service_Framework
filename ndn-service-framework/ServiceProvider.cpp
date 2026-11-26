@@ -10863,6 +10863,24 @@ namespace ndn_service_framework
         size_t thresholdBytes,
         ndn::time::milliseconds freshness)
     {
+        return prepareRequestScopedResponse(requesterName, providerName, serviceName,
+            requestId, std::move(response), keys, std::move(binding), thresholdBytes,
+            freshness).value();
+    }
+
+    std::optional<LargeDataReferenceResponseResult>
+    ServiceProvider::prepareRequestScopedResponse(
+        const ndn::Name& requesterName,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        ResponseMessage response,
+        const RequestKeyBundle& keys,
+        RequestSecurityBinding binding,
+        size_t thresholdBytes,
+        ndn::time::milliseconds freshness, std::function<bool()> mayCommit,
+        std::function<void(LargeDataReferenceResponseResult)> onReady)
+    {
         LargeDataReferenceResponseResult result;
         const auto threshold = thresholdBytes == 0 ?
             responseLargeDataThresholdBytes() : thresholdBytes;
@@ -10919,90 +10937,147 @@ namespace ndn_service_framework
             return result;
         }
         result.largeData.digest = sha256DigestString(payload);
-        std::string publicationStage = "initialization";
-        try {
-            const auto makeSegment = [&](std::uint64_t segment) {
-                const auto offset = static_cast<size_t>(segment) * chunkBytes;
-                const auto length = std::min(chunkBytes, payload.size() - offset);
-                auto segmentBinding = binding;
-                segmentBinding.segmentOrEventId =
-                    "response/" + std::to_string(segment);
-                publicationStage = "encrypt";
-                const auto envelope = encryptRequestContent(
-                    keys.responseKey,
-                    keys.keyId,
-                    segmentBinding,
-                    ndn::span<const uint8_t>(payload.data() + offset, length));
-                const auto envelopeWire = envelope.wireEncode();
-                auto data = std::make_shared<ndn::Data>(
-                    ndn::Name(encryptedDataName).appendSegment(segment));
-                data->setContent(envelopeWire);
-                data->setFreshnessPeriod(freshness);
-                data->setFinalBlock(
-                    ndn::name::Component::fromSegment(finalSegment));
-                publicationStage = "sign";
-                auto& activeKeyChain = m_testSigningKeyChain ?
-                    *m_testSigningKeyChain : m_keyChain;
-                activeKeyChain.sign(*data, m_signingInfo);
-                return data;
-            };
-            if (segmentCount > MAX_IN_MEMORY_RESPONSE_SEGMENTS) {
-                const auto now = nowMilliseconds();
-                if (!keys.isValid(now))
-                    throw std::runtime_error("request-scoped response key expired");
-                const auto lifetime = std::min<std::uint64_t>(
-                    keys.expiresAtMs - now, std::numeric_limits<int>::max());
-                const auto deadline = std::chrono::steady_clock::now() +
-                    std::chrono::milliseconds(lifetime);
-                retainSegmentedResponse(encryptedDataName, segmentCount, deadline,
-                    [&](std::uint64_t segment) {
-                        const auto packet = makeSegment(segment);
-                        const auto& wire = packet->wireEncode();
-                        publicationStage = "retain-original";
-                        return std::vector<std::uint8_t>(wire.begin(), wire.end());
-                    });
-            }
-            else {
-                for (size_t segment = 0; segment < segmentCount; ++segment) {
-                    auto data = makeSegment(segment);
-                    publicationStage = "insert-ims";
-                    insertDataIntoIMS(*data, freshness);
-                }
-            }
-        }
-        catch (const std::exception& e) {
-            result.errorMessage = std::string(
-                "request-scoped large response publication failed at ") +
-                publicationStage + ": " + e.what();
-            return result;
-        }
         result.largeData.encryptedDataName = encryptedDataName;
-        LargeDataReference reference;
-        reference.dataName = encryptedDataName;
-        reference.objectType = "ndnsf-response";
-        reference.objectId = result.largeData.objectId;
-        reference.plaintextSize = payload.size();
-        reference.encrypted = true;
-        reference.digest = result.largeData.digest;
-        reference.keyScope = "request";
-        auto referencePayload = encodeLargeDataReferencePayload(reference);
-        response.setPayload(referencePayload, referencePayload.size());
-        response.clearAeadEnvelope();
-        response.setControllerVersion(binding.controllerVersion);
+        // Keep ownership of the plaintext Block while the Face runs batches.
+        const auto payloadBlock = response.getPayloadBlock();
+        const auto makeSegment = [this, payloadBlock, keys, binding, encryptedDataName,
+                                  chunkBytes, finalSegment, freshness](std::uint64_t segment) {
+            const auto payload = payloadBlock.value_bytes();
+            const auto offset = static_cast<size_t>(segment) * chunkBytes;
+            const auto length = std::min(chunkBytes, payload.size() - offset);
+            auto segmentBinding = binding;
+            segmentBinding.segmentOrEventId = "response/" + std::to_string(segment);
+            const auto envelope = encryptRequestContent(keys.responseKey, keys.keyId,
+                segmentBinding, payload.subspan(offset, length));
+            auto data = std::make_shared<ndn::Data>(
+                ndn::Name(encryptedDataName).appendSegment(segment));
+            data->setContent(envelope.wireEncode());
+            data->setFreshnessPeriod(freshness);
+            data->setFinalBlock(ndn::name::Component::fromSegment(finalSegment));
+            auto& activeKeyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+            activeKeyChain.sign(*data, m_signingInfo);
+            return data;
+        };
+        auto finishReference = [requestId, serviceName, bindingVersion = binding.controllerVersion,
+                                      response = std::move(response), result = std::move(result),
+                                      payloadSize = payload.size(), chunkBytes, segmentCount]() mutable {
+            LargeDataReference reference;
+            reference.dataName = result.largeData.encryptedDataName;
+            reference.objectType = "ndnsf-response";
+            reference.objectId = result.largeData.objectId;
+            reference.plaintextSize = payloadSize;
+            reference.encrypted = true;
+            reference.digest = result.largeData.digest;
+            reference.keyScope = "request";
+            auto payload = encodeLargeDataReferencePayload(reference);
+            response.setPayload(payload, payload.size());
+            response.clearAeadEnvelope();
+            response.setControllerVersion(bindingVersion);
+            result.responseMessage = std::move(response);
+            result.usedLargeDataReference = true;
+            result.success = true;
+            NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_LARGE_RESPONSE_PUBLISHED"
+                         << " name=" << reference.dataName.toUri()
+                         << " requestId=" << requestId.toUri()
+                         << " serviceName=" << serviceName.toUri()
+                         << " plaintextBytes=" << payloadSize
+                         << " chunkBytes=" << chunkBytes
+                         << " segments=" << segmentCount
+                         << " retention=" << (segmentCount > MAX_IN_MEMORY_RESPONSE_SEGMENTS ?
+                                               "file" : "ims"));
+            return std::move(result);
+        };
+        const auto failure = [](const std::exception& error) {
+            LargeDataReferenceResponseResult failed;
+            failed.errorMessage = std::string("request-scoped large response publication failed: ") +
+                                  error.what();
+            return failed;
+        };
+        std::shared_ptr<RetainedPackets> owner;
+        try {
+            if (segmentCount <= MAX_IN_MEMORY_RESPONSE_SEGMENTS) {
+                for (std::uint64_t segment = 0; segment < segmentCount; ++segment) {
+                    insertDataIntoIMS(*makeSegment(segment), freshness);
+                }
+                return finishReference();
+            }
+            const auto now = nowMilliseconds();
+            if (!keys.isValid(now))
+                throw std::runtime_error("request-scoped response key expired");
+            const auto lifetime = std::min<std::uint64_t>(keys.expiresAtMs - now,
+                std::numeric_limits<int>::max());
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(lifetime);
+            owner = reserveSegmentedResponse(encryptedDataName, segmentCount, deadline);
+            auto file = detail::OriginalPacketFile::createSegmented(
+                std::filesystem::temp_directory_path(), encryptedDataName, segmentCount,
+                owner->diskLimit);
+            const auto nextPacket = [makeSegment](std::uint64_t segment) {
+                const auto packet = makeSegment(segment);
+                const auto& wire = packet->wireEncode();
+                return std::vector<std::uint8_t>(wire.begin(), wire.end());
+            };
+            const auto requireCurrent = [this, retained = owner.get()] {
+                if (!retained->isCurrent() || m_fetchStopping->load())
+                    throw std::runtime_error("request-scoped response retention expired");
+            };
+            if (!onReady) {
+                file->appendSegments(segmentCount, nextPacket, requireCurrent);
+                commitSegmentedResponse(owner, std::move(file));
+                return finishReference();
+            }
+            // Bound the amount of KeyChain and file work queued on the Face.
+            // Repost through the event loop so status reads and timers can run.
+            postRequestScopedResponseBatch(
+                [this, owner, file = std::move(file), nextPacket, requireCurrent, failure,
+                 finish = std::move(finishReference), mayCommit = std::move(mayCommit),
+                 ready = std::move(onReady)]() mutable {
+                    LargeDataReferenceResponseResult prepared;
+                    try {
+                        if (!mayCommit())
+                            throw std::runtime_error("request-scoped response no longer current");
+                        constexpr std::uint64_t SEGMENTS_PER_BATCH = 32;
+                        if (!file->appendSegments(SEGMENTS_PER_BATCH, nextPacket, requireCurrent))
+                            return false;
+                        if (!mayCommit())
+                            throw std::runtime_error("request-scoped response no longer current");
+                        commitSegmentedResponse(owner, std::move(file));
+                        prepared = finish();
+                    }
+                    catch (const std::exception& error) {
+                        file.reset();
+                        retirePacketRetention(owner);
+                        prepared = failure(error);
+                    }
+                    try {
+                        ready(std::move(prepared));
+                    }
+                    catch (const std::exception& error) {
+                        retirePacketRetention(owner);
+                        NDN_LOG_ERROR("Request-scoped response commit failed: " << error.what());
+                    }
+                    return true;
+                });
+            return std::nullopt;
+        }
+        catch (const std::exception& error) {
+            if (owner) retirePacketRetention(owner);
+            return failure(error);
+        }
+    }
 
-        result.responseMessage = std::move(response);
-        result.usedLargeDataReference = true;
-        result.success = true;
-        NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_LARGE_RESPONSE_PUBLISHED"
-                     << " name=" << encryptedDataName.toUri()
-                     << " requestId=" << requestId.toUri()
-                     << " serviceName=" << serviceName.toUri()
-                     << " plaintextBytes=" << payload.size()
-                     << " chunkBytes=" << chunkBytes
-                     << " segments=" << segmentCount
-                     << " retention=" << (segmentCount > MAX_IN_MEMORY_RESPONSE_SEGMENTS ?
-                                           "file" : "ims"));
-        return result;
+    void
+    ServiceProvider::postRequestScopedResponseBatch(std::function<bool()> batch)
+    {
+        const std::weak_ptr<RegistrationControl> registration = m_registrationControl;
+        boost::asio::post(m_face.getIoContext(), [registration, batch = std::move(batch)]() mutable {
+            const auto control = registration.lock();
+            auto* provider = control ? control->acquireOwner() : nullptr;
+            if (!provider) return;
+            const auto release = ndn::make_scope_exit([&] { control->releaseOwner(); });
+            if (!batch())
+                provider->postRequestScopedResponseBatch(std::move(batch));
+        });
     }
 
     void ServiceProvider::finishRequestExecutionOnEventLoop(
@@ -11019,27 +11094,6 @@ namespace ndn_service_framework
         if (traceSpec192Status) {
             traceSpec192StatusResponse("execution-response-entered");
         }
-        auto releaseR1Reservation = [this, &requesterName, &serviceName,
-                                     &requestId](const std::string& cause) {
-            const ndn::Name key = ndn::Name(requesterName).append(serviceName).append(requestId);
-            std::string reservationId;
-            {
-                std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
-                const auto found = m_r1ReservationByRequest.find(key);
-                if (found == m_r1ReservationByRequest.end()) return;
-                reservationId = found->second;
-                m_r1ReservationByRequest.erase(found);
-            }
-            const auto handler = m_r1ReservationTerminalHandlers.find(serviceName);
-            if (handler != m_r1ReservationTerminalHandlers.end()) {
-                try { handler->second(reservationId, cause); }
-                catch (const std::exception& e) {
-                    NDN_LOG_ERROR("R1 reservation terminal release failed reservation="
-                                  << reservationId << " cause=" << cause
-                                  << " error=" << e.what());
-                }
-            }
-        };
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=PROVIDER_EXECUTE_DONE timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
@@ -11087,23 +11141,6 @@ namespace ndn_service_framework
             }
         }
         const bool requestScopedResponse = requestScopedState.has_value();
-        const auto protectInlineResponse = [&](ResponseMessage& message) {
-            auto binding = requestScopedState->binding;
-            binding.segmentOrEventId = "response";
-            const auto payload = message.getPayloadBlock().value_bytes();
-            const auto envelope = encryptRequestContent(requestScopedState->keys.responseKey,
-                requestScopedState->keys.keyId, binding, payload);
-            ndn::Block emptyPayload(tlv::PayloadType);
-            emptyPayload.encode();
-            message.setPayloadBlock(emptyPayload);
-            message.setAeadEnvelope(envelope.wireEncode());
-            message.setControllerVersion(binding.controllerVersion);
-            NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_RESPONSE_ENCRYPTED requestId="
-                         << requestId.toUri()
-                         << " providerName=" << providerName.toUri()
-                         << " plaintextBytes=" << payload.size()
-                         << " keyId=" << requestScopedState->keys.keyId);
-        };
         LargeDataReferenceResponseResult optimizedResponse;
         if (requestScopedResponse) {
             auto binding = requestScopedState->binding;
@@ -11112,17 +11149,38 @@ namespace ndn_service_framework
             if (response.getStatus() && threshold > 0 &&
                 payload.size() > threshold &&
                 !isLargeDataReferencePayload(payload)) {
-                optimizedResponse = makeRequestScopedResponseWithLargeDataOptimization(
-                    requesterName,
-                    providerName,
-                    serviceName,
-                    requestId,
-                    std::move(response),
-                    requestScopedState->keys,
-                    std::move(binding));
+                const auto mayCommit = [this, pendingKey, registrationState, serviceName,
+                                        keyId = requestScopedState->keys.keyId,
+                                        version = binding.controllerVersion] {
+                    if ((registrationState && registrationState->closed) ||
+                        !authorizeControllerTransition(serviceName,
+                            ProtectedTransition::PROVIDER_EXECUTION)) {
+                        return false;
+                    }
+                    const auto currentVersion = getControllerVersion(serviceName);
+                    if (currentVersion && *currentVersion != version)
+                        return false;
+                    const std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                    const auto current = m_requestScopedInvocations.find(pendingKey);
+                    return current != m_requestScopedInvocations.end() &&
+                           current->second.keys.keyId == keyId &&
+                           current->second.keys.isValid(nowMilliseconds());
+                };
+                auto prepared = prepareRequestScopedResponse(
+                    requesterName, providerName, serviceName, requestId, std::move(response),
+                    requestScopedState->keys, std::move(binding), threshold,
+                    ndn::DEFAULT_FRESHNESS_PERIOD, mayCommit,
+                    [this, requesterName, providerName, serviceName, requestId, selectionDigest,
+                     requestScopedState, userToken = requestMessage.getUserToken()]
+                    (LargeDataReferenceResponseResult prepared) {
+                        commitExecutedRequestResponse(requesterName, providerName, serviceName,
+                            requestId, selectionDigest, userToken, requestScopedState,
+                            std::move(prepared));
+                    });
+                if (!prepared) return;
+                optimizedResponse = std::move(*prepared);
             }
             else {
-                protectInlineResponse(response);
                 optimizedResponse.success = true;
                 optimizedResponse.responseMessage = std::move(response);
             }
@@ -11149,6 +11207,75 @@ namespace ndn_service_framework
                 optimizedResponse.responseMessage = std::move(response);
             }
         }
+        commitExecutedRequestResponse(requesterName, providerName, serviceName, requestId,
+            selectionDigest, requestMessage.getUserToken(), requestScopedState,
+            std::move(optimizedResponse));
+    }
+
+    void
+    ServiceProvider::commitExecutedRequestResponse(
+        const ndn::Name& requesterName, const ndn::Name& providerName,
+        const ndn::Name& serviceName, const ndn::Name& requestId,
+        const std::string& selectionDigest, const std::string& userToken,
+        const std::optional<RequestScopedInvocationState>& requestScopedState,
+        LargeDataReferenceResponseResult optimizedResponse)
+    {
+        const bool traceSpec192Status = isSpec192StatusService(serviceName);
+        const bool requestScopedResponse = requestScopedState.has_value();
+        const ndn::Name pendingKey = ndn::Name(requesterName).append(serviceName).append(requestId);
+        const auto cleanup = ndn::make_scope_exit([&] {
+            if (requestScopedResponse) {
+                std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                const auto stateIt = m_requestScopedInvocations.find(pendingKey);
+                if (stateIt != m_requestScopedInvocations.end() &&
+                    stateIt->second.keys.keyId == requestScopedState->keys.keyId) {
+                    stateIt->second.keys.zeroize();
+                    m_requestScopedInvocations.erase(stateIt);
+                }
+                m_requestScopedNonceRegistry.invalidate(requestScopedState->keys.keyId);
+            }
+            releaseDataV1Subscriptions(requestId);
+            retireCollaborationInput(requestId);
+        });
+        ResponseMessage response;
+        auto releaseR1Reservation = [this, &requesterName, &serviceName,
+                                     &requestId](const std::string& cause) {
+            const ndn::Name key = ndn::Name(requesterName).append(serviceName).append(requestId);
+            std::string reservationId;
+            {
+                std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                const auto found = m_r1ReservationByRequest.find(key);
+                if (found == m_r1ReservationByRequest.end()) return;
+                reservationId = found->second;
+                m_r1ReservationByRequest.erase(found);
+            }
+            const auto handler = m_r1ReservationTerminalHandlers.find(serviceName);
+            if (handler != m_r1ReservationTerminalHandlers.end()) {
+                try { handler->second(reservationId, cause); }
+                catch (const std::exception& e) {
+                    NDN_LOG_ERROR("R1 reservation terminal release failed reservation="
+                                  << reservationId << " cause=" << cause
+                                  << " error=" << e.what());
+                }
+            }
+        };
+        const auto protectInlineResponse = [&](ResponseMessage& message) {
+            auto binding = requestScopedState->binding;
+            binding.segmentOrEventId = "response";
+            const auto payload = message.getPayloadBlock().value_bytes();
+            const auto envelope = encryptRequestContent(requestScopedState->keys.responseKey,
+                requestScopedState->keys.keyId, binding, payload);
+            ndn::Block emptyPayload(tlv::PayloadType);
+            emptyPayload.encode();
+            message.setPayloadBlock(emptyPayload);
+            message.setAeadEnvelope(envelope.wireEncode());
+            message.setControllerVersion(binding.controllerVersion);
+            NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_RESPONSE_ENCRYPTED requestId="
+                         << requestId.toUri()
+                         << " providerName=" << providerName.toUri()
+                         << " plaintextBytes=" << payload.size()
+                         << " keyId=" << requestScopedState->keys.keyId);
+        };
         if (!optimizedResponse.success) {
             NDN_LOG_ERROR("Failed to prepare large response reference requestId="
                           << requestId.toUri()
@@ -11157,7 +11284,7 @@ namespace ndn_service_framework
             response = makeErrorResponse("large response reference preparation failed: " +
                                          optimizedResponse.errorMessage);
             if (m_useTokens) {
-                response.setUserToken(requestMessage.getUserToken());
+                response.setUserToken(userToken);
             }
             if (requestScopedResponse && requestScopedState->keys.isValid(nowMilliseconds())) {
                 protectInlineResponse(response);
@@ -11165,6 +11292,8 @@ namespace ndn_service_framework
         }
         else {
             response = std::move(optimizedResponse.responseMessage);
+            if (requestScopedResponse && !optimizedResponse.usedLargeDataReference)
+                protectInlineResponse(response);
         }
         response.setPolicyEpoch(getCurrentPolicyEpoch(serviceName));
         if (requestScopedResponse) {
@@ -11262,20 +11391,9 @@ namespace ndn_service_framework
                                            std::string("response publish failed: ") + e.what(),
                                            responseName);
             releaseR1Reservation("RESPONSE_PUBLISH_FAILED");
-            retireCollaborationInput(requestId);
             throw;
         }
-        if (requestScopedResponse) {
-            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
-            const auto stateIt = m_requestScopedInvocations.find(pendingKey);
-            if (stateIt != m_requestScopedInvocations.end()) {
-                stateIt->second.keys.zeroize();
-                m_requestScopedInvocations.erase(stateIt);
-            }
-            m_requestScopedNonceRegistry.invalidate(requestScopedState->keys.keyId);
-        }
-        releaseDataV1Subscriptions(requestId);
-        retireCollaborationInput(requestId);
+
     }
 
     void ServiceProvider::fetchRequestScopedInputAndDispatch(
@@ -20546,11 +20664,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         });
     }
 
-    void
-    ServiceProvider::retainSegmentedResponse(
+    std::shared_ptr<RetainedPackets>
+    ServiceProvider::reserveSegmentedResponse(
         const ndn::Name& prefix, std::uint64_t segmentCount,
-        std::chrono::steady_clock::time_point deadline,
-        const std::function<std::vector<std::uint8_t>(std::uint64_t)>& nextPacket)
+        std::chrono::steady_clock::time_point deadline)
     {
         // Charge a ceiling before signing. The immutable segment ordinal is
         // already the file index, so no per-packet name table is needed.
@@ -20577,27 +20694,22 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 m_retainedPacketReadPool.setThreadCount(1);
             retained.push_back(owner);
         }
-        try {
-            const auto requireCurrent = [&] {
-                if (!owner->isCurrent() || m_fetchStopping->load())
-                    throw std::runtime_error("request-scoped response retention expired");
-            };
-            auto file = detail::OriginalPacketFile::create(
-                std::filesystem::temp_directory_path(), prefix, segmentCount, owner->diskLimit,
-                nextPacket, requireCurrent);
-            std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
-            requireCurrent();
-            // Allow one fetch interval for notification and one for segment retrieval.
-            // Start this window after signing and staging the complete packet file.
-            owner->deadline = std::min(deadline, std::chrono::steady_clock::now() +
-                2 * REQUEST_SCOPED_RESPONSE_FETCH_TIMEOUT);
-            scheduleRetainedPacketExpiry(owner);
-            owner->responseFile = std::move(file);
-        }
-        catch (...) {
-            retirePacketRetention(owner);
-            throw;
-        }
+        return owner;
+    }
+
+    void
+    ServiceProvider::commitSegmentedResponse(
+        const std::shared_ptr<RetainedPackets>& owner,
+        std::shared_ptr<const detail::OriginalPacketFile> file)
+    {
+        const std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
+        if (!owner->isCurrent() || m_fetchStopping->load())
+            throw std::runtime_error("request-scoped response retention expired");
+        // Start the notification and retrieval windows after the file is sealed.
+        owner->deadline = std::min(owner->deadline, std::chrono::steady_clock::now() +
+            2 * REQUEST_SCOPED_RESPONSE_FETCH_TIMEOUT);
+        scheduleRetainedPacketExpiry(owner);
+        owner->responseFile = std::move(file);
     }
 
     bool

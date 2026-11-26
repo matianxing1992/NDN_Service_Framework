@@ -15,6 +15,8 @@
 #include <ndn-cxx/util/scope.hpp>
 #include <ndn-cxx/util/time-unit-test-clock.hpp>
 
+#include <boost/asio/post.hpp>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -378,12 +380,15 @@ publish(ndn::svs::SVSPubSub& pubSub, const ndn::Name& name,
 // publishes the Request, the Provider's production subscription dispatches it,
 // and the response returns through the User's production OnResponse with the
 // request-scoped decrypt path.  Large responses additionally traverse the
-// Provider IMS segments and the User's SegmentFetcher reconstruction.
+// Provider segments and the User's SegmentFetcher reconstruction.
+enum class StagingPolicy { NONE, REFRESH, REVOKE };
+
 void
 runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = false,
                            std::string terminalDuringFetch = {},
                            size_t largeResponseBytes = 9000,
-                           std::string expectedResponseError = {})
+                           std::string expectedResponseError = {},
+                           StagingPolicy stagingPolicy = StagingPolicy::NONE)
 {
   // Callback dependencies outlive the environment and all of its worker teardown.
   std::atomic<bool> releaseSegment{terminalDuringFetch.empty()};
@@ -394,6 +399,7 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   std::atomic<size_t> requestExecutions{0};
   std::atomic<size_t> responseCallbacks{0};
   std::atomic<size_t> timeoutCallbacks{0};
+  bool policyInstalledWhileStaging = false;
   std::optional<ndn::Data> heldSecondSegment;
   std::string responseError;
   test::LargeResponseFetchOracle::Observation observed;
@@ -463,11 +469,15 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   environment.pumpUntilWithAttributeAuthority([] { return false; });
 
   for (size_t index = 0; index < environment.providerCount(); ++index) {
-    environment.provider(index).addService(
+    auto& provider = environment.provider(index);
+    auto* const io = &environment.providerFace(index).getIoContext();
+    if (stagingPolicy != StagingPolicy::NONE)
+      provider.setHandlerThreads(0);
+    provider.addService(
         serviceName,
         ServiceProvider::RequestHandler(
-            [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
-                 const ndn::Name&, const RequestMessage& request) {
+            [&, index, io] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                 const ndn::Name& invocationId, const RequestMessage& request) {
               ++requestExecutions;
               const auto actualPayload = request.getPayload();
               BOOST_CHECK_EQUAL_COLLECTIONS(
@@ -479,6 +489,33 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
                   reinterpret_cast<const uint8_t*>(responseText.data()),
                   responseText.size());
               response.setPayload(payload, payload.size());
+              if (stagingPolicy != StagingPolicy::NONE) {
+                boost::asio::post(*io, [&, index, io, invocationId] {
+                  boost::asio::post(*io, [&, index, invocationId] {
+                    auto& activeProvider = environment.provider(index);
+                    const auto lifecycle = activeProvider.getProviderRequestStatus(invocationId);
+                    BOOST_REQUIRE(lifecycle);
+                    const bool preparing = lifecycle->state ==
+                      ServiceProvider::ProviderRequestLifecycleState::EXECUTION_DONE;
+                    BOOST_CHECK(preparing);
+                    BOOST_CHECK_EQUAL(lifecycle->responsePublishedTimestampUs, 0U);
+                    auto refreshed = status;
+                    refreshed.setValidity(status.getValidFromMs(),
+                                          status.getValidUntilMs() + 1);
+                    if (stagingPolicy == StagingPolicy::REVOKE) {
+                      auto version = refreshed.getControllerVersion();
+                      ++version.controllerEpoch;
+                      refreshed.setControllerVersion(version);
+                      RevocationTarget target;
+                      target.kind = RevocationKind::IDENTITY;
+                      target.targetIdentity = activeProvider.getName();
+                      refreshed.addRevocation(target);
+                    }
+                    policyInstalledWhileStaging =
+                      preparing && activeProvider.installControllerStatus(refreshed, true, true);
+                  });
+                });
+              }
               return response;
             }));
   }
@@ -521,7 +558,8 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   request.setPayload(input, input.size());
   const auto requestId = environment.user().RequestService(
       providers, serviceName, request,
-      (revokeAfterExecution || terminalDuringFetch == "timeout") ? 800 : 5000,
+      (revokeAfterExecution || stagingPolicy == StagingPolicy::REVOKE ||
+       terminalDuringFetch == "timeout") ? 800 : 5000,
       [&] (const ndn::Name&) {
         if (terminalDuringFetch == "timeout") BOOST_CHECK(observed.owner.expired());
         ++timeoutCallbacks;
@@ -680,6 +718,16 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
     BOOST_CHECK(!responseReceived);
     BOOST_CHECK_EQUAL(requestExecutions.load(), 1U);
   }
+  else if (stagingPolicy == StagingPolicy::REVOKE) {
+    BOOST_CHECK(requestTimedOut);
+    BOOST_CHECK_EQUAL(responseCallbacks.load(), 0U);
+    BOOST_CHECK_EQUAL(segmentInterests.load(), 0U);
+    BOOST_CHECK_EQUAL(timeoutCallbacks.load(), 1U);
+    for (size_t index = 0; index < environment.providerCount(); ++index) {
+      BOOST_CHECK_EQUAL(environment.provider(index).getSelectedOutstandingRequestCountForTesting(),
+                        0U);
+    }
+  }
   else if (!expectedResponseError.empty()) {
     BOOST_CHECK(!requestTimedOut);
     BOOST_CHECK(!responseReceived);
@@ -691,6 +739,8 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
     BOOST_CHECK(!requestTimedOut);
     BOOST_CHECK(responseReceived);
   }
+  if (stagingPolicy != StagingPolicy::NONE)
+    BOOST_CHECK(policyInstalledWhileStaging);
   // The old service-wide response-key carrier and its
   // NDNSF_REQUEST_SCOPED_COMPATIBILITY switch were removed (Spec179 T012);
   // the default path cannot activate them, structurally.  These runs
@@ -720,7 +770,12 @@ BOOST_AUTO_TEST_CASE(RevokedUserCannotReceiveLargeResponseAfterProviderExecution
 
 BOOST_AUTO_TEST_CASE(LargeResponseAtActualFrameSizeCompletesWithZeroHandlerWorkers)
 {
-  runFullRuntimeResponseCase(true, false, {}, 1259436);
+  runFullRuntimeResponseCase(true, false, {}, 1259436, {}, StagingPolicy::REFRESH);
+}
+
+BOOST_AUTO_TEST_CASE(LargeResponseCannotCommitAfterProviderRevocationDuringStaging)
+{
+  runFullRuntimeResponseCase(true, false, {}, 1259436, {}, StagingPolicy::REVOKE);
 }
 
 BOOST_AUTO_TEST_CASE(LargeResponsePreparationFailureCompletesThroughProductionOnResponse)

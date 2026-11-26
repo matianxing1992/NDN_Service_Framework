@@ -23,6 +23,13 @@ public:
     const std::filesystem::path& directory, const ndn::Name& dataPrefix,
     std::uint64_t segmentCount, std::uint64_t maxStorageBytes,
     const NextPacket& nextPacket, const std::function<void()>& requireActive = {});
+  /** Prepare a private segmented file. It cannot be read until sealed. */
+  static std::shared_ptr<OriginalPacketFile> createSegmented(
+    const std::filesystem::path& directory, const ndn::Name& dataPrefix,
+    std::uint64_t segmentCount, std::uint64_t maxStorageBytes);
+  /** Write at most maxSegments and return whether the file is sealed. */
+  bool appendSegments(std::uint64_t maxSegments, const NextPacket& nextPacket,
+                      const std::function<void()>& requireActive = {});
   /** Create a request-owned file for exact packets without a common FinalBlock.
    * The caller owns name uniqueness, signer admission and the name/ordinal index.
    */
@@ -47,6 +54,10 @@ private:
   ndn::Name m_dataPrefix;
   std::uint64_t m_segmentCount = 0;
   std::uint64_t m_storageBytes = 0;
+  std::uint64_t m_expectedSegments = 0;
+  std::uint64_t m_segmentedBudget = 0;
+  bool m_segmentsSealed = false;
+  bool m_segmentsFailed = false;
   std::uint64_t m_exactBudget = 0;
   std::uint64_t m_exactPacketOffset = 0;
   std::FILE* m_packets = nullptr;
