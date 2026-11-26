@@ -496,6 +496,10 @@ budget is not an estimate of qualified end-to-end performance.
 After the installed C++ oracle verifies the completed clip, a host FFmpeg can
 package its RGB24 frames as a playable MP4. Keep the raw frames and manifest as
 the numerical authority: H.264 with YUV420 conversion is a presentation copy.
+Run `python3 Experiments/export-wan-clip.py CLIP NEW_DIRECTORY` to package the
+MP4, a frame contact sheet and the FFmpeg receipts together. Add `--verify-trace`
+when the complete native trace is available. The presentation receipt records
+the checked source digest and whether the trace files were verified.
 Set `wan_width`, `wan_height` and `wan_frames` from the manifest's `width`,
 `height` and `frames` fields. Calculate the shell variable
 `wan_fps = time_base[1] / (time_base[0] * ticks_per_frame)`. Do not infer them
