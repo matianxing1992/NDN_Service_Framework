@@ -255,7 +255,7 @@ def load_deployment(path, *, prepare_only=False):
     publish_only = config.get('operation') == 'prepare' and model_input.get('mode') == 'publish-stored'
     platform = _object(config["platform"], "platform", {
         "kind", "sif", "sif_sha256", "build_record", "apptainer", "slurm",
-        "topology", "topology_sha256"}, {"kind"})
+        "topology", "topology_sha256", "source_cache_payloads", "source_cache_objects"}, {"kind"})
     if not isinstance(platform["kind"], str) or platform["kind"] not in (
             "host", "minindn", "slurm-apptainer"):
         _fail("platform.kind", "unsupported platform")
@@ -317,6 +317,13 @@ def load_deployment(path, *, prepare_only=False):
 
     if not local:
         _object(platform, "platform", required={"sif", "sif_sha256", "build_record", "apptainer", "slurm"})
+        for key in ("source_cache_payloads", "source_cache_objects"):
+            if key not in platform:
+                continue
+            field = "platform." + key
+            if model_input.get("mode") != "source-cache":
+                _fail(field, "requires source-cache model input")
+            platform[key] = resolve(platform[key], field, directory=True)
         for key in ("sif", "build_record", "apptainer"):
             platform[key] = resolve(platform[key], "platform." + key, control=True, exists=True)
         if not DIGEST.fullmatch(_string(platform["sif_sha256"], "platform.sif_sha256")):
@@ -705,11 +712,13 @@ def _translate_native(config, by_kind, resolve):
         _translate_requester(requester, network, security, controller, requester_identity,
                              authority_identity, paths, bind,
                              operation=config.get('operation', 'run'),
-                             allow_test_barriers=config['platform']['kind'] == 'minindn')
+                             allow_test_barriers=config['platform']['kind'] == 'minindn',
+                             allow_wan_trace=config['platform']['kind'] in
+                             ('minindn', 'slurm-apptainer'))
         if 'wan_generation' in requester:
-            if not local:
-                _fail('requester.wan_generation', 'requires local native component files')
-            track_wan_component_paths(requester, paths)
+            if not local and requester['model_input']['mode'] != 'source-cache':
+                _fail('requester.wan_generation', 'Slurm Wan requires source-cache')
+            track_wan_component_paths(requester, paths, shared_source_cache=not local)
         if requester.get('model_input', {}).get('mode') == 'source-cache':
             for provider in by_kind['provider']:
                 if provider['external']:
@@ -929,7 +938,7 @@ def wan_component_files(requester):
         yield path, _object(_read_json(path), location), location
 
 
-def track_wan_component_paths(requester, paths):
+def track_wan_component_paths(requester, paths, *, shared_source_cache=False):
     local_cache = requester['model_input']['mode'] == 'source-cache'
     seen_private = {requester['model_input'][key] for key in
                     ('private_handle_file', 'preparation_state_file')
@@ -942,6 +951,12 @@ def track_wan_component_paths(requester, paths):
         def component_paths(obj, fields, field, **options):
             copies = {key: str(path.parent / _string(obj[key], field + '.' + key))
                       for key in fields if key in obj}
+            if shared_source_cache:
+                for key, value in copies.items():
+                    normalized = os.path.normpath(value)
+                    if str(Path(value).resolve()) != normalized:
+                        _fail(field + '.' + key, 'shared Wan component input must not use symlinks')
+                    copies[key] = normalized
             paths(copies, fields, field, **options)
             return copies
 
@@ -975,8 +990,12 @@ def track_wan_component_paths(requester, paths):
         for key, fields in (
                 ('core', ('trust_schema_file',)),
                 ('grant', ('requester_private_key_file', 'authority_public_key_file'))):
-            component_paths(_object(config.get(key), location + '.' + key), fields,
-                            location + '.' + key)
+            resolved = component_paths(_object(config.get(key), location + '.' + key), fields,
+                                       location + '.' + key)
+            if shared_source_cache and key == 'grant':
+                requester_key = requester['grant']['requester_private_key_file']
+                if resolved.get('requester_private_key_file') != requester_key:
+                    _fail(location + '.grant', 'must use the managed Requester private key')
         admission = _object(config.get('offer_admission', {}), location + '.offer_admission')
         keys = _object(admission.get('public_key_files', {}), location + '.offer_admission.keys')
         component_paths(keys, tuple(keys), location + '.offer_admission.public_key_files')
@@ -984,7 +1003,7 @@ def track_wan_component_paths(requester, paths):
 
 def _translate_requester(requester, network, security, controller, requester_identity,
                          authority_identity, paths, bind, *, operation='run',
-                         allow_test_barriers=False):
+                         allow_test_barriers=False, allow_wan_trace=False):
     model_input = _object(requester.get('model_input', {'mode': 'source'}), 'requester.model_input')
     mode = model_input.get('mode')
     if mode not in ('source', 'publish-stored', 'stored', 'source-cache'):
@@ -1006,9 +1025,9 @@ def _translate_requester(requester, network, security, controller, requester_ide
             paths(tokenizer, ('file',), field + '.tokenizer')
     if 'test_wan_fixture_trace' in requester:
         enabled = _boolean(requester['test_wan_fixture_trace'], 'requester.test_wan_fixture_trace')
-        if enabled and (not allow_test_barriers or requester.get('test_only') is not True or not wan):
+        if enabled and (not allow_wan_trace or requester.get('test_only') is not True or not wan):
             _fail('requester.test_wan_fixture_trace',
-                  'requires MiniNDN Wan generation and test_only=true')
+                  'requires Wan generation on MiniNDN or Slurm and test_only=true')
     if 'test_wan_fixture_trace_max_bytes' in requester:
         field = 'requester.test_wan_fixture_trace_max_bytes'
         if requester.get('test_wan_fixture_trace') is not True:

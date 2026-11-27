@@ -419,14 +419,15 @@ def load_slurm_placement(path):
 
 
 def apply_slurm_placement(config, placement):
-    """Place already prepared roles on an explicit two-node allocation."""
+    """Place one prepared Provider on each allocation node."""
     config.update(platform=placement["platform"], release=placement["release"], nodes=placement["nodes"])
-    first, second = config["nodes"]
+    nodes = config["nodes"]
     providers = [actor for actor in config["actors"] if actor["kind"] == "provider"]
-    if len(providers) != 2:
-        raise ValueError("DEPLOYMENT_SLURM_TWO_PROVIDERS_REQUIRED")
+    if not providers or len(providers) != len(nodes):
+        raise ValueError("DEPLOYMENT_SLURM_PROVIDER_NODE_COUNT_MISMATCH")
+    provider_nodes = {actor["id"]: node for actor, node in zip(providers, nodes)}
     for actor in config["actors"]:
-        node = second if actor is providers[1] else first
+        node = provider_nodes.get(actor["id"], nodes[0])
         devices = node.get("gpu_devices", []) if actor["kind"] == "provider" else []
         actor["node"] = node["id"]
         actor["resources"].update(gpu_devices=devices, allow_sharing=False)
@@ -435,7 +436,7 @@ def apply_slurm_placement(config, placement):
     group = config["network"]["group"]
     config["network"]["routes"] = [
         {"from": local["id"], "to": remote["id"], "prefix": prefix}
-        for local, remote in ((first, second), (second, first))
+        for local in nodes for remote in nodes if local["id"] != remote["id"]
         for prefix in (group, *(actor["identity"] for actor in config["actors"] if actor["node"] == remote["id"]))]
 
 

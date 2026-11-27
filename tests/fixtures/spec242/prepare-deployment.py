@@ -21,7 +21,7 @@ def capture(command, env=None):
 
 
 def prepare_identities(root, prefix, namespace, group, actors, *,
-                       certificate_validity=timedelta(days=1)):
+                       certificate_validity=timedelta(days=1), native_command=None):
     ca = root / "ca"
     ca.mkdir(mode=0o700)
     environments = {}
@@ -32,8 +32,15 @@ def prepare_identities(root, prefix, namespace, group, actors, *,
                     NDN_CLIENT_PIB="pib-sqlite3:" + str(home / ".ndn"),
                     NDN_CLIENT_TPM="tpm-file:")
 
+    def run(command, env, inputs=()):
+        if native_command is None:
+            return capture(command, env)
+        container_env = dict(env, APPTAINERENV_NDN_CLIENT_PIB=env["NDN_CLIENT_PIB"],
+                             APPTAINERENV_NDN_CLIENT_TPM=env["NDN_CLIENT_TPM"])
+        return capture(native_command(Path(env["HOME"]), command, inputs), container_env)
+
     ca_env = environment(ca)
-    capture(["ndnsec", "key-gen", "-t", "e", namespace], ca_env)
+    run(["ndnsec", "key-gen", "-t", "e", namespace], ca_env)
     now = datetime.now(timezone.utc)
     not_before = (now - timedelta(minutes=1)).strftime("%Y%m%d%H%M%S")
     not_after = (now + certificate_validity).strftime("%Y%m%d%H%M%S")
@@ -42,25 +49,25 @@ def prepare_identities(root, prefix, namespace, group, actors, *,
         home = root / "homes" / actor_id
         home.mkdir(mode=0o700, parents=True)
         env = environment(home)
-        capture(["ndnsec", "key-gen", "-t", "r", identity], env)
+        run(["ndnsec", "key-gen", "-t", "r", identity], env)
         request = root / (actor_id + ".req")
-        request.write_bytes(capture(["ndnsec", "sign-req", identity], env))
+        request.write_bytes(run(["ndnsec", "sign-req", identity], env))
         certificate = root / (actor_id + ".cert")
-        certificate.write_bytes(capture(["ndnsec", "cert-gen", "--sign-id", namespace,
+        certificate.write_bytes(run(["ndnsec", "cert-gen", "--sign-id", namespace,
                                          "--issuer-id", "spec242", "--not-before", not_before,
                                          "--not-after", not_after, "--request", str(request)],
-                                        ca_env))
+                                    ca_env, (request,)))
         request.unlink()
-        capture(["ndnsec", "cert-install", "--key-default", str(certificate)], env)
+        run(["ndnsec", "cert-install", "--key-default", str(certificate)], env, (certificate,))
         actor["credential_home"] = str(home)
         environments[actor_id] = env
         certificates[actor_id] = str(certificate)
     for actor in actors:
         home = Path(actor["credential_home"])
-        capture([str(prefix / "bin/public-trust-installer"), str(home / ".ndn"),
-                 "tpm-file:", *certificates.values()], environments[actor["id"]])
-        capture([str(prefix / "bin/ndnsf-identity-check"), str(home), actor["identity"]],
-                environments[actor["id"]])
+        run([str(prefix / "bin/public-trust-installer"), str(home / ".ndn"),
+             "tpm-file:", *certificates.values()], environments[actor["id"]], certificates.values())
+        run([str(prefix / "bin/ndnsf-identity-check"), str(home), actor["identity"]],
+            environments[actor["id"]])
     from native_probe_validation_links import render_anchored_probe_validation_schema
     trust = root / "trust-schema.conf"
     trust.write_text(render_anchored_probe_validation_schema(

@@ -1092,6 +1092,68 @@ def test_filesystem_source_cache_is_read_only_in_provider_container(node_contain
     assert str(cache) + ':' + str(cache) + ':ro' in argv
 
 
+@pytest.mark.parametrize('actor', ['requester', 'p0'])
+@pytest.mark.parametrize('use_local_objects', (False, True))
+def test_node_local_source_cache_mounts(node_container, actor, use_local_objects):
+    config, _, _, capture, run = node_container
+    root = Path(config['model']['plan']).parent
+    cache, local = root / 'shared-source', root / 'local-payloads'
+    cache.mkdir(mode=0o700)
+    (cache / 'payloads').mkdir(mode=0o700)
+    (cache / 'objects').mkdir(mode=0o700)
+    (cache / 'cache-identity.json').write_text('{}')
+    local.mkdir(mode=0o700)
+    objects = root / 'local-objects'
+    objects.mkdir(mode=0o700)
+    config['platform']['source_cache_payloads'] = str(local)
+    if use_local_objects:
+        config['platform']['source_cache_objects'] = str(objects)
+    config['requester']['model_input'] = {
+        'mode': 'source-cache', 'source_directory': str(cache),
+        'source_namespace': 'sha256:' + 'a' * 64}
+    config['requester']['catalog']['source'] = {}
+    provider = next(a for a in config['actors'] if a['id'] == 'p0')
+    provider['parameters']['cache-compatibility-source-dir'] = str(cache)
+    result = run('--actor', actor)
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(capture.read_text())['argv']
+    assert argv.index(f'{cache}:{cache}:ro') < argv.index(f'{local}:{cache / "payloads"}:ro')
+    if use_local_objects:
+        mode = 'rw' if actor == 'requester' else 'ro'
+        assert argv.index(f'{cache}:{cache}:ro') < argv.index(f'{objects}:{cache / "objects"}:{mode}')
+    shared_write = f'{cache / "objects"}:{cache / "objects"}:rw'
+    assert (shared_write in argv) == (actor == 'requester' and not use_local_objects)
+    assert f'{local}:{local}:ro' not in argv
+
+
+@pytest.mark.parametrize('part', ('payloads', 'objects'))
+@pytest.mark.parametrize('mutation', ('populated', 'overlap', 'missing'))
+def test_node_local_source_cache_rejects_conflicts(node_container, part, mutation):
+    config, _, _, _, run = node_container
+    root = Path(config['model']['plan']).parent
+    cache, local = root / 'shared-source', root / 'local-payloads'
+    cache.mkdir(mode=0o700)
+    target = cache / part
+    target.mkdir(mode=0o700)
+    (cache / 'cache-identity.json').write_text('{}')
+    config['requester']['model_input'] = {
+        'mode': 'source-cache', 'source_directory': str(cache),
+        'source_namespace': 'sha256:' + 'a' * 64}
+    if mutation == 'populated':
+        local.mkdir()
+        (target / 'graph').write_text('original')
+        error = f'CONTAINER_SOURCE_{part.upper()}_TARGET_INVALID'
+    if mutation == 'overlap':
+        local = cache
+        error = f'CONTAINER_SOURCE_{part.upper()}_OVERLAP'
+    if mutation == 'missing':
+        error = 'CONTAINER_INPUT_DIRECTORY_MISSING'
+    config['platform']['source_cache_' + part] = str(local)
+    result = run('--actor', 'requester')
+    assert result.returncode != 0
+    assert error in result.stderr
+
+
 @pytest.mark.parametrize('canonical', [False, True])
 @pytest.mark.parametrize('external', [False, True])
 def test_model_repository_binds_declared_independent_repo(ops, deployment, canonical, external):
@@ -1870,7 +1932,7 @@ def test_wan_warm_preparation_pins_signed_segment_manifests(tmp_path, option):
     ('trace-limit-zero', 'expected integer'),
     ('trace-limit-bool', 'expected integer'),
     ('trace-limit-excess', 'exceeds native trace byte limit'),
-    ('trace-not-opted-in', 'requires MiniNDN Wan generation and test_only=true'),
+    ('trace-not-opted-in', 'requires Wan generation on MiniNDN or Slurm and test_only=true'),
     ('trace-wrong-type', 'expected boolean'),
     ('manifest-disabled', 'Wan generation requires signed segment manifests'),
     ('manifest-enabled', ''),
@@ -4043,6 +4105,102 @@ def test_stored_model_private_paths_have_only_requester_mounts(node_container, m
     provider = next(a for a in config['actors'] if a['kind'] == 'provider')
     provider_mounts = container.role_mounts(config, frozen, provider)[3]
     assert not any(container._contains(path, handle) for path in provider_mounts)
+
+
+def _slurm_wan_requester(root, config):
+    requester = config['requester']
+    requester.pop('turns')
+    model_cache = root / 'wan-cache'
+    model_cache.mkdir(mode=0o700)
+    (model_cache / 'objects').mkdir(mode=0o700)
+    (model_cache / 'cache-identity.json').write_text('{}')
+    components = root / 'wan-components'
+    components.mkdir(mode=0o700)
+    requester['model_input'] = dict(mode='source-cache', source_directory=str(model_cache),
+                                    source_namespace='sha256:' + 'a' * 64)
+    for field in ('file', 'initializer_file'):
+        requester['catalog']['source'].pop(field, None)
+    config['actors'] = [actor for actor in config['actors'] if actor['kind'] != 'repo']
+    config['network'].pop('repo_service', None)
+    tokenizer = components / 'tokenizer.json'
+    tokenizer.write_text('{}')
+    requester.update(test_only=True, test_wan_fixture_trace=True,
+                     test_wan_fixture_trace_max_bytes=1 << 20)
+    requester['wan_generation'] = dict(
+        denoiser_config_file=str(components / 'dit.json'),
+        decoder_config_file=str(components / 'vae.json'),
+        output_directory=str(root / 'wan-output' / 'clip'),
+        tokenizer={'file': str(tokenizer)})
+    for name in ('dit', 'vae'):
+        component = {
+            'schema': 'ndnsf-di-native-requester-v1', 'core': {}, 'grant': requester['grant'],
+            'model_input': {'mode': 'source'}, 'catalog': {'source': {}},
+        }
+        (components / (name + '.json')).write_text(json.dumps(component))
+    return requester
+
+
+@pytest.mark.parametrize('mutation, message', [
+    (None, ''),
+    ('other-key', 'must use the managed Requester private key'),
+    ('trace', 'and test_only=true'),
+    ('barrier', 'experiment harness field requires explicit MiniNDN'),
+])
+def test_slurm_wan_admits_only_scoped_experiment_inputs(ops, deployment, mutation, message):
+    parser, _ = ops
+    root, config = deployment
+    _tiger_config(root, config)
+    requester = _slurm_wan_requester(root, config)
+    if mutation == 'other-key':
+        path = Path(requester['wan_generation']['decoder_config_file'])
+        component = json.loads(path.read_text())
+        component['grant']['requester_private_key_file'] = '/remote/fake-private.pem'
+        path.write_text(json.dumps(component))
+    elif mutation == 'trace':
+        requester.pop('test_only')
+    elif mutation == 'barrier':
+        requester['test_stream_barrier'] = {}
+    path = write_config(root, config)
+    if message:
+        with pytest.raises(parser.DeploymentConfigError, match=message):
+            parser.load_deployment(path)
+        return
+    frozen = parser.load_deployment(path)
+    assert frozen['requester']['test_wan_fixture_trace']
+    assert all(actor['parameters']['enable-segment-manifest'] is True
+               for actor in frozen['actors'] if actor['kind'] == 'provider')
+
+
+@pytest.mark.parametrize('mutation, message', [
+    (None, ''),
+    ('missing', 'CONTAINER_INPUT_FILE_MISSING'),
+    ('overlap', 'CONTAINER_WRITABLE_INPUT_OVERLAP'),
+])
+def test_container_mounts_wan_component_inputs_and_clip_parent(node_container, mutation, message):
+    config, container, frozen, _, _ = node_container
+    root = frozen.parent.parent
+    requester = _slurm_wan_requester(root, config)
+    wan = requester['wan_generation']
+    decoder = Path(wan['decoder_config_file'])
+    component = json.loads(decoder.read_text())
+    component['grant']['requester_private_key_file'] = '../requester-private.pem'
+    component['core'] = {'trust_schema_file': '../trust.conf'}
+    decoder.write_text(json.dumps(component))
+    if mutation == 'missing':
+        decoder.unlink()
+    elif mutation == 'overlap':
+        wan['output_directory'] = str(decoder.parent / 'clip')
+    container.cluster.write_json(frozen, config)
+    actor = next(a for a in config['actors'] if a['kind'] == 'requester')
+    if message:
+        with pytest.raises(container.cluster.ClusterError, match=message):
+            container.role_mounts(config, frozen, actor)
+        return
+    mounts = container.role_mounts(config, frozen, actor)[3]
+    assert all(mounts[Path(path)] == 'ro' for path in (
+        wan['denoiser_config_file'], wan['decoder_config_file'], wan['tokenizer']['file']))
+    output = Path(wan['output_directory'])
+    assert mounts[output.parent] == 'rw' and not output.exists()
 
 
 def test_container_mounts_only_the_current_actors_file_keyring(node_container):

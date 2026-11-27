@@ -469,31 +469,43 @@ python3 tests/minindn/prepare-wan-video-run.py \
   --tensor-segment-bytes 7600 --output "$run_root"
 ```
 
-The Spec271 CPU application workload is 25 frames at 24 fps, 320×320,
-50 UniPC steps, shift/guidance 5 and seed 0. Its prompt is
+The Spec271 qualification workload runs on Tiger GPUs. It uses 25 frames at
+24 fps, 320×320, 50 UniPC steps, shift/guidance 5 and seed 0. Its prompt is
 `NDN distributed inference`. Prepare DiT and VAE with the matching
 `--frames 25 --height 320 --width 320` options. The CLI's 361-frame default
-remains available for long-sequence stress experiments.
-Use separately prepared 9-frame 32×32 catalogs and explicit
-`--frames 9 --width 32 --height 32 --steps 1` for readiness. This short run does
-not qualify the final video. Prepare all components for the requested layout;
+remains available for long-sequence stress experiments. For CPU correctness
+checks, use the generated tiny Wan fixture on MiniNDN. On Tiger, use the
+full qualification geometry with `--steps 1` for the first GPU trial.
+Prepare all components for the requested layout;
 the native Requester validates geometry and placement before execution.
 The launcher keeps shared graph/weight files read-only, writes secondary
 configs under the run root and supports its existing `--warm-from` flow.
 Distributed checkpoint configurations use the existing 16,384-segment
 request limit to admit large VAE edges.
-Its large cache limits are conservative accounting ceilings, not RAM allocation.
+
+For Slurm deployments with node-local weights, set `platform.source_cache_payloads`
+to the same absolute path on each participating node. Stage the graph and weight
+files under its `sha256/<first-two-hex-digits>/<sha256>` directory. The launcher
+binds that directory read-only to the existing source cache's `payloads` path
+for the Requester and Providers. The deployment root still holds the shared
+source identity and native artifact records. Put the clip output on the
+Requester's local filesystem when the shared mount lacks atomic no-replace rename.
+
+`runner-cache-entries` is a Provider parameter that bounds retained live
+runners independently of `artifact-cache-entries`. The default is eight. A
+sequence that loads UMT5, DiT and VAE on one GPU can use one runner slot to
+release the previous component after the next runner is published. Budget each
+role against measured device usage and verify repeat admission on the target GPU.
+Large cache limits express accounting ceilings.
 Use the installed `ndnsf-di cluster check/up/status/down` entry points and retain
 the actual configuration, artifact ledger, outcomes and cleanup receipts.
 Prepare and run the private work root as the same user; MiniNDN requires root
 for network namespaces, and the launcher checks ownership of its operation files.
 
-For a multi-day CPU stress experiment, explicitly set the generated deployment's
-`requester.wan_generation.timeout_ms` to `259200000` before freezing its identity,
-and pass `--timeout 259200` to `cluster up`. The launcher retains its shorter
-default. This finite 72-hour total budget applies to MiniNDN inference runs;
-individual requests, grants and assembly keep their independent limits. The
-budget is not an estimate of qualified end-to-end performance.
+The archived multi-day MiniNDN CPU stress configuration used
+`requester.wan_generation.timeout_ms=259200000` and `cluster up --timeout 259200`.
+This was the total run deadline in seconds. Individual requests, grants and
+assembly had independent limits.
 
 After the installed C++ oracle verifies the completed clip, a host FFmpeg can
 package its RGB24 frames as a playable MP4. Keep the raw frames and manifest as

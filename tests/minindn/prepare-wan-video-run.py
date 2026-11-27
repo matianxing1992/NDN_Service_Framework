@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Prepare a real installed MiniNDN deployment of the C++ Wan video fixture."""
+"""Prepare an installed deployment of the C++ Wan video workload."""
 
 import argparse
 import copy
 from datetime import timedelta
+import errno
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 CHECKOUT = Path(__file__).resolve().parents[2]
 TOPOLOGY = CHECKOUT / 'Experiments/Topology/spec261-hybrid.conf'
@@ -52,7 +54,8 @@ def installed_ledger(prefix, file_digest, capture_fixture_trace, local_model_cac
 
 def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_disk_mib,
             capture_fixture_trace, tile_dit=False, tensor_segment_bytes=None,
-            checkpoint_workload=None, local_model_cache=False, vae_no_progress_ms=None):
+            checkpoint_workload=None, local_model_cache=False, vae_no_progress_ms=None,
+            slurm_placement=None):
     if exact_packet_disk_mib is None:
         exact_packet_disk_mib = 0
         if checkpoint_workload and mode != 'single':
@@ -61,8 +64,16 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
     deployment = runpy.run_path(str(CHECKOUT / 'Experiments/prepare-native-deployment.py'))
     credentials = runpy.run_path(str(CHECKOUT / 'tests/fixtures/spec242/prepare-deployment.py'))
     digest, write_json = deployment['digest'], deployment['write_json']
-    ledger = installed_ledger(prefix, deployment['file_digest'], capture_fixture_trace,
-                              local_model_cache)
+    image_command = None
+    if slurm_placement is not None:
+        deployment['check_slurm_image_inputs'](slurm_placement, CHECKOUT / 'Experiments', os.environ)
+        prefix = Path(slurm_placement['release']['prefix'])
+
+        def image_command(home, argv, inputs=()):
+            return deployment['slurm_image_command'](slurm_placement, home, argv, inputs)
+
+    ledger = (installed_ledger(prefix, deployment['file_digest'], capture_fixture_trace,
+                               local_model_cache) if image_command is None else None)
     root.mkdir(mode=0o700)
     network = dict(group=namespace + '/group', service=namespace + '/infer',
                    artifact_service=namespace + '/grants', repo_service=namespace + '/repo-objects')
@@ -78,7 +89,17 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
         build_command = [str(builder), str(workload), requester, network['service'], epoch]
         if tile_dit:
             build_command.append('--tile-dit')
-        subprocess.run(build_command, check=True, timeout=120)
+        if image_command is not None:
+            # The native exporter commits with RENAME_NOREPLACE. Keep that
+            # commit on the owner node before copying the finished fixture.
+            with tempfile.TemporaryDirectory(prefix='ndnsf-wan-fixture-') as temporary:
+                stage = Path(temporary)
+                generated = stage / 'workload'
+                build_command[:2] = [str(prefix / 'bin/write-wan-video-fixture'), str(generated)]
+                subprocess.run(image_command(stage, build_command), check=True, timeout=120)
+                shutil.copytree(generated, workload)
+        else:
+            subprocess.run(build_command, check=True, timeout=120)
         fixture = json.loads((workload / 'fixture.json').read_bytes())
     else:
         if tile_dit:
@@ -117,7 +138,8 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
     # Cover a queued checkpoint run's wait, preparation, and 24-hour generation budget.
     identity_options = {'certificate_validity': timedelta(days=4)} if checkpoint_workload else {}
     environments, certificates, trust = credentials['prepare_identities'](
-        root, prefix, namespace, network['group'], actors, **identity_options)
+        root, prefix, namespace, network['group'], actors,
+        native_command=image_command, **identity_options)
     credentials['prepare_file_keyrings'](root, actors, 'wan-fixture-protection')
     policy = root / 'controller-policy.info'
     policy.write_text(deployment['policy_text'](identities, network, provider_roles, None))
@@ -159,9 +181,12 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
                 publicKeyPath='public/authority-public.pem', publicKeySha256=digest(hint.read_bytes()),
                 signatureAlgorithm='ed25519', grantSchema='ndnsf-di-key-grant-v1'),
         })
-        metadata = json.loads(deployment['run'](
-            [prefix / 'bin/ndnsf-identity-check', '--credential-metadata',
-             actor['credential_home'], identity], env, root))
+        metadata_command = [prefix / 'bin/ndnsf-identity-check', '--credential-metadata',
+                            actor['credential_home'], identity]
+        if image_command is not None:
+            metadata_command = image_command(Path(actor['credential_home']),
+                                             list(map(str, metadata_command)))
+        metadata = json.loads(deployment['run'](metadata_command, env, root))
         offer_entries.append(dict(provider=identity, service=network['service'], signerKeyId=signer,
                                   keyLocatorPrefix=metadata['keyName'],
                                   certificateName=metadata['certificateName']))
@@ -213,6 +238,16 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
     local_input = None
     if local_model_cache:
         cache = root / 'cache' / 'local-model-cache'
+        payloads = cache / 'payloads'
+        node_local_payloads = (slurm_placement or {}).get('platform', {}).get('source_cache_payloads')
+        if node_local_payloads:
+            node_local_payloads = Path(node_local_payloads)
+            if (not node_local_payloads.is_absolute() or
+                    node_local_payloads.resolve(strict=True) != node_local_payloads or
+                    not node_local_payloads.is_dir()):
+                raise ValueError('invalid Slurm source cache payload directory')
+            payloads.mkdir(mode=0o700, parents=True)
+            payloads = node_local_payloads
         sources = {}
         for component, (catalog, base) in catalogs.items():
             source = catalog['source']
@@ -227,13 +262,24 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
                         any(char not in '0123456789abcdef' for char in hex_digest)):
                     raise ValueError('invalid Wan local-model-cache digest')
                 raw = (base / source[field]).resolve(strict=True)
-                target = cache / 'payloads/sha256' / hex_digest[:2] / hex_digest
+                target = payloads / 'sha256' / hex_digest[:2] / hex_digest
                 target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 if target.exists():
-                    if not target.samefile(raw):
+                    if target.is_symlink() or (not target.samefile(raw) and (
+                            not node_local_payloads or deployment['file_digest'](target) != hex_digest)):
                         raise ValueError('duplicate Wan cache digest points to a different file')
                 else:
-                    os.link(raw, target)
+                    try:
+                        os.link(raw, target)
+                    except OSError as error:
+                        if not node_local_payloads or error.errno != errno.EXDEV:
+                            raise
+                        with tempfile.TemporaryDirectory(dir=target.parent) as pending:
+                            copied = Path(pending) / 'payload'
+                            shutil.copyfile(raw, copied)
+                            if deployment['file_digest'](copied) != hex_digest:
+                                raise ValueError('copied Wan cache payload digest differs')
+                            os.link(copied, target)
                 sources[component][field] = identity
         marker = dict(schema='ndnsf-di-model-source-cache-v1', sources=sources)
         write_json(cache / 'cache-identity.json', marker)
@@ -290,7 +336,8 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
         name: fixture[name] for name in (
             'latent_shape', 'padded_video_tokens', 'text_width', 'steps', 'shift',
             'guidance', 'seed', 'positive_tokens', 'negative_tokens')}
-    wan.update(output_directory=str(root / 'evidence' / 'clip'), generation_id='wan-video-' + mode,
+    clip_parent = root / ('clips' if slurm_placement is not None else 'evidence')
+    wan.update(output_directory=str(clip_parent / 'clip'), generation_id='wan-video-' + mode,
                timeout_ms=86400000 if checkpoint_workload else 900000,
                inline_limit_bytes=inline_limit)
     if checkpoint_workload:
@@ -321,9 +368,10 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
         publication_sources=publication_sources),
         max_grant_ttl_ms=3600000 if checkpoint_workload else 900000)
     ledger_path = root / 'installed.json'
-    write_json(ledger_path, ledger)
+    if ledger is not None:
+        write_json(ledger_path, ledger)
     path = root / 'deployment.json'
-    write_json(path, dict(
+    config = dict(
         schema='ndnsf-di-deployment-v1', deployment_id='wan-video-' + mode,
         release=dict(prefix=str(prefix), manifest=str(ledger_path)),
         platform=dict(kind='minindn', topology=str(topology),
@@ -338,7 +386,10 @@ def prepare(root, prefix, builder, mode, namespace, inline_limit, exact_packet_d
                     ('cache', 'evidence', 'repo', 'scratch', 'state')},
                  'max_bytes': 192 << 30 if checkpoint_workload else 512 << 20},
         model=dict(plan=str(plan), manifest=str(manifest), tokenizer=str(tokenizer)),
-        requester=main, artifact_authority=artifact_authority))
+        requester=main, artifact_authority=artifact_authority)
+    if slurm_placement is not None:
+        deployment['apply_slurm_placement'](config, slurm_placement)
+    write_json(path, config)
     return path
 
 
@@ -381,7 +432,7 @@ def prepare_warm(cold_path):
             path = path.with_name('requester-warm.json')
             files[path] = secondary
             generation[field] = str(path)
-    generation['output_directory'] = str(root / 'evidence/clip-warm')
+    generation['output_directory'] = str(Path(generation['output_directory']).with_name('clip-warm'))
     output = root / 'deployment-warm.json'
     files[output] = cold
     if any(path.exists() for path in files):
@@ -420,6 +471,8 @@ def main():
     parser.add_argument('--capture-fixture-trace', action='store_true')
     parser.add_argument('--tile-dit', action='store_true')
     parser.add_argument('--local-model-cache', action='store_true')
+    parser.add_argument('--slurm-placement', type=Path,
+                        help='JSON with platform, release, and one node per Provider')
     args = parser.parse_args()
     if args.inline_limit_bytes <= 0:
         parser.error('--inline-limit-bytes must be positive')
@@ -431,6 +484,21 @@ def main():
         if not args.checkpoint_workload or not 0 < args.vae_no_progress_ms <= 3600000:
             parser.error('--vae-no-progress-ms requires a checkpoint and must be in [1, 3600000]')
     os.umask(0o077)
+    placement = None
+    if args.slurm_placement:
+        if not args.local_model_cache or not args.mode or args.warm_from:
+            parser.error('--slurm-placement requires a cold --mode and --local-model-cache')
+        placement = json.loads(args.slurm_placement.read_bytes())
+        if not isinstance(placement, dict) or set(placement) != {'platform', 'release', 'nodes'}:
+            parser.error('Slurm placement requires platform, release, and nodes')
+        if placement['platform'].get('kind') != 'slurm-apptainer':
+            parser.error('Slurm placement requires platform.kind=slurm-apptainer')
+        count = {'single': 1, 'tp': 2, 'pp': 2, 'pp-tp': 3, 'tp-pp': 3}[args.mode]
+        nodes = placement['nodes']
+        if not isinstance(nodes, list) or len(nodes) != count:
+            parser.error('Slurm placement requires one node per Wan Provider')
+        if any(node.get('gpu_devices') != ['allocated:0'] for node in nodes):
+            parser.error('Tiger Wan requires one allocated GPU per Provider')
     if args.warm_from:
         if args.exact_packet_disk_mib is not None or any((
                 args.prefix, args.builder, args.output, args.mode,
@@ -440,16 +508,18 @@ def main():
             parser.error('--warm-from uses the cold deployment paths')
         print(prepare_warm(args.warm_from.resolve()))
     else:
-        if (not all((args.prefix, args.output, args.mode)) or
-                bool(args.builder) == bool(args.checkpoint_workload)):
+        if (not args.output or not args.mode or (placement is None and not args.prefix) or
+                (args.builder and args.checkpoint_workload) or
+                (placement is None and not (args.builder or args.checkpoint_workload))):
             parser.error('cold preparation requires prefix/output/mode and one builder or workload')
-        print(prepare(args.output.resolve(), args.prefix.resolve(),
+        prefix = args.prefix.resolve() if args.prefix else Path(placement['release']['prefix'])
+        print(prepare(args.output.resolve(), prefix,
                       args.builder.resolve() if args.builder else None,
                       args.mode, args.namespace, args.inline_limit_bytes,
                       args.exact_packet_disk_mib, args.capture_fixture_trace, args.tile_dit,
                       args.tensor_segment_bytes,
                       args.checkpoint_workload.resolve() if args.checkpoint_workload else None,
-                      args.local_model_cache, args.vae_no_progress_ms))
+                      args.local_model_cache, args.vae_no_progress_ms, placement))
 
 
 if __name__ == '__main__':

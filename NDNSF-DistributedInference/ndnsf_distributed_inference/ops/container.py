@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 from . import cluster
 from .deployment_config import (_digest_file, _name, _read_json, actor_file_keyring, provider_cache_path,
-                                provider_recipient_map)
+                                provider_recipient_map, track_wan_component_paths)
 from .trust_resources import TrustResourceError, describe_failure
 
 
@@ -61,6 +61,18 @@ def _canonical(path):
 
 def _contains(parent, child):
     return parent == child or parent in child.parents
+
+
+def _source_cache_overlays(config, kind):
+    if kind not in ('requester', 'provider'):
+        return {}
+    platform = config['platform']
+    sources = {part: platform['source_cache_' + part] for part in ('payloads', 'objects')
+               if 'source_cache_' + part in platform}
+    if not sources:
+        return {}
+    cache = _canonical(config['requester']['model_input']['source_directory'])
+    return {_canonical(cache / part): _canonical(source) for part, source in sources.items()}
 
 
 def _admit_runtime_mount(value, config):
@@ -322,6 +334,26 @@ def _oracle_reference_inputs(config, args):
     return command, inputs, {_canonical(item['file']) for item in keys}
 
 
+def _wan_oracle_inputs(config, args):
+    fixture = getattr(args, 'wan_fixture', None)
+    reference = getattr(args, 'wan_reference', None)
+    conditioned = getattr(args, 'wan_conditioned_reference', None)
+    if not (fixture or reference or conditioned):
+        return [], []
+    if (args.management != 'oracle' or not os.environ.get('SLURM_JOB_ID') or
+            'wan_generation' not in config['requester'] or
+            getattr(args, 'model_reference', False) or getattr(args, 'model_reference_source', None) or
+            getattr(args, 'require_fixed_role_conversation', None)):
+        raise cluster.ClusterError('CONTAINER_WAN_ORACLE_REQUIRES_SLURM_WAN_DEPLOYMENT')
+    if fixture:
+        path = _canonical(fixture)
+        return ['--fixture', str(path)], [path]
+    descriptor, workload, initial = map(_canonical, conditioned or reference)
+    command = ['--conditioned-reference' if conditioned else '--reference', str(descriptor),
+               '--workload', str(workload), '--initial-latent', str(initial)]
+    return command, [descriptor.parent, workload, initial]
+
+
 def role_mounts(config, source, actor=None, *, node=None, management=None,
                 trust_resources=(), oracle_inputs=(), verification_keys=(),
                 phase_id=None):
@@ -433,6 +465,7 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
     add(source)
     add(config['release']['manifest'])
     if kind == 'oracle':
+        wan = requester.get('wan_generation')
         from .allocation import _receipt_path, _roles
         add(config['platform']['build_record'])
         for filename in ('allocation.json', 'operation.json'):
@@ -453,15 +486,21 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
             runtime = source.parent / 'actors' / current['id'] / 'runtime' / config['deployment_id']
             if current['kind'] == 'requester':
                 add(runtime / (current['id'] + '.json'))
-                add(requester.get('statistics_file', str(runtime / (current['id'] + '-statistics.jsonl'))))
+                if wan is None:
+                    add(requester.get('statistics_file',
+                                      str(runtime / (current['id'] + '-statistics.jsonl'))))
             else:
                 add(current['parameters'].get('statistics-file', str(runtime / (current['id'] + '-statistics.jsonl'))))
+                if wan is not None:
+                    add(runtime / (current['id'] + '.log'))
+        if wan is not None:
+            add(wan['output_directory'], directory=True)
         for turn in requester.get('turns', []):
             for key in ('input_file', 'options_file', 'output_file', 'checkpoint_output_file'):
                 if key in turn:
                     add(turn[key])
         for path in oracle_inputs:
-            add(path)
+            add(path, directory=wan is not None and Path(path).is_dir())
         for path in sorted(verification_keys):
             add(path, verification_key=True)
         return role_id, home, evidence, mounts, repository_locks
@@ -529,6 +568,23 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
         for path in authority.get('requester_public_key_files', {}).values():
             add(path)
     elif kind == 'requester':
+        wan = requester.get('wan_generation')
+        if wan is not None:
+            for field in ('denoiser_config_file', 'decoder_config_file'):
+                add(wan[field])
+            if 'tokenizer' in wan:
+                add(wan['tokenizer']['file'])
+
+            def add_component_inputs(values, fields, location, *, exists=True):
+                if not exists:
+                    raise cluster.ClusterError('CONTAINER_WAN_COMPONENT_OUTPUT:' + location)
+                for field in fields:
+                    if field in values:
+                        add(values[field])
+
+            track_wan_component_paths(requester, add_component_inputs, shared_source_cache=True)
+            # The native Requester creates a sibling staging directory and renames it.
+            output(wan['output_directory'])
         for key, path in requester.get('grant', {}).items():
             if key.endswith('_file'):
                 add(path)
@@ -594,6 +650,26 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
             add(Path(journal['state_root']) / journal['identity'], writable=True, directory=True)
             for key in journal['keys']:
                 add(key['file'])
+    overlays = _source_cache_overlays(config, kind)
+    protected_roots = [*mounts, *(Path(item['credential_home']) for item in config['actors']
+                                  if not item['external'])]
+    for target, local_source in overlays.items():
+        label = 'CONTAINER_SOURCE_' + target.name.upper()
+        writable = target.name == 'objects' and kind == 'requester'
+        if mounts.get(target.parent) != 'ro' or any(
+                _contains(local_source, path) or _contains(path, local_source)
+                for path in protected_roots):
+            raise cluster.ClusterError(label + '_OVERLAP')
+        if not target.is_dir() or any(target.iterdir()) or any(
+                _contains(target, path) for path in mounts
+                if not (writable and path == target and mounts[path] == 'rw')):
+            raise cluster.ClusterError(label + '_TARGET_INVALID')
+        if not local_source.is_dir():
+            raise cluster.ClusterError('CONTAINER_INPUT_DIRECTORY_MISSING:' + str(local_source))
+        add(local_source, writable=writable, directory=True)
+        del mounts[local_source]
+        add(target, writable=writable, directory=True)
+        protected_roots.append(local_source)
     # An output parent must not turn an individual read-only mount into writable
     # host access. The provisioned credential HOME is intentionally mutable.
     for target, mode in mounts.items():
@@ -709,6 +785,7 @@ def role_cpu_affinity(config, node, actor, management, available):
 def execute(args):
     config = load_frozen(args.deployment, args.configuration_sha256, args.boot_id, args.release_sha256)
     reference_command, reference_inputs, verification_keys = _oracle_reference_inputs(config, args)
+    wan_command, wan_inputs = _wan_oracle_inputs(config, args)
     if getattr(args, 'command', None) in ([], ['--']) and args.management not in (
             'oracle', 'gpu-probe'):
         # Keep process orchestration on the host; each child enters the image
@@ -734,7 +811,7 @@ def execute(args):
         raise cluster.ClusterError('CONTAINER_ALLOCATION_NODE_MISMATCH')
     role_id, home, evidence, mounts, repository_locks = role_mounts(
         config, args.deployment, actor, node=node, management=args.management,
-        oracle_inputs=reference_inputs, verification_keys=verification_keys,
+        oracle_inputs=reference_inputs + wan_inputs, verification_keys=verification_keys,
         phase_id=getattr(args, 'phase_id', None))
     large_data_mount = _large_data_mount(config, actor, evidence, mounts)
     target_plan = dict(mounts)
@@ -787,17 +864,22 @@ def execute(args):
     if oracle:
         if args.command not in ([], ['--']):
             raise cluster.ClusterError('CONTAINER_ORACLE_WORKLOAD_FIXED')
-        workload = [str(Path(config['release']['prefix']) / 'bin/multiturn-oracle'),
-                    '--deployment-state', str(args.deployment.parent / 'allocation.json'),
-                    '--require-multi-token']
-        workload += reference_command
-        fixed_tokens = getattr(args, 'require_fixed_role_conversation', None)
-        if fixed_tokens:
-            workload += ['--require-fixed-role-conversation', *map(str, fixed_tokens)]
-        gpu_nodes = {item['node'] for item in config['actors'] if not item['external'] and
-                     item['kind'] == 'provider' and item['resources']['gpu_devices']}
-        if len(gpu_nodes) >= 2:
-            workload.append('--require-distributed-gpu')
+        binary_root = Path(config['release']['prefix']) / 'bin'
+        allocation_state = ['--deployment-state', str(args.deployment.parent / 'allocation.json')]
+        if wan_command:
+            workload = [str(binary_root / 'di-wan-video-oracle'), *allocation_state, *wan_command]
+        else:
+            if 'wan_generation' in config['requester']:
+                raise cluster.ClusterError('CONTAINER_WAN_ORACLE_INPUTS_REQUIRED')
+            workload = [str(binary_root / 'multiturn-oracle'), *allocation_state,
+                        '--require-multi-token', *reference_command]
+            fixed_tokens = getattr(args, 'require_fixed_role_conversation', None)
+            if fixed_tokens:
+                workload += ['--require-fixed-role-conversation', *map(str, fixed_tokens)]
+            gpu_nodes = {item['node'] for item in config['actors'] if not item['external'] and
+                         item['kind'] == 'provider' and item['resources']['gpu_devices']}
+            if len(gpu_nodes) >= 2:
+                workload.append('--require-distributed-gpu')
     elif probe:
         workload = [str(Path(config['release']['prefix']) / 'libexec/ndnsf-di/ndnsf-di-device-query'),
                     '--count', str(config['platform']['slurm']['gpu']['count'])]
@@ -868,8 +950,9 @@ def execute(args):
     if journal_mount:
         parent, target = journal_mount
         command += ['--bind', str(parent) + ':' + str(target) + ':ro']
+    overlays = _source_cache_overlays(config, actor['kind'] if actor is not None else None)
     for path, mode in sorted(mounts.items(), key=lambda item: str(item[0])):
-        command += ['--bind', str(path) + ':' + str(path) + ':' + mode]
+        command += ['--bind', str(overlays.get(path, path)) + ':' + str(path) + ':' + mode]
     command += [image, *workload]
     # Apptainer itself needs the host Slurm/GPU environment, but none of the
     # user's container override or loader variables may alter this invocation.
@@ -904,6 +987,12 @@ def main(argv=None):
     parser.add_argument('--timing', action='store_true')
     parser.add_argument('--model-reference', action='store_true')
     parser.add_argument('--model-reference-source', type=Path)
+    wan = parser.add_mutually_exclusive_group()
+    wan.add_argument('--wan-fixture', type=Path)
+    wan.add_argument('--wan-reference', type=Path, nargs=3,
+                     metavar=('REFERENCE', 'WORKLOAD', 'INITIAL'))
+    wan.add_argument('--wan-conditioned-reference', type=Path, nargs=3,
+                     metavar=('REFERENCE', 'WORKLOAD', 'INITIAL'))
     parser.add_argument('--require-fixed-role-conversation', nargs=2, type=int,
                         metavar=('INPUT_TOKENS', 'OUTPUT_TOKENS'))
     parser.add_argument('command', nargs=argparse.REMAINDER)
