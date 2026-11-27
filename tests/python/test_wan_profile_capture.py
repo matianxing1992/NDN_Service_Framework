@@ -172,6 +172,45 @@ def test_compressed_storage_overflow_removes_only_its_partial_output(observer):
     assert not (root / 'provider-1-profiles.jsonl').read_text()
 
 
+@pytest.mark.parametrize('growth_on_read', [1, 2])
+def test_compressed_capture_retries_a_growing_profile(observer, monkeypatch, growth_on_read):
+    module, root, source, output, _ = observer
+    profile = source / 'ort-profile-growing.json'
+    original = b'[0' if growth_on_read == 1 else b'[0]'
+    suffix = b']' if growth_on_read == 1 else b'\n'
+    payload = original + suffix
+    profile.write_bytes(original)
+    open_path = Path.open
+    reads = 0
+    retries = 0
+
+    def grow_profile(path, mode='r', *args, **kwargs):
+        nonlocal reads
+        if path == profile and mode == 'rb':
+            reads += 1
+            if reads == growth_on_read:
+                with open_path(profile, 'ab') as writer:
+                    writer.write(suffix)
+        return open_path(path, mode, *args, **kwargs)
+
+    def check_retry(_):
+        nonlocal retries
+        retries += 1
+        assert not list(output.iterdir())
+        assert not (root / 'provider-1-profiles.jsonl').read_text()
+
+    monkeypatch.setattr(Path, 'open', grow_profile)
+    monkeypatch.setattr(module.time, 'sleep', check_retry)
+    result = module.capture(root, timeout=1, compress=True, max_bytes=len(payload),
+                            max_stored_bytes=128)
+    assert retries == 1 and result['profiles'] == 1
+    archived = output / (profile.name + '.gz')
+    assert gzip.decompress(archived.read_bytes()) == payload
+    row, = map(json.loads, (root / 'provider-1-profiles.jsonl').read_text().splitlines())
+    assert row['sha256'] == hashlib.sha256(payload).hexdigest()
+    assert module.verify(root, compress=True)['profile_json_validated']
+
+
 def test_compressed_archive_requires_explicit_mode_and_bounded_expansion(observer):
     module, root, source, output, _ = observer
     profile = source / 'ort-profile-expansion.json'

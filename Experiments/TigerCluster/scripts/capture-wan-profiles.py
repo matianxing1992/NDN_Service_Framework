@@ -115,8 +115,9 @@ def capture(root, timeout=9000, max_bytes=2 << 30, max_profiles=8192, output_roo
                         pending = True
                         continue
                     with source.open('rb') as stream:
-                        stream.seek(max(0, before.st_size - 128))
-                        closed = stream.read().rstrip().endswith(b']')
+                        tail_bytes = min(128, before.st_size)
+                        stream.seek(before.st_size - tail_bytes)
+                        closed = stream.read(tail_bytes).rstrip().endswith(b']')
                     if not closed:
                         pending = True
                         continue
@@ -149,7 +150,9 @@ def capture(root, timeout=9000, max_bytes=2 << 30, max_profiles=8192, output_roo
                                         break
                                     copied += len(chunk)
                                     if copied > before.st_size:
-                                        raise ValueError('profile grew while being compressed')
+                                        # The copy was only a snapshot of an active writer.
+                                        # The shared identity check below discards it and retries.
+                                        break
                                     checksum.update(chunk)
                                     archive.write(chunk)
                                     if stored + target.tell() > storage_limit:
