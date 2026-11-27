@@ -62,10 +62,12 @@ def make_request(args):
     if component == 'dit':
         shards = {name: identity(sources[name]) for name in recipe['shards']}
         index = identity(sources['diffusion_pytorch_model.safetensors.index.json'])
+        # Match the Wan2.2 FP32 reference at block 29's self-attention key projection.
         geometry = dict(grid=dict(frames=latent_frames, height=height // 2, width=width // 2,
                                   padded_tokens=padded), heads=24, text_tokens=512,
                         video_key_tile=128, text_key_tile=128, prefix_blocks=15,
-                        score_bytes=512 << 20, rotary_bytes=256 << 20)
+                        score_bytes=512 << 20, rotary_bytes=256 << 20,
+                        fp64_self_key_projection_block=29)
     elif component == 'vae':
         row = recipe['converted_vae']
         shards = {row['file']: identity(row)}

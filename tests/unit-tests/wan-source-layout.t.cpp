@@ -784,9 +784,60 @@ BOOST_AUTO_TEST_CASE(Wan21DitCheckpointBindsAllBlocksAndRunsHybridEntries)
   wrong.erase("blocks.2.norm3.bias");
   BOOST_CHECK_THROW(lowerWan21Denoiser(load("wrong.safetensors", wrong), shape, tp),
                     std::invalid_argument);
-  auto checkpoint = lowerWan21Denoiser(load("denoiser.safetensors", header), shape, tp);
+  const auto weights = load("denoiser.safetensors", header);
+  const auto original = lowerWan21Denoiser(weights, shape, tp);
+  auto preciseShape = shape;
+  preciseShape.fp64SelfKeyProjectionBlock = 2;
+  auto checkpoint = lowerWan21Denoiser(weights, preciseShape, tp);
   BOOST_REQUIRE_EQUAL(checkpoint.layout.blockEnds.size(), 3);
   BOOST_REQUIRE_EQUAL(checkpoint.initializerRangeSource->size(), payload.size() * sizeof(float));
+  const auto sidecarBytes = checkpoint.initializerRangeSource->size();
+  BOOST_CHECK(checkpoint.initializerRangeSource->read(0, sidecarBytes) ==
+              original.initializerRangeSource->read(0, sidecarBytes));
+  const auto& originalNodes = original.layout.model.graph().node();
+  const auto& preciseNodes = checkpoint.layout.model.graph().node();
+  BOOST_REQUIRE_EQUAL(preciseNodes.size(), originalNodes.size() + 8);
+  int preciseIndex = 0;
+  int widenedRanks = 0;
+  for (int i = 0; i < originalNodes.size(); ++i) {
+    const auto& node = originalNodes.Get(i);
+    if (node.op_type() != "MatMul" || node.name().find("block-2/self/context/key/") != 0) {
+      BOOST_CHECK_MESSAGE(node.SerializeAsString() ==
+                          preciseNodes.Get(preciseIndex++).SerializeAsString(), node.name());
+      continue;
+    }
+    const auto& originalBias = originalNodes.Get(++i);
+    const auto& input = preciseNodes.Get(preciseIndex++);
+    const auto& weight = preciseNodes.Get(preciseIndex++);
+    const auto& bias = preciseNodes.Get(preciseIndex++);
+    const auto& linear = preciseNodes.Get(preciseIndex++);
+    const auto& projected = preciseNodes.Get(preciseIndex++);
+    const auto& rounded = preciseNodes.Get(preciseIndex++);
+    for (const auto* cast : {&input, &weight, &bias, &rounded}) {
+      BOOST_REQUIRE_EQUAL(cast->op_type(), "Cast");
+      BOOST_REQUIRE_EQUAL(cast->attribute_size(), 1);
+      BOOST_CHECK_EQUAL(cast->attribute(0).name(), "to");
+      BOOST_CHECK_EQUAL(cast->attribute(0).i(), cast == &rounded ? onnx::TensorProto::FLOAT
+                                                              : onnx::TensorProto::DOUBLE);
+    }
+    BOOST_CHECK_EQUAL(input.input(0), node.input(0));
+    BOOST_CHECK_EQUAL(weight.input(0), node.input(1));
+    BOOST_CHECK_EQUAL(bias.input(0), originalBias.input(1));
+    BOOST_REQUIRE_EQUAL(linear.op_type(), "MatMul");
+    BOOST_CHECK_EQUAL(linear.input(0), input.output(0));
+    BOOST_CHECK_EQUAL(linear.input(1), weight.output(0));
+    BOOST_REQUIRE_EQUAL(projected.op_type(), "Add");
+    BOOST_CHECK_EQUAL(projected.input(0), linear.output(0));
+    BOOST_CHECK_EQUAL(projected.input(1), bias.output(0));
+    BOOST_CHECK_EQUAL(rounded.input(0), projected.output(0));
+    BOOST_CHECK_EQUAL(rounded.output(0), originalBias.output(0));
+    ++widenedRanks;
+  }
+  BOOST_CHECK_EQUAL(widenedRanks, 2);
+  BOOST_CHECK_EQUAL(preciseIndex, preciseNodes.size());
+  const NativeStageLayout one{"single", {}, {"provider"}};
+  const auto single = makeWanSingleProviderPlan(checkpoint.layout.model.graph(),
+                                               checkpoint.layout.tensorParallel, one);
   const auto hybrid = makeVideoDenoiserStagedPlan(checkpoint.layout, 1, {serial, tp});
   const auto reverse = makeVideoDenoiserStagedPlan(checkpoint.layout, 1, {tp, serial});
   const NativeStageLayout suffix{"suffix", nativePlanningDigest("fixture/dit/pp2"), {"/dit/last"}};
@@ -812,13 +863,38 @@ BOOST_AUTO_TEST_CASE(Wan21DitCheckpointBindsAllBlocksAndRunsHybridEntries)
       return std::string_view(error.what()) == "native role weight budget is below its consumed initializers";
     });
   BOOST_CHECK(!std::filesystem::exists(directory / "underbudget"));
+  auto badPolicy = request;
+  badPolicy["geometry"]["fp64_self_key_projection_block"] = -1;
+  BOOST_CHECK_EXCEPTION(prepareWanCheckpointComponent(
+    badPolicy, directory, directory / "bad-policy", control), std::invalid_argument,
+    [](const auto& error) {
+      return std::string_view(error.what()) ==
+             "Wan FP64 self-attention key policy requires a DiT block index";
+    });
+  badPolicy["geometry"]["fp64_self_key_projection_block"] = 3;
+  BOOST_CHECK_EXCEPTION(prepareWanCheckpointComponent(
+    badPolicy, directory, directory / "bad-policy", control), std::invalid_argument,
+    [](const auto& error) {
+      return std::string_view(error.what()) ==
+             "Wan FP64 self-attention key block index exceeds the checkpoint";
+    });
+  BOOST_CHECK(!std::filesystem::exists(directory / "bad-policy"));
+  request["geometry"]["fp64_self_key_projection_block"] = 2;
   const auto offline = prepareWanCheckpointComponent(request, directory, directory / "offline",
                                                      control);
-  BOOST_CHECK(std::filesystem::exists(offline));
+  BOOST_REQUIRE(std::filesystem::is_regular_file(offline));
+  onnx::ModelProto prepared;
+  std::ifstream preparedGraph(offline.parent_path() / "model.onnx", std::ios::binary);
+  BOOST_REQUIRE(prepared.ParseFromIstream(&preparedGraph));
+  BOOST_REQUIRE_EQUAL(prepared.graph().node_size(), preciseNodes.size());
+  for (int i = 0; i < preciseNodes.size(); ++i) {
+    BOOST_CHECK_MESSAGE(prepared.graph().node(i).SerializeAsString() ==
+                        preciseNodes.Get(i).SerializeAsString(), preciseNodes.Get(i).name());
+  }
   auto baselineControl = control;
   baselineControl.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
-  const auto baselineRequest = offlineCheckpointRequest("dit", shard,
-    {{"single", {}, {"provider"}}}, request.at("geometry"), baselineControl);
+  const auto baselineRequest = offlineCheckpointRequest("dit", shard, {one},
+    request.at("geometry"), baselineControl);
   BOOST_CHECK(std::filesystem::is_regular_file(prepareWanCheckpointComponent(
     baselineRequest, directory, directory / "single", baselineControl)));
   NativeCanonicalSource source;
@@ -844,7 +920,7 @@ BOOST_AUTO_TEST_CASE(Wan21DitCheckpointBindsAllBlocksAndRunsHybridEntries)
     using Scalar = std::remove_pointer_t<decltype(data)>;
     return Ort::Value::CreateTensor<Scalar>(memory, data, cells, dims.data(), dims.size());
   };
-  for (const auto* candidate : {&std::as_const(checkpoint.layout.tensorParallel), &pp,
+  for (const auto* candidate : {&std::as_const(checkpoint.layout.tensorParallel), &single, &pp,
                                 &hybrid, &reverse}) {
     std::map<std::string, Ort::Value> values;
     values.emplace("latent", makeTensor(latent.data(), latent.size(), {1, 2, 3, 4, 4}));

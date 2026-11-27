@@ -7,6 +7,8 @@
 #include "wan-time-embedding.hpp"
 #include "wan-video-head.hpp"
 
+#include <optional>
+
 namespace ndnsf::di {
 class NativeCanonicalByteRangeSource;
 }
@@ -80,6 +82,7 @@ struct WanDenoiserGeometry
   std::int64_t textKeyTile;
   std::uint64_t scoreBytes;
   std::uint64_t rotaryBytes;
+  std::optional<std::uint64_t> fp64SelfKeyProjectionBlock = std::nullopt;
 };
 
 struct CheckpointDenoiser

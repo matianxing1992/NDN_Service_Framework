@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <set>
 #include <stdexcept>
 
@@ -223,6 +224,13 @@ prepareWanCheckpointComponent(NativeJson request, const std::filesystem::path& b
   const auto kind = request.at("component").get<std::string>();
   if (kind != "umt5" && kind != "dit" && kind != "vae")
     throw std::invalid_argument("unknown Wan checkpoint component: " + kind);
+  std::optional<std::uint64_t> fp64SelfKeyProjectionBlock;
+  if (const auto block = bounds.find("fp64_self_key_projection_block"); block != bounds.end()) {
+    if (kind != "dit" || !block->is_number_integer() ||
+        (!block->is_number_unsigned() && block->get<std::int64_t>() < 0))
+      throw std::invalid_argument("Wan FP64 self-attention key policy requires a DiT block index");
+    fp64SelfKeyProjectionBlock = block->get<std::uint64_t>();
+  }
   std::vector<NativeStageLayout> stages;
   for (const auto& data : request.at("stages")) {
     auto& stage = stages.emplace_back(NativeStageLayout{
@@ -300,7 +308,8 @@ prepareWanCheckpointComponent(NativeJson request, const std::filesystem::path& b
       const WanDenoiserGeometry geometry{
         {grid.at("frames"), grid.at("height"), grid.at("width"), grid.at("padded_tokens")},
         bounds.at("heads"), bounds.at("text_tokens"), bounds.at("video_key_tile"),
-        bounds.at("text_key_tile"), bounds.at("score_bytes"), bounds.at("rotary_bytes")};
+        bounds.at("text_key_tile"), bounds.at("score_bytes"), bounds.at("rotary_bytes"),
+        fp64SelfKeyProjectionBlock};
       // Staged compilation derives its cuts from the same two-rank graph.
       const NativeStageLayout ranked{"dit", {}, {"rank0", "rank1"}};
       auto denoiser = lowerWan21Denoiser(checkpoint, geometry, (staged || single) ? ranked : stages[0]);

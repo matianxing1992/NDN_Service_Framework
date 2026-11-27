@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -45,6 +46,16 @@ emit(onnx::GraphProto& graph, const char* op, const char* output,
   for (const auto* input : inputs) node.add_input(input);
   node.add_output(output);
   return node;
+}
+
+void
+emitCast(onnx::GraphProto& graph, const std::string& output, const std::string& input,
+         onnx::TensorProto::DataType type)
+{
+  auto& to = *emit(graph, "Cast", output.c_str(), {input.c_str()}).add_attribute();
+  to.set_name("to");
+  to.set_type(onnx::AttributeProto::INT);
+  to.set_i(type);
 }
 
 using Matrix = std::pair<onnx::TensorProto, onnx::TensorProto>;
@@ -103,26 +114,41 @@ linearGraph(const Matrix& first, std::int64_t tokens, const Matrix* second = nul
 
 void
 lowerCheckpointMatrixOperands(VideoDenoiserLayout& layout,
-                              const std::set<std::uint64_t>& physicalMatrices)
+                              const std::set<std::uint64_t>& physicalMatrices,
+                              const std::set<std::uint64_t>& fp64KeyWeights,
+                              const std::set<std::uint64_t>& fp64KeyBiases)
 {
   auto& graph = *layout.model.mutable_graph();
   std::set<std::string> remaining;
+  std::map<std::string, std::int64_t> keyWeights;
+  std::map<std::string, std::int64_t> keyBiases;
   for (auto& tensor : *graph.mutable_initializer()) {
-    if (tensor.data_location() != onnx::TensorProto::EXTERNAL ||
-        physicalMatrices.count(offsetOf(tensor)) == 0) continue;
-    if (tensor.dims_size() != 2 || !remaining.insert(tensor.name()).second)
-      throw std::logic_error("invalid Wan DiT checkpoint matrix operand");
-    tensor.mutable_dims()->SwapElements(0, 1);
+    if (tensor.data_location() != onnx::TensorProto::EXTERNAL) continue;
+    const auto offset = offsetOf(tensor);
+    if (physicalMatrices.count(offset) != 0) {
+      if (tensor.dims_size() != 2 || !remaining.insert(tensor.name()).second)
+        throw std::logic_error("invalid Wan DiT checkpoint matrix operand");
+      tensor.mutable_dims()->SwapElements(0, 1);
+      if (fp64KeyWeights.count(offset) != 0 && tensor.data_type() == onnx::TensorProto::FLOAT)
+        keyWeights.emplace(tensor.name(), tensor.dims(0));
+    }
+    if (fp64KeyBiases.count(offset) != 0 && tensor.data_type() == onnx::TensorProto::FLOAT &&
+        tensor.dims_size() == 1)
+      keyBiases.emplace(tensor.name(), tensor.dims(0));
   }
   if (remaining.size() != physicalMatrices.size())
     throw std::logic_error("Wan DiT checkpoint matrix is not present in the lowered graph");
+  if (keyWeights.size() != fp64KeyWeights.size() || keyBiases.size() != fp64KeyBiases.size())
+    throw std::logic_error("Wan FP64 self-attention key operands must remain FP32 slices");
   const auto matrixNames = remaining;
 
   google::protobuf::RepeatedPtrField<onnx::NodeProto> nodes;
   nodes.Swap(graph.mutable_node());
   std::vector<std::uint64_t> starts;
-  for (auto& node : nodes) {
+  for (int i = 0; i < nodes.size(); ++i) {
+    auto& node = *nodes.Mutable(i);
     starts.push_back(graph.node_size());
+    std::int64_t keyWidth = 0;
     for (int port = 0; port < node.input_size(); ++port) {
       const auto& name = node.input(port);
       if (matrixNames.count(name) == 0) continue;
@@ -135,13 +161,47 @@ lowerCheckpointMatrixOperands(VideoDenoiserLayout& layout,
       permutation.set_type(onnx::AttributeProto::INTS);
       permutation.add_ints(1);
       permutation.add_ints(0);
+      if (const auto key = keyWeights.find(name); key != keyWeights.end())
+        keyWidth = key->second;
       node.set_input(port, transpose);
     }
-    *graph.add_node() = std::move(node);
+    if (keyWidth == 0) {
+      *graph.add_node() = std::move(node);
+      continue;
+    }
+
+    if (node.input_size() != 2 || node.output_size() != 1 || !node.domain().empty() ||
+        node.attribute_size() != 0 || i + 1 == nodes.size())
+      throw std::logic_error("invalid Wan FP64 self-attention key MatMul");
+    const auto& add = nodes.Get(++i);
+    if (add.op_type() != "Add" || add.input_size() != 2 || add.output_size() != 1 ||
+        !add.domain().empty() || add.attribute_size() != 0 || add.input(0) != node.output(0))
+      throw std::logic_error("Wan FP64 self-attention key MatMul must be followed by its bias");
+    const auto bias = keyBiases.find(add.input(1));
+    if (bias == keyBiases.end() || bias->second != keyWidth)
+      throw std::logic_error("Wan FP64 self-attention key requires one bias slice per rank");
+    keyBiases.erase(bias);
+
+    const auto prefix = node.output(0) + "/fp64/";
+    const auto input = prefix + "input";
+    const auto weight = prefix + "weight";
+    const auto biasValue = prefix + "bias";
+    const auto linear = prefix + "linear";
+    const auto projected = prefix + "projected";
+    // Match the verified accumulation order and round once before the original RMS graph.
+    emitCast(graph, input, node.input(0), onnx::TensorProto::DOUBLE);
+    emitCast(graph, weight, node.input(1), onnx::TensorProto::DOUBLE);
+    emitCast(graph, biasValue, add.input(1), onnx::TensorProto::DOUBLE);
+    emit(graph, "MatMul", linear.c_str(), {input.c_str(), weight.c_str()});
+    starts.push_back(graph.node_size());
+    emit(graph, "Add", projected.c_str(), {linear.c_str(), biasValue.c_str()});
+    emitCast(graph, add.output(0), projected, onnx::TensorProto::FLOAT);
   }
   starts.push_back(graph.node_size());
   if (!remaining.empty())
     throw std::logic_error("Wan DiT checkpoint matrix has no consumer");
+  if (!keyBiases.empty())
+    throw std::logic_error("Wan FP64 self-attention key bias has no consumer");
 
   for (auto& entry : layout.tensorParallel.entries) {
     std::vector<std::uint64_t> translated;
@@ -168,11 +228,22 @@ lowerWan21Denoiser(const WanCheckpoint& checkpoint, const WanDenoiserGeometry& s
       shape.heads < 2 || shape.textTokens <= 0 || shape.grid.height > LIMIT / 2 ||
       shape.grid.width > LIMIT / 2 || shape.grid.height <= 0 || shape.grid.width <= 0)
     throw std::invalid_argument("invalid Wan DiT checkpoint or geometry");
+  const auto count = (parameters.size() - FIXED_PARAMETERS) / PARAMETERS_PER_BLOCK;
+  std::string fp64Key;
+  if (shape.fp64SelfKeyProjectionBlock) {
+    if (*shape.fp64SelfKeyProjectionBlock >= count)
+      throw std::invalid_argument("Wan FP64 self-attention key block index exceeds the checkpoint");
+    fp64Key = "blocks." + std::to_string(*shape.fp64SelfKeyProjectionBlock) + ".self_attn.k.";
+  }
+  const auto fp64WeightName = fp64Key + "weight";
+  const auto fp64BiasName = fp64Key + "bias";
 
   auto sidecar = std::make_shared<WanCheckpointSidecar>(nullptr);
   std::set<std::string> bound;
   std::set<std::string> linearNames;
   std::set<std::uint64_t> physicalMatrices;
+  std::set<std::uint64_t> fp64KeyWeights;
+  std::set<std::uint64_t> fp64KeyBiases;
   const auto get = [&](const std::string& name) -> const onnx::TensorProto& {
     const auto found = parameters.find(name);
     if (found == parameters.end() || !bound.insert(name).second)
@@ -206,9 +277,14 @@ lowerWan21Denoiser(const WanCheckpoint& checkpoint, const WanDenoiserGeometry& s
       const bool linear = linearNames.count(name) != 0;
       auto result = sidecar->addSlice(checkpoint, name, linear ? 1 - axis : axis, begin, end);
       if (linear) {
-        physicalMatrices.insert(offsetOf(result));
+        const auto offset = offsetOf(result);
+        physicalMatrices.insert(offset);
+        if (name == fp64WeightName) fp64KeyWeights.insert(offset);
         // The fragments still use logical MatMul dimensions until all cuts are connected.
         result.mutable_dims()->SwapElements(0, 1);
+      }
+      else if (name == fp64BiasName) {
+        fp64KeyBiases.insert(offsetOf(result));
       }
       return result;
     }};
@@ -261,7 +337,6 @@ lowerWan21Denoiser(const WanCheckpoint& checkpoint, const WanDenoiserGeometry& s
                               shape.scoreBytes, material)};
   };
   std::vector<ConnectedVideoBlock> blocks;
-  const auto count = (parameters.size() - FIXED_PARAMETERS) / PARAMETERS_PER_BLOCK;
   blocks.reserve(count);
   for (std::size_t index = 0; index < count; ++index) {
     const auto prefix = "blocks." + std::to_string(index) + ".";
@@ -279,9 +354,11 @@ lowerWan21Denoiser(const WanCheckpoint& checkpoint, const WanDenoiserGeometry& s
   }
   if (bound.size() != parameters.size())
     throw std::invalid_argument("Wan DiT checkpoint has unused parameters");
+  if (shape.fp64SelfKeyProjectionBlock && (fp64KeyWeights.size() != 2 || fp64KeyBiases.size() != 2))
+    throw std::logic_error("Wan FP64 self-attention key requires exactly two rank slices");
   auto layout = connectVideoDenoiser(std::move(patch), std::move(text), std::move(time),
                                     std::move(blocks), std::move(head), shape.grid, stage);
-  lowerCheckpointMatrixOperands(layout, physicalMatrices);
+  lowerCheckpointMatrixOperands(layout, physicalMatrices, fp64KeyWeights, fp64KeyBiases);
   return {std::move(layout), std::move(sidecar)};
 }
 
