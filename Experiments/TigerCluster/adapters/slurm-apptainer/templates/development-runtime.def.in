@@ -194,10 +194,14 @@ PY
     if [ "$NDNSF_RUNTIME_PROFILE" = di-runtime ]; then
       ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest
     else
-      ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-repo,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,ndnsf-identity-check,DI_NativeRequester,DI_NativeArtifactAuthority,DistributedRepoServer,NDNSF_RepoPacketServer,multiturn-oracle,di-native-provider,di-native-assembly-worker,ndnsf-di-device-query,di-native-fault-provider,spec187-yolo-minindn
+      ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-repo,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,ndnsf-identity-check,DI_NativeRequester,DI_NativeArtifactAuthority,DistributedRepoServer,NDNSF_RepoPacketServer,multiturn-oracle,di-native-provider,di-native-assembly-worker,ndnsf-di-device-query,di-native-fault-provider,spec187-yolo-minindn,di-prepare-wan-checkpoint,di-wan-video-oracle,write-wan-video-fixture,public-trust-installer
     fi
     test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker
     test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/libexec/ndnsf-di/ndnsf-di-device-query
+    test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/bin/di-prepare-wan-checkpoint
+    test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/bin/di-wan-video-oracle
+    test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/bin/write-wan-video-fixture
+    test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/bin/public-trust-installer
     install -d /opt/ndnsf-stage/waf-install
     cp -a /opt/ndnsf-waf-dest/opt/ndnsf-di/current/. /opt/ndnsf-stage/waf-install/
     cp -a /opt/ndnsf-stage/waf-install/. /opt/ndnsf-stage/
@@ -564,6 +568,10 @@ PY
         /opt/ndnsf-stage/bin/App_ServiceController \
         /opt/ndnsf-stage/bin/DI_NativeArtifactAuthority \
         /opt/ndnsf-stage/bin/DI_NativeRequester \
+        /opt/ndnsf-stage/bin/di-prepare-wan-checkpoint \
+        /opt/ndnsf-stage/bin/di-wan-video-oracle \
+        /opt/ndnsf-stage/bin/write-wan-video-fixture \
+        /opt/ndnsf-stage/bin/public-trust-installer \
         /opt/ndnsf-stage/bin/DistributedRepoServer \
         /opt/ndnsf-stage/bin/ndnsf-identity-check \
         /opt/ndnsf-stage/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker \

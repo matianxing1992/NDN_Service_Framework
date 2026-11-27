@@ -359,12 +359,18 @@ def test_selected_waf_install_posts_header_generators_without_building():
     branch = build.body[-1]
     assert isinstance(branch, ast.If)
     posted = []
-    header = SimpleNamespace(features=['install_task'], post=lambda: posted.append('headers'))
-    native = SimpleNamespace(features=['cxxprogram'], post=lambda: posted.append('native'))
+    def task(features, target):
+        return SimpleNamespace(features=features, target=target, to_list=str.split,
+                               post=lambda: posted.append(target))
+
+    header = task('install_task', 'headers')
+    package_config = task('subst', 'libndnsf-di.pc')
+    generated_source = task('subst', 'generated.cpp')
+    native = task('cxxprogram', 'ndnsf-di-provider')
     for command in ('build', 'install'):
-        bld = SimpleNamespace(cmd=command, groups=[[header, native]])
+        bld = SimpleNamespace(cmd=command, groups=[[header, package_config, generated_source, native]])
         exec(compile(ast.Module(body=[branch], type_ignores=[]), '<install-posting>', 'exec'), {'bld': bld})
-    assert posted == ['headers']
+    assert posted == ['headers', 'libndnsf-di.pc']
 
 
 def test_repository_runtime_environment_survives_inherited_sdk(tmp_path):

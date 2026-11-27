@@ -229,6 +229,17 @@ def repair_framework_headers():
                                clean_framework_headers)
 
 
+def repair_all_application_content():
+    site = Path(sysconfig.get_path('purelib'))
+    require(str(site) == '/opt/venv/lib/python3.10/site-packages', 'BASE_PYTHON_PREFIX')
+
+    def clean(sdk):
+        paths = framework_header_paths() + application_metadata_paths(site)
+        return clean_application_paths(sdk, paths, 'BASE_APPLICATION_CONTENT')
+
+    repair_application_content('APPLICATION_CONTENT', 'application-content-repair', clean)
+
+
 def prepare(lock_path, wheels):
     require(Path('/.singularity.d').is_dir() and os.geteuid() == 0,
             'BASE_CONTAINER_ROOT_REQUIRED')
@@ -391,7 +402,8 @@ def verify():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('prepare', 'verify', 'repair-framework-headers',
-                                          'repair-application-metadata', 'rebuild-native-smoke'))
+                                          'repair-application-metadata',
+                                          'repair-application-content', 'rebuild-native-smoke'))
     parser.add_argument('--lock', type=Path)
     parser.add_argument('--wheels', type=Path)
     args = parser.parse_args()
@@ -404,5 +416,7 @@ if __name__ == '__main__':
         repair_framework_headers()
     elif args.action == 'repair-application-metadata':
         repair_application_metadata()
+    elif args.action == 'repair-application-content':
+        repair_all_application_content()
     else:
         verify()

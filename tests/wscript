@@ -157,12 +157,6 @@ def build(bld):
                 use='NDN_CXX NAC-ABE BOOST OPENSSL DL',
                 cxxflags=['-std=c++17', '-O0', '-g0'],
                 defines=['HAVE_TESTS'], install_path=None)
-    # MiniNDN test actors need public peer certificates in each isolated PIB.
-    bld.program(target='../public-trust-installer',
-                name='public-trust-installer',
-                source=['minindn/public-trust-installer.cpp'],
-                defines=['NDN_CXX_WITH_TESTS'],
-                use='NDN_CXX', install_path='${BINDIR}')
     bld.program(target='../input-identity', name='input-identity',
                 source=['main.cpp', 'unit-tests/collaboration-input-identity.t.cpp',
                         'integration-tests/ndnsf-integration-fixture.cpp'],
@@ -1154,23 +1148,6 @@ def build(bld):
                         'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                     defines=['HAVE_TESTS'], cxxflags=flags, linkflags=links,
                     rpath=[bld.bldnode.abspath()], install_path=None)
-
-    bld.program(target='../write-wan-video-fixture',
-                name='write-wan-video-fixture',
-                source=['fixtures/wan-video/write-wan-video-fixture.cpp',
-                        'fixtures/wan-video/wan-video-fixture.cpp'],
-                includes=framework_includes,
-                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
-                rpath=[bld.bldnode.abspath()], install_path=None)
-
-    bld.program(target='../di-wan-video-oracle',
-                name='di-wan-video-oracle',
-                source=['fixtures/wan-video/wan-video-oracle.cpp',
-                        'fixtures/wan-video/wan-video-reference.cpp'],
-                includes=framework_includes,
-                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
-                rpath=[bld.env.LIBDIR], linkflags=['-Wl,-rpath,$ORIGIN/../lib'],
-                install_path='${BINDIR}')
 
     # C05 names and lifecycle use the actual Core publishers/consumers and
     # existing Face/SVS harness, including original signed-packet serving.

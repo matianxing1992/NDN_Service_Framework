@@ -104,6 +104,13 @@ FILES = (
     "tests/fixtures/spec182/native-model-fixture.hpp",
     "tests/fixtures/spec182/native-qwen-config.hpp",
     "tests/fixtures/spec220/ort-required-operators.cpp",
+    "tests/fixtures/wan-video/wan-video-oracle.cpp",
+    "tests/fixtures/wan-video/wan-video-reference.cpp",
+    "tests/fixtures/wan-video/wan-video-reference.hpp",
+    "tests/fixtures/wan-video/wan-video-fixture.cpp",
+    "tests/fixtures/wan-video/wan-video-fixture.hpp",
+    "tests/fixtures/wan-video/write-wan-video-fixture.cpp",
+    "tests/minindn/public-trust-installer.cpp",
 )
 NDN_SVS_FILES = (
     "waf",

@@ -279,11 +279,32 @@ def test_header_repair_rejects_host_before_mutation(monkeypatch, tmp_path):
     assert not list(tmp_path.iterdir())
 
 
+def test_combined_repair_checks_both_owners_before_removal(monkeypatch, tmp_path):
+    header = tmp_path / 'framework.hpp'
+    metadata = tmp_path / 'ndnsf-di'
+    header.write_text('legacy header')
+    metadata.write_text('legacy launcher')
+    monkeypatch.setattr(runtime.sysconfig, 'get_path', lambda _: '/opt/venv/lib/python3.10/site-packages')
+    monkeypatch.setattr(runtime, 'framework_header_paths', lambda: [header])
+    monkeypatch.setattr(runtime, 'application_metadata_paths', lambda _: [metadata])
+
+    def verify_invocation(scope, receipt, clean):
+        assert scope == 'APPLICATION_CONTENT' and receipt == 'application-content-repair'
+        with pytest.raises(RuntimeError, match='BASE_APPLICATION_CONTENT_OWNED_BY_SDK'):
+            clean({'artifacts': {str(metadata): 'frozen'}})
+        assert header.is_file() and metadata.is_file()
+        assert [row['path'] for row in clean({'artifacts': {}})] == [str(header), str(metadata)]
+
+    monkeypatch.setattr(runtime, 'repair_application_content', verify_invocation)
+    runtime.repair_all_application_content()
+    assert not header.exists() and not metadata.exists()
+
+
 @pytest.mark.parametrize('wrong_parent', [False, True])
 @pytest.mark.parametrize('filesystem', ['xfs', 'rootfs'])
-@pytest.mark.parametrize('metadata_only', [False, True])
+@pytest.mark.parametrize('repair', ['headers', 'metadata', 'both'])
 def test_header_repair_builder_binds_parent_and_bounded_calls(monkeypatch, tmp_path,
-                                                            wrong_parent, filesystem, metadata_only):
+                                                            wrong_parent, filesystem, repair):
     import json
     from types import SimpleNamespace
 
@@ -301,13 +322,17 @@ def test_header_repair_builder_binds_parent_and_bounded_calls(monkeypatch, tmp_p
     apptainer.write_text('fake runtime')
     output = tmp_path / 'result'
     calls = []
+    receipt, action, scope = {
+        'headers': ('framework-header-repair', 'repair-framework-headers', 'BASE_FRAMEWORK_HEADER_REPAIR'),
+        'metadata': ('application-metadata-repair', 'repair-application-metadata', 'BASE_APPLICATION_METADATA_REPAIR'),
+        'both': ('application-content-repair', 'repair-application-content', 'BASE_APPLICATION_CONTENT_REPAIR'),
+    }[repair]
 
     def check_output(argv, **kwargs):
         if argv[0] == 'findmnt':
             return filesystem + '\n'
         if argv[1:] == ['version']:
             return '1.5.3-3.el8\n'
-        receipt = 'application-metadata-repair' if metadata_only else 'framework-header-repair'
         assert argv[-2:] == ['/bin/cat', '/opt/ndn-base/manifest/' + receipt + '.json']
         return json.dumps({'status': 'VERIFIED', 'scope': 'FRAMEWORK_HEADERS_ONLY',
                            'removed': [], 'dependencySdkSha256': 'a' * 64})
@@ -318,7 +343,6 @@ def test_header_repair_builder_binds_parent_and_bounded_calls(monkeypatch, tmp_p
             assert argv[argv.index('--mksquashfs-args') + 1] == '-processors 2 -mem 2G'
             assert '--fakeroot' not in argv and '--no-cleanup' in argv
             definition = Path(argv[-1]).read_text()
-            action = 'repair-application-metadata' if metadata_only else 'repair-framework-headers'
             assert action in definition and '@REPAIR_ACTION@' not in definition
             assert 'dependency-sdk.py prepare' not in definition
             Path(argv[-2]).write_bytes(b'derived sdk')
@@ -329,8 +353,8 @@ def test_header_repair_builder_binds_parent_and_bounded_calls(monkeypatch, tmp_p
     monkeypatch.setattr(builder.subprocess, 'run', run)
     args = SimpleNamespace(base=parent, lock=lock, output=output, wheel=None,
                            dependency_bundle=None, apptainer=str(apptainer),
-                           expected_apptainer='1.5.3', repair_framework_headers=not metadata_only,
-                           repair_application_metadata=metadata_only)
+                           expected_apptainer='1.5.3', repair_framework_headers=repair != 'metadata',
+                           repair_application_metadata=repair != 'headers')
     if wrong_parent:
         with pytest.raises(ValueError, match='BASE_PARENT_IDENTITY'):
             builder.build(args)
@@ -343,7 +367,6 @@ def test_header_repair_builder_binds_parent_and_bounded_calls(monkeypatch, tmp_p
         return
     builder.build(args)
     record = json.loads((output / 'build-record.json').read_text())
-    scope = 'BASE_APPLICATION_METADATA_REPAIR' if metadata_only else 'BASE_FRAMEWORK_HEADER_REPAIR'
     assert record['status'] == 'PASS' and record['scope'] == scope
     assert record['apptainerVersion'] == '1.5.3-3.el8'
     assert record['cleanup']['status'] == 'VERIFIED' and len(calls) == 3

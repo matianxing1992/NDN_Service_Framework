@@ -11,6 +11,12 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}' if bld.env.INSTALL_EXPERIMENT_FIXTURES else None)
     runtime_libdir = Utils.subst_vars('${LIBDIR}', bld.env)
+    if bld.env.WITH_TESTS or 'di' in bld.env.NDNSF_COMPONENTS:
+        bld.program(target='../public-trust-installer',
+                    name='public-trust-installer',
+                    source=['../tests/minindn/public-trust-installer.cpp'],
+                    defines=['NDN_CXX_WITH_TESTS'],
+                    use='NDN_CXX', install_path='${BINDIR}')
     if bld.env.WITH_TESTS or bld.env.INSTALL_EXPERIMENT_FIXTURES:
         bld.program(name='ndnsf-policy-lease-probe',
                     target='ndnsf-policy-lease-probe',
@@ -356,6 +362,26 @@ def build(bld):
                     includes=['..'],
                     use='ndnsf-distributed-inference ndn-service-framework NDN_CXX ONNX',
                     rpath=[bld.env.LIBDIR], linkflags=['-Wl,-rpath,$ORIGIN/../lib'],
+                    install_path='${BINDIR}')
+
+        bld.program(name='di-wan-video-oracle',
+                    target='../di-wan-video-oracle',
+                    source=['../tests/fixtures/wan-video/wan-video-oracle.cpp',
+                            '../tests/fixtures/wan-video/wan-video-reference.cpp'],
+                    includes=['..'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
+                        'BOOST NAC-ABE NDNSD OPENSSL DL',
+                    rpath=[runtime_libdir], linkflags=['-Wl,-rpath,$ORIGIN/../lib'],
+                    install_path='${BINDIR}')
+
+        bld.program(name='write-wan-video-fixture',
+                    target='../write-wan-video-fixture',
+                    source=['../tests/fixtures/wan-video/write-wan-video-fixture.cpp',
+                            '../tests/fixtures/wan-video/wan-video-fixture.cpp'],
+                    includes=['..'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
+                        'BOOST NAC-ABE NDNSD OPENSSL DL ONNX',
+                    rpath=[runtime_libdir], linkflags=['-Wl,-rpath,$ORIGIN/../lib'],
                     install_path='${BINDIR}')
 
         bld.program(name='ndnsf-di-device-query',

@@ -44,10 +44,12 @@ def build(args):
         return reseal_base(args, ort_bundle=args.upgrade_onnxruntime)
     if getattr(args, 'repair_application_metadata', False):
         if any(getattr(args, name, None) for name in (
-                'repair_framework_headers', 'complete_nac_abe', 'complete_tokenizer_bridge',
+                'complete_nac_abe', 'complete_tokenizer_bridge',
                 'dependency_bundle', 'wheel', 'nac_source_archive')):
             raise ValueError('BASE_COMPLETION_MODE_CONFLICT')
-        return reseal_base(args, metadata_only=True)
+        action = ('repair-application-content' if getattr(args, 'repair_framework_headers', False)
+                  else 'repair-application-metadata')
+        return reseal_base(args, repair_action=action)
     if getattr(args, 'complete_nac_abe', None):
         if getattr(args, 'repair_framework_headers', False) or getattr(args, 'complete_tokenizer_bridge', None):
             raise ValueError('BASE_COMPLETION_MODE_CONFLICT')
@@ -266,7 +268,8 @@ def nac_inputs(bundle, inputs, parent_sha, source_archive=None):
     sdk.nac_contract(destination, repository, expected)
 
 
-def reseal_base(args, tokenizer_bundle=None, nac_bundle=None, metadata_only=False, ort_bundle=None):
+def reseal_base(args, tokenizer_bundle=None, nac_bundle=None, ort_bundle=None,
+                repair_action='repair-framework-headers'):
     """Share parent identity/resource handling across explicit base maintenance actions."""
     if args.dependency_bundle or args.wheel:
         raise ValueError('BASE_HEADER_REPAIR_INPUT_CONFLICT')
@@ -302,9 +305,16 @@ def reseal_base(args, tokenizer_bundle=None, nac_bundle=None, metadata_only=Fals
     inputs.mkdir()
     for source in (lock_path, HERE / 'base-runtime.py'):
         shutil.copy2(source, inputs / ('parent.lock.json' if source == lock_path else source.name))
-    mode = 'nac-completion' if nac_bundle else ('tokenizer-completion' if tokenizer_bundle else 'header-repair')
-    if metadata_only:
-        mode = 'application-metadata-repair'
+    repair_receipt, repair_scope = {
+        'repair-framework-headers': ('framework-header-repair', 'BASE_FRAMEWORK_HEADER_REPAIR'),
+        'repair-application-metadata': ('application-metadata-repair', 'BASE_APPLICATION_METADATA_REPAIR'),
+        'repair-application-content': ('application-content-repair', 'BASE_APPLICATION_CONTENT_REPAIR'),
+    }[repair_action]
+    mode = repair_receipt
+    if tokenizer_bundle:
+        mode = 'tokenizer-completion'
+    if nac_bundle:
+        mode = 'nac-completion'
     if tokenizer_bundle:
         tokenizer_inputs(tokenizer_bundle, inputs, lock['parentSha256'])
         shutil.copy2(HERE / 'dependency-sdk.py', inputs / 'dependency-sdk.py')
@@ -331,17 +341,14 @@ def reseal_base(args, tokenizer_bundle=None, nac_bundle=None, metadata_only=Fals
         shutil.copy2(HERE.parents[4] / 'tests/fixtures/spec220/ort-runtime-probe.cpp',
                      destination / 'probe.cpp')
         shutil.copy2(HERE / 'dependency-sdk.py', inputs / 'dependency-sdk.py')
-    template_name = 'header-repair' if metadata_only else mode
+    template_name = 'header-repair' if mode == repair_receipt else mode
     template = HERE.parent / 'templates' / (template_name + '.def.in')
     definition = out / 'base.def'
     definition.write_text(template.read_text().replace('@BASE_SIF@', str(parent))
                           .replace('@INPUT@', str(inputs))
-                          .replace('@REPAIR_ACTION@', 'repair-application-metadata' if metadata_only
-                                   else 'repair-framework-headers'))
+                          .replace('@REPAIR_ACTION@', repair_action))
     scope = ('BASE_NAC_PATCH_COMPLETION' if nac_bundle else
-             ('BASE_TOKENIZER_BRIDGE_COMPLETION' if tokenizer_bundle else 'BASE_FRAMEWORK_HEADER_REPAIR'))
-    if metadata_only:
-        scope = 'BASE_APPLICATION_METADATA_REPAIR'
+             ('BASE_TOKENIZER_BRIDGE_COMPLETION' if tokenizer_bundle else repair_scope))
     if ort_bundle:
         scope = 'BASE_ONNXRUNTIME_UPGRADE'
     record = {'status': 'RUNNING', 'scope': scope,
@@ -381,8 +388,7 @@ def reseal_base(args, tokenizer_bundle=None, nac_bundle=None, metadata_only=Fals
                     'onnxruntime-upgrade.json' if ort_bundle else
                     ('nac-abe-completion.json' if nac_bundle else
                     ('tokenizer-bridge-completion.json' if tokenizer_bundle
-                     else ('application-metadata-repair.json' if metadata_only
-                           else 'framework-header-repair.json'))))],
+                     else (repair_receipt + '.json'))))],
                 env=env, stderr=log, text=True)
             if tokenizer_bundle or nac_bundle or ort_bundle:
                 sdk = subprocess.check_output(command + [
