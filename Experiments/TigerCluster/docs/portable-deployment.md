@@ -135,6 +135,9 @@ Slurm CPU配额不等于ORT intra-op线程数。
 prefill/decode/finalize、独立参考和清理。互斥wall分区可相加，嵌套CPU/机制计时另列。
 并行ORT累计时间不能直接除以wall当端到端占比，wall减ORT也不是网络时间。
 普通性能运行关闭诊断日志，保留结构化统计；故障定位才显式打开 debug/timing。
+逐包 `NDNSF_EXACT_DATA_DISPATCH` 明细还要求
+`ndn_service_framework.ServiceProvider=TRACE` 和控制计时开关。
+阶段统计和签名清单证据的原有日志级别不变；普通 WARN/INFO 不写逐包发送明细。
 
 每次按 run + request/attempt + role + epoch 过滤统计，禁止把追加文件中的旧PP结果当本轮TP结果。
 有token事件不等于请求/checkpoint成功；逐token参考、实际设备执行、完整role receipts和清理分别报告。

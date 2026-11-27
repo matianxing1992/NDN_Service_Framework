@@ -1408,16 +1408,19 @@ namespace ndn_service_framework
         putMeasuredDataOnFace(ndn::Face& face, const ndn::Data& packet, const char* mode,
             bool timingEnabled, std::chrono::steady_clock::time_point queuedAt)
         {
-            const auto putStartedAt = timingEnabled ? std::chrono::steady_clock::now() :
+            // Per-packet dispatch is opt-in tracing; phase timing must stay bounded.
+            const bool traceEnabled = timingEnabled &&
+                ndn_cxx_getLogger().isLevelEnabled(ndn::util::LogLevel::TRACE);
+            const auto putStartedAt = traceEnabled ? std::chrono::steady_clock::now() :
                 std::chrono::steady_clock::time_point{};
             face.put(packet);
-            if (timingEnabled) {
+            if (traceEnabled) {
                 const auto returnedAt = std::chrono::steady_clock::now();
                 const auto nanos = [] (const auto& stamp) {
                     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                         stamp.time_since_epoch()).count();
                 };
-                NDN_LOG_WARN("NDNSF_EXACT_DATA_DISPATCH mode=" << mode
+                NDN_LOG_TRACE("NDNSF_EXACT_DATA_DISPATCH mode=" << mode
                     << " name=" << packet.getName().toUri(ndn::name::UriFormat::CANONICAL)
                     << " queued_steady_ns=" << nanos(queuedAt)
                     << " started_steady_ns=" << nanos(queuedAt)
