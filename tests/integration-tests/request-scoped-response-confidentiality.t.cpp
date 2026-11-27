@@ -1,5 +1,6 @@
 #include "tests/boost-test.hpp"
 
+#include "exact-publication-oracle.hpp"
 #include "ndnsf-integration-fixture.hpp"
 #include "isolated-test-trust.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
@@ -23,11 +24,14 @@
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
+#include <iterator>
 #include <openssl/sha.h>
 #include <optional>
 #include <sstream>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -391,7 +395,8 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
                            size_t largeResponseBytes = 9000,
                            std::string expectedResponseError = {},
                            StagingPolicy stagingPolicy = StagingPolicy::NONE,
-                           bool signedManifest = false)
+                           bool signedManifest = false,
+                           bool checkExactReservationAfterResponse = false)
 {
   // Callback dependencies outlive the environment and all of its worker teardown.
   std::atomic<bool> releaseSegment{terminalDuringFetch.empty()};
@@ -797,6 +802,38 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
       BOOST_CHECK_EQUAL(manifestPages.size(), count == 4097 ? 32 : 0);
     }
   }
+  if (checkExactReservationAfterResponse) {
+    BOOST_REQUIRE(signedManifest);
+    BOOST_REQUIRE(responseReceived);
+    BOOST_REQUIRE_EQUAL(manifestRoots.size(), 1U);
+    const auto selected = std::find_if(providers.begin(), providers.end(), [&](const auto& name) {
+      return name.isPrefixOf(*manifestRoots.begin());
+    });
+    BOOST_REQUIRE(selected != providers.end());
+    auto& provider = environment.provider(std::distance(providers.begin(), selected));
+    for (const auto diskLimit : {65'537ULL << 20, 96ULL << 30}) {
+      ServiceProvider::CollaborationAssignment assignment;
+      assignment.role = "manifest-authority";
+      assignment.service = serviceName;
+      assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+      assignment.workCurrent = [] { return true; };
+      ServiceProvider::CollaborationContext next(provider, requesterName,
+        ndn::Name(requestId).append("next").appendNumber(diskLimit), RequestMessage(), assignment);
+      const SegmentManifestScope scope{provider.getName(),
+        ndn::Name(provider.getName()).append("NDNSF").append("TENSOR-QUOTA").appendVersion(diskLimit)};
+
+      // The resolved response remains legitimately retained. Only a few bytes are
+      // written: these are logical reservations, not multi-gigabyte test files.
+      BOOST_CHECK_EXCEPTION(test::ExactPublicationOracle::publishManifest(
+        next, scope, 2, {}, 128ULL << 30), std::length_error, [](const auto& error) {
+          return std::string_view(error.what()) == "exact packet retention Provider capacity";
+        });
+      BOOST_CHECK_EQUAL(provider.evictImsPrefixForTest(scope.objectPrefix), 0U);
+      BOOST_REQUIRE(test::ExactPublicationOracle::publishManifest(
+        next, scope, 2, {}, diskLimit));
+      BOOST_REQUIRE(next.tryReleaseExactPacketRetention());
+    }
+  }
   if (stagingPolicy != StagingPolicy::NONE)
     BOOST_CHECK(policyInstalledWhileStaging);
   // The old service-wide response-key carrier and its
@@ -834,6 +871,11 @@ BOOST_AUTO_TEST_CASE(SignedManifestResponseAuthenticatesMultipleGroupsThroughPro
       ::unsetenv(variable);
   });
   runFullRuntimeResponseCase(true, false, {}, 8194, {}, StagingPolicy::NONE, true);
+}
+
+BOOST_AUTO_TEST_CASE(SignedManifestResponseLeavesCapacityForNextCollaboration)
+{
+  runFullRuntimeResponseCase(true, false, {}, 9000, {}, StagingPolicy::NONE, true, true);
 }
 
 BOOST_AUTO_TEST_CASE(SignedManifestResponseCancelsWithPendingOriginals)
