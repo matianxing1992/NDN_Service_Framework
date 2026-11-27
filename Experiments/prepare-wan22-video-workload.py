@@ -22,6 +22,9 @@ def main():
     parser.add_argument('--width', type=int, default=320)
     parser.add_argument('--height', type=int, default=320)
     parser.add_argument('--steps', type=int, default=50)
+    parser.add_argument('--positive-prompt', default='NDN distributed inference',
+                        help='Override the frozen engineering fixture prompt for a new workload')
+    parser.add_argument('--negative-prompt', default='blurry')
     args = parser.parse_args()
     if (args.frames <= 0 or args.frames % 4 != 1 or args.steps <= 0 or
             min(args.width, args.height) <= 0 or args.width % 32 or args.height % 32):
@@ -78,7 +81,7 @@ def main():
     generation = dict(latent_shape=latent, padded_video_tokens=padded,
         text_width=4096, vae_spatial_stride=16, frames_per_second=24, steps=args.steps,
         shift=5.0, guidance=5.0, seed=0,
-        positive_prompt='NDN distributed inference', negative_prompt='blurry',
+        positive_prompt=args.positive_prompt, negative_prompt=args.negative_prompt,
         tokenizer=dict(file=str(tokenizer_file), digest='sha256:' + tokenizer['sha256'], slots=512))
     workload = dict(schema='ndnsf-di-wan-checkpoint-workload-v1', namespace=args.namespace,
         mode=args.mode, generation=generation, modes={args.mode: layout})
