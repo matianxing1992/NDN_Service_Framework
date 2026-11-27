@@ -2,6 +2,7 @@
 
 #include "PublishedContentName.hpp"
 #include "ProducerDataNaming.hpp"
+#include "segment-manifest.hpp"
 
 #include <ndn-cxx/name.hpp>
 #include <cstdint>
@@ -35,6 +36,15 @@ struct ProtectedBlobManifest
   std::vector<std::uint8_t> publicationNonce;
   ndn::Name signerCertificate;
 
+  struct ManifestGroup
+  {
+    SegmentManifestScope scope;
+    uint32_t firstSegment;
+    uint32_t sourceCount;
+  };
+
+  bool usesSegmentManifests() const;
+  std::optional<ManifestGroup> segmentManifestGroup(uint32_t group) const;
   ndn::Name semanticDataPrefix() const;
   void validateSigner(const ndn::Data& data) const;
   void validate(DataNameReadMode mode = DataNameReadMode::StrictCanonical) const;

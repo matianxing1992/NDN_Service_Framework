@@ -56,6 +56,9 @@ struct AdmissionObservations
   std::atomic<size_t> computes{0};
   std::atomic<size_t> validators{0};
   std::atomic<size_t> rootInterests{0};
+  std::atomic<size_t> signedInputRoots{0};
+  std::atomic<size_t> signedInputMembers{0};
+  std::atomic<size_t> legacyInputSegments{0};
   std::atomic<size_t> producerLocationHints{0};
   std::atomic<size_t> selectedRoleLocationHints{0};
   std::atomic<size_t> unselectedLocationHints{0};
@@ -331,10 +334,12 @@ void runAuthorizedLocationRotationCase(bool authorizedObject = false)
   consumer.setHandlerThreads(0);
 }
 
-void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertiseLarge = false)
+void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertiseLarge = false,
+                      bool signedInput = false)
 {
   auto observed = std::make_shared<AdmissionObservations>();
   auto payload = std::make_shared<ndn::Buffer>(
+    signedInput ? 14000 :
     inBandXor && mode == AdmissionCase::ImmutableGeneric ? 24000 :
     inBandXor && mode == AdmissionCase::ReusableLarge ? 2400 : 2);
   std::fill(payload->begin(), payload->end(), 3);
@@ -388,14 +393,15 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertise
     contentName.label = "spec226-canonical-input";
     contentName.semanticRole = ContentSemanticRole::BlobObject;
     options.contentName = std::move(contentName);
+    options.requireSegmentManifests = signedInput;
     canonicalPublication = environment.user().publishEncryptedLargeData(publicationContext,
-      ndn::Buffer{3, 7}, "spec226-canonical-input", ndn::time::milliseconds(60000), true, options);
+      *immutablePayload, "spec226-canonical-input", ndn::time::milliseconds(60000), true, options);
     BOOST_REQUIRE_MESSAGE(canonicalPublication->success, canonicalPublication->errorMessage);
     BOOST_REQUIRE(!canonicalPublication->manifestName.empty());
     canonicalReference.name = canonicalPublication->manifestName;
     canonicalReference.producerName = environment.user().getName();
     canonicalReference.serviceName = profile.serviceName;
-    canonicalReference.sizeBytes = 2;
+    canonicalReference.sizeBytes = immutablePayload->size();
     canonicalRequestInput = {
       canonicalPublication->manifestName,
       canonicalPublication->plaintextSize,
@@ -403,10 +409,26 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertise
       canonicalPublication->manifestDigest,
       canonicalPublication->protectionEpoch,
       canonicalPublication->authorizationScope,
+      signedInput,
     };
   }
   ndn::signal::ScopedConnection interests = environment.providerFace(1).onSendInterest.connect(
     [&](const ndn::Interest& interest) {
+      if (signedInput && canonicalPublication &&
+          canonicalPublication->dataPrefix.isPrefixOf(interest.getName())) {
+        const auto& name = interest.getName();
+        if (name.at(-1).toUri() == "MANIFEST") {
+          ++observed->signedInputRoots;
+          BOOST_CHECK(!interest.getCanBePrefix());
+        }
+        else if (name.at(-1).isImplicitSha256Digest()) {
+          ++observed->signedInputMembers;
+          BOOST_CHECK(!interest.getCanBePrefix());
+        }
+        else {
+          ++observed->legacyInputSegments;
+        }
+      }
       if (mode == AdmissionCase::ImmutableGeneric && observed->trackKeyReads.load() &&
           (ndn::Name(source.getName()).append("NDNSF").append("KEY").isPrefixOf(interest.getName()) ||
            ndn::Name(source.getName()).append("CK").isPrefixOf(interest.getName())))
@@ -794,7 +816,7 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertise
         }
         if (mode == AdmissionCase::GenericLarge || mode == AdmissionCase::ReusableLarge ||
             mode == AdmissionCase::ImmutableGeneric || mode == AdmissionCase::CanonicalManifest) {
-          const auto& expected = mode == AdmissionCase::CanonicalManifest ? ndn::Buffer{3, 7} : *immutablePayload;
+          const auto& expected = *immutablePayload;
           if (objects[0].content() != expected) throw std::runtime_error("incorrect plaintext");
           return;
         }
@@ -996,6 +1018,11 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertise
   BOOST_REQUIRE_MESSAGE(observed->committed, "ACK_CLOSED candidates=" << observed->closedCandidates.load());
   BOOST_REQUIRE_MESSAGE(observed->completed, "no terminal response; reason=" << observed->terminalReason);
   BOOST_CHECK(!observed->timedOut);
+  if (signedInput) {
+    BOOST_CHECK_EQUAL(observed->signedInputRoots.load(), 2);
+    BOOST_CHECK_EQUAL(observed->signedInputMembers.load(), 6);
+    BOOST_CHECK_EQUAL(observed->legacyInputSegments.load(), 0);
+  }
   if (inBandXor) {
     BOOST_CHECK_GT(observed->inBandDrops.load(), 0);
     BOOST_CHECK_EQUAL(observed->inBandRecovered.load(), 1);
@@ -1387,6 +1414,10 @@ BOOST_AUTO_TEST_CASE(WrongProducerRoleRejectsBeforeNetworkRead) { runAdmissionCa
 BOOST_AUTO_TEST_CASE(FaceExecutorCannotBlockOrRunDomainValidator) { runAdmissionCase(AdmissionCase::FaceBoundary); }
 BOOST_AUTO_TEST_CASE(RegistrationClosureInvalidatesInputsBeforeCompute) { runAdmissionCase(AdmissionCase::RegistrationClosedDuringValidation); }
 BOOST_AUTO_TEST_CASE(CanonicalManifestAdmitsAuthorizedObjectFromUnselectedProducer) { runAdmissionCase(AdmissionCase::CanonicalManifest); }
+BOOST_AUTO_TEST_CASE(SignedInputManifestAdmitsProtectedMultiSegmentUpload)
+{
+  runAdmissionCase(AdmissionCase::CanonicalManifest, false, false, true);
+}
 BOOST_AUTO_TEST_CASE(OriginalSignatureFailureHasStableAdmissionReason) { runAdmissionCase(AdmissionCase::BadOriginalSignature); }
 BOOST_AUTO_TEST_CASE(ResolvedCredentialCannotChangeItsReadScope) { runAdmissionCase(AdmissionCase::ScopeCredentialMismatch); }
 BOOST_AUTO_TEST_CASE(LegacyNotificationReplayStillCompletesOnWorker) { runAdmissionCase(AdmissionCase::LegacyReplay); }

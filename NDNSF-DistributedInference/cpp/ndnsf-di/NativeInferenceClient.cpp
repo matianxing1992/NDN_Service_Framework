@@ -3282,8 +3282,10 @@ publishRequestInput(const NativeInferenceHandle::Operation& operation, NativePre
   context.serviceName = ndn::Name(operation.runtime->contract.serviceName);
   context.requestId = ndn::Name(operation.coreRequestId);
   const auto label = "di-input-" + nativePlanningDigest(operation.coreRequestId).substr(7);
+  ndn_service_framework::LargeDataPublishOptions publicationOptions;
+  publicationOptions.requireSegmentManifests = operation.options.requireTensorSegmentManifests;
   auto published = operation.user->publishEncryptedLargeDataFromWorker(
-    context, input.payload, label, ndn::DEFAULT_FRESHNESS_PERIOD,
+    context, input.payload, label, ndn::DEFAULT_FRESHNESS_PERIOD, publicationOptions,
     [&control] { control.requireActive(); });
   control.requireActive();
   if (!published.success || !published.servingLease || !published.encrypted ||

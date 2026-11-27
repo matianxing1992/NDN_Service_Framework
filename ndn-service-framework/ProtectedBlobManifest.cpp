@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 namespace ndn_service_framework {
 namespace {
@@ -215,6 +216,34 @@ void ProtectedBlobManifest::validate(DataNameReadMode mode) const
     throw std::invalid_argument("BLOB_MANIFEST_BINDING_MISMATCH");
   checkNamingNameSize(ndn::Name(dataPrefix).appendSegment(
     std::numeric_limits<std::uint64_t>::max()));
+}
+
+bool
+ProtectedBlobManifest::usesSegmentManifests() const
+{
+  constexpr std::string_view SUFFIX = ",\"segmentValidation\":\"signed-manifest-v1\"}";
+  return representationSpec.size() >= SUFFIX.size() &&
+    representationSpec.compare(representationSpec.size() - SUFFIX.size(),
+                               SUFFIX.size(), SUFFIX) == 0;
+}
+
+std::optional<ProtectedBlobManifest::ManifestGroup>
+ProtectedBlobManifest::segmentManifestGroup(uint32_t group) const
+{
+  if (segmentCount < 2 || segmentCount > std::numeric_limits<uint32_t>::max())
+    throw std::invalid_argument("BLOB_SEGMENT_MANIFEST_COUNT_INVALID");
+  const auto range = getSegmentManifestGroupRange(static_cast<uint32_t>(segmentCount), group);
+  if (!range) return std::nullopt;
+  const auto wire = encode();
+  const auto digest = computeNamingDigest("ndnsf/protected-input/manifest/v1",
+                                         {{1, 4, wire}});
+  const auto component = makeNamingDigestComponent(digest);
+  SegmentManifestScope scope;
+  scope.producer = producer;
+  scope.objectPrefix = ndn::Name(dataPrefix).append("MANIFEST-GROUP").appendSegment(group);
+  std::copy(component.value(), component.value() + component.value_size(),
+            scope.bindingDigest.begin());
+  return ManifestGroup{std::move(scope), range->first, range->second};
 }
 
 std::vector<std::uint8_t> ProtectedBlobManifest::encode(DataNameReadMode mode) const

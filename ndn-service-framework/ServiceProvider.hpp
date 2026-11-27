@@ -119,6 +119,7 @@ namespace ndn_service_framework{
         std::string manifestDigest;
         std::string protectionEpoch;
         std::string authorizationScope;
+        bool requireSegmentManifests = false;
     };
 
     class ImmutableProtectedPublicationStore;
@@ -240,6 +241,7 @@ namespace ndn_service_framework{
                 SegmentManifestLimits limits;
                 std::chrono::steady_clock::time_point deadline;
                 std::size_t pageCount;
+                bool deferSourceAdmission = true;
             };
         public:
             enum class ExactDataFetchPhase { Published, AwaitPublication };
@@ -1154,7 +1156,8 @@ namespace ndn_service_framework{
                     ExactDataWireRecovery recoverMissing = {},
                     bool hybridKeyBootstrap = false,
                     std::vector<std::size_t> optionalSlots = {},
-                    ExactDataRecoveryReady recoveryReady = {});
+                    ExactDataRecoveryReady recoveryReady = {},
+                    std::optional<ExactManifestRead> manifestRead = std::nullopt);
                 InputAdmissionResult admitResolvedInputsImpl(
                     const std::vector<CollaborationInputSpec>& inputs,
                     std::vector<VerifiedInputObject> objects,

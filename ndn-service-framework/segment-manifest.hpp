@@ -37,6 +37,10 @@ struct SegmentManifestLimits
   std::optional<uint32_t> expectedSourceSegments;
 };
 
+/** Ordered source range for one manifest group, avoiding a final singleton. */
+std::optional<std::pair<uint32_t, uint32_t>>
+getSegmentManifestGroupRange(uint32_t sourceCount, uint32_t group);
+
 class ManifestPublication
 {
 public:

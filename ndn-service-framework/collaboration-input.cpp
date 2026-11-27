@@ -192,7 +192,7 @@ ServiceProvider::CollaborationContext::startVerifiedSignedExactDataBatchImpl(
     std::size_t maxOutstanding, std::size_t maxWireBytes, std::function<void()> onReady,
     ExactDataWireRecovery recoverMissing,
     bool hybridKeyBootstrap, std::vector<std::size_t> optionalSlots,
-    ExactDataRecoveryReady recoveryReady)
+    ExactDataRecoveryReady recoveryReady, std::optional<ExactManifestRead> manifestRead)
 {
   if (m_assignment.inputAdmissionProfile != "data-admission-v1")
     throw std::invalid_argument("INPUT_PROFILE_UNSUPPORTED");
@@ -244,7 +244,7 @@ ServiceProvider::CollaborationContext::startVerifiedSignedExactDataBatchImpl(
     std::move(cancelled), std::move(onFirstReadStarted), phase,
     std::move(onValidatedData), {}, maxOutstanding, true, maxWireBytes, std::move(onReady), signatureRejected,
     std::move(authorizedLocations), std::move(recoverMissing), hybridKeyBootstrap,
-    std::move(optionalSlots), std::move(recoveryReady));
+    std::move(optionalSlots), std::move(recoveryReady), std::move(manifestRead));
   const auto binding = ndn::Name(m_requestId).append(m_assignment.service).append(m_assignment.selectionDigest)
     .append(m_assignment.role).append(keyScope).toUri();
   return VerifiedExactDataFetchOperation(std::move(operation), dataNames.front(), expectedProducer,

@@ -1459,6 +1459,7 @@ initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationCo
         if (transport == "REPO_REF") {
           const auto& reference = root.at("input_reference");
           ndn_service_framework::ProtectedRequestInputReference bound;
+          bound.requireSegmentManifests = request.requiresInputManifest();
           try {
             (void)DataRef::fromPublishedMetadata(nativeCanonicalJson(reference));
             bound.name = ndn::Name(reference.at("dataName").get_ref<const std::string&>());

@@ -150,6 +150,7 @@ namespace ndn_service_framework
         std::shared_ptr<const detail::OriginalPacketFile> originalPackets;
         std::shared_ptr<const ndn::Data> manifestPacket;
         bool originalPacketSource = false;
+        std::map<ndn::Name, std::uint64_t> manifestOrdinals;
         // Immutable isolated-key material; serving ciphertext grants no execution authority.
         bool ownerRecoverable = false;
         std::weak_ptr<void> servingLease;
@@ -2662,7 +2663,8 @@ namespace ndn_service_framework
                                     ndn::time::milliseconds freshness,
                                     std::size_t segmentBytes,
                                     const PublishedContentName& contentName,
-                                    const ndn::Name& signerCertificate)
+                                    const ndn::Name& signerCertificate,
+                                    bool requireSegmentManifests)
         {
             if (contentDigest.size() != 71 || contentDigest.compare(0, 7, "sha256:") != 0)
                 throw std::invalid_argument("protected BLOB content digest is invalid");
@@ -2675,7 +2677,8 @@ namespace ndn_service_framework
             // They contain descriptors only, never secret key material.
             const auto representation = std::string("{\"aad\":\"canonical-name-and-service-uri\",\"encoding\":\"ndnsf-hybrid-envelope\",\"freshnessMs\":") +
                 std::to_string(freshness.count()) + ",\"schema\":1,\"segmentBytes\":" +
-                std::to_string(segmentBytes) + "}";
+                std::to_string(segmentBytes) +
+                (requireSegmentManifests ? ",\"segmentValidation\":\"signed-manifest-v1\"}" : "}");
             const auto protection = std::string("{\"cipher\":\"AES-256-GCM\",\"epoch\":") +
                 quoteNamingJson(epoch) + ",\"keyReference\":" + quoteNamingJson(keyReference) +
                 ",\"noncePolicy\":\"unique-per-new-publication\",\"publication\":" +
@@ -8083,6 +8086,11 @@ namespace ndn_service_framework
         }
 
         const bool durable = options.retention == EncryptedLargeDataRetention::Durable;
+        if (options.requireSegmentManifests && (durable || !retainWhileLeased ||
+                                               plaintext.size() > (1ULL << 30))) {
+            result.errorMessage = "signed input manifests require a bounded transient lease";
+            return result;
+        }
         if (durable && (options.publicationIdentity.size() != 71 ||
                         options.publicationIdentity.compare(0, 7, "sha256:") != 0)) {
             result.errorMessage = "durable large-data publication identity is invalid";
@@ -8567,7 +8575,8 @@ namespace ndn_service_framework
             blobIdentity = makeProtectedBlobDataPrefix(
                 identity, result.contentDigest, currentKeyReferenceId, key.epochId,
                 accessAttribute, durable ? durablePublicationIdentity : std::string{},
-                freshness, maxSegmentBytes, contentName, m_signingInfo.getSignerName());
+                freshness, maxSegmentBytes, contentName, m_signingInfo.getSignerName(),
+                options.requireSegmentManifests);
             encryptedDataName = blobIdentity.dataPrefix;
             result.dataPrefix = encryptedDataName;
 
@@ -8705,7 +8714,9 @@ namespace ndn_service_framework
                 }
                 const auto envelopeBudget = static_cast<std::uintmax_t>(plaintext.size()) +
                                             64ULL * 1024ULL;
-                const auto packetCountBudget = 1 + (envelopeBudget - 1) / maxSegmentBytes;
+                auto packetCountBudget = 1 + (envelopeBudget - 1) / maxSegmentBytes;
+                if (options.requireSegmentManifests)
+                    packetCountBudget += 2 + packetCountBudget / 128 + packetCountBudget / 4096;
                 const auto packetRecordBudget = ndn::MAX_NDN_PACKET_SIZE +
                                                 2 * sizeof(std::uint64_t);
                 if (packetCountBudget >
@@ -8851,7 +8862,8 @@ namespace ndn_service_framework
                     // Small transient control objects already have bounded private
                     // files and immutable signed packets. Keep that owner instead
                     // of committing a second copy through the model Repo catalog.
-                    if (rangeStore && !durable && plaintext.size() >= fileBackedThresholdBytes) {
+                    if (rangeStore && !durable && !options.requireSegmentManifests &&
+                        plaintext.size() >= fileBackedThresholdBytes) {
                         auto commitTiming = measure(STORE_COMMIT);
                             publication->rangeSource = rangeStore->commitFile(
                                 encryptedDataName.toUri(), filePath, encodedBytes, requireActive);
@@ -8867,7 +8879,45 @@ namespace ndn_service_framework
                         if (!publication->stream)
                             throw std::runtime_error("cannot open committed large-data wire file");
                     }
-                    publication->originalPackets = measureCall(ORIGINAL_PACKETS, [&] {
+                    publication->originalPackets = measureCall(ORIGINAL_PACKETS, [&]()
+                        -> std::shared_ptr<const detail::OriginalPacketFile> {
+                      if (options.requireSegmentManifests && segmentCount > 1) {
+                        const auto& payload = publication->manifestPacket->getContent();
+                        const auto descriptor = ProtectedBlobManifest::decode(
+                            {payload.value(), payload.value() + payload.value_size()},
+                            identity, publication->manifestPacket->getName());
+                        auto file = detail::OriginalPacketFile::createExact(
+                            directory, identity, packetStorageBudget);
+                        for (uint32_t groupId = 0;
+                             auto group = descriptor.segmentManifestGroup(groupId); ++groupId) {
+                            std::vector<ndn::ConstBufferPtr> sources;
+                            sources.reserve(group->sourceCount);
+                            for (uint32_t index = 0; index < group->sourceCount; ++index) {
+                                if (requireActive) requireActive();
+                                const auto bytes = publication->readSegment(group->firstSegment + index);
+                                sources.push_back(std::make_shared<ndn::Buffer>(
+                                    bytes.begin(), bytes.end()));
+                            }
+                            std::optional<ManifestPublication> prepared;
+                            onIo([&] {
+                                auto& keyChain = m_testSigningKeyChain ?
+                                    *m_testSigningKeyChain : m_keyChain;
+                                prepared.emplace(ManifestPublication::prepare(keyChain, m_signingInfo,
+                                    group->scope, {group->sourceCount, packetStorageBudget,
+                                                   group->sourceCount}, sources, {}, freshness));
+                            });
+                            std::vector<std::shared_ptr<const ndn::Data>> packets;
+                            for (const auto& packet : prepared->packets())
+                                packets.push_back(std::make_shared<const ndn::Data>(packet));
+                            const auto first = file->appendExact(packets, requireActive);
+                            for (size_t i = 0; i < packets.size(); ++i) {
+                                if (!publication->manifestOrdinals.emplace(
+                                        packets[i]->getName(), first + i).second)
+                                    throw std::runtime_error("duplicate signed input packet name");
+                            }
+                        }
+                        return file;
+                      }
                       return detail::OriginalPacketFile::create(
                         directory, encryptedDataName, segmentCount, packetStorageBudget,
                         [&](std::uint64_t segment) {
@@ -17766,6 +17816,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
                     publication = candidate;
                     break;
                 }
+                auto exactName = interestName;
+                if (!exactName.empty() && exactName.at(-1).isImplicitSha256Digest())
+                    exactName = exactName.getPrefix(-1);
+                if (candidate->manifestOrdinals.count(exactName)) {
+                    publication = candidate;
+                    break;
+                }
                 if (!candidate->baseName.isPrefixOf(interestName)) continue;
                 // SegmentFetcher starts with the versioned base name and
                 // CanBePrefix, then requests explicit /seg=N names.  Serve
@@ -17816,6 +17873,20 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
         if (publication->manifestPacket && publication->manifestPacket->getName() == interestName) {
             m_face.put(*publication->manifestPacket);
+            return true;
+        }
+        if (!publication->manifestOrdinals.empty()) {
+            const auto name = !interestName.empty() && interestName.at(-1).isImplicitSha256Digest()
+                ? interestName.getPrefix(-1) : interestName;
+            const auto found = publication->manifestOrdinals.find(name);
+            if (found == publication->manifestOrdinals.end()) return true;
+            try {
+                const auto data = publication->originalPackets->readExactData(found->second, name);
+                if (interest.matchesData(data)) m_face.put(data);
+            }
+            catch (const std::exception& error) {
+                NDN_LOG_ERROR("signed input original packet read failed: " << error.what());
+            }
             return true;
         }
         const auto segment = interestName.equals(publication->baseName) ?

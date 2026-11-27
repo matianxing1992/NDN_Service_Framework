@@ -244,6 +244,7 @@ namespace ndn_service_framework{
         };
 
         EncryptedLargeDataRetention retention = EncryptedLargeDataRetention::Transient;
+        bool requireSegmentManifests = false;
         // Stable, non-secret identity supplied by the native preparation owner.
         std::string publicationIdentity;
         // Producer-relative semantic manifest prefix, including its namespace.

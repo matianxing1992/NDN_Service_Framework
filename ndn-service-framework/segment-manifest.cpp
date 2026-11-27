@@ -153,6 +153,25 @@ hasCertificateSignature(const ndn::Data& data)
 
 } // namespace
 
+std::optional<std::pair<uint32_t, uint32_t>>
+getSegmentManifestGroupRange(uint32_t sourceCount, uint32_t group)
+{
+  constexpr auto GROUP_SIZE = SegmentManifestVerifier::MAX_SOURCE_PACKETS;
+  const auto offset = static_cast<uint64_t>(group) * GROUP_SIZE;
+  if (offset >= sourceCount)
+    return std::nullopt;
+  auto first = static_cast<uint32_t>(offset);
+  auto count = std::min(GROUP_SIZE, sourceCount - first);
+  if (count == 1 && first != 0) {
+    --first;
+    ++count;
+  }
+  else if (sourceCount - first == GROUP_SIZE + 1) {
+    --count;
+  }
+  return std::make_pair(first, count);
+}
+
 ndn::Name
 SegmentManifestScope::rootName() const
 {

@@ -645,7 +645,9 @@ InputAdmissionOperation ServiceProvider::CollaborationContext::startInputAdmissi
                        size_t byteLimit, ExactDataWireRecovery recovery = {},
                        bool rootControl = false, bool hybridKeyBootstrap = false,
                        std::vector<size_t> optionalSlots = {},
-                       ExactDataRecoveryReady recoveryReady = {}) -> VerifiedInputObject {
+                       ExactDataRecoveryReady recoveryReady = {},
+                       std::optional<ExactManifestRead> manifestRead = std::nullopt)
+                       -> VerifiedInputObject {
         check();
         const InputAdmissionOperation::Impl::FetchKey key{
           input.keyScope, input.object.producerName, names, hybridKeyBootstrap};
@@ -706,7 +708,7 @@ InputAdmissionOperation ServiceProvider::CollaborationContext::startInputAdmissi
                 if (const auto owner = weakState.lock()) owner->schedule();
               },
               std::move(recovery), hybridKeyBootstrap,
-              std::move(optionalSlots), std::move(recoveryReady)));
+              std::move(optionalSlots), std::move(recoveryReady), std::move(manifestRead)));
             throw AwaitRead{};
           }
         }
@@ -813,43 +815,81 @@ InputAdmissionOperation ServiceProvider::CollaborationContext::startInputAdmissi
             dataPrefix = manifest->dataPrefix;
           }
           auto physical = input;
-          physical.object.name = ndn::Name(dataPrefix).appendSegment(0);
-          auto root = fetch(physical, {physical.object.name}, input.maxBytes - indexBytes, {}, true);
-          const auto& first = *root.m_packets->front();
-          const auto layout = detail::FinitePacketLayout::readFrom(
-            first, dataPrefix, input.object.producerName);
-          if (!first.getFinalBlock() || !first.getFinalBlock()->isSegment() ||
-              (layout && layout->framing != detail::FinitePacketLayout::Framing::SEGMENTED))
-            throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
-          if (input.encoding == InputObjectEncoding::ReusableCollaborationObject &&
-              owned->m_assignment.dependencyTransport.redundancy == DependencyRedundancy::Xor &&
-              !layout)
-            throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
-          const auto count = layout ? layout->sourceCount : first.getFinalBlock()->toSegment() + 1;
-          if (count > input.maxPackets - (manifest ? 1 : 0) ||
-              (manifest && count != manifest->segmentCount))
-            throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
-          std::vector<ndn::Name> names;
-          names.reserve(count - 1);
-          for (uint64_t i = 1; i < count; ++i) names.push_back(ndn::Name(dataPrefix).appendSegment(i));
           auto packets = std::make_shared<std::vector<std::shared_ptr<const ndn::Data>>>();
-          packets->reserve(count);
-          packets->push_back(root.m_packets->front());
-          if (!names.empty()) {
-            const auto firstBytes = first.wireEncode().size();
-            if (firstBytes >= input.maxBytes - indexBytes) throw std::runtime_error("INPUT_SIZE_EXCEEDED");
-            auto rest = [&] {
-              if (layout &&
-                  owned->m_assignment.dependencyTransport.redundancy == DependencyRedundancy::Xor) {
-                auto sourceNames = names;
-                sourceNames.insert(sourceNames.begin(), first.getName());
-                return fetchFinite(physical, *layout, sourceNames,
-                  {{first.getName(), root.m_packets->front()}},
-                  input.maxBytes - indexBytes - firstBytes);
+          std::vector<std::shared_ptr<const ndn::Data>> manifestPackets;
+          const bool signedManifest = manifest && manifest->usesSegmentManifests() &&
+                                      manifest->segmentCount > 1;
+          physical.object.name = ndn::Name(dataPrefix).appendSegment(0);
+          auto root = signedManifest ? *index :
+            fetch(physical, {physical.object.name}, input.maxBytes - indexBytes, {}, true);
+          if (signedManifest) {
+            size_t retainedWire = indexBytes;
+            for (uint32_t groupId = 0;
+                 auto group = manifest->segmentManifestGroup(groupId); ++groupId) {
+              const auto pages = SegmentManifestVerifier::pageCountFor(group->sourceCount);
+              const size_t controlCount = 1 + pages;
+              const auto count = controlCount + group->sourceCount;
+              if (count > input.maxPackets - std::min(input.maxPackets,
+                    packets->size() + manifestPackets.size() + 1) || retainedWire >= input.maxBytes)
+                throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
+              std::vector<ndn::Name> names{group->scope.rootName()};
+              for (uint32_t page = 0; page < pages; ++page)
+                names.push_back(group->scope.pageName(page));
+              for (uint32_t segment = 0; segment < group->sourceCount; ++segment)
+                names.push_back(group->scope.sourceName(segment));
+              const auto wireLimit = input.maxBytes - retainedWire;
+              auto received = fetch(input, names, wireLimit, {}, false, false, {}, {},
+                ExactManifestRead{group->scope,
+                  {group->sourceCount, wireLimit, group->sourceCount}, deadline, pages, false});
+              if (received.m_packets->size() != count)
+                throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
+              for (const auto& packet : *received.m_packets) {
+                if (packet->wireEncode().size() > input.maxBytes - retainedWire)
+                  throw std::runtime_error("INPUT_SIZE_EXCEEDED");
+                retainedWire += packet->wireEncode().size();
               }
-              return fetch(physical, names, input.maxBytes - indexBytes - firstBytes);
-            }();
-            packets->insert(packets->end(), rest.m_packets->begin(), rest.m_packets->end());
+              manifestPackets.insert(manifestPackets.end(), received.m_packets->begin(),
+                                     received.m_packets->begin() + controlCount);
+              packets->insert(packets->end(), received.m_packets->begin() + controlCount,
+                              received.m_packets->end());
+            }
+          }
+          else {
+            const auto& first = *root.m_packets->front();
+            const auto layout = detail::FinitePacketLayout::readFrom(
+              first, dataPrefix, input.object.producerName);
+            if (!first.getFinalBlock() || !first.getFinalBlock()->isSegment() ||
+                (layout && layout->framing != detail::FinitePacketLayout::Framing::SEGMENTED))
+              throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
+            if (input.encoding == InputObjectEncoding::ReusableCollaborationObject &&
+                owned->m_assignment.dependencyTransport.redundancy == DependencyRedundancy::Xor &&
+                !layout)
+              throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
+            const auto count = layout ? layout->sourceCount : first.getFinalBlock()->toSegment() + 1;
+            if (count > input.maxPackets - (manifest ? 1 : 0) ||
+                (manifest && count != manifest->segmentCount))
+              throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
+            std::vector<ndn::Name> names;
+            names.reserve(count - 1);
+            for (uint64_t i = 1; i < count; ++i) names.push_back(ndn::Name(dataPrefix).appendSegment(i));
+            packets->reserve(count);
+            packets->push_back(root.m_packets->front());
+            if (!names.empty()) {
+              const auto firstBytes = first.wireEncode().size();
+              if (firstBytes >= input.maxBytes - indexBytes) throw std::runtime_error("INPUT_SIZE_EXCEEDED");
+              auto rest = [&] {
+                if (layout &&
+                    owned->m_assignment.dependencyTransport.redundancy == DependencyRedundancy::Xor) {
+                  auto sourceNames = names;
+                  sourceNames.insert(sourceNames.begin(), first.getName());
+                  return fetchFinite(physical, *layout, sourceNames,
+                    {{first.getName(), root.m_packets->front()}},
+                    input.maxBytes - indexBytes - firstBytes);
+                }
+                return fetch(physical, names, input.maxBytes - indexBytes - firstBytes);
+              }();
+              packets->insert(packets->end(), rest.m_packets->begin(), rest.m_packets->end());
+            }
           }
           auto savedEnvelope = state->immutableEnvelopes.find(input.slotId);
           ndn::ConstBufferPtr encoded;
@@ -857,12 +897,12 @@ InputAdmissionOperation ServiceProvider::CollaborationContext::startInputAdmissi
           size_t encodedBytes = 0;
           for (size_t segment = 0; segment < packets->size(); ++segment) {
             const auto& packet = packets->at(segment);
-            if (packet->getFinalBlock() != first.getFinalBlock() ||
+            if ((!signedManifest && packet->getFinalBlock() != packets->front()->getFinalBlock()) ||
                 packet->getContent().value_size() > input.maxBytes - encodedBytes ||
                 (manifest && packet->getContent().value_size() != std::min<uint64_t>(manifest->segmentBytes,
                   manifest->envelopeBytes - segment * manifest->segmentBytes)))
               throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
-            if (manifest)
+            if (manifest && !signedManifest)
               manifest->validateSigner(*packet);
             encodedBytes += packet->getContent().value_size();
           }
@@ -994,6 +1034,7 @@ InputAdmissionOperation ServiceProvider::CollaborationContext::startInputAdmissi
           if (!plaintext || plaintext->size() > input.maxBytes)
             throw std::runtime_error("INPUT_DECRYPTION_REJECTED");
           root.m_name = input.object.name;
+          packets->insert(packets->begin(), manifestPackets.begin(), manifestPackets.end());
           if (index) packets->insert(packets->begin(), index->m_packets->front());
           root.m_packets = std::move(packets);
           root.m_content = std::make_shared<const ndn::Buffer>(std::move(*plaintext));

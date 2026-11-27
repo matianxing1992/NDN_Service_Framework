@@ -14669,6 +14669,16 @@ namespace ndn_service_framework
                         if (index == 0) {
                             manifest->rootSettled = true;
                             manifest->root.set_value(std::move(content));
+                            if (!manifest->read.deferSourceAdmission) {
+                                manifest->resumed = true;
+                                if (manifest->read.pageCount == 0) {
+                                    manifest->allowSources(0, manifest->verifier->sourceCount());
+                                }
+                                else {
+                                    for (size_t i = 1; i < manifest->firstSource(); ++i)
+                                        manifest->ready.push_back(i);
+                                }
+                            }
                         }
                         else {
                             constexpr auto perPage = SegmentManifestVerifier::SOURCE_PACKETS_PER_PAGE;
@@ -14750,7 +14760,8 @@ namespace ndn_service_framework
                     if (state->error.empty() && allVerified) {
                         result.emplace();
                         std::size_t payloadBytes = 0;
-                        const auto first = manifest ? manifest->firstSource() : 0;
+                        const auto first = manifest && !state->strict
+                            ? manifest->firstSource() : 0;
                         result->contents.reserve(state->content.size() - first);
                         for (std::size_t i = first; i < state->content.size(); ++i) {
                             if (state->slots[i].optional) continue;
@@ -15556,7 +15567,20 @@ namespace ndn_service_framework
                             state->metrics.repairWireBytes += data.wireEncode().size();
                         }
                         if (state->manifest) {
-                            const auto wireSize = data.wireEncode().size();
+                            const auto& wire = data.wireEncode();
+                            const auto wireSize = wire.size();
+                            if (retainOriginalWire) {
+                                const auto used = state->retainedWireBytes.fetch_add(wireSize);
+                                if (used > state->maxRetainedWireBytes ||
+                                    wireSize > state->maxRetainedWireBytes - used) {
+                                    finish({}, "manifest original retained-byte limit exceeded");
+                                    return;
+                                }
+                                state->recordPeakRetained(used + wireSize);
+                                std::lock_guard<std::mutex> lock(state->mutex);
+                                if (state->completed.load()) return;
+                                state->content[index].assign(wire.begin(), wire.end());
+                            }
                             if (index == 0) {
                                 try {
                                     validator->validateManifestRoot(data, state->manifest->read.scope,
@@ -15628,6 +15652,8 @@ namespace ndn_service_framework
                                 finish({}, error.what());
                                 return;
                             }
+                            if (retainOriginalWire)
+                                payload.assign(wire.begin(), wire.end());
                             finish(std::move(payload), {});
                             return;
                         }
@@ -21794,6 +21820,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             // Access to admission and this handle is serialized by mutex;
             // only the Face executor starts or stops the fetcher.
             std::shared_ptr<ndn::SegmentFetcher> fetcher;
+            std::shared_ptr<detail::SegmentManifestFetch> manifestFetcher;
             bool terminalRequested = false;
             bool cleanupDone = false;
         };
@@ -21815,10 +21842,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             completed->store(true);
         }
         else {
+        const bool requireInputManifests =
+            (requestInput && requestInput->requireSegmentManifests) ||
+            (expectedManifest && expectedManifest->usesSegmentManifests());
         boost::asio::post(m_face.getIoContext(), [this, stopping, current, overallDeadline, dataValidator, encryptedDataName,
                                                   mutex, owner, finish,
                                                   interestLifetimeMs, fetchTimeoutMs, expectedManifest,
-                                                  producer, explicitProducerBound] {
+                                                  producer, explicitProducerBound, requireInputManifests] {
             std::unique_lock<std::mutex> admission(*mutex);
             if (owner->terminalRequested || stopping->load() ||
                 std::chrono::steady_clock::now() >= overallDeadline || (current && !current())) return;
@@ -21827,6 +21857,50 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             interest.setMustBeFresh(true);
             interest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
             try {
+                if (requireInputManifests && expectedManifest && expectedManifest->segmentCount > 1) {
+                    const auto descriptor = *expectedManifest;
+                    if (descriptor.envelopeBytes > (1ULL << 30))
+                        throw std::length_error("signed input envelope exceeds receive bound");
+                    const auto groupAt = [descriptor](uint32_t index)
+                        -> std::optional<detail::SegmentManifestFetch::Group> {
+                        const auto group = descriptor.segmentManifestGroup(index);
+                        if (!group) return std::nullopt;
+                        return detail::SegmentManifestFetch::Group{group->scope,
+                            {group->sourceCount,
+                             uint64_t(group->sourceCount + 33) * ndn::MAX_NDN_PACKET_SIZE,
+                             group->sourceCount}};
+                    };
+                    const auto bytes = std::make_shared<ndn::Buffer>();
+                    bytes->reserve(descriptor.envelopeBytes);
+                    const auto consume = [bytes, descriptor, stopping, current, overallDeadline](
+                        const ndn::Block& content) {
+                        if (stopping->load() || (current && !current()) ||
+                            std::chrono::steady_clock::now() >= overallDeadline)
+                            throw std::runtime_error("signed input authority or deadline expired");
+                        if (content.value_size() == 0 ||
+                            content.value_size() > descriptor.envelopeBytes - bytes->size())
+                            throw std::length_error("signed input exceeds declared envelope");
+                        bytes->insert(bytes->end(), content.value(), content.value() + content.value_size());
+                    };
+                    const auto finishManifest = [finish, bytes, descriptor](
+                        std::string error, uint32_t roots, uint64_t members) {
+                        if (error.empty() && bytes->size() != descriptor.envelopeBytes)
+                            error = "signed input envelope is incomplete";
+                        if (error.empty()) {
+                            NDN_LOG_INFO("NDNSF_PROTECTED_INPUT_MANIFEST_VERIFIED name="
+                                << descriptor.dataPrefix << " certificate_validations=" << roots
+                                << " hash_verified_members=" << members);
+                        }
+                        finish(std::move(error), bytes);
+                    };
+                    owner->manifestFetcher = std::make_shared<detail::SegmentManifestFetch>(
+                        m_face, dataValidator, ndn::time::milliseconds(interestLifetimeMs),
+                        8, groupAt, consume, finishManifest);
+                    const auto active = owner->manifestFetcher;
+                    admission.unlock();
+                    active->start();
+                    return;
+                }
                 ndn::SegmentFetcher::Options options;
                 options.probeLatestVersion = false;
                 options.useConstantCwnd = true;
@@ -21906,12 +21980,16 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         auto* faceIo = &m_face.getIoContext();
         boost::asio::post(*faceIo, [owner, mutex, cv, faceIo] {
             std::shared_ptr<ndn::SegmentFetcher> active;
+            std::shared_ptr<detail::SegmentManifestFetch> manifest;
             {
                 std::lock_guard<std::mutex> lock(*mutex);
                 active = std::move(owner->fetcher);
+                manifest = std::move(owner->manifestFetcher);
             }
             if (active) active->stop();
+            if (manifest) manifest->stop();
             active.reset();
+            manifest.reset();
             // stop() itself posts release of the library's self ownership.
             // A second Face post acknowledges cleanup after that release.
             boost::asio::post(*faceIo, [owner, mutex, cv] {

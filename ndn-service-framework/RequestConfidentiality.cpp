@@ -256,22 +256,10 @@ getRequestResponseManifestGroup(const LargeDataReference& reference,
   if (!producer.isPrefixOf(reference.dataName) || producer.size() >= reference.dataName.size()) {
     throw std::invalid_argument("request response manifest Producer name mismatch");
   }
-  const auto total = *reference.manifestSourceSegments;
-  constexpr auto GROUP_SIZE = SegmentManifestVerifier::MAX_SOURCE_PACKETS;
-  const auto offset = static_cast<uint64_t>(group) * GROUP_SIZE;
-  if (offset >= total) {
+  const auto range = getSegmentManifestGroupRange(*reference.manifestSourceSegments, group);
+  if (!range)
     return std::nullopt;
-  }
-  auto first = static_cast<uint32_t>(offset);
-  auto count = std::min(GROUP_SIZE, total - first);
-  // A final singleton borrows its predecessor's last segment.
-  if (count == 1) {
-    --first;
-    ++count;
-  }
-  else if (total - first == GROUP_SIZE + 1) {
-    --count;
-  }
+  const auto [first, count] = *range;
   auto responseBinding = binding;
   responseBinding.segmentOrEventId = "response";
   constexpr std::string_view DOMAIN = "ndnsf/request-response/manifest/v1";
