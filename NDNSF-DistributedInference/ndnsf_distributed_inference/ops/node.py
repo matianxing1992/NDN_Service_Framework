@@ -406,6 +406,11 @@ def run_role(args):
             return _receipt(state, receipt)
 
         def launch_native(argv, **kwargs):
+            # The container launcher rebuilds the native environment. Preserve the
+            # explicit, already validated filter until that second boundary.
+            if args.debug and 'NDNSF_DI_DIAGNOSTIC_LOG_FILTER' in os.environ:
+                env = kwargs['env']
+                kwargs['env'] = dict(env, NDNSF_DI_DIAGNOSTIC_LOG_FILTER=env['NDN_LOG'])
             child = subprocess.Popen(_container_command(args, argv), **kwargs)
             container_children.append(child)
             expected = str(Path(argv[0]).resolve())

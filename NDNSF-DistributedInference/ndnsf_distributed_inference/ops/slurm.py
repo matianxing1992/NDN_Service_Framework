@@ -403,6 +403,7 @@ def _remaining(deadline):
 
 def up(config, source, root, timeout, debug=False, timing=False, repo_benchmark=None):
     """Persist a single submission intent before allowing any scheduler side effect."""
+    log_filter = cluster._diagnostic_log_filter() if debug else None
     if config.get('operation') == 'repo-benchmark' and repo_benchmark is not None:
         if (repo_benchmark.get('source') != config['repo_benchmark']['source'] or
                 repo_benchmark.get('sha256') != config['repo_benchmark']['sha256']):
@@ -432,6 +433,9 @@ def up(config, source, root, timeout, debug=False, timing=False, repo_benchmark=
             argv.append('--debug')
         if timing:
             argv.append('--timing')
+        if log_filter is not None:
+            # The adapter submits with --export=NONE. Bind this one opt-in to the script.
+            argv[:0] = ['/usr/bin/env', 'NDNSF_DI_DIAGNOSTIC_LOG_FILTER=' + log_filter]
         script = directory / 'allocation.sbatch'
         with script.open('x') as stream:
             stream.write('#!/bin/bash\nset -euo pipefail\nexec ' + shlex.join(argv) + '\n')

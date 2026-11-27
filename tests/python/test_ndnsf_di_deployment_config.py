@@ -2845,6 +2845,34 @@ def test_diagnostic_log_filter_rejects_invalid_values(ops, tmp_path, monkeypatch
         cluster._environment(tmp_path, tmp_path/'nfd.sock', 'repo', state)
 
 
+@pytest.mark.parametrize('debug', [False, True])
+def test_slurm_binds_explicit_diagnostic_filter_to_submission(ops, tmp_path, monkeypatch, debug):
+    import shlex
+
+    slurm = importlib.import_module('_spec217_ops.slurm')
+    variable = 'NDNSF_DI_DIAGNOSTIC_LOG_FILTER'
+    mask = "*=NONE:ndnsf.di.RuntimeEvidence=WARN:literal='$(x)'"
+    monkeypatch.setenv(variable, mask)
+    release = tmp_path/'release.json'
+    release.write_text('{}')
+    config = {'deployment_id': 'diag', 'storage': {'evidence_root': str(tmp_path/'evidence')},
+              'release': {'manifest': str(release)}}
+
+    def check_script(_, config, script, **binding):
+        command = shlex.split(script.read_text().splitlines()[-1])
+        assert command[0] == 'exec'
+        if debug:
+            assert command[1:3] == ['/usr/bin/env', f'{variable}={mask}']
+        else:
+            assert all(not part.startswith(variable) for part in command)
+        assert ('--debug' in command) is debug
+        raise ValueError('checked submission script')
+
+    monkeypatch.setattr(slurm.SlurmApptainerAdapter, 'prepare_deployment', check_script)
+    with pytest.raises(ValueError, match='checked submission script'):
+        slurm.up(config, tmp_path/'source.json', tmp_path/'state', 1, debug=debug)
+
+
 @pytest.mark.parametrize('runner_entries', [0, 1])
 def test_provider_native_launch_passes_cache_and_exact_transport_parameters(
         ops, deployment, runner_entries):
@@ -4701,15 +4729,18 @@ def test_host_container_commands_keep_native_helpers_in_owned_groups(ops):
 def test_native_steps_explicitly_export_bindings_from_isolated_batch(ops):
     allocation = importlib.import_module('_spec217_ops.allocation')
     config = dict(nodes=[dict(id='node', host='fixture-host', cpus=1, nfd=dict(mode='managed'))])
-    for kind in ('nfd', 'nfdc', 'requester', 'controller', 'provider', 'audit'):
+    for kind in ('nfd', 'nfdc', 'requester', 'controller', 'provider', 'audit', 'gpu-probe'):
         role = dict(id=kind, kind=kind, node='node', resources=dict(cpus=1, gpu_devices=[]))
         command = allocation.step_arguments(config, role)
         assert command.count('--export=ALL') == 1
         assert '--gres=none' in command
+        binding = '--cpu-bind=none' if kind in ('audit', 'gpu-probe') else '--cpu-bind=threads'
+        assert [arg for arg in command if arg.startswith('--cpu-bind=')] == [binding]
 
 
+@pytest.mark.parametrize('debug', [False, True])
 def test_host_gpu_owner_keeps_step_pool_mask_until_container_scopes_actor(node_container,
-                                                                       monkeypatch):
+                                                                       monkeypatch, debug):
     config, container, frozen, _, _ = node_container
     owner = importlib.import_module('_spec217_ops.node')
     actor = next(item for item in config['actors'] if item['id'] == 'p0')
@@ -4719,6 +4750,9 @@ def test_host_gpu_owner_keeps_step_pool_mask_until_container_scopes_actor(node_c
     container.cluster.write_json(frozen, config)
     args = _role_args(config, frozen, actor='p0', timeout=3)
     args.host_container = True
+    args.debug = debug
+    log_filter = '*=NONE:ndnsf.di.RuntimeEvidence=WARN'
+    monkeypatch.setenv('NDNSF_DI_DIAGNOSTIC_LOG_FILTER', log_filter)
     _role_environment(monkeypatch, args, 'step.p0')
     monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0,1')
     monkeypatch.setenv('SLURM_STEP_GPUS', '2,6')
@@ -4747,7 +4781,9 @@ def test_host_gpu_owner_keeps_step_pool_mask_until_container_scopes_actor(node_c
         event = dict(event='NDNSF_DEPLOYMENT_READY', actor_id=actor['id'],
             identity=actor['identity'], boot_id=args.boot_id,
             config_sha256=args.configuration_sha256, native_boot_id='native')
-        code = ('import json,os,signal,time; e=' + repr(event) +
+        code = ('import json,os,signal,time; '
+                'assert os.getenv("NDNSF_DI_DIAGNOSTIC_LOG_FILTER") == '
+                + repr(log_filter if debug else None) + '; e=' + repr(event) +
                 '; e["pid"]=os.getpid(); print(json.dumps(e),flush=True); '
                 'time.sleep(.2); os.kill(os.getppid(),signal.SIGTERM); time.sleep(60)')
         return [sys.executable, '-c', code], env

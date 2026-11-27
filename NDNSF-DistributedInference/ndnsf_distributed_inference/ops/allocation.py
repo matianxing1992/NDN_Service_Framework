@@ -315,8 +315,9 @@ def step_arguments(config, role, gpu_allocation=None):
     cpus = node['cpus'] if resident else resources['cpus']
     command = ['srun', '--overlap', '--exact', '--export=ALL', '--nodes=1', '--ntasks=1',
                '--nodelist=' + node['host'], '--cpus-per-task=' + str(cpus)]
-    if resident:
-        command.append('--cpu-bind=threads')
+    # Management steps request one CPU. Do not inherit a binding for the
+    # whole allocation, which can be outside that step's Slurm CPU mask.
+    command.append('--cpu-bind=threads' if resident else '--cpu-bind=none')
     slots = _gpu_slots(role, gpu_allocation)
     if slots:
         # The container scopes declared UUIDs; Slurm/NVML mask numbering may differ.

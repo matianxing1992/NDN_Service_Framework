@@ -177,6 +177,14 @@ def _lock(root):
         os.close(descriptor)
 
 
+def _diagnostic_log_filter():
+    mask = os.environ.get('NDNSF_DI_DIAGNOSTIC_LOG_FILTER')
+    if mask is not None and (not mask or len(mask) > 4096 or
+                             any(ord(c) < 33 or ord(c) > 126 for c in mask)):
+        raise ClusterError('invalid NDNSF_DI_DIAGNOSTIC_LOG_FILTER')
+    return mask
+
+
 def _environment(home, socket, actor_id, state):
     # Avoid development overrides or credentials from the invoking shell.
     env = {key: value for key, value in os.environ.items()
@@ -192,10 +200,8 @@ def _environment(home, socket, actor_id, state):
     if state.get('diagnostic_logging'):
         # Explicit diagnostic mode may narrow logs to the boundary under study.
         env['NDNSF_SPEC192_REPO_OPERATION_TRACE'] = '1'
-        mask = os.environ.get('NDNSF_DI_DIAGNOSTIC_LOG_FILTER')
+        mask = _diagnostic_log_filter()
         if mask is not None:
-            if not mask or len(mask) > 4096 or any(ord(c) < 33 or ord(c) > 126 for c in mask):
-                raise ClusterError('invalid NDNSF_DI_DIAGNOSTIC_LOG_FILTER')
             env['NDN_LOG'] = mask
     if 'release_sha256' in state:
         env['NDNSF_DEPLOYMENT_RELEASE_SHA256'] = state['release_sha256']
