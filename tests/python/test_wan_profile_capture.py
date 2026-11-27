@@ -3,13 +3,14 @@
 import hashlib
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 
-@pytest.fixture
-def observer(tmp_path, monkeypatch):
+@pytest.fixture(params=["wan-video-pp", "wan-video-pp-tp", "wan-video-tp-pp"])
+def observer(tmp_path, monkeypatch, request):
     path = (Path(__file__).resolve().parents[2] / 'Experiments/TigerCluster/scripts' /
             'capture-wan-profiles.py')
     spec = importlib.util.spec_from_file_location('wan_profile_capture', path)
@@ -21,7 +22,7 @@ def observer(tmp_path, monkeypatch):
     source = tmp_path / 'artifacts'
     source.mkdir()
     clip = tmp_path / 'output/video/clip'
-    deployment = 'wan-video-pp'
+    deployment = request.param
     boot = 'f' * 32
 
     def write(path, value):
@@ -111,3 +112,19 @@ def test_profile_json_validation_is_deferred_and_still_rejects_malformed_archive
     with pytest.raises(json.JSONDecodeError):
         module.verify(root)
     assert not (root / 'provider-1-profile-verification.json').exists()
+
+
+def test_host_cli_arguments_capture_and_verify_the_same_archive(observer, monkeypatch):
+    module, root, source, output, _ = observer
+    (source / 'ort-profile-cli.json').write_bytes(b'[]')
+    monkeypatch.setattr(module.subprocess, 'check_output',
+                        lambda *a, **k: pytest.fail('terminal observer queried NVML'))
+    args = ['capture-wan-profiles.py', str(root), '--output-root', str(output.parents[1]),
+            '--timeout', '1', '--max-bytes', '1048576', '--max-profiles', '16']
+    monkeypatch.setattr(sys, 'argv', args)
+    module.main()
+    assert (output / 'ort-profile-cli.json').read_bytes() == b'[]'
+    monkeypatch.setattr(sys, 'argv', args + ['--verify-only'])
+    module.main()
+    receipt = json.loads((root / 'provider-1-profile-verification.json').read_bytes())
+    assert receipt['profiles'] == 1 and receipt['profile_json_validated']
