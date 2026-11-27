@@ -14,6 +14,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 from . import cluster
@@ -29,7 +30,7 @@ _ROLE_STOP_GRACE_SECONDS = 10.0
 def benchmark_phases(config):
     """Ordered finite phase plan for the frozen repo-benchmark operation.
 
-    Each round writes one immutable 500,000,000-byte file, restarts the Repo
+    Each round writes one immutable file of the frozen size, restarts the Repo
     once, then reads it twice through a fresh reader. The Repo incarnation is
     the number of restarts completed before the phase runs.
     """
@@ -47,6 +48,27 @@ def benchmark_phases(config):
     return plan
 
 
+def _prepare_benchmark_source(spec):
+    """Materialize the deterministic experiment input in the Requester allocation."""
+    source = Path(spec['source'])
+    cluster._private_directory(source.parent)
+    digest = hashlib.sha256()
+    total = spec['bytes']
+    block_size = 1 << 20
+    with tempfile.NamedTemporaryFile(dir=source.parent, prefix='.payload-') as stream:
+        for index, offset in enumerate(range(0, total, block_size)):
+            block = hashlib.shake_256(b'NDNSF Spec 271 recovery fixture v1' +
+                                      index.to_bytes(8, 'big')).digest(min(block_size, total - offset))
+            stream.write(block)
+            digest.update(block)
+        if digest.hexdigest() != spec['sha256']:
+            raise cluster.ClusterError('ALLOCATION_REPO_BENCHMARK_SOURCE_DIGEST_MISMATCH')
+        stream.flush()
+        os.fsync(stream.fileno())
+        os.link(stream.name, source)
+    print(json.dumps(dict(source=str(source), bytes=total, sha256=digest.hexdigest())), flush=True)
+
+
 def benchmark_phase_id(item):
     return 'round-{}.{}'.format(item['round'], item['phase'])
 
@@ -54,9 +76,8 @@ def benchmark_phase_id(item):
 def benchmark_reference_path(config, item, boot_directory=None):
     """Stable per-round reference path shared by the write and both reads.
 
-    The reference lives in the boot's evidence directory, which the requester
-    container already mounts writable; a separate cache-root mount was found to
-    break the role's other binds on the Slurm path.
+    The writer owns the reference directory in its boot evidence. A later
+    reader receives that round's committed reference as a read-only file.
     """
     base = Path(boot_directory) if boot_directory is not None else (
         Path(config['storage']['evidence_root']) / config['deployment_id'])
@@ -80,8 +101,9 @@ def _audit_id(node_id):
     return 'host-audit.' + hashlib.sha256(node_id.encode()).hexdigest()[:32]
 
 
-def _audit_tag(node_id, role_id=None):
-    return _audit_id(node_id) + ('.' + hashlib.sha256(role_id.encode()).hexdigest()[:16]
+def _audit_tag(node_id, role_id=None, *, phase_id=None):
+    identity = role_id + '\0' + phase_id if phase_id else role_id
+    return _audit_id(node_id) + ('.' + hashlib.sha256(identity.encode()).hexdigest()[:16]
                                 if role_id else '')
 
 
@@ -227,6 +249,8 @@ def audit_node(args, config):
                 known[proof['pid']] = proof
         ignored = {_audit_id(item['id']) for item in config['nodes']} | {
             _audit_tag(role['node'], role['id']) for role in roles}
+        if args.observe_role and getattr(args, 'phase_id', None):
+            ignored.add(_audit_tag(node['id'], args.observe_role, phase_id=args.phase_id))
         if ignored & {role['id'] for role in roles}:
             raise cluster.ClusterError('ALLOCATION_AUDIT_ROLE_ID_COLLISION')
         for root in Path('/proc').iterdir():
@@ -467,7 +491,8 @@ def run_allocation(args, config):
                 command += ['--phase-id', phase_id]
             # Prime a positive NFS entry before the remote owner polls it.
             # A newly created cancellation can otherwise remain negatively cached.
-            cancel_root = _receipt_path(args, role).parent / 'runtime' / config['deployment_id']
+            cancel_root = (_receipt_path(args, role, phase_id=phase_id).parent
+                           / 'runtime' / config['deployment_id'])
             cluster._private_directory(cancel_root)
             try:
                 descriptor = os.open(str(cancel_root / 'cancel.json'),
@@ -499,7 +524,7 @@ def run_allocation(args, config):
                 command += ['--observe-role', role_id]
                 if phase_id:
                     command += ['--phase-id', phase_id]
-            tag = _audit_tag(node_id, role_id)
+            tag = _audit_tag(node_id, role_id, phase_id=phase_id)
             # Ignore only the explicit host-audit identity during its own scan.
             env = dict(os.environ, NDNSF_DEPLOYMENT_BOOT_ID=args.boot_id,
                        NDNSF_DEPLOYMENT_CONFIG_SHA256=args.configuration_sha256,
@@ -551,12 +576,12 @@ def run_allocation(args, config):
                         value.get('native_process'),
                         read_role(args, observed, phase_id=phase_id) or {}, observed)):
                     raise cluster.ClusterError('ALLOCATION_HOST_AUDIT_PROOF_MISSING:' + role_id)
+                if config.get('operation') == 'repo-benchmark' and observed['kind'] == 'nfd':
+                    cs = value.get('cs')
+                    if not isinstance(cs, dict) or cs.get('capacity') != 0 or cs.get('nEntries') != 0:
+                        raise cluster.ClusterError('ALLOCATION_HOST_AUDIT_CS_NOT_ZERO:' + node_id)
             elif value.get('processes') != [] or value.get('errors') != []:
                 raise cluster.ClusterError('ALLOCATION_HOST_AUDIT_ZERO_NOT_PROVEN:' + node_id)
-            elif config.get('operation') == 'repo-benchmark' and (
-                    not isinstance(value.get('cs'), dict) or value['cs'].get('capacity') != 0 or
-                    value['cs'].get('nEntries') != 0):
-                raise cluster.ClusterError('ALLOCATION_HOST_AUDIT_CS_NOT_ZERO:' + node_id)
             state['host_audits'].append(str(target))
 
         def await_ready(child, role, *, phase_id=None):
@@ -589,7 +614,7 @@ def run_allocation(args, config):
             plan = benchmark_phases(config)
             recorded = False
             repo_phase = None
-            for item in plan:
+            for index, item in enumerate(plan):
                 phase_id = benchmark_phase_id(item)
                 reference = benchmark_reference_path(
                     config, item, args.deployment.parent / 'actors' / requester_role['id'])
@@ -607,9 +632,9 @@ def run_allocation(args, config):
                     guard()
                     value = read_role(args, requester_role, phase_id=phase_id)
                     if value and value['readiness'] == 'FINITE_RUNNING':
-                        # The phase receipt already carries the native launch proof
-                        # and its own cleanup; the per-start host audit is not needed
-                        # here. Host ZERO remains the final closeout audit.
+                        # Closeout binds the requester audit to the last phase receipt.
+                        if index == len(plan) - 1:
+                            audit(requester_role['node'], requester_role['id'], phase_id=phase_id)
                         break
                     time.sleep(0.05)
                 wait(child, requester_role['id'])
@@ -667,6 +692,17 @@ def run_allocation(args, config):
             if set(hosts) != {node['host'] for node in config['nodes']} or len(hosts) != len(config['nodes']):
                 raise cluster.ClusterError('ALLOCATION_NODE_MEMBERSHIP_MISMATCH')
             if not args.routes_only:
+                benchmark = config.get('repo_benchmark', {})
+                if config.get('operation') == 'repo-benchmark' and 'source_recipe' in benchmark:
+                    requester = next(role for role in roles if role['kind'] == 'requester')
+                    step = dict(id='benchmark-source', kind='audit', node=requester['node'])
+                    prepare = ('from ndnsf_di_launcher import _bind_package_root; _bind_package_root(); '
+                               'from ndnsf_distributed_inference.ops.allocation import '
+                               '_prepare_benchmark_source; import json, sys; '
+                               '_prepare_benchmark_source(json.loads(sys.argv[1]))')
+                    child = launch(step['id'], 'preparation', step_arguments(config, step) +
+                                   [sys.executable, '-I', '-c', prepare, json.dumps(benchmark)])
+                    wait(child, step['id'])
                 for node in config['nodes']:
                     if not any(role['node'] == node['id'] and _gpu_selectors(role) for role in roles):
                         continue

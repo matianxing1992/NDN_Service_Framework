@@ -605,13 +605,23 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
         if 'options_file' in requester.get('request', {}):
             add(requester['request']['options_file'])
         if config.get('operation') == 'repo-benchmark':
-            # The staged benchmark requester has no inference catalog. The
-            # writer reads the frozen source; the reference directory is a
-            # separate mount added below so this control keeps the earlier
-            # request path unchanged.
+            phase = os.environ.get('NDNSF_BENCHMARK_PHASE', 'write')
             if phase_id:
-                add(base_evidence, directory=True)
-            if os.environ.get('NDNSF_BENCHMARK_PHASE', 'write') != 'read':
+                from .allocation import benchmark_reference_path
+                round_index = os.environ.get('NDNSF_BENCHMARK_ROUND', '')
+                if (not round_index.isdecimal() or
+                        phase not in ('write', 'read-first', 'read-repeat') or
+                        phase_id != f'round-{round_index}.{phase}'):
+                    raise cluster.ClusterError('CONTAINER_BENCHMARK_PHASE_INVALID')
+                reference = benchmark_reference_path(
+                    config, {'round': int(round_index)}, base_evidence)
+                if os.environ.get('NDNSF_BENCHMARK_REFERENCE') != str(reference):
+                    raise cluster.ClusterError('CONTAINER_BENCHMARK_REFERENCE_MISMATCH')
+                if phase == 'write':
+                    add(reference.parent, writable=True, directory=True)
+                else:
+                    add(reference)
+            if phase in ('write', 'write-read'):
                 add(config['repo_benchmark']['source'])
             return role_id, home, evidence, mounts, repository_locks
         catalog = requester['catalog']

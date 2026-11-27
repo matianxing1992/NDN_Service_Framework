@@ -18,6 +18,10 @@ from pathlib import Path
 
 from .allocation_topology import DIGEST, PROCESS_ID
 
+REPO_BENCHMARK_AUTHENTICATION = 'manifest'
+REPO_BENCHMARK_FILE_SIZES = (500_000_000, 20_000_000_000)
+REPO_BENCHMARK_SOURCE_RECIPE = 'shake256-v1'
+
 REPO_MANIFEST_BENCHMARK_OPTIONS = {
     'manifest-segment-bytes': (('7000', '8400'), None),
     'manifest-group-segments': (('2048', '2560', '3840'), 'write'),
@@ -27,6 +31,15 @@ REPO_MANIFEST_BENCHMARK_OPTIONS = {
     'manifest-read-total-window': (('32', '48', '64'), 'read'),
     'manifest-owner-claims': (('selected', 'targeted'), 'read'),
 }
+
+
+def invalid_repo_manifest_benchmark_option(options, phase):
+    for option, (choices, phase_limit) in REPO_MANIFEST_BENCHMARK_OPTIONS.items():
+        if option in options and (options[option] not in choices or
+                (phase_limit is not None and phase not in (phase_limit, 'write-read'))):
+            return option
+    return None
+
 
 REPO_MANIFEST_SERVER_OPTIONS = {
     'manifest-fetch-window': 4096,
@@ -236,20 +249,29 @@ def load_deployment(path, *, prepare_only=False):
         _fail('operation', 'expected run, prepare or repo-benchmark')
     benchmark = config.get('operation') == 'repo-benchmark'
     if benchmark:
-        # The frozen T012 profile: one immutable 500,000,000-byte source, three
-        # rounds. Other sizes, repetition counts and unknown fields are rejected.
+        # Freeze the source size and phase count together with transport settings.
         spec = _object(config.get('repo_benchmark'), 'repo_benchmark',
-                       {"source", "sha256", "bytes", "repetitions"},
+                       {"source", "sha256", "bytes", "repetitions", "authentication", "source_recipe",
+                        *REPO_MANIFEST_BENCHMARK_OPTIONS},
                        {"source", "sha256", "bytes", "repetitions"})
+        if spec.setdefault('authentication',
+                           REPO_BENCHMARK_AUTHENTICATION) != REPO_BENCHMARK_AUTHENTICATION:
+            _fail('repo_benchmark.authentication', 'requires signed manifest authentication')
+        invalid = invalid_repo_manifest_benchmark_option(spec, 'write-read')
+        if invalid is not None:
+            _fail('repo_benchmark.' + invalid, 'invalid manifest benchmark option')
+        if 'manifest-read-total-window' in spec and 'manifest-read-pipeline' not in spec:
+            _fail('repo_benchmark.manifest-read-total-window', 'requires manifest-read-pipeline')
         source_path = _string(spec['source'], 'repo_benchmark.source')
         if not Path(source_path).is_absolute() or ".." in Path(source_path).parts:
             _fail('repo_benchmark.source', 'requires an absolute compute-node path')
         if not re.fullmatch(r'[0-9a-f]{64}', _string(spec['sha256'], 'repo_benchmark.sha256')):
             _fail('repo_benchmark.sha256', 'expected lowercase SHA-256')
-        if _integer(spec['bytes'], 'repo_benchmark.bytes', 1) != 500000000:
-            _fail('repo_benchmark.bytes', 'the frozen profile requires 500000000 bytes')
-        if _integer(spec['repetitions'], 'repo_benchmark.repetitions', 1) != 3:
-            _fail('repo_benchmark.repetitions', 'the frozen profile requires three rounds')
+        size = _integer(spec['bytes'], 'repo_benchmark.bytes', 1)
+        if size not in REPO_BENCHMARK_FILE_SIZES:
+            _fail('repo_benchmark.bytes', 'expected 500000000 or 20000000000 bytes')
+        if _integer(spec['repetitions'], 'repo_benchmark.repetitions', 1) not in (1, 3):
+            _fail('repo_benchmark.repetitions', 'expected one or three rounds')
     requester_input = _object(config['requester'], 'requester')
     model_input = _object(requester_input.get('model_input', {}), 'requester.model_input')
     publish_only = config.get('operation') == 'prepare' and model_input.get('mode') == 'publish-stored'
@@ -261,6 +283,11 @@ def load_deployment(path, *, prepare_only=False):
         _fail("platform.kind", "unsupported platform")
     namespaced = platform["kind"] == "minindn"
     local = platform["kind"] != "slurm-apptainer"
+    if benchmark and 'source_recipe' in spec:
+        if (local or spec['source_recipe'] != REPO_BENCHMARK_SOURCE_RECIPE or
+                Path('/tmp') not in Path(source_path).parents):
+            _fail('repo_benchmark.source_recipe',
+                  'requires shake256-v1 and a Slurm allocation-local source under /tmp')
     if platform["kind"] == "host" and platform.keys() != {"kind"}:
         _fail("platform", "host cannot declare container/scheduler inputs")
     if namespaced and platform.keys() != {"kind", "topology", "topology_sha256"}:
@@ -632,6 +659,8 @@ def load_deployment(path, *, prepare_only=False):
         _name(route["prefix"], "route.prefix")
 
     if not local:
+        if benchmark and any(node['nfd']['mode'] != 'managed' for node in nodes.values()):
+            _fail('nodes.nfd.mode', 'Repo benchmark requires managed forwarders')
         slurm = platform["slurm"]
         _bind(slurm, "nodes", len(nodes), "platform.slurm.nodes")
         if len({node["host"] for node in nodes.values()}) != len(nodes):
@@ -879,8 +908,9 @@ def _translate_native(config, by_kind, resolve):
                                                  'cache-bytes', 'large-object-threshold-bytes',
                                                  'core-svs-periodic-sync-ms', 'handler-threads',
                                                  *REPO_MANIFEST_SERVER_OPTIONS})
-            if not local and parameters.keys() & {'handler-threads', *REPO_MANIFEST_SERVER_OPTIONS}:
-                _fail('repo.parameters', 'manifest tuning requires a local deployment')
+            if not local and not benchmark and (
+                    parameters.keys() & {'handler-threads', *REPO_MANIFEST_SERVER_OPTIONS}):
+                _fail('repo.parameters', 'manifest tuning requires local or Repo benchmark deployment')
             for option, limit in REPO_MANIFEST_SERVER_OPTIONS.items():
                 if option not in parameters:
                     continue

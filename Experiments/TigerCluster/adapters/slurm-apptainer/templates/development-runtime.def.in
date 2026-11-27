@@ -194,7 +194,7 @@ PY
     if [ "$NDNSF_RUNTIME_PROFILE" = di-runtime ]; then
       ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest
     else
-      ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-repo,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,ndnsf-identity-check,DI_NativeRequester,DI_NativeArtifactAuthority,DistributedRepoServer,NDNSF_RepoPacketServer,multiturn-oracle,di-native-provider,di-native-assembly-worker,ndnsf-di-device-query,di-native-fault-provider,spec187-yolo-minindn,di-prepare-wan-checkpoint,di-wan-checkpoint-oracle,di-wan-video-oracle,write-wan-video-fixture,public-trust-installer
+      ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-repo,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,ndnsf-identity-check,DI_NativeRequester,DI_NativeArtifactAuthority,DistributedRepoServer,NDNSF_RepoPacketServer,ndnsf-repo-file-benchmark,multiturn-oracle,di-native-provider,di-native-assembly-worker,ndnsf-di-device-query,di-native-fault-provider,spec187-yolo-minindn,di-prepare-wan-checkpoint,di-wan-checkpoint-oracle,di-wan-video-oracle,write-wan-video-fixture,public-trust-installer
     fi
     test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker
     test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/libexec/ndnsf-di/ndnsf-di-device-query
@@ -401,6 +401,7 @@ artifacts = [('provider', base / 'bin/di-native-provider', runtime / 'bin/di-nat
              ('requester', base / 'bin/DI_NativeRequester', runtime / 'bin/DI_NativeRequester'),
              ('repo', base / 'bin/DistributedRepoServer', runtime / 'bin/DistributedRepoServer'),
              ('packetRepo', base / 'bin/NDNSF_RepoPacketServer', runtime / 'bin/NDNSF_RepoPacketServer'),
+             ('repoFileBenchmark', base / 'bin/ndnsf-repo-file-benchmark', runtime / 'bin/ndnsf-repo-file-benchmark'),
              ('identity', base / 'bin/ndnsf-identity-check', runtime / 'bin/ndnsf-identity-check'),
              ('oracle', base / 'bin/multiturn-oracle', runtime / 'bin/multiturn-oracle')]
 if profile != 'di-runtime':
@@ -574,6 +575,7 @@ PY
         /opt/ndnsf-stage/bin/write-wan-video-fixture \
         /opt/ndnsf-stage/bin/public-trust-installer \
         /opt/ndnsf-stage/bin/DistributedRepoServer \
+        /opt/ndnsf-stage/bin/ndnsf-repo-file-benchmark \
         /opt/ndnsf-stage/bin/ndnsf-identity-check \
         /opt/ndnsf-stage/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker \
         /opt/ndnsf-stage/libexec/ndnsf-di/ndnsf-di-device-query \

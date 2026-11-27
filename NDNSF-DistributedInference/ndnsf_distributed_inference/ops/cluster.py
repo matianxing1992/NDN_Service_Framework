@@ -15,9 +15,11 @@ import subprocess
 import time
 import uuid
 
-from .deployment_config import (REPO_MANIFEST_BENCHMARK_OPTIONS, REPO_MANIFEST_SERVER_OPTIONS,
+from .deployment_config import (REPO_BENCHMARK_AUTHENTICATION, REPO_BENCHMARK_FILE_SIZES,
+                                REPO_MANIFEST_BENCHMARK_OPTIONS, REPO_MANIFEST_SERVER_OPTIONS,
                                 _identifier, _object, _read_json, _string, _name,
-                                actor_file_keyring, load_deployment, provider_cache_path,
+                                actor_file_keyring, invalid_repo_manifest_benchmark_option,
+                                load_deployment, provider_cache_path,
                                 provider_recipient_map, wan_component_files)
 from .processes import process_identity, owned_state, stop_owned, write_json
 
@@ -251,7 +253,8 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
                CUDA_VISIBLE_DEVICES=(','.join(actor['resources']['gpu_devices'])
                                      if visible_devices is None else visible_devices))
     kind = actor['kind']
-    if kind in ('repo', 'requester') and repo_benchmark is not None and state.get('runtime_timing'):
+    if (kind in ('repo', 'requester') and state.get('runtime_timing') and
+            (repo_benchmark is not None or config.get('operation') == 'repo-benchmark')):
         env['NDNSF_REPO_SOURCE_TIMING'] = '1'
     params = dict(actor.get('parameters', {}))
     periodic = params.pop('core-svs-periodic-sync-ms', None)
@@ -418,12 +421,12 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
             argv += ['--source', repo_benchmark['source']]
         if 'file_bytes' in repo_benchmark:
             argv += ['--file-bytes', str(repo_benchmark['file_bytes'])]
-        if 'authentication' in repo_benchmark:
-            argv += ['--authentication', repo_benchmark['authentication']]
+        argv += ['--authentication', REPO_BENCHMARK_AUTHENTICATION]
         if 'signing_certificate' in repo_benchmark:
             argv += ['--signing-certificate', repo_benchmark['signing_certificate']]
-        for option in REPO_MANIFEST_BENCHMARK_OPTIONS:
-            if option in repo_benchmark:
+        for option, (_, phase_limit) in REPO_MANIFEST_BENCHMARK_OPTIONS.items():
+            if option in repo_benchmark and (phase_limit in (None, binary_phase) or
+                                             binary_phase == 'write-read'):
                 argv += ['--' + option, repo_benchmark[option]]
         if repo_benchmark.get('under_gdb'):
             argv = ['/usr/bin/gdb', '-batch', '-ex', 'set pagination off',
@@ -1066,12 +1069,10 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
                     expected.get('sha256') != hashlib.sha256(binary.read_bytes()).hexdigest() or
                     not os.access(binary, os.X_OK)):
                 raise ClusterError('Repo file benchmark must match the installed release manifest')
-        elif 'authentication' in repo_benchmark:
-            raise ClusterError('explicit Repo benchmark authentication requires local MiniNDN')
+        elif 'signing_certificate' in repo_benchmark:
+            raise ClusterError('explicit Repo benchmark signing certificate requires local MiniNDN')
         elif repo_benchmark.get('phase', 'write-read') != 'write-read':
             raise ClusterError('independent Repo benchmark phases require local MiniNDN')
-        elif repo_benchmark.get('file_bytes', 500_000_000) != 500_000_000:
-            raise ClusterError('20 GB Repo benchmark requires local MiniNDN')
         elif config['platform']['kind'] != 'slurm-apptainer':
             raise ClusterError('Repo file benchmark requires MiniNDN or Slurm')
     if config['platform']['kind'] == 'slurm-apptainer':
@@ -1356,11 +1357,9 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_
         if (not isinstance(repo_benchmark, dict) or 'sha256' not in repo_benchmark or
                 repo_benchmark.keys() - options):
             raise ClusterError('Repo benchmark needs SHA-256 and supported options')
-        authentication = repo_benchmark.get('authentication', 'digest')
-        if authentication not in ('digest', 'certificate', 'manifest'):
-            raise ClusterError('unsupported Repo benchmark authentication')
-        if 'signing_certificate' in repo_benchmark and authentication == 'digest':
-            raise ClusterError('a signing certificate requires authenticated Repo benchmark mode')
+        if repo_benchmark.get('authentication', REPO_BENCHMARK_AUTHENTICATION) != (
+                REPO_BENCHMARK_AUTHENTICATION):
+            raise ClusterError('Repo file benchmark requires signed manifest authentication')
         digest = repo_benchmark['sha256']
         if (not isinstance(digest, str) or len(digest) != 64 or
                 any(c not in '0123456789abcdef' for c in digest)):
@@ -1369,13 +1368,11 @@ def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_
         if phase not in ('write-read', 'write', 'read'):
             raise ClusterError('unsupported Repo benchmark phase')
         file_bytes = repo_benchmark.get('file_bytes', 500_000_000)
-        if type(file_bytes) is not int or file_bytes not in (500_000_000, 20_000_000_000):
+        if type(file_bytes) is not int or file_bytes not in REPO_BENCHMARK_FILE_SIZES:
             raise ClusterError('Repo benchmark file bytes must be 500000000 or 20000000000')
-        for option, (choices, phase_limit) in REPO_MANIFEST_BENCHMARK_OPTIONS.items():
-            if option in repo_benchmark and (authentication != 'manifest' or
-                    repo_benchmark[option] not in choices or
-                    (phase_limit is not None and phase not in (phase_limit, 'write-read'))):
-                raise ClusterError('invalid manifest benchmark option for this phase: ' + option)
+        invalid = invalid_repo_manifest_benchmark_option(repo_benchmark, phase)
+        if invalid is not None:
+            raise ClusterError('invalid manifest benchmark option for this phase: ' + invalid)
         if ('manifest-read-total-window' in repo_benchmark and
                 'manifest-read-pipeline' not in repo_benchmark):
             raise ClusterError('manifest-read-total-window requires manifest-read-pipeline')

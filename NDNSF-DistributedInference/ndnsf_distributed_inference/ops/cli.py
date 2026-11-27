@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 import sys
 
-from .deployment_config import REPO_MANIFEST_BENCHMARK_OPTIONS
+from .deployment_config import (REPO_BENCHMARK_AUTHENTICATION, REPO_BENCHMARK_FILE_SIZES,
+                                REPO_MANIFEST_BENCHMARK_OPTIONS)
 
 def definition_from_json(path):
     from ..app_sdk.contracts import ArtifactReference, DeploymentDefinition
@@ -48,14 +49,14 @@ def build_parser():
                                  help='enable native phase measurements for this boot')
         if name == 'benchmark-repo':
             command.add_argument('--source', help='regular file of the selected size for publication')
-            command.add_argument('--file-bytes', type=int, choices=(500_000_000, 20_000_000_000),
+            command.add_argument('--file-bytes', type=int, choices=REPO_BENCHMARK_FILE_SIZES,
                                  help='expected file size in both phases, default 500000000')
             command.add_argument('--expected-sha256', required=True)
             command.add_argument('--phase', choices=('write-read', 'write', 'read'),
                                  help='run both phases or use independent local MiniNDN boots')
             command.add_argument('--reference', help='write or read the native original-wire reference')
-            command.add_argument('--authentication', choices=('digest', 'certificate', 'manifest'),
-                                 help='select the packet authentication mode in local MiniNDN')
+            command.add_argument('--authentication', choices=(REPO_BENCHMARK_AUTHENTICATION,),
+                                 help='packet authentication (manifest is used by default)')
             command.add_argument('--signing-certificate', help='data signing certificate NDN name')
             command.add_argument('--cpu-placement', type=Path,
                                  help='local benchmark JSON with actor IDs and CPU lists')

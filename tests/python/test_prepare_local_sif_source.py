@@ -117,6 +117,11 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     assert observed_roles == production_roles
     definition = SCRIPT.resolve().parent.parent / "templates/development-runtime.def.in"
     template = definition.read_text()
+    assert "examples/repo-file-benchmark.cpp" in names
+    explicit_targets, = [line.split("--targets=", 1)[1].split(",")
+                         for line in template.splitlines() if "--targets=" in line]
+    assert "ndnsf-repo-file-benchmark" in explicit_targets
+    assert "base / 'bin/ndnsf-repo-file-benchmark', runtime / 'bin/ndnsf-repo-file-benchmark'" in template
     assert "base / 'bin/multiturn-oracle', runtime / 'bin/multiturn-oracle'" in template
     assert "spec190-multiturn-oracle" not in template
     assert "di-prepare-wan-checkpoint,di-wan-checkpoint-oracle,di-wan-video-oracle" in template

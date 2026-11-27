@@ -1,5 +1,4 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-repository.hpp"
 #include "ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
@@ -155,14 +154,15 @@ run(int argc, char** argv)
     for (const auto& option : required) std::cout << option << " VALUE ";
     std::cout << "[--file-bytes 500000000|20000000000] "
                  "[--phase write|read|write-read] [--reference PATH] "
-                 "[--authentication digest|certificate|manifest] [--signing-certificate NAME] "
+                 "[--authentication manifest] [--signing-certificate NAME] "
                  "[--manifest-read-pipeline serial|paired|quad] "
                  "[--manifest-read-total-window 32|48|64] "
                  "[--manifest-owner-claims selected|targeted] "
                  "[--manifest-insert indexed|compact] "
                  "[--manifest-segment-bytes 7000|8400] "
                  "[--manifest-group-segments 2048|2560|3840] [--manifest-write-slots 3|5] ";
-    std::cout << "\nUses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
+    std::cout << "\nPacket authentication uses a signed manifest.\n"
+                 "Uses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
                  "whole-group reads, with a default input of 500000000 bytes and "
               << di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS
               << " concurrent native commits. Deadline 1800 seconds. Report must not exist.\n";
@@ -193,25 +193,23 @@ run(int argc, char** argv)
   }
   const std::string phaseOption = options.count("--phase") ? options.at("--phase") : "write-read";
   const std::string authentication = options.count("--authentication")
-    ? options.at("--authentication") : "digest";
-  require(authentication == "digest" || authentication == "certificate" ||
-          authentication == "manifest", "unsupported benchmark authentication");
-  const bool useCertificate = authentication != "digest";
-  const bool useManifest = authentication == "manifest";
+    ? options.at("--authentication") : "manifest";
+  require(authentication == "manifest",
+          "Repo file benchmark requires signed manifest authentication");
   const auto configuredSegmentBytes = options.find("--manifest-segment-bytes");
-  require(configuredSegmentBytes == options.end() || (useManifest &&
-          (configuredSegmentBytes->second == "7000" || configuredSegmentBytes->second == "8400")),
+  require(configuredSegmentBytes == options.end() || configuredSegmentBytes->second == "7000" ||
+          configuredSegmentBytes->second == "8400",
           "manifest segment bytes require manifest mode and a payload of 7000 or 8400 bytes");
   const auto contentBytes = configuredSegmentBytes != options.end() &&
                             configuredSegmentBytes->second == "8400"
     ? LARGE_CONTENT_BYTES : DEFAULT_CONTENT_BYTES;
   const auto insertMode = options.find("--manifest-insert");
-  require(insertMode == options.end() || (useManifest && phaseOption != "read" &&
+  require(insertMode == options.end() || (phaseOption != "read" &&
           (insertMode->second == "indexed" || insertMode->second == "compact")),
           "manifest INSERT mode requires manifest publication");
   const bool compactInsert = insertMode != options.end() && insertMode->second == "compact";
   const auto writeSlots = options.find("--manifest-write-slots");
-  require(writeSlots == options.end() || (useManifest && phaseOption != "read" &&
+  require(writeSlots == options.end() || (phaseOption != "read" &&
           (writeSlots->second == "3" || writeSlots->second == "5")),
           "manifest write slots require manifest publication and a capacity of 3 or 5");
   const auto writeCapacity = writeSlots != options.end() && writeSlots->second == "5"
@@ -222,7 +220,7 @@ run(int argc, char** argv)
   size_t readGroups = 1;
   if (boundedRead) {
     const auto& mode = readPipeline->second;
-    require(useManifest && phaseOption != "write" &&
+    require(phaseOption != "write" &&
             (mode == "serial" || mode == "paired" || mode == "quad"),
             "a bounded read pipeline requires manifest read and serial, paired or quad mode");
     if (mode == "paired") readGroups = 2;
@@ -238,16 +236,14 @@ run(int argc, char** argv)
   }
   const auto readWindow = boundedRead ? totalReadWindow / readGroups : 0;
   const auto claimMode = options.find("--manifest-owner-claims");
-  require(claimMode == options.end() || (useManifest && phaseOption != "write" &&
+  require(claimMode == options.end() || (phaseOption != "write" &&
           (claimMode->second == "selected" || claimMode->second == "targeted")),
           "manifest Owner claim mode requires a manifest read");
   const bool targetedOwnerClaims = claimMode != options.end() && claimMode->second == "targeted";
 
   const auto selectedCertificate = options.find("--signing-certificate");
-  require(useCertificate || selectedCertificate == options.end(),
-          "a signing certificate requires authenticated benchmark mode");
   const auto groupSize = options.find("--manifest-group-segments");
-  require(groupSize == options.end() || (useManifest && phaseOption != "read" &&
+  require(groupSize == options.end() || (phaseOption != "read" &&
           (groupSize->second == "2048" || groupSize->second == "2560" ||
            groupSize->second == "3840")),
           "manifest group size requires manifest publication and 2048, 2560 or 3840 segments");
@@ -256,9 +252,8 @@ run(int argc, char** argv)
     if (groupSize->second == "2560") manifestGroupSize = LARGE_MANIFEST_GROUP_SEGMENTS;
     if (groupSize->second == "3840") manifestGroupSize = MAX_BENCHMARK_MANIFEST_GROUP_SEGMENTS;
   }
-  const size_t maxSourcePackets = useManifest
-    ? (phaseOption == "read" ? MAX_BENCHMARK_MANIFEST_GROUP_SEGMENTS : manifestGroupSize)
-    : (useCertificate ? CERTIFICATE_GROUP_SEGMENTS : di::NATIVE_STORED_MODEL_UPLOAD_PACKETS);
+  const size_t maxSourcePackets = phaseOption == "read"
+    ? MAX_BENCHMARK_MANIFEST_GROUP_SEGMENTS : manifestGroupSize;
   require(phaseOption == "write" || phaseOption == "read" || phaseOption == "write-read",
           "benchmark phase must be write, read or write-read");
   for (const auto& option : required) {
@@ -313,7 +308,7 @@ run(int argc, char** argv)
   const auto certificate = explicitCertificate.empty() ? serviceCertificate :
     dataKey.getCertificate(explicitCertificate);
   const auto keyType = dataKey.getKeyType();
-  require(!useCertificate || keyType == ndn::KeyType::RSA || keyType == ndn::KeyType::EC,
+  require(keyType == ndn::KeyType::RSA || keyType == ndn::KeyType::EC,
           "benchmark certificate mode requires an RSA or ECDSA signing identity");
   const ndn::Name controller(options.at("--controller-identity"));
   const auto controllerCertificate = ndn_service_framework::loadControllerCertificate(
@@ -340,10 +335,8 @@ run(int argc, char** argv)
   bootstrap["phase"] = "bootstrap";
   bootstrap["contentSegmentBytes"] = contentBytes;
   bootstrap["authentication"] = authentication;
-  if (useCertificate) {
-    bootstrap["keyAlgorithm"] = keyType == ndn::KeyType::EC ? "ECDSA" : "RSA";
-    bootstrap["signingCertificate"] = certificate.getName().toUri();
-  }
+  bootstrap["keyAlgorithm"] = keyType == ndn::KeyType::EC ? "ECDSA" : "RSA";
+  bootstrap["signingCertificate"] = certificate.getName().toUri();
   bootstrap["publicationIncludesReadback"] = false;
   bootstrap["publicationMode"] = "bounded-pipeline";
   bootstrap["publicationMaxActiveCommits"] = writeCapacity;
@@ -353,29 +346,20 @@ run(int argc, char** argv)
     uint64_t payloadBytes = 0, wireBytes = 0;
     size_t groupIndex = 0;
     try {
-      auto io = di::nativeStoredModelRepositoryIo(user, target, deadline, current, true);
-      require(bool(io.commitConcurrent), "benchmark native concurrent commit unavailable");
       const repo::RepoTarget packetTarget{target.repoNode, target.providerIdentity,
                                           target.servicePrefix};
       const auto verifyData = [certificate](const ndn::Data& packet) {
         return ndn::security::verifySignature(packet, certificate);
       };
-      const auto verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
-        [verifyData](const std::vector<uint8_t>& wire) {
-          const ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
-          return verifyData(packet);
-        });
       const auto rootName = [&](const Group& group) {
-        return useManifest ? manifestScope(identity, group.prefix).rootName()
-                           : ndn::Name(group.prefix).appendSegment(0);
+        return manifestScope(identity, group.prefix).rootName();
       };
       std::optional<repo::RepoClient> packetClient;
-      if (useCertificate && phaseOption != "read") {
+      if (phaseOption != "read") {
         packetClient.emplace(makePacketClient(user, target));
       }
-      const auto commitSecured = [&](di::NativeStoredModelPacketIo::PacketWires wires,
-                                     repo::PacketSource packetSource,
-                                     repo::RepoPreparedManifest* manifest,
+      const auto commitSecured = [&](repo::PacketSource packetSource,
+                                     repo::RepoPreparedManifest& manifest,
                                      const Group& group, const std::function<void()>& active) {
         auto& client = *packetClient;
         const repo::RepoOperationOptions operation{deadline, active, {}};
@@ -396,22 +380,11 @@ run(int argc, char** argv)
         auto& source = *publication.packets;
         source.expectedDigest = "sha256:" + group.wireDigest;
         source.expectedWireBytes = group.wireBytes;
-        if (manifest) {
-          publication.segmentManifest =
-            std::make_shared<ndn_service_framework::SegmentManifestScope>(
-              manifest->publication().scope());
-        }
-        else {
-          source.next = [&wires, index = size_t{0}](std::vector<uint8_t>& wire) mutable {
-            if (index == wires.size()) return false;
-            wire = std::move(wires[index++]);
-            return true;
-          };
-          publication.verifyWire = verifyWire;
-        }
-        const auto committed = manifest
-          ? client.publishPreparedManifest(publication, std::move(*manifest), operation)
-          : client.publishData(publication, operation);
+        publication.segmentManifest =
+          std::make_shared<ndn_service_framework::SegmentManifestScope>(
+            manifest.publication().scope());
+        const auto committed = client.publishPreparedManifest(
+          publication, std::move(manifest), operation);
         require(committed.packetSet && committed.packetSet->wireDigest == source.expectedDigest &&
                 ndn::Name(committed.packetSet->objectName) == ndn::Name(object),
                 "benchmark signed publication did not commit the original packet set");
@@ -428,9 +401,8 @@ run(int argc, char** argv)
                 reference.at("schema") == "ndnsf-repo-file-benchmark-reference-v1" &&
                 reference.at("fileBytes") == fileBytes &&
                 reference.at("sha256") == expected &&
-                reference.value("authentication", "digest") == authentication &&
-                (!useCertificate || reference.at("signingCertificate") ==
-                                      certificate.getName().toUri()) &&
+                reference.value("authentication", "") == authentication &&
+                reference.at("signingCertificate") == certificate.getName().toUri() &&
                 reference.at("contentSegmentBytes") == contentBytes,
                 "benchmark reference identity mismatch");
         for (const auto& item : reference.at("groups")) {
@@ -452,10 +424,8 @@ run(int argc, char** argv)
         }
         require(payloadBytes == fileBytes, "benchmark reference payload size mismatch");
       }
-      auto packetKeys = useCertificate ? std::make_unique<ndn::KeyChain>() :
-        std::make_unique<ndn::KeyChain>("pib-memory:repo-file-benchmark",
-                                        "tpm-memory:repo-file-benchmark");
       if (phaseOption != "read") {
+      ndn::KeyChain packetKeys;
       ndn::Name publication(identity);
       publication.append("repo-file-benchmark").appendVersion(static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -471,7 +441,7 @@ run(int argc, char** argv)
           {"packets", group.packetCount}, {"originalWireSha256", group.wireDigest},
           {"objectName", rootName(group).toUri(ndn::name::UriFormat::CANONICAL)},
           {"authentication", authentication},
-          {"certificateSignedPackets", useManifest ? 1 : (useCertificate ? group.packetCount : 0)},
+          {"certificateSignedPackets", 1},
           {"minimumWireBytes", group.minimumWireBytes},
           {"maximumWireBytes", group.maximumWireBytes},
           {"publicationMode", "bounded-pipeline"},
@@ -482,95 +452,61 @@ run(int argc, char** argv)
       const Measurement publicationTime;
       using CompletionOrder = di::NativeModelCommitPipeline::CompletionOrder;
       di::NativeModelCommitPipeline pipeline(current, NDNSF_DI_WIRE_LIMIT, writeCapacity,
-        useManifest ? CompletionOrder::READY : CompletionOrder::SUBMISSION);
+        CompletionOrder::READY);
       while (payloadBytes < fileBytes) {
         const Measurement groupTime;
         Group group;
         group.prefix = ndn::Name(publication).append(std::to_string(groupIndex));
-        di::NativeStoredModelPacketIo::PacketWires wires;
         repo::PacketSource packetSource;
-        if (useCertificate) {
-          packetSource.packetOffsets.push_back(0);
-        }
-        ndn::util::Sha256 wireHash;
+        packetSource.packetOffsets.push_back(0);
         const auto groupPackets = std::min<uint64_t>(maxSourcePackets,
           (fileBytes - payloadBytes + contentBytes - 1) / contentBytes);
         const auto appendOriginal = [&](const ndn::Data& packet) {
           const auto& wire = packet.wireEncode();
-          if (!useManifest) {
-            wires.emplace_back(wire.begin(), wire.end());
-            wireHash.update(ndn::span<const uint8_t>(wire.data(), wire.size()));
-          }
           group.wireBytes += wire.size();
-          if (useCertificate) {
-            packetSource.packetNames.push_back(packet.getName().toUri(
-              ndn::name::UriFormat::CANONICAL));
-            packetSource.packetOffsets.push_back(group.wireBytes);
-          }
+          packetSource.packetNames.push_back(packet.getName().toUri(
+            ndn::name::UriFormat::CANONICAL));
+          packetSource.packetOffsets.push_back(group.wireBytes);
           group.minimumWireBytes = std::min<uint64_t>(group.minimumWireBytes, wire.size());
           group.maximumWireBytes = std::max<uint64_t>(group.maximumWireBytes, wire.size());
         };
         std::vector<ndn::ConstBufferPtr> manifestContent;
-        if (useManifest) {
-          manifestContent.reserve(groupPackets);
-        }
+        manifestContent.reserve(groupPackets);
         for (size_t segment = 0; segment < groupPackets; ++segment) {
           current();
-          std::array<uint8_t, LARGE_CONTENT_BYTES> buffer;
           const auto count = static_cast<size_t>(std::min<uint64_t>(
             contentBytes, fileBytes - payloadBytes));
-          auto manifestPayload = useManifest ? std::make_shared<ndn::Buffer>(count) : nullptr;
-          auto* bytes = manifestPayload ? manifestPayload->data() : buffer.data();
+          auto manifestPayload = std::make_shared<ndn::Buffer>(count);
+          auto* bytes = manifestPayload->data();
           input.read(reinterpret_cast<char*>(bytes), count);
           require(static_cast<size_t>(input.gcount()) == count, "benchmark source truncated");
-          const ndn::span<const uint8_t> content(bytes, count);
-          sourceHash.update(content);
-          if (useManifest) {
-            manifestContent.push_back(std::move(manifestPayload));
-          }
-          else {
-            ndn::Data packet(ndn::Name(group.prefix).appendSegment(segment));
-            packet.setContent(content);
-            packet.setFinalBlock(ndn::name::Component::fromSegment(groupPackets - 1));
-            packetKeys->sign(packet, useCertificate ?
-              ndn::security::signingByCertificate(certificate) : ndn::security::signingWithSha256());
-            appendOriginal(packet);
-          }
+          sourceHash.update(ndn::span<const uint8_t>(bytes, count));
+          manifestContent.push_back(std::move(manifestPayload));
           ++group.packetCount;
           group.payloadBytes += count;
           payloadBytes += count;
         }
-        std::shared_ptr<repo::RepoPreparedManifest> manifest;
-        if (useManifest) {
-          manifest = std::make_shared<repo::RepoPreparedManifest>(
-            ndn_service_framework::ManifestPublication::prepare(*packetKeys,
-            ndn::security::signingByCertificate(certificate), manifestScope(identity, group.prefix),
-            {manifestGroupSize, repo::REPO_USER_STORAGE_OBJECT_MAX_BYTES,
-             static_cast<uint32_t>(groupPackets)}, manifestContent, {}, ndn::time::seconds(60)));
-          for (const auto& packet : manifest->publication().packets()) {
-            appendOriginal(packet);
-          }
+        auto manifest = std::make_shared<repo::RepoPreparedManifest>(
+          ndn_service_framework::ManifestPublication::prepare(packetKeys,
+          ndn::security::signingByCertificate(certificate), manifestScope(identity, group.prefix),
+          {manifestGroupSize, repo::REPO_USER_STORAGE_OBJECT_MAX_BYTES,
+           static_cast<uint32_t>(groupPackets)}, manifestContent, {}, ndn::time::seconds(60)));
+        for (const auto& packet : manifest->publication().packets()) {
+          appendOriginal(packet);
         }
-        group.wireDigest = manifest ? manifest->wireSha256() : digest(wireHash);
+        group.wireDigest = manifest->wireSha256();
         const auto preparationEnd = std::chrono::duration_cast<std::chrono::nanoseconds>(
           Clock::now().time_since_epoch()).count();
         auto prepared = std::make_shared<Group>(std::move(group));
         const auto index = groupIndex;
         groups.resize(index + 1);
         pipeline.submit(prepared->wireBytes,
-          [&, commit = io.commitConcurrent, wires = std::move(wires),
-           packetSource = std::move(packetSource), manifest = std::move(manifest), prepared, index,
+          [&, packetSource = std::move(packetSource), manifest = std::move(manifest), prepared, index,
            preparationEnd, groupTime](const di::NativeModelCommitPipeline::CurrentCheck& active)
             mutable {
             const Measurement commitTime;
             try {
-              if (useCertificate) {
-                commitSecured(std::move(wires), std::move(packetSource),
-                              manifest.get(), *prepared, active);
-              }
-              else {
-                commit(std::move(wires), "sha256:" + prepared->wireDigest, active);
-              }
+              commitSecured(std::move(packetSource), *manifest, *prepared, active);
               auto row = publicationRow(commitTime, *prepared, index, "publication-commit");
               row["status"] = "COMMITTED_MANIFEST_VERIFIED";
               row["preparationStartMonotonicNs"] = std::chrono::duration_cast<
@@ -628,10 +564,8 @@ run(int argc, char** argv)
         Json reference{{"schema", "ndnsf-repo-file-benchmark-reference-v1"},
           {"fileBytes", fileBytes}, {"sha256", expected}, {"contentSegmentBytes", contentBytes},
           {"orderedWireSha256", digest(orderedWire)}, {"groups", referenceGroups}};
-        if (useCertificate) {
-          reference["authentication"] = authentication;
-          reference["signingCertificate"] = certificate.getName().toUri();
-        }
+        reference["authentication"] = authentication;
+        reference["signingCertificate"] = certificate.getName().toUri();
         {
           const int descriptor = ::open(temporary.c_str(),
             O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
@@ -684,14 +618,11 @@ run(int argc, char** argv)
           limits.maxPacketCount = defaults.maxPacketCount;
           limits.maxPacketWireBytes = defaults.maxPacketWireBytes;
           limits.maxManifestWireBytes = defaults.maxManifestWireBytes;
-          std::optional<ndn_service_framework::SegmentManifestScope> scope;
-          if (useManifest) {
-            scope = manifestScope(identity, group.prefix);
-            limits.targetedExactOwnerClaims = targetedOwnerClaims;
-            if (boundedRead) {
-              limits.manifestFetchWindow = readWindow;
-              limits.maxPacketWireBytes = group.wireBytes;
-            }
+          const auto scope = manifestScope(identity, group.prefix);
+          limits.targetedExactOwnerClaims = targetedOwnerClaims;
+          if (boundedRead) {
+            limits.manifestFetchWindow = readWindow;
+            limits.maxPacketWireBytes = group.wireBytes;
           }
           const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - Clock::now()).count();
@@ -722,40 +653,28 @@ run(int argc, char** argv)
         pending[index % readGroups] = std::async(policy, fetchGroup, index);
       };
       try {
-        if (useCertificate) {
-          for (size_t index = 0; index < std::min(readGroups, groups.size()); ++index) {
-            submitRead(index);
-          }
+        for (size_t index = 0; index < std::min(readGroups, groups.size()); ++index) {
+          submitRead(index);
         }
         for (groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
           const Measurement groupTime;
           const auto& group = groups[groupIndex];
           std::vector<ndn::Name> names;
           const auto scope = manifestScope(identity, group.prefix);
-          if (useManifest) {
-            names.push_back(scope.rootName());
-            const auto pages = ndn_service_framework::SegmentManifestVerifier::pageCountFor(
-              static_cast<uint32_t>(group.packetCount));
-            for (uint32_t page = 0; page < pages; ++page) {
-              names.push_back(scope.pageName(page));
-            }
+          names.push_back(scope.rootName());
+          const auto pages = ndn_service_framework::SegmentManifestVerifier::pageCountFor(
+            static_cast<uint32_t>(group.packetCount));
+          for (uint32_t page = 0; page < pages; ++page) {
+            names.push_back(scope.pageName(page));
           }
           const auto firstSource = names.size();
           for (size_t segment = 0; segment < group.packetCount; ++segment) {
-            names.push_back(useManifest ? scope.sourceName(static_cast<uint32_t>(segment)) :
-              ndn::Name(group.prefix).appendSegment(segment));
+            names.push_back(scope.sourceName(static_cast<uint32_t>(segment)));
           }
           ndn::util::Sha256 wireHash;
           current();
-          std::optional<OwnerPacketSet> ownerPackets;
-          std::vector<std::vector<uint8_t>> legacyPackets;
-          if (useCertificate) {
-            ownerPackets.emplace(pending[groupIndex % readGroups].get());
-          }
-          else {
-            legacyPackets = io.fetch(names);
-          }
-          const auto& packets = ownerPackets ? ownerPackets->packetWires() : legacyPackets;
+          auto ownerPackets = pending[groupIndex % readGroups].get();
+          const auto& packets = ownerPackets.packetWires();
           current();
           require(packets.size() == names.size(), "benchmark packet count changed");
           const auto next = groupIndex + readGroups;
@@ -783,7 +702,7 @@ run(int argc, char** argv)
             {"authentication", authentication}, {"manifestControlPackets", firstSource},
             {"status", "VERIFIED"}});
           record(std::move(row));
-          if (useCertificate && !overlapNext && next < groups.size()) submitRead(next);
+          if (!overlapNext && next < groups.size()) submitRead(next);
         }
       }
       catch (...) {

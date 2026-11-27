@@ -15,6 +15,8 @@ from types import SimpleNamespace
 
 from . import cluster
 from ._container.lib.adapters.slurm_apptainer import SlurmApptainerAdapter, SlurmAdapterError
+from .deployment_config import (REPO_BENCHMARK_AUTHENTICATION,
+                                REPO_MANIFEST_BENCHMARK_OPTIONS)
 from .processes import write_json
 
 
@@ -87,16 +89,18 @@ def _allocation_result(state, result):
                   oracle='NOT_RUN', readiness=value.get('readiness', 'UNVERIFIED'))
     if config.get('operation') == 'repo-benchmark':
         from .allocation import benchmark_phase_id, benchmark_phases
-        expected_phases = [benchmark_phase_id(item) for item in benchmark_phases(config)]
-        expected_keys = [(item['round'], item['phase']) for item in benchmark_phases(config)]
-        observed = value.get('benchmark_phases')
-        if not isinstance(observed, list):
+        complete = value['execution'] == 'COMPLETE'
+        plan = benchmark_phases(config)
+        observed = value.get('benchmark_phases', [] if not complete else None)
+        if not isinstance(observed, list) or not all(isinstance(row, dict) for row in observed):
             raise cluster.ClusterError('SLURM_RESULT_BENCHMARK_PHASES')
         if any(row.get('id') is not None for row in observed):
+            expected_keys = [benchmark_phase_id(item) for item in plan]
             observed_keys = [row.get('id') for row in observed]
-            if observed_keys != expected_phases:
-                raise cluster.ClusterError('SLURM_RESULT_BENCHMARK_PHASES')
-        elif [(row.get('round'), row.get('phase')) for row in observed] != expected_keys:
+        else:
+            expected_keys = [(item['round'], item['phase']) for item in plan]
+            observed_keys = [(row.get('round'), row.get('phase')) for row in observed]
+        if observed_keys != (expected_keys if complete else expected_keys[:len(observed)]):
             raise cluster.ClusterError('SLURM_RESULT_BENCHMARK_PHASES')
         for row in observed:
             receipt = Path(row['receipt'])
@@ -409,10 +413,19 @@ def _remaining(deadline):
 def up(config, source, root, timeout, debug=False, timing=False, repo_benchmark=None):
     """Persist a single submission intent before allowing any scheduler side effect."""
     log_filter = cluster._diagnostic_log_filter() if debug else None
-    if config.get('operation') == 'repo-benchmark' and repo_benchmark is not None:
-        if (repo_benchmark.get('source') != config['repo_benchmark']['source'] or
-                repo_benchmark.get('sha256') != config['repo_benchmark']['sha256']):
+    if repo_benchmark is not None:
+        if config.get('operation') != 'repo-benchmark':
+            raise cluster.ClusterError('BENCHMARK_CLI_CONFIGURATION_MISMATCH:operation')
+        frozen = config['repo_benchmark']
+        if (repo_benchmark.get('source') != frozen['source'] or
+                repo_benchmark.get('sha256') != frozen['sha256']):
             raise cluster.ClusterError('BENCHMARK_CLI_CONFIGURATION_MISMATCH')
+        if 'file_bytes' in repo_benchmark and repo_benchmark['file_bytes'] != frozen['bytes']:
+            raise cluster.ClusterError('BENCHMARK_CLI_CONFIGURATION_MISMATCH:file_bytes')
+        for option in ('authentication', *REPO_MANIFEST_BENCHMARK_OPTIONS):
+            default = REPO_BENCHMARK_AUTHENTICATION if option == 'authentication' else None
+            if option in repo_benchmark and repo_benchmark[option] != frozen.get(option, default):
+                raise cluster.ClusterError('BENCHMARK_CLI_CONFIGURATION_MISMATCH:' + option)
     cluster._private_directory(root)
     with cluster._lock(root):
         old = cluster._read_state(root)

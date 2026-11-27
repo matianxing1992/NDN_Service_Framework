@@ -83,7 +83,7 @@ def test_repo_benchmark_sampling_keeps_identity_mismatch_failure(ops, monkeypatc
         cluster._sample_repo_benchmark(tmp_path, children, 'periodic')
 
 
-@pytest.mark.parametrize('authentication', (None, 'certificate', 'manifest'))
+@pytest.mark.parametrize('authentication', (None, 'manifest'))
 def test_repo_file_benchmark_delegates_to_owned_cluster(ops, monkeypatch, authentication):
     _, cli = ops
     cluster = importlib.import_module('_spec217_ops.cluster')
@@ -176,7 +176,8 @@ def test_repo_file_benchmark_forwards_independent_native_phase(ops, tmp_path, mo
     ({'phase': 'read'}, 'absolute reference'),
     ({'phase': 'read', 'source': '/input.bin'}, 'uses a reference file'),
     ({'phase': 'read', 'reference': '/missing/reference.json'}, 'existing reference'),
-    ({'phase': 'read', 'manifest-segment-bytes': '8400'}, 'invalid manifest benchmark option'),
+    ({'phase': 'read', 'authentication': 'digest'}, 'requires signed manifest authentication'),
+    ({'phase': 'read', 'authentication': 'certificate'}, 'requires signed manifest authentication'),
     ({'phase': 'read', 'authentication': 'manifest', 'manifest-insert': 'compact'},
      'invalid manifest benchmark option'),
     ({'phase': 'read', 'authentication': 'manifest', 'manifest-read-total-window': '64'},
@@ -240,14 +241,14 @@ def test_repo_file_benchmark_reads_installed_manifest_before_launch(ops, tmp_pat
     assert not (tmp_path / 'state').exists()
 
 
-def test_repo_file_benchmark_rejects_large_slurm_profile_before_launch(ops, tmp_path, monkeypatch):
-    cluster = importlib.import_module('_spec217_ops.cluster')
-    monkeypatch.setattr(cluster, 'load_deployment', lambda *args, **kwargs:
-                        dict(operation='repo-benchmark', platform=dict(kind='slurm-apptainer')))
-    with pytest.raises(cluster.ClusterError, match='20 GB Repo benchmark requires local MiniNDN'):
-        cluster._up(tmp_path / 'deployment.json', tmp_path / 'state', 30,
-                    repo_benchmark=dict(source='/input.bin', sha256='a' * 64,
-                                        file_bytes=20_000_000_000))
+def test_repo_file_benchmark_rejects_slurm_size_mismatch_before_launch(ops, tmp_path):
+    slurm = importlib.import_module('_spec217_ops.slurm')
+    source = dict(source='/input.bin', sha256='a' * 64)
+    config = dict(operation='repo-benchmark', repo_benchmark=dict(source, bytes=500_000_000))
+    with pytest.raises(slurm.cluster.ClusterError,
+                       match='BENCHMARK_CLI_CONFIGURATION_MISMATCH:file_bytes'):
+        slurm.up(config, None, tmp_path / 'state', 30,
+                 repo_benchmark=dict(source, file_bytes=20_000_000_000))
     assert not (tmp_path / 'state').exists()
 
 
@@ -1080,6 +1081,42 @@ def test_filesystem_source_cache_only_objects_are_writable_in_requester_containe
     assert str(cache) + ':' + str(cache) + ':rw' not in argv
 
 
+@pytest.mark.parametrize('phase', ['write', 'read-first', 'read-repeat'])
+def test_repo_benchmark_container_mounts_only_phase_inputs(node_container, monkeypatch, phase):
+    config, _, _, _, _ = node_container
+    container = importlib.import_module('_spec217_ops.container')
+    root = Path(config['model']['plan']).parent
+    frozen = root / 'operation' / 'configuration.json'
+    frozen.write_text('{}')
+    source = root / 'benchmark-payload.bin'
+    config['operation'] = 'repo-benchmark'
+    config['repo_benchmark'] = {'source': str(source)}
+    config['requester'] = {}
+    requester = next(actor for actor in config['actors'] if actor['kind'] == 'requester')
+    actor_evidence = frozen.parent / 'actors' / requester['id']
+    reference = actor_evidence / 'benchmark-references' / 'round-1.reference.json'
+    monkeypatch.setenv('NDNSF_BENCHMARK_PHASE', phase)
+    monkeypatch.setenv('NDNSF_BENCHMARK_ROUND', '1')
+    monkeypatch.setenv('NDNSF_BENCHMARK_REFERENCE', str(reference))
+    if phase == 'write':
+        source.write_bytes(b'fixture payload')
+    else:
+        container.cluster._private_directory(reference.parent)
+        reference.write_text('{}')
+    _, _, _, mounts, _ = container.role_mounts(
+        config, frozen, requester, phase_id='round-1.' + phase)
+    assert actor_evidence not in mounts
+    if phase == 'write':
+        assert mounts[source] == 'ro' and mounts[reference.parent] == 'rw'
+        assert reference not in mounts
+    else:
+        assert mounts[reference] == 'ro'
+        assert source not in mounts and reference.parent not in mounts
+    monkeypatch.setenv('NDNSF_BENCHMARK_REFERENCE', str(source))
+    with pytest.raises(container.cluster.ClusterError, match='BENCHMARK_REFERENCE_MISMATCH'):
+        container.role_mounts(config, frozen, requester, phase_id='round-1.' + phase)
+
+
 def test_filesystem_source_cache_is_read_only_in_provider_container(node_container):
     config, _, _, capture, run = node_container
     cache = Path(config['model']['plan']).parent / 'shared-source'
@@ -1456,7 +1493,7 @@ def test_periodic_sync_setting_survives_file_benchmark_requester(ops, deployment
     monkeypatch.setenv('NDNSF_SVS_PERIODIC_SYNC_MS', '30000')
     argv, env = cluster._native_launch(frozen, actor, root,
         dict(boot_id='a' * 32, configuration_sha256='b' * 64, runtime_timing=timing),
-        repo_benchmark=dict(source='/input.bin', sha256='a' * 64, authentication='manifest',
+        repo_benchmark=dict(source='/input.bin', sha256='a' * 64,
                             signing_certificate='/test/KEY/data/issuer/v=1',
                             file_bytes=20_000_000_000))
     assert Path(argv[0]).name == 'ndnsf-repo-file-benchmark'
@@ -1469,7 +1506,94 @@ def test_periodic_sync_setting_survives_file_benchmark_requester(ops, deployment
     assert frozen == before
 
 
-def test_repo_cache_limits_reach_installed_native_actor(ops, deployment):
+def test_repo_benchmark_audit_tags_are_distinct_across_restarts(ops):
+    allocation = importlib.import_module('_spec217_ops.allocation')
+    tags = {allocation._audit_tag('repo-node', 'repo', phase_id=phase)
+            for phase in (None, 'incarnation-1', 'incarnation-2', 'incarnation-3')}
+    assert len(tags) == 4
+
+
+@pytest.mark.parametrize('phase', ['write', 'read-first', 'read-repeat'])
+@pytest.mark.parametrize(('file_bytes', 'rounds'), [(500_000_000, 3), (20_000_000_000, 1)])
+def test_frozen_repo_benchmark_translates_only_current_phase_options(
+        ops, deployment, phase, file_bytes, rounds):
+    parser, _ = ops
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    root, config = deployment
+    config['operation'] = 'repo-benchmark'
+    _tiger_config(root, config)
+    config['requester'].pop('model_input', None)
+    repo = next(row for row in config['actors'] if row['kind'] == 'repo')
+    repo['parameters'] = {'handler-threads': 1, 'manifest-fetch-face': 'dedicated',
+                          'manifest-source-window': 40}
+    settings = {
+        'source': str(root / 'input.bin'), 'sha256': 'a' * 64, 'bytes': file_bytes,
+        'repetitions': rounds, 'manifest-segment-bytes': '8400',
+        'manifest-insert': 'compact', 'manifest-write-slots': '5',
+        'manifest-read-pipeline': 'quad', 'manifest-read-total-window': '64',
+        'manifest-owner-claims': 'targeted',
+    }
+    if file_bytes == 20_000_000_000:
+        settings['source_recipe'] = 'shake256-v1'
+    config['repo_benchmark'] = settings
+    frozen = parser.load_deployment(write_config(root, config))
+    assert frozen['repo_benchmark']['authentication'] == 'manifest'
+    assert frozen['repo_benchmark'].get('source_recipe') == settings.get('source_recipe')
+    assert next(row for row in frozen['actors'] if row['kind'] == 'repo')['parameters'] == (
+        repo['parameters'])
+    actor = next(row for row in frozen['actors'] if row['kind'] == 'requester')
+    benchmark = dict(frozen['repo_benchmark'], phase=phase, reference='/benchmark/reference',
+                     file_bytes=frozen['repo_benchmark']['bytes'],
+                     target=dict(repo_node='/repo', provider_identity='/repo',
+                                 service_prefix='/repo/service'))
+    argv, _ = cluster._native_launch(frozen, actor, root,
+        dict(boot_id='a' * 32, configuration_sha256='b' * 64), repo_benchmark=benchmark)
+    is_write = phase == 'write'
+    assert argv[argv.index('--authentication') + 1] == 'manifest'
+    assert argv[argv.index('--file-bytes') + 1] == str(file_bytes)
+    assert argv[argv.index('--manifest-segment-bytes') + 1] == '8400'
+    assert argv[argv.index('--phase') + 1] == ('write' if is_write else 'read')
+    for option in ('source', 'manifest-insert', 'manifest-write-slots'):
+        assert ('--' + option in argv) is is_write
+    for option in ('manifest-read-pipeline', 'manifest-read-total-window', 'manifest-owner-claims'):
+        assert ('--' + option in argv) is not is_write
+    settings['authentication'] = 'digest'
+    with pytest.raises(ValueError, match='requires signed manifest authentication'):
+        parser.load_deployment(write_config(root, config))
+
+
+def test_slurm_rejects_repo_benchmark_options_outside_frozen_config(ops, tmp_path):
+    slurm = importlib.import_module('_spec217_ops.slurm')
+    source = dict(source='/payload', sha256='a' * 64)
+    config = dict(operation='repo-benchmark', repo_benchmark=dict(source, authentication='manifest'))
+    state = tmp_path / 'state'
+    with pytest.raises(slurm.cluster.ClusterError,
+                       match='BENCHMARK_CLI_CONFIGURATION_MISMATCH:manifest-segment-bytes'):
+        slurm.up(config, None, state, 60,
+                 repo_benchmark=dict(source, authentication='manifest',
+                                     **{'manifest-segment-bytes': '8400'}))
+    assert not state.exists()
+
+
+def test_repo_benchmark_source_fixture_checks_hash_and_never_replaces(ops, tmp_path):
+    allocation = importlib.import_module('_spec217_ops.allocation')
+    source = tmp_path / 'input' / 'payload.bin'
+    reference = hashlib.shake_256(b'NDNSF Spec 271 recovery fixture v1' + bytes(8)).digest(67)
+    spec = dict(source=str(source), bytes=len(reference), sha256='a' * 64)
+    with pytest.raises(allocation.cluster.ClusterError, match='SOURCE_DIGEST_MISMATCH'):
+        allocation._prepare_benchmark_source(spec)
+    assert list(source.parent.iterdir()) == []
+    spec['sha256'] = hashlib.sha256(reference).hexdigest()
+    allocation._prepare_benchmark_source(spec)
+    assert source.read_bytes() == reference
+    with pytest.raises(FileExistsError):
+        allocation._prepare_benchmark_source(spec)
+    assert source.read_bytes() == reference
+    assert list(source.parent.iterdir()) == [source]
+
+
+@pytest.mark.parametrize('slurm_benchmark_role', [False, True])
+def test_repo_cache_limits_reach_installed_native_actor(ops, deployment, slurm_benchmark_role):
     module = importlib.import_module('_spec217_ops.deployment_config')
     cluster = importlib.import_module('_spec217_ops.cluster')
     root, config = _stored_deployment(deployment, prepare=True)
@@ -1480,10 +1604,13 @@ def test_repo_cache_limits_reach_installed_native_actor(ops, deployment):
                           'manifest-spool': 'bounded-memory',
                           'handler-threads': 1}
     frozen = module.load_deployment(write_config(root, config))
+    if slurm_benchmark_role:
+        # Slurm binds requester phase arguments to the requester only.
+        frozen['operation'] = 'repo-benchmark'
     actor = next(actor for actor in frozen['actors'] if actor['kind'] == 'repo')
     argv, env = cluster._native_launch(frozen, actor, root,
         dict(boot_id='a' * 32, configuration_sha256='b' * 64, runtime_timing=True),
-        repo_benchmark={})
+        repo_benchmark=None if slurm_benchmark_role else {})
     assert env['NDNSF_HANDLER_THREADS'] == '1'
     assert env['NDNSF_REPO_SOURCE_TIMING'] == '1'
     for key, value in repo['parameters'].items():
@@ -5217,7 +5344,10 @@ def test_allocation_roles_receive_their_own_stop_grace(ops, monkeypatch, tmp_pat
         return 0 if started is not None and now - started >= 6.0 else None
 
     for role in roles:
-        (tmp_path / role['id'] / 'runtime' / 'run').mkdir(mode=0o700, parents=True)
+        role_root = tmp_path / role['id']
+        role_root.mkdir(mode=0o700)
+        (role_root / 'runtime').mkdir(mode=0o700)
+        (role_root / 'runtime' / 'run').mkdir(mode=0o700)
     children = {role['id']: SimpleNamespace(poll=lambda role_id=role['id']: poll(role_id))
                 for role in roles}
     monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: now, sleep=sleep))
@@ -5279,7 +5409,7 @@ if payload['facility']=='audit':
  value=dict(base,schema='ndnsf-di-host-node-audit-v1',node_id=node,
             host=socket.gethostname(),processes=[],errors=[],
             status='UNKNOWN' if mode=='audit-fail' else ('OBSERVED' if role else 'ZERO'))
- if not role and mode!='missing-cs':
+ if role and role.startswith('nfd.') and mode!='missing-cs':
   value['cs']=dict(capacity=0,nEntries=1 if mode=='nonzero-cs' else 0)
  if role:
   receipt=json.loads(Path(payload['native_receipt']).read_text())
@@ -5452,6 +5582,20 @@ def test_allocation_owner_orders_real_steps_and_keeps_failure_boundaries(
     with pytest.raises(module.cluster.ClusterError, match='ALLOCATION_BOOT_ALREADY_ENTERED'):
         module.run_allocation(args, config)
     assert len(children) == count and target.read_bytes() == before
+
+
+@pytest.mark.parametrize('mode', ['missing-cs', 'nonzero-cs'])
+def test_repo_benchmark_checks_cache_before_starting_actors(allocation_facility, mode):
+    config, module, args, scenario, events, children = allocation_facility
+    config['operation'] = 'repo-benchmark'
+    scenario['mode'] = mode
+    result = module.run_allocation(args, config)
+    assert result['execution'] == 'FAILED'
+    assert result['failure'] == 'ALLOCATION_HOST_AUDIT_CS_NOT_ZERO:' + config['nodes'][0]['id']
+    rows = [json.loads(line) for line in events.read_text().splitlines()]
+    assert ['role', 'requester'] not in rows and ['role', 'repo'] not in rows
+    assert all(item['status'] == 'ZERO' for item in result['cleanup'])
+    assert all(child.poll() is not None for child in children)
 
 
 @pytest.mark.parametrize('marker', ['cancelled', 'symlink', 'malformed'])
@@ -6271,13 +6415,17 @@ def test_tiger_submit_check_does_not_read_remote_credentials(ops, deployment):
                                   'early-zero-exit', 'early-bool-exit', 'early-float-exit',
                                   'early-none-exit', 'early-foreign-owner', 'early-open-role',
                                   'early-complete', 'early-forced', 'early-survivor',
-                                  'early-missing-final'])
+                                  'early-missing-final', 'repo-startup-failure', 'repo-complete-missing'])
 def test_slurm_snapshot_consumes_bound_closeout_without_runtime_inputs(node_container, monkeypatch, change):
     """Receipt admission only: no assertion about synthetic native inference results."""
     config, container, frozen, _, run = node_container
     if change == 'external':
         next(actor for actor in config['actors'] if actor['kind'] == 'controller')['external'] = True
     assert run('--actor', 'p0').returncode == 0
+    if change.startswith('repo-'):
+        config['operation'] = 'repo-benchmark'
+        config['repo_benchmark'] = {'repetitions': 3}
+        container.cluster.write_json(frozen, config)
     owner = importlib.import_module('_spec217_ops.allocation')
     backend = importlib.import_module('_spec217_ops.slurm')
     args = _role_args(config, frozen)
@@ -6315,7 +6463,8 @@ def test_slurm_snapshot_consumes_bound_closeout_without_runtime_inputs(node_cont
         deployment_id=config['deployment_id'], evidence_root=str(root / 'supervisor' / config['deployment_id']),
         status='STOPPED', execution='COMPLETE', readiness='SERVICES_READY', failure=None,
         roles=roles, external_references=[])
-    partial = change in ('partial-start', 'identity-fail', 'not-spawned', 'pre-entry-fail')
+    partial = change in ('partial-start', 'identity-fail', 'not-spawned', 'pre-entry-fail',
+                         'repo-startup-failure')
     if partial:
         roles = [role for role in roles if role['kind'] in ('nfd', 'nfdc', 'controller')]
         allocation.update(roles=roles, execution='FAILED', failure='controlled startup failure')

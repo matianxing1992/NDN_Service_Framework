@@ -20,7 +20,8 @@ from . import cluster
 from .allocation_topology import deployment_management_commands
 from .container import (gpu_slots, load_frozen, load_gpu_allocation, management_role_id,
                         read_gpu_probe, step_visibility)
-from .deployment_config import _check_installed_files, _name, _read_json
+from .deployment_config import (REPO_MANIFEST_BENCHMARK_OPTIONS, _check_installed_files,
+                                _name, _read_json)
 from .processes import write_json
 
 
@@ -467,6 +468,7 @@ def run_role(args):
                         raise cluster.ClusterError('BENCHMARK_REPO_ACTOR_MISSING')
                     benchmark = dict(source=config['repo_benchmark']['source'],
                                      sha256=config['repo_benchmark']['sha256'],
+                                     file_bytes=config['repo_benchmark']['bytes'],
                                      phase=os.environ.get('NDNSF_BENCHMARK_PHASE', 'write-read'),
                                      under_gdb=os.environ.get('NDNSF_BENCHMARK_UNDER_GDB') == '1',
                                      reference=os.environ.get('NDNSF_BENCHMARK_REFERENCE'),
@@ -475,6 +477,9 @@ def run_role(args):
                                              'repo-node', repo_actor['identity']),
                                          provider_identity=repo_actor['identity'],
                                          service_prefix=config['network']['repo_service']))
+                    for option in REPO_MANIFEST_BENCHMARK_OPTIONS:
+                        if option in config['repo_benchmark']:
+                            benchmark[option] = config['repo_benchmark'][option]
                 argv, env = cluster._native_launch(config, actor, root, state,
                                                    visible_devices=state['gpu_visibility'],
                                                    repo_benchmark=benchmark)

@@ -112,7 +112,7 @@ PY
 Generate two configs with `ops.deployment_config.preparation_deployment`. Give them distinct
 `deployment_id` values and keep the same `storage.repo_root`, topology and credentials.
 Place the Repo on `provider1` so that its traffic to and from the Requester crosses the router.
-Use the same `--authentication` and, when choosing an explicit Producer certificate, the same
+When choosing an explicit Producer certificate, use the same
 `--signing-certificate` in both phases. Put the reference in the private work root.
 
 ```sh
@@ -139,11 +139,11 @@ read_config="$work_root/repo-read.json"
 
 ```sh
 sudo -n /usr/local/bin/ndnsf-di cluster benchmark-repo --config "$write_config" \
-  --authentication manifest --phase write --file-bytes "$repo_file_bytes" \
+  --phase write --file-bytes "$repo_file_bytes" \
   --reference "$work_root/reference.json" \
   --source "$work_root/repo-input.bin" --expected-sha256 "$input_sha256"
 sudo -n /usr/local/bin/ndnsf-di cluster benchmark-repo --config "$read_config" \
-  --authentication manifest --phase read --file-bytes "$repo_file_bytes" \
+  --phase read --file-bytes "$repo_file_bytes" \
   --reference "$work_root/reference.json" \
   --expected-sha256 "$input_sha256"
 ```
@@ -205,6 +205,25 @@ to `bounded-memory`. Authenticated source wires use at most 32 MiB per object an
 per Repo process. Groups without a reservation use the default `file` spool.
 Run `--timing` separately from
 the throughput samples to capture source fetch, spooling and durable confirmation events.
+
+The native file benchmark uses signed manifest authentication on MiniNDN and
+Tiger. Digest-only and per-packet certificate benchmark modes are retired.
+Use a signed-manifest reference for the independent read. For the tuned packet profile on Tiger, set
+`operation` to `repo-benchmark` and add the manifest options above to the
+deployment's `repo_benchmark` object. Use the CLI option names without the leading
+`--` and string values. Keep the Repo server settings on its actor. The
+allocation passes each option to its applicable native phase and permits a CLI option
+only if it matches the frozen configuration. Set `bytes` to 500000000 or 20000000000
+and `repetitions` to one or three. Each round restarts the Repo after the write and
+performs two reads with fresh clients. Record per-phase goodput and
+the host interface MTU alongside MiniNDN results.
+
+On Tiger, `/tmp` is local to each Slurm allocation. To run the deterministic
+fixture there, set `repo_benchmark.source_recipe` to `"shake256-v1"`, reserve
+a fresh absolute `source` path under `/tmp`, and provide the expected size and
+SHA-256 above. Run the frozen deployment with `ndnsf-di cluster up`. The
+allocation prepares and checks the file on the Requester node before starting
+the native roles. Use the same input digest when comparing throughput.
 
 Build and install the Waf target `ndnsf-nfd-wire-benchmark` from the same candidate. After
 stopping the Repo, replay a complete group from its filesystem store through the same topology.
