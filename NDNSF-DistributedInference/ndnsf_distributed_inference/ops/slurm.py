@@ -258,15 +258,17 @@ def _recovery_result(state, result):
     for node in config['nodes']:
         owner_root = root / 'recovery' / nonce / node['id'] / config['deployment_id']
         owner = _private_json(owner_root / 'state.json')
+        owner_boot = owner.get('boot_id')
         expected = dict(schema='ndnsf-di-host-operation-v1', deployment_id=config['deployment_id'],
-            boot_id=boot, configuration_sha256=digest, evidence_root=str(owner_root),
+            configuration_sha256=digest, evidence_root=str(owner_root),
             recovery_id=nonce, status='STOPPED')
-        if (any(owner.get(key) != value for key, value in expected.items()) or
+        if (owner_boot not in (nonce, boot) or
+                any(owner.get(key) != value for key, value in expected.items()) or
                 type(owner.get('audit_exit_code')) is not int or owner['audit_exit_code'] != 0 or
                 len(owner.get('launches', [])) != 1 or
                 owner['launches'][0]['id'] != _audit_id(node['id'])):
             raise cluster.ClusterError('SLURM_RECOVERY_OWNER_BINDING')
-        _closed_groups(owner, boot, digest)
+        _closed_groups(owner, owner_boot, digest)
         audit = _private_json(root / 'nodes' / node['id'] / 'host-audit-recovery.json')
         binding = dict(schema='ndnsf-di-host-node-audit-v1', boot_id=boot,
             configuration_sha256=digest, release_sha256=reference['release_sha256'],
@@ -310,8 +312,11 @@ def _recover_missing_closeout(state, operation_root, deadline):
     for node in config['nodes']:
         owner_root = root / 'recovery' / nonce / node['id'] / config['deployment_id']
         cluster._private_directory(owner_root)
+        # The launch client can share the target node with the audit step.
+        # Its owner binding must identify this recovery, while the audit
+        # arguments below continue to identify the original allocation.
         owner = dict(schema='ndnsf-di-host-operation-v1', deployment_id=config['deployment_id'],
-            boot_id=boot, configuration_sha256=digest, evidence_root=str(owner_root),
+            boot_id=nonce, configuration_sha256=digest, evidence_root=str(owner_root),
             recovery_id=nonce, status='STARTING', launches=[], audit_exit_code=None)
         slurm = config['platform']['slurm']
         command = [srun, '--job-name=ndnsf-audit-' + nonce[:12],
@@ -330,7 +335,7 @@ def _recover_missing_closeout(state, operation_root, deadline):
         env = {key: value for key, value in os.environ.items()
                if key in ('PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ')}
         tag = _audit_id(node['id'])
-        env.update(NDNSF_DEPLOYMENT_ACTOR_ID=tag, NDNSF_DEPLOYMENT_BOOT_ID=boot,
+        env.update(NDNSF_DEPLOYMENT_ACTOR_ID=tag, NDNSF_DEPLOYMENT_BOOT_ID=nonce,
                    NDNSF_DEPLOYMENT_CONFIG_SHA256=digest)
         try:
             child, _ = cluster._spawn(owner, owner_root, tag, 'audit', command, env,
@@ -343,7 +348,7 @@ def _recover_missing_closeout(state, operation_root, deadline):
                 raise cluster.ClusterError('SLURM_RECOVERY_AUDIT_EXIT:' + node['id'])
         finally:
             cluster._close(owner, owner_root)
-        _closed_groups(owner, boot, digest)
+        _closed_groups(owner, nonce, digest)
 
 
 def snapshot(state, *, timeout=30):

@@ -6434,7 +6434,8 @@ def test_slurm_snapshot_consumes_bound_closeout_without_runtime_inputs(node_cont
 
 @pytest.mark.parametrize('change', ['none', 'boot', 'config', 'release', 'job', 'node', 'host',
                                   'auditor-job', 'auditor-cgroup', 'recovery-id', 'survivor',
-                                  'unreadable', 'missing-owner', 'forced-owner', 'live',
+                                  'unreadable', 'missing-owner', 'wrong-owner-boot',
+                                  'forced-owner', 'live',
                                   'existing-allocation', 'allocation-symlink', 'auditor-step',
                                   'missing-step', 'failed-owner', 'missing-exit', 'bool-exit',
                                   'null-cgroup', 'numeric-cgroup', 'failed-allocation',
@@ -6494,6 +6495,8 @@ def test_missing_allocation_requires_independent_bound_recovery(node_container, 
             audit_state.pop('audit_exit_code')
         elif change == 'bool-exit':
             audit_state['audit_exit_code'] = False
+        elif change == 'wrong-owner-boot':
+            audit_state['boot_id'] = 'f' * 32
         container.cluster.write_json(audit_root / 'state.json', audit_state)
     audit = dict(schema='ndnsf-di-host-node-audit-v1', node_id=node['id'], host=node['host'],
         boot_id=args.boot_id, configuration_sha256=args.configuration_sha256,
@@ -6631,6 +6634,10 @@ if OUTCOME == 'late-exit': raise SystemExit(9)
 
     def spawn(owner, root, tag, kind, argv, env, guard):
         assert kind == 'audit'
+        nonce = argv[argv.index('--recovery-id') + 1]
+        assert nonce != args.boot_id
+        assert owner['boot_id'] == env['NDNSF_DEPLOYMENT_BOOT_ID'] == nonce
+        assert argv[argv.index('--boot-id') + 1] == args.boot_id
         commands.append(list(argv))
         child, row = real_spawn(owner, root, tag, kind,
             [sys.executable, '-c', reply, *argv[1:]], env, guard)
