@@ -1,11 +1,13 @@
 #include "utils.hpp"
 #include "ProducerDataNaming.hpp"
+#include "RequestConfidentiality.hpp"
 
 #include <ndn-cxx/security/transform.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <sstream>
 #include <algorithm>
+#include <charconv>
 #include <iomanip>
 #include <stdexcept>
 #include <string_view>
@@ -1346,13 +1348,36 @@ std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
         catch (const std::exception&) { return std::nullopt; }
     }
 
+    namespace {
+
+    bool
+    isManifestResponseReference(const LargeDataReference& reference)
+    {
+      return reference.manifestSourceSegments && *reference.manifestSourceSegments >= 2 &&
+             *reference.manifestSourceSegments <= MAX_REQUEST_RESPONSE_SEGMENTS &&
+             reference.objectType == "ndnsf-response" && reference.keyScope == "request" &&
+             reference.encrypted && !reference.objectId.empty() && !reference.dataName.empty() &&
+             reference.dataName.at(-1).isVersion() && reference.plaintextSize > 0 &&
+             reference.plaintextSize <= MAX_REQUEST_RESPONSE_BYTES &&
+             *reference.manifestSourceSegments <= reference.plaintextSize &&
+             reference.digest.size() == 71 && reference.digest.compare(0, 7, "sha256:") == 0 &&
+             std::all_of(reference.digest.begin() + 7, reference.digest.end(),
+               [](char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
+    }
+
+    } // namespace
+
     ndn::Buffer
     encodeLargeDataReferencePayload(const LargeDataReference& reference)
     {
+        if (reference.manifestSourceSegments && !isManifestResponseReference(reference))
+            throw std::invalid_argument("invalid signed-manifest response reference");
         std::ostringstream os;
+        const auto dataName = reference.manifestSourceSegments ?
+            reference.dataName.toUri(ndn::name::UriFormat::CANONICAL) : reference.dataName.toUri();
         os << LARGE_DATA_REFERENCE_MAGIC << "\n"
-           << "version=1\n"
-           << "name=" << reference.dataName.toUri() << "\n"
+           << "version=" << (reference.manifestSourceSegments ? 2 : 1) << "\n"
+           << "name=" << dataName << "\n"
            << "type=" << sanitizeReferenceField(reference.objectType) << "\n"
            << "object_id=" << sanitizeReferenceField(reference.objectId) << "\n"
            << (reference.keyScope.empty() ? std::string() :
@@ -1360,6 +1385,8 @@ std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
            << "plaintext_size=" << reference.plaintextSize << "\n"
            << "encrypted=" << (reference.encrypted ? "1" : "0") << "\n"
            << "digest=" << sanitizeReferenceField(reference.digest) << "\n";
+        if (reference.manifestSourceSegments)
+            os << "source_segments=" << *reference.manifestSourceSegments << "\n";
         const auto text = os.str();
         return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()), text.size());
     }
@@ -1378,6 +1405,7 @@ std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
         std::string line;
         std::getline(input, line);
 
+        std::string version;
         while (std::getline(input, line)) {
             const auto pos = line.find('=');
             if (pos == std::string::npos) {
@@ -1385,7 +1413,18 @@ std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
             }
             const auto key = line.substr(0, pos);
             const auto value = line.substr(pos + 1);
-            if (key == "name") {
+            if (key == "version") {
+                version = value;
+            }
+            else if (key == "source_segments") {
+                uint32_t count = 0;
+                const auto end = value.data() + value.size();
+                const auto [ptr, error] = std::from_chars(value.data(), end, count);
+                if (error != std::errc{} || ptr != end)
+                    return std::nullopt;
+                reference.manifestSourceSegments = count;
+            }
+            else if (key == "name") {
                 try {
                     reference.dataName = ndn::Name(value);
                 }
@@ -1425,6 +1464,14 @@ std::optional<uint64_t> controlNonceExpiry(const ndn::Name& controller,
             }
         }
 
+        if (version == "2") {
+            if (!isManifestResponseReference(reference) ||
+                encodeLargeDataReferencePayload(reference) != payload)
+                return std::nullopt;
+        }
+        else if (reference.manifestSourceSegments || (!version.empty() && version != "1")) {
+            return std::nullopt;
+        }
         if (reference.dataName.empty()) {
             return std::nullopt;
         }

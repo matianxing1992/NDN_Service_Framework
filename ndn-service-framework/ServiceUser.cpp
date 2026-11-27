@@ -6,6 +6,7 @@
 #include "detail/ProtectedTargetedRequest.hpp"
 #include "detail/OriginalPacketFile.hpp"
 #include "detail/in-memory-storage-range.hpp"
+#include "detail/segment-manifest-fetch.hpp"
 #include "ProducerDataNaming.hpp"
 #include "ProtectedBlobManifest.hpp"
 #include <future>
@@ -10955,8 +10956,9 @@ namespace ndn_service_framework
             // The N5 input name commits only to facts both sides hold before publication, so it can be built from
             // the binding as soon as it is complete and before the name itself joins it.
             const RequestInputOwner inputOwner{identity, providerName};
+            const bool requireInputManifest = pendingCall.requestMessage.requiresInputManifest();
             const auto inputName = makeRequestScopedInputName(inputOwner, binding,
-                pendingCall.requestMessage.getPublicRequestId());
+                pendingCall.requestMessage.getPublicRequestId(), requireInputManifest);
             binding.inputDataName = inputName;
             binding.segmentOrEventId = "request-input";
 
@@ -10969,15 +10971,20 @@ namespace ndn_service_framework
             // authenticated envelopes under the same base name.  The
             // Provider resolves the segment sequence after Selection;
             // no oversized Data packet is ever put on the Face.
-            constexpr std::size_t inputChunkBytes = 4096;
-            constexpr std::size_t inputMaxPlaintextBytes = 16 * 1024 * 1024;
-            constexpr std::size_t inputMaxSegments = 4096;
-            if (plaintext.size() > inputMaxPlaintextBytes ||
-                (plaintext.size() + inputChunkBytes - 1) / inputChunkBytes >
-                    inputMaxSegments) {
+            constexpr auto inputChunkBytes = REQUEST_INPUT_CHUNK_BYTES;
+            if (plaintext.size() > MAX_REQUEST_INPUT_BYTES) {
                 throw std::length_error(
                     "request-scoped input exceeds segmented publication bounds");
             }
+            const auto sealInputSegment = [&](std::size_t segment) {
+                const auto offset = segment * inputChunkBytes;
+                const auto length = std::min(inputChunkBytes, plaintext.size() - offset);
+                auto segmentBinding = binding;
+                segmentBinding.segmentOrEventId = "request-input/" + std::to_string(segment);
+                const auto envelope = encryptRequestContent(keys.inputKey, keys.keyId,
+                    segmentBinding, ndn::span<const uint8_t>(plaintext.data() + offset, length));
+                return envelope.wireEncode();
+            };
             const bool useSegments = plaintext.size() > inputChunkBytes;
             if (!useSegments) {
                 binding.segmentOrEventId = "request-input";
@@ -11009,18 +11016,53 @@ namespace ndn_service_framework
                     }
                 }
             }
+            else if (requireInputManifest) {
+                const auto segmentCount = (plaintext.size() + inputChunkBytes - 1) /
+                                          inputChunkBytes;
+                std::vector<ndn::ConstBufferPtr> sources;
+                sources.reserve(segmentCount);
+                for (std::size_t index = 0; index < segmentCount; ++index) {
+                    const auto wire = sealInputSegment(index);
+                    auto buffer = wire.getBuffer();
+                    if (wire.size() != buffer->size() || wire.data() != buffer->data())
+                        buffer = std::make_shared<const ndn::Buffer>(wire.begin(), wire.end());
+                    sources.push_back(std::move(buffer));
+                }
+                auto& keyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+                const auto count = static_cast<uint32_t>(sources.size());
+                const auto freshness = ndn::time::milliseconds(lifetimeMs);
+                const auto publication = ManifestPublication::prepare(keyChain, m_signingInfo,
+                    getRequestInputManifestScope(binding, identity),
+                    {count, MAX_REQUEST_INPUT_MANIFEST_WIRE_BYTES, count},
+                    sources, {}, freshness);
+                std::vector<std::shared_ptr<ndn::Data>> packets;
+                packets.reserve(publication.packets().size());
+                for (const auto& packet : publication.packets())
+                    packets.push_back(std::make_shared<ndn::Data>(packet));
+                {
+                    std::lock_guard<std::mutex> cacheLock(_cache_mutex);
+                    if (packets.size() > m_IMS.getLimit())
+                        throw std::length_error("request input manifest exceeds packet cache capacity");
+                    for (const auto& packet : packets)
+                        m_IMS.insert(*packet, freshness);
+                }
+                if (pendingCall.controlStatistics) {
+                    for (std::size_t offset = 0; offset < plaintext.size(); offset += inputChunkBytes) {
+                        pendingCall.controlStatistics->record(
+                            ControlByteKind::REQUEST_INPUT_PACKET_PUBLISHED,
+                            std::min(inputChunkBytes, plaintext.size() - offset));
+                    }
+                }
+                NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_INPUT_MANIFEST_PUBLISHED name=" << inputName
+                    << " source_segments=" << count << " plaintext_bytes=" << plaintext.size());
+            }
             else {
                 const auto segmentCount = (plaintext.size() + inputChunkBytes - 1) /
                                           inputChunkBytes;
                 for (std::size_t segment = 0; segment < segmentCount; ++segment) {
                     const auto offset = segment * inputChunkBytes;
                     const auto length = std::min(inputChunkBytes, plaintext.size() - offset);
-                    binding.segmentOrEventId = "request-input/" +
-                                               std::to_string(segment);
-                    const auto segmentEnvelope = encryptRequestContent(
-                        keys.inputKey, keys.keyId, binding,
-                        ndn::span<const uint8_t>(plaintext.data() + offset, length));
-                    const auto segmentWire = segmentEnvelope.wireEncode();
+                    const auto segmentWire = sealInputSegment(segment);
                     auto data = std::make_shared<ndn::Data>(
                         ndn::Name(inputName).appendSegment(segment));
                     data->setFreshnessPeriod(ndn::time::milliseconds(lifetimeMs));
@@ -11077,6 +11119,7 @@ namespace ndn_service_framework
                 input = m_IMS.find(scopedState.binding.inputDataName);
             }
             if (input && input->getName() == scopedState.binding.inputDataName &&
+                !SegmentManifestVerifier::hasRootContent(*input) &&
                 input->wireEncode().size() <= 2048)
                 selectionMessage.setInlineSignedInputData(input->wireEncode());
         }
@@ -12930,6 +12973,8 @@ namespace ndn_service_framework
     onError.disconnect();
     if (fetcher) fetcher->stop();
     fetcher.reset();
+    if (manifestFetcher) manifestFetcher->stop();
+    manifestFetcher.reset();
   }
 
   void
@@ -12941,6 +12986,7 @@ namespace ndn_service_framework
     const auto reference = parseLargeDataReferencePayload(responseMessage.getPayload());
     auto pending = m_pendingCalls.find(requestId);
     if (!reference || pending == m_pendingCalls.end()) return;
+    const auto requireManifest = pending->second.requestMessage.requiresResponseManifest();
     const auto current = [this, requestId] {
       const auto call = m_pendingCalls.find(requestId);
       if (call == m_pendingCalls.end() || call->second.timedOut) return false;
@@ -12996,7 +13042,10 @@ namespace ndn_service_framework
               !keys->isValid(nowMilliseconds())) {
             throw std::runtime_error("request-scoped large response key is no longer current");
           }
-          if (active->nonces.empty() || active->plaintext.size() != reference.plaintextSize ||
+          if (active->nonces.empty() ||
+              (reference.manifestSourceSegments &&
+               active->nonces.size() != *reference.manifestSourceSegments) ||
+              active->plaintext.size() != reference.plaintextSize ||
               (!reference.digest.empty() &&
                sha256DigestString(active->plaintext) != reference.digest)) {
             throw std::runtime_error("request-scoped large response size or digest mismatch");
@@ -13018,7 +13067,11 @@ namespace ndn_service_framework
             << " name=" << reference.dataName.toUri() << " requestId=" << requestId.toUri()
             << " serviceName=" << serviceName.toUri()
             << " plaintextBytes=" << resolved.getPayloadSize()
-            << " segments=" << active->nonces.size());
+            << " segments=" << active->nonces.size()
+            << " signed_manifest=" << reference.manifestSourceSegments.has_value()
+            << " manifest_roots=" << (reference.manifestSourceSegments ?
+              1 + (*reference.manifestSourceSegments - 1) /
+                  SegmentManifestVerifier::MAX_SOURCE_PACKETS : 0));
         }
         catch (const std::exception& failure) {
           error = failure.what();
@@ -13047,7 +13100,8 @@ namespace ndn_service_framework
     try {
       constexpr auto MAX_PENDING_RESPONSE_BYTES = 2 * MAX_REQUEST_RESPONSE_BYTES;
       constexpr std::size_t MAX_PENDING_LARGE_RESPONSES = 32;
-      if (reference->keyScope != "request" || !reference->encrypted ||
+      if ((reference->manifestSourceSegments && !requireManifest) ||
+          reference->keyScope != "request" || !reference->encrypted ||
           !providerName.isPrefixOf(reference->dataName) ||
           reference->dataName.size() <= providerName.size() ||
           !reference->dataName.at(-1).isVersion()) {
@@ -13090,6 +13144,74 @@ namespace ndn_service_framework
       };
       const int lifetimeMs = std::max(50,
         intEnvOrDefault("NDNSF_RESPONSE_LARGE_INTEREST_LIFETIME_MS", 4000));
+      const auto consume = [this, weakOwner, current, authority, serviceName](const ndn::Block& block) {
+        const auto active = weakOwner.lock();
+        if (!active || active->terminal || !active->error.empty()) return;
+        if (!current() ||
+            !authorizeControllerTransition(serviceName, ProtectedTransition::RESPONSE_DELIVERY))
+          throw std::runtime_error("large response delivery is no longer current");
+        const auto [keys, scoped] = authority();
+        if (!keys || !scoped || keys->keyId != active->keyId ||
+            !keys->isValid(nowMilliseconds()))
+          throw std::runtime_error("request-scoped large response key is no longer current");
+        const auto ordinal = active->nonces.size();
+        if (block.size() > ndn::MAX_NDN_PACKET_SIZE ||
+            ordinal >= MAX_REQUEST_RESPONSE_SEGMENTS)
+          throw std::length_error("large response exceeds segment bound");
+        AeadEnvelope envelope;
+        if (!envelope.wireDecode(block) ||
+            envelope.segmentOrEventId != "response/" + std::to_string(ordinal))
+          throw std::runtime_error("request-scoped large response segment envelope is invalid");
+        if (envelope.ciphertext.empty() ||
+            envelope.ciphertext.size() > active->expectedBytes - active->plaintext.size())
+          throw std::length_error("large response exceeds declared plaintext size");
+        auto binding = *scoped;
+        binding.segmentOrEventId = envelope.segmentOrEventId;
+        ndn::Buffer plaintext;
+        RequestCryptoFailure failure = RequestCryptoFailure::NONE;
+        if (!decryptRequestContent(keys->responseKey, keys->keyId, binding, envelope,
+                                   plaintext, &failure)) {
+          throw std::runtime_error(std::string("request-scoped large response decryption failed: ") +
+                                   requestCryptoFailureName(failure));
+        }
+        if (ordinal == 0) active->plaintext.reserve(active->expectedBytes);
+        active->plaintext.insert(active->plaintext.end(), plaintext.begin(), plaintext.end());
+        active->nonces.push_back(std::move(envelope.nonce));
+        active->encodedBytes += block.size();
+      };
+      if (reference->manifestSourceSegments) {
+        const auto window = std::clamp(
+          intEnvOrDefault("NDNSF_RESPONSE_LARGE_FETCH_INIT_CWND", 64), 1, 256);
+        const auto groupAt = [reference = *reference, binding = *binding](uint32_t groupId)
+            -> std::optional<detail::SegmentManifestFetch::Group> {
+          const auto group = getRequestResponseManifestGroup(reference, binding, groupId);
+          if (!group) return std::nullopt;
+          return detail::SegmentManifestFetch::Group{group->scope,
+            {group->sourceCount, MAX_REQUEST_RESPONSE_PACKET_FILE_BYTES, group->sourceCount}};
+        };
+        const auto finishManifest = [finish, name = reference->dataName]
+            (std::string error, uint32_t roots, uint64_t members) {
+          if (error.empty()) {
+            NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_RESPONSE_MANIFEST_VERIFIED"
+              << " name=" << name << " certificate_validations=" << roots
+              << " hash_verified_members=" << members);
+          }
+          constexpr std::string_view genericPrefix = "signed segment manifest";
+          if (error.compare(0, genericPrefix.size(), genericPrefix) == 0)
+            error.replace(0, genericPrefix.size(), "signed response manifest");
+          finish(std::move(error));
+        };
+        owner->manifestFetcher = std::make_shared<detail::SegmentManifestFetch>(m_face, validator,
+          ndn::time::milliseconds(lifetimeMs), window, groupAt,
+          [consume](const ndn::Block& content) {
+            const auto envelope = content.blockFromValue();
+            if (envelope.size() != content.value_size())
+              throw std::runtime_error("signed response manifest segment has trailing bytes");
+            consume(envelope);
+          }, finishManifest);
+        owner->manifestFetcher->start();
+        return;
+      }
       ndn::Interest interest(reference->dataName);
       interest.setCanBePrefix(true);
       interest.setMustBeFresh(true);
@@ -13107,7 +13229,8 @@ namespace ndn_service_framework
       owner->fetcher = ndn::SegmentFetcher::start(m_face, interest,
         transportValidator->getConfiguredValidatorForSegmentFetcher(), options);
       owner->onValidated = owner->fetcher->afterSegmentValidated.connect(
-        [weakOwner, reject, transportValidator, providerName, prefix = reference->dataName]
+        [weakOwner, reject, transportValidator, providerName, requireManifest,
+         prefix = reference->dataName]
         (const ndn::Data& data) {
           const auto active = weakOwner.lock();
           if (!active || active->terminal || !active->error.empty()) return;
@@ -13117,44 +13240,22 @@ namespace ndn_service_framework
               !transportValidator->isProducerSignerAuthorized(data, providerName)) {
             reject(*active, "large response segment Producer or name mismatch");
           }
+          else if (requireManifest && (name.at(-1).toSegment() != 0 ||
+                   data.getFinalBlock() != ndn::name::Component::fromSegment(0))) {
+            reject(*active, "large response requires signed segment manifests");
+          }
         });
       owner->onData = owner->fetcher->onInOrderData.connect(
-        [this, weakOwner, current, authority, serviceName, reject](ndn::ConstBufferPtr buffer) {
+        [weakOwner, consume, reject](ndn::ConstBufferPtr buffer) {
           const auto active = weakOwner.lock();
           if (!active || active->terminal || !active->error.empty()) return;
           try {
-            if (!current() ||
-                !authorizeControllerTransition(serviceName, ProtectedTransition::RESPONSE_DELIVERY))
-              throw std::runtime_error("large response delivery is no longer current");
-            const auto [keys, scoped] = authority();
-            if (!keys || !scoped || keys->keyId != active->keyId ||
-                !keys->isValid(nowMilliseconds()))
-              throw std::runtime_error("request-scoped large response key is no longer current");
-            const auto ordinal = active->nonces.size();
-            if (!buffer || buffer->size() > ndn::MAX_NDN_PACKET_SIZE ||
-                ordinal >= MAX_REQUEST_RESPONSE_SEGMENTS)
+            if (!buffer || buffer->size() > ndn::MAX_NDN_PACKET_SIZE)
               throw std::length_error("large response exceeds segment bound");
             const auto [parsed, block] = ndn::Block::fromBuffer(buffer);
-            AeadEnvelope envelope;
-            if (!parsed || block.size() != buffer->size() || !envelope.wireDecode(block) ||
-                envelope.segmentOrEventId != "response/" + std::to_string(ordinal))
+            if (!parsed || block.size() != buffer->size())
               throw std::runtime_error("request-scoped large response segment envelope is invalid");
-            if (envelope.ciphertext.empty() ||
-                envelope.ciphertext.size() > active->expectedBytes - active->plaintext.size())
-              throw std::length_error("large response exceeds declared plaintext size");
-            auto binding = *scoped;
-            binding.segmentOrEventId = envelope.segmentOrEventId;
-            ndn::Buffer plaintext;
-            RequestCryptoFailure failure = RequestCryptoFailure::NONE;
-            if (!decryptRequestContent(keys->responseKey, keys->keyId, binding, envelope,
-                                       plaintext, &failure)) {
-              throw std::runtime_error(std::string("request-scoped large response decryption failed: ") +
-                                       requestCryptoFailureName(failure));
-            }
-            if (ordinal == 0) active->plaintext.reserve(active->expectedBytes);
-            active->plaintext.insert(active->plaintext.end(), plaintext.begin(), plaintext.end());
-            active->nonces.push_back(std::move(envelope.nonce));
-            active->encodedBytes += buffer->size();
+            consume(block);
           }
           catch (const std::exception& failure) {
             reject(*active, failure.what());

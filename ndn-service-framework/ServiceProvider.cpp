@@ -16,6 +16,7 @@
 #include "detail/TargetedRequestRouting.hpp"
 #include "detail/ProtectedTargetedRequest.hpp"
 #include "detail/in-memory-storage-range.hpp"
+#include "detail/segment-manifest-fetch.hpp"
 #include "ProducerDataNaming.hpp"
 #include "ProtectedBlobManifest.hpp"
 #include "ImmutableProtectedPublicationStore.hpp"
@@ -72,6 +73,7 @@ namespace ndn_service_framework
         std::chrono::steady_clock::time_point deadline;
         std::uint64_t diskLimit = 0;
         detail::ExactPacketIndex exactIndex;
+        bool visible = true;
         ndn::Name responsePrefix;
         std::uint64_t responseSegmentCount = 0;
         std::shared_ptr<const detail::OriginalPacketFile> responseFile;
@@ -10879,7 +10881,7 @@ namespace ndn_service_framework
         RequestSecurityBinding binding,
         size_t thresholdBytes,
         ndn::time::milliseconds freshness, std::function<bool()> mayCommit,
-        std::function<void(LargeDataReferenceResponseResult)> onReady)
+        std::function<void(LargeDataReferenceResponseResult)> onReady, bool requireManifest)
     {
         LargeDataReferenceResponseResult result;
         const auto threshold = thresholdBytes == 0 ?
@@ -10940,35 +10942,38 @@ namespace ndn_service_framework
         result.largeData.encryptedDataName = encryptedDataName;
         // Keep ownership of the plaintext Block while the Face runs batches.
         const auto payloadBlock = response.getPayloadBlock();
-        const auto makeSegment = [this, payloadBlock, keys, binding, encryptedDataName,
-                                  chunkBytes, finalSegment, freshness](std::uint64_t segment) {
+        const auto sealContent = [payloadBlock, keys, binding, chunkBytes](std::uint64_t segment) {
             const auto payload = payloadBlock.value_bytes();
             const auto offset = static_cast<size_t>(segment) * chunkBytes;
             const auto length = std::min(chunkBytes, payload.size() - offset);
             auto segmentBinding = binding;
             segmentBinding.segmentOrEventId = "response/" + std::to_string(segment);
-            const auto envelope = encryptRequestContent(keys.responseKey, keys.keyId,
-                segmentBinding, payload.subspan(offset, length));
+            return encryptRequestContent(keys.responseKey, keys.keyId,
+                segmentBinding, payload.subspan(offset, length)).wireEncode();
+        };
+        const auto makeSegment = [this, sealContent, encryptedDataName, finalSegment, freshness]
+            (std::uint64_t segment) {
             auto data = std::make_shared<ndn::Data>(
                 ndn::Name(encryptedDataName).appendSegment(segment));
-            data->setContent(envelope.wireEncode());
+            data->setContent(sealContent(segment));
             data->setFreshnessPeriod(freshness);
             data->setFinalBlock(ndn::name::Component::fromSegment(finalSegment));
             auto& activeKeyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
             activeKeyChain.sign(*data, m_signingInfo);
             return data;
         };
+        LargeDataReference reference;
+        reference.dataName = result.largeData.encryptedDataName;
+        reference.objectType = "ndnsf-response";
+        reference.objectId = result.largeData.objectId;
+        reference.plaintextSize = payload.size();
+        reference.digest = result.largeData.digest;
+        reference.keyScope = "request";
+        if (requireManifest && segmentCount > 1)
+            reference.manifestSourceSegments = static_cast<uint32_t>(segmentCount);
         auto finishReference = [requestId, serviceName, bindingVersion = binding.controllerVersion,
                                       response = std::move(response), result = std::move(result),
-                                      payloadSize = payload.size(), chunkBytes, segmentCount]() mutable {
-            LargeDataReference reference;
-            reference.dataName = result.largeData.encryptedDataName;
-            reference.objectType = "ndnsf-response";
-            reference.objectId = result.largeData.objectId;
-            reference.plaintextSize = payloadSize;
-            reference.encrypted = true;
-            reference.digest = result.largeData.digest;
-            reference.keyScope = "request";
+                                      reference, chunkBytes, segmentCount]() mutable {
             auto payload = encodeLargeDataReferencePayload(reference);
             response.setPayload(payload, payload.size());
             response.clearAeadEnvelope();
@@ -10980,11 +10985,11 @@ namespace ndn_service_framework
                          << " name=" << reference.dataName.toUri()
                          << " requestId=" << requestId.toUri()
                          << " serviceName=" << serviceName.toUri()
-                         << " plaintextBytes=" << payloadSize
+                         << " plaintextBytes=" << reference.plaintextSize
                          << " chunkBytes=" << chunkBytes
                          << " segments=" << segmentCount
-                         << " retention=" << (segmentCount > MAX_IN_MEMORY_RESPONSE_SEGMENTS ?
-                                               "file" : "ims"));
+                         << " retention=" << (reference.manifestSourceSegments ? "manifest-file" :
+                             segmentCount > MAX_IN_MEMORY_RESPONSE_SEGMENTS ? "file" : "ims"));
             return std::move(result);
         };
         const auto failure = [](const std::exception& error) {
@@ -10995,6 +11000,94 @@ namespace ndn_service_framework
         };
         std::shared_ptr<RetainedPackets> owner;
         try {
+            if (reference.manifestSourceSegments) {
+                const auto now = nowMilliseconds();
+                if (!onReady || !mayCommit || !keys.isValid(now))
+                    throw std::runtime_error("signed response manifest requires a live invocation");
+                const auto lifetime = std::min<uint64_t>(keys.expiresAtMs - now,
+                    std::numeric_limits<int>::max());
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(lifetime);
+                auto groups = std::vector<RequestResponseManifestGroup>{};
+                uint64_t packetCount = segmentCount;
+                for (uint32_t i = 0;
+                     auto group = getRequestResponseManifestGroup(reference, binding, i); ++i) {
+                    packetCount += 1 + SegmentManifestVerifier::pageCountFor(group->sourceCount);
+                    groups.push_back(std::move(*group));
+                }
+                if (packetCount > MAX_REQUEST_RESPONSE_SEGMENTS)
+                    throw std::length_error("signed response manifest packet file capacity");
+                const auto diskLimit = packetCount * REQUEST_RESPONSE_PACKET_FILE_CHARGE;
+                postRequestScopedResponseBatch(
+                    [this, groups = std::move(groups), sealContent, freshness, deadline, diskLimit,
+                     mayCommit = std::move(mayCommit), ready = std::move(onReady),
+                     finish = std::move(finishReference), failure, groupId = size_t{0},
+                     retained = std::weak_ptr<RetainedPackets>{},
+                     content = std::vector<ndn::ConstBufferPtr>{}]() mutable {
+                        LargeDataReferenceResponseResult prepared;
+                        try {
+                            const auto current = [&] {
+                                return !m_fetchStopping->load() &&
+                                    std::chrono::steady_clock::now() < deadline && mayCommit();
+                            };
+                            if (!current())
+                                throw std::runtime_error("signed response manifest no longer current");
+                            const auto& group = groups.at(groupId);
+                            constexpr size_t SEGMENTS_PER_BATCH = 32;
+                            const auto end = std::min<size_t>(group.sourceCount,
+                                                              content.size() + SEGMENTS_PER_BATCH);
+                            while (content.size() < end) {
+                                const auto wire = sealContent(group.firstSegment + content.size());
+                                auto buffer = wire.getBuffer();
+                                if (wire.size() != buffer->size() || wire.data() != buffer->data())
+                                    buffer = std::make_shared<const ndn::Buffer>(
+                                        wire.begin(), wire.end());
+                                content.push_back(std::move(buffer));
+                            }
+                            if (content.size() < group.sourceCount) return false;
+                            auto publication = [&] {
+                                const std::lock_guard<std::mutex> lock(_cache_mutex);
+                                auto& keyChain = m_testSigningKeyChain ?
+                                    *m_testSigningKeyChain : m_keyChain;
+                                SegmentManifestLimits limits{group.sourceCount, diskLimit,
+                                                             group.sourceCount};
+                                return ManifestPublication::prepare(keyChain, m_signingInfo,
+                                    group.scope, limits, content, {}, freshness);
+                            }();
+                            std::vector<std::shared_ptr<const ndn::Data>> originals;
+                            originals.reserve(publication.packets().size());
+                            for (const auto& packet : publication.packets())
+                                originals.push_back(std::make_shared<const ndn::Data>(packet));
+                            retainExactPackets(retained, deadline, diskLimit, originals, current,
+                                               false);
+                            content.clear();
+                            if (++groupId < groups.size()) return false;
+                            if (!current())
+                                throw std::runtime_error("signed response manifest no longer current");
+                            const auto saved = retained.lock();
+                            if (!saved)
+                                throw std::runtime_error("signed response manifest retention expired");
+                            prepared = finish();
+                            const std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
+                            scheduleRetainedPacketExpiry(saved, std::chrono::steady_clock::now() +
+                                2 * REQUEST_SCOPED_RESPONSE_FETCH_TIMEOUT);
+                            saved->visible = true;
+                        }
+                        catch (const std::exception& error) {
+                            if (const auto saved = retained.lock()) retirePacketRetention(saved);
+                            prepared = failure(error);
+                        }
+                        try {
+                            ready(std::move(prepared));
+                        }
+                        catch (const std::exception& error) {
+                            if (const auto saved = retained.lock()) retirePacketRetention(saved);
+                            NDN_LOG_ERROR("Signed response manifest commit failed: " << error.what());
+                        }
+                        return true;
+                    });
+                return std::nullopt;
+            }
             if (segmentCount <= MAX_IN_MEMORY_RESPONSE_SEGMENTS) {
                 for (std::uint64_t segment = 0; segment < segmentCount; ++segment) {
                     insertDataIntoIMS(*makeSegment(segment), freshness);
@@ -11176,7 +11269,7 @@ namespace ndn_service_framework
                         commitExecutedRequestResponse(requesterName, providerName, serviceName,
                             requestId, selectionDigest, userToken, requestScopedState,
                             std::move(prepared));
-                    });
+                    }, requestMessage.requiresResponseManifest());
                 if (!prepared) return;
                 optimizedResponse = std::move(*prepared);
             }
@@ -11484,9 +11577,10 @@ namespace ndn_service_framework
             computeSelectionDigestWithoutKeyEnvelope(selectionMessage);
         // Same N5 builder the User used, over the same pre-publication facts; the Provider rebuilds the name
         // before it fetches or decrypts, so nothing here may depend on the plaintext.
+        const bool requireInputManifest = requestMessage.requiresInputManifest();
         expected.inputDataName = makeRequestScopedInputName(
             RequestInputOwner{requesterName, providerName}, expected,
-            requestMessage.getPublicRequestId());
+            requestMessage.getPublicRequestId(), requireInputManifest);
         expected.segmentOrEventId = "request-input";
 
         SelectionKeyEnvelope envelope;
@@ -11741,15 +11835,16 @@ namespace ndn_service_framework
             (const std::vector<AeadEnvelope>& envelopes) {
                 auto ownerLease = acquireOwner();
                 if (!ownerLease) return;
-                constexpr std::size_t inputMaxSegments = 4096;
-                if (envelopes.empty() || envelopes.size() > inputMaxSegments) {
+                if (envelopes.empty() || envelopes.size() > SegmentManifestVerifier::MAX_SOURCE_PACKETS) {
                     finishFailure("request-scoped input segment count is invalid");
                     return;
                 }
                 const auto nowMs = nowMilliseconds();
-                const auto lifetimeMs = std::chrono::milliseconds(
-                    std::max<uint64_t>(1, keys.expiresAtMs > nowMs ?
-                        keys.expiresAtMs - nowMs : 1));
+                if (completed->load() || !keys.isValid(nowMs)) {
+                    finishFailure("request-scoped input key expired before admission");
+                    return;
+                }
+                const auto lifetimeMs = std::chrono::milliseconds(keys.expiresAtMs - nowMs);
                 ndn::Buffer plaintext;
                 std::vector<ndn::Buffer> nonces;
                 nonces.reserve(envelopes.size());
@@ -11766,7 +11861,7 @@ namespace ndn_service_framework
                                       requestCryptoFailureName(failure));
                         return;
                     }
-                    if (plaintext.size() + segmentPlaintext.size() > 16 * 1024 * 1024) {
+                    if (plaintext.size() + segmentPlaintext.size() > MAX_REQUEST_INPUT_BYTES) {
                         finishFailure("request-scoped input exceeds bounded plaintext size");
                         return;
                     }
@@ -11921,8 +12016,78 @@ namespace ndn_service_framework
                 }
             };
 
+        const auto startManifestFetch =
+            [this, requesterName, expected, pendingKey, keys, completed, finishFailure,
+             decryptEnvelopes, acquireOwner](const ndn::Data& root) {
+                auto ownerLease = acquireOwner();
+                if (!ownerLease || completed->load()) return;
+                const auto nowMs = nowMilliseconds();
+                if (!keys.isValid(nowMs)) {
+                    finishFailure("request-scoped input key expired before manifest fetch");
+                    return;
+                }
+                try {
+                    const auto scope = getRequestInputManifestScope(expected, requesterName);
+                    const auto groupAt = [scope](uint32_t group)
+                        -> std::optional<detail::SegmentManifestFetch::Group> {
+                        if (group != 0) return std::nullopt;
+                        return detail::SegmentManifestFetch::Group{scope,
+                            {SegmentManifestVerifier::MAX_SOURCE_PACKETS,
+                             MAX_REQUEST_INPUT_MANIFEST_WIRE_BYTES, std::nullopt}};
+                    };
+                    auto envelopes = std::make_shared<std::vector<AeadEnvelope>>();
+                    const auto consume = [envelopes](const ndn::Block& content) {
+                        const auto wire = content.blockFromValue();
+                        AeadEnvelope envelope;
+                        if (wire.size() != content.value_size() || !envelope.wireDecode(wire) ||
+                            envelope.ciphertext.empty() ||
+                            envelope.ciphertext.size() > REQUEST_INPUT_CHUNK_BYTES)
+                            throw std::runtime_error("invalid signed input segment envelope");
+                        envelopes->push_back(std::move(envelope));
+                    };
+                    const auto finish = [this, envelopes, decryptEnvelopes, finishFailure, scope,
+                                         acquireOwner, pendingKey, keyId = keys.keyId](
+                        std::string error, uint32_t roots, uint64_t members) {
+                        auto ownerLease = acquireOwner();
+                        if (!ownerLease) return;
+                        {
+                            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                            const auto it = m_requestScopedInvocations.find(pendingKey);
+                            if (it == m_requestScopedInvocations.end() || it->second.keys.keyId != keyId)
+                                return;
+                            it->second.inputManifestFetch.reset();
+                        }
+                        if (!error.empty()) {
+                            finishFailure(std::move(error));
+                            return;
+                        }
+                        NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_INPUT_MANIFEST_VERIFIED name="
+                            << scope.objectPrefix << " certificate_validations=" << roots
+                            << " hash_verified_members=" << members);
+                        decryptEnvelopes(*envelopes);
+                    };
+                    const auto lifetime = ndn::time::milliseconds(
+                        std::min<uint64_t>(1000, keys.expiresAtMs - nowMs));
+                    const auto fetch = std::make_shared<detail::SegmentManifestFetch>(
+                        m_face, validator, lifetime, 8, groupAt, consume, finish);
+                    {
+                        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                        const auto it = m_requestScopedInvocations.find(pendingKey);
+                        if (it == m_requestScopedInvocations.end() || it->second.keys.keyId != keys.keyId)
+                            return;
+                        it->second.inputManifestFetch = fetch;
+                    }
+                    fetch->expireAfter(m_scheduler, ndn::time::milliseconds(keys.expiresAtMs - nowMs));
+                    fetch->start(&root);
+                }
+                catch (const std::exception& error) {
+                    finishFailure(std::string("signed input manifest setup failed: ") + error.what());
+                }
+            };
+
         const auto validateSingleInput =
-            [this, requesterName, expected, completed, finishFailure, decryptEnvelopes, acquireOwner]
+            [this, requesterName, expected, completed, finishFailure, decryptEnvelopes,
+             requireInputManifest, acquireOwner]
             (const ndn::Data& data, std::shared_ptr<const ndn::Data> owner) {
                 auto ownerLease = acquireOwner();
                 if (!ownerLease) return;
@@ -11930,7 +12095,8 @@ namespace ndn_service_framework
                 inputValidator->validate(
                     data,
                     [requesterName, expected, completed, finishFailure,
-                     decryptEnvelopes, owner, inputValidator](const ndn::Data& validated) {
+                     decryptEnvelopes, requireInputManifest, owner, inputValidator](
+                        const ndn::Data& validated) {
                         if (completed->load()) return;
                         if (validated.getName() != expected.inputDataName ||
                             !isSignedByIdentity(validated, requesterName)) {
@@ -11946,7 +12112,8 @@ namespace ndn_service_framework
                             decoded = ok && envelope.wireDecode(block);
                         }
                         catch (const std::exception&) {}
-                        if (!decoded) {
+                        if (!decoded || (requireInputManifest &&
+                            envelope.ciphertext.size() > REQUEST_INPUT_CHUNK_BYTES)) {
                             finishFailure("malformed input AEAD envelope");
                             return;
                         }
@@ -12010,7 +12177,8 @@ namespace ndn_service_framework
         // must not extend the request key lifetime or outlive the Provider.
         const auto fetchInput =
             [this, expected, completed, finishFailure, validateSingleInput,
-             startSegmentedFetch, requestId, providerName, acquireOwner,
+             startSegmentedFetch, startManifestFetch, requireInputManifest,
+             requestId, providerName, acquireOwner,
              expiresAtMs = keys.expiresAtMs,
              deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000)]
             (const auto& self, unsigned attempt) -> void {
@@ -12025,7 +12193,7 @@ namespace ndn_service_framework
                 return;
             }
             ndn::Interest interest(expected.inputDataName);
-            interest.setCanBePrefix(true);
+            interest.setCanBePrefix(!requireInputManifest);
             interest.setMustBeFresh(true);
             const auto keyLifetimeMs = std::min<uint64_t>(1000, expiresAtMs - nowMs);
             interest.setInterestLifetime(ndn::time::milliseconds(
@@ -12038,13 +12206,17 @@ namespace ndn_service_framework
             m_face.expressInterest(
             interest,
             [expected, completed, finishFailure, validateSingleInput,
-             startSegmentedFetch](const ndn::Interest&, const ndn::Data& data) {
+             startSegmentedFetch, startManifestFetch, requireInputManifest](
+                const ndn::Interest&, const ndn::Data& data) {
                 if (completed->load()) return;
                 if (data.getName() == expected.inputDataName) {
-                    validateSingleInput(data, {});
+                    if (requireInputManifest && SegmentManifestVerifier::hasRootContent(data))
+                        startManifestFetch(data);
+                    else
+                        validateSingleInput(data, {});
                     return;
                 }
-                if (expected.inputDataName.isPrefixOf(data.getName()) &&
+                if (!requireInputManifest && expected.inputDataName.isPrefixOf(data.getName()) &&
                     data.getName().size() == expected.inputDataName.size() + 1 &&
                     data.getName().at(-1).isSegment()) {
                     startSegmentedFetch();
@@ -20579,7 +20751,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     ServiceProvider::retainExactPackets(std::weak_ptr<RetainedPackets>& request,
         std::chrono::steady_clock::time_point deadline, std::uint64_t diskLimit,
         const std::vector<std::shared_ptr<const ndn::Data>>& originals,
-        const std::function<bool()>& current)
+        const std::function<bool()>& current, bool visible)
     {
         constexpr std::uint64_t MAX_INDEX_BYTES = 256ULL << 20;
         if (diskLimit > MAX_RETAINED_PACKET_DISK_BYTES ||
@@ -20623,6 +20795,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 std::filesystem::temp_directory_path(), identity, diskLimit);
             owner->diskLimit = diskLimit;
             owner->deadline = deadline;
+            owner->visible = visible;
             retained.reserve(retained.size() + 1);
             if (m_retainedPacketReadPool.getThreadCount() == 0)
                 m_retainedPacketReadPool.setThreadCount(1);
@@ -20640,9 +20813,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
     void
     ServiceProvider::scheduleRetainedPacketExpiry(
-        const std::shared_ptr<RetainedPackets>& owner)
+        const std::shared_ptr<RetainedPackets>& owner,
+        std::chrono::steady_clock::time_point limit)
     {
-        const auto deadline = owner->deadline;
+        const auto deadline = std::min(owner->deadline, limit);
         const std::weak_ptr<RegistrationControl> registration = m_registrationControl;
         const std::weak_ptr<RetainedPackets> expiring = owner;
         boost::asio::post(m_face.getIoContext(), [registration, expiring, deadline] {
@@ -20731,7 +20905,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
         std::lock_guard<std::mutex> lock(m_retainedPacketMutex);
         for (const auto& owner : m_retainedPackets) {
-            if (!owner->isCurrent()) continue;
+            if (!owner->visible || !owner->isCurrent()) continue;
             if (const auto index = owner->exactIndex.find(name)) return {owner, *index};
         }
         return {};

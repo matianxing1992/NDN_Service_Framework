@@ -38,7 +38,7 @@ struct LargeResponseFetchOracle
   struct Observation
   {
     std::weak_ptr<void> owner;
-    std::weak_ptr<ndn::SegmentFetcher> fetcher;
+    std::weak_ptr<void> fetcher;
     std::size_t authenticatedSegments = 0;
     std::size_t plaintextBytes = 0;
     std::size_t committedNonceKeys = 0;
@@ -48,7 +48,9 @@ struct LargeResponseFetchOracle
   {
     for (const auto& call : user.m_pendingCalls) {
       for (const auto& item : call.second.largeResponseFetches) {
-        return {item.second, item.second->fetcher,
+        const std::weak_ptr<void> fetcher = item.second->manifestFetcher ?
+          std::weak_ptr<void>(item.second->manifestFetcher) : item.second->fetcher;
+        return {item.second, fetcher,
                 item.second->nonces.size(), item.second->plaintext.size(),
                 user.m_requestScopedNonceRegistry.size()};
       }
@@ -388,12 +390,16 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
                            std::string terminalDuringFetch = {},
                            size_t largeResponseBytes = 9000,
                            std::string expectedResponseError = {},
-                           StagingPolicy stagingPolicy = StagingPolicy::NONE)
+                           StagingPolicy stagingPolicy = StagingPolicy::NONE,
+                           bool signedManifest = false)
 {
   // Callback dependencies outlive the environment and all of its worker teardown.
   std::atomic<bool> releaseSegment{terminalDuringFetch.empty()};
   std::atomic<size_t> heldSegments{0};
   std::atomic<size_t> segmentInterests{0};
+  std::set<ndn::Name> manifestRoots;
+  std::set<ndn::Name> manifestPages;
+  std::set<ndn::Name> manifestSources;
   std::atomic<bool> responseReceived{false};
   std::atomic<bool> requestTimedOut{false};
   std::atomic<size_t> requestExecutions{0};
@@ -401,6 +407,7 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   std::atomic<size_t> timeoutCallbacks{0};
   bool policyInstalledWhileStaging = false;
   std::optional<ndn::Data> heldSecondSegment;
+  std::optional<ndn::Data> heldRoot;
   std::string responseError;
   test::LargeResponseFetchOracle::Observation observed;
   const std::string inputText = "full-runtime-secret-input";
@@ -419,6 +426,11 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   test::FaultProfile faults;
   faults.dropDataPredicate = [&] (const ndn::Data& data) {
     const auto& name = data.getName();
+    if (terminalDuringFetch == "bad-root" && !name.empty() &&
+        name.at(-1).toUri() == "MANIFEST" && isLargeResponse(name)) {
+      heldRoot = data;
+      return true;
+    }
     const bool hold = !releaseSegment.load() && !name.empty() &&
       name.at(-1).isSegment() && name.at(-1).toSegment() != 0 &&
       isLargeResponse(name);
@@ -437,6 +449,19 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
     [&] (const ndn::Interest& interest) {
       if (isLargeResponse(interest.getName())) {
         ++segmentInterests;
+        if (!signedManifest) return;
+        const auto& name = interest.getName();
+        BOOST_CHECK(!interest.getCanBePrefix());
+        if (name.at(-1).toUri() == "MANIFEST") {
+          manifestRoots.insert(name);
+        }
+        else {
+          BOOST_REQUIRE(name.at(-1).isImplicitSha256Digest());
+          if (name.at(-3).toUri() == "DATA")
+            manifestSources.insert(name);
+          else
+            manifestPages.insert(name);
+        }
       }
     });
 
@@ -479,6 +504,7 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
             [&, index, io] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
                  const ndn::Name& invocationId, const RequestMessage& request) {
               ++requestExecutions;
+              BOOST_CHECK_EQUAL(request.requiresResponseManifest(), signedManifest);
               const auto actualPayload = request.getPayload();
               BOOST_CHECK_EQUAL_COLLECTIONS(
                   actualPayload.begin(), actualPayload.end(),
@@ -552,6 +578,8 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
 
   RequestCapabilities capabilities;
   capabilities.setField("RequestScopedConfidentialityV1", "required");
+  if (signedManifest)
+    capabilities.setField(RequestCapabilities::RESPONSE_MANIFEST_V1_FIELD, "required");
   RequestMessage request;
   request.setRequestCapabilities(capabilities);
   ndn::Buffer input(reinterpret_cast<const uint8_t*>(inputText.data()), inputText.size());
@@ -559,7 +587,7 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   const auto requestId = environment.user().RequestService(
       providers, serviceName, request,
       (revokeAfterExecution || stagingPolicy == StagingPolicy::REVOKE ||
-       terminalDuringFetch == "timeout") ? 800 : 5000,
+       terminalDuringFetch == "timeout") ? 800 : (signedManifest ? 20000 : 5000),
       [&] (const ndn::Name&) {
         if (terminalDuringFetch == "timeout") BOOST_CHECK(observed.owner.expired());
         ++timeoutCallbacks;
@@ -575,6 +603,30 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
       },
       tlv::FirstResponding);
   BOOST_REQUIRE(!requestId.empty());
+
+  if (terminalDuringFetch == "bad-root") {
+    environment.pumpUntil([&] { return heldRoot.has_value() || requestTimedOut.load(); });
+    BOOST_REQUIRE(heldRoot);
+    const auto content = heldRoot->getContent().value_bytes();
+    ndn::Buffer changed(content.begin(), content.end());
+    BOOST_REQUIRE(!changed.empty());
+    changed.back() ^= 1;
+    heldRoot->setContent(std::move(changed));
+    environment.userFace().receive(*heldRoot);
+    environment.pumpUntil([&] { return responseCallbacks.load() != 0 || requestTimedOut.load(); });
+    BOOST_CHECK(!requestTimedOut);
+    BOOST_CHECK(!responseReceived);
+    BOOST_CHECK_EQUAL(responseCallbacks.load(), 1);
+    BOOST_CHECK_EQUAL(responseError,
+                      "large response reference fetch failed: signed response manifest root was rejected");
+    BOOST_CHECK_EQUAL(manifestRoots.size(), 1);
+    BOOST_CHECK(manifestPages.empty());
+    BOOST_CHECK(manifestSources.empty());
+    BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
+    environment.updateRequestResidue(scope, {});
+    environment.resetRequest(scope);
+    return;
+  }
 
   if (!terminalDuringFetch.empty()) {
     environment.pumpUntil([&] {
@@ -738,6 +790,12 @@ runFullRuntimeResponseCase(bool useLargeResponse, bool revokeAfterExecution = fa
   else {
     BOOST_CHECK(!requestTimedOut);
     BOOST_CHECK(responseReceived);
+    if (signedManifest) {
+      const auto count = largeResponseBytes == 8194 ? 4097 : 3;
+      BOOST_CHECK_EQUAL(manifestRoots.size(), count == 4097 ? 2 : 1);
+      BOOST_CHECK_EQUAL(manifestSources.size(), count);
+      BOOST_CHECK_EQUAL(manifestPages.size(), count == 4097 ? 32 : 0);
+    }
   }
   if (stagingPolicy != StagingPolicy::NONE)
     BOOST_CHECK(policyInstalledWhileStaging);
@@ -761,6 +819,31 @@ BOOST_AUTO_TEST_CASE(NormalResponseCompletesThroughProductionOnResponse)
 BOOST_AUTO_TEST_CASE(LargeResponseCompletesThroughProductionOnResponse)
 {
   runFullRuntimeResponseCase(true);
+}
+
+BOOST_AUTO_TEST_CASE(SignedManifestResponseAuthenticatesMultipleGroupsThroughProductionOnResponse)
+{
+  constexpr auto variable = "NDNSF_REQUEST_SCOPED_RESPONSE_CHUNK_BYTES";
+  const char* current = std::getenv(variable);
+  const auto previous = current ? std::optional<std::string>(current) : std::nullopt;
+  BOOST_REQUIRE_EQUAL(::setenv(variable, "2", 1), 0);
+  const auto restore = ndn::make_scope_exit([&] {
+    if (previous)
+      ::setenv(variable, previous->c_str(), 1);
+    else
+      ::unsetenv(variable);
+  });
+  runFullRuntimeResponseCase(true, false, {}, 8194, {}, StagingPolicy::NONE, true);
+}
+
+BOOST_AUTO_TEST_CASE(SignedManifestResponseCancelsWithPendingOriginals)
+{
+  runFullRuntimeResponseCase(true, false, "cancel", 9000, {}, StagingPolicy::NONE, true);
+}
+
+BOOST_AUTO_TEST_CASE(SignedManifestResponseRejectsChangedRootBeforeReadingMembers)
+{
+  runFullRuntimeResponseCase(true, false, "bad-root", 9000, {}, StagingPolicy::NONE, true);
 }
 
 BOOST_AUTO_TEST_CASE(RevokedUserCannotReceiveLargeResponseAfterProviderExecution)

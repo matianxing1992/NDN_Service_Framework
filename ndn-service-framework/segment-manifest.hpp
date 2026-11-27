@@ -23,6 +23,7 @@ struct SegmentManifestScope
   ndn::Name producer;
   ndn::Name objectPrefix;
   std::array<uint8_t, 32> bindingDigest{};
+  bool rootAtObjectPrefix = false;
 
   ndn::Name rootName() const;
   ndn::Name pageName(uint32_t page) const;
@@ -85,6 +86,7 @@ class SegmentManifestVerifier
 public:
   static constexpr uint32_t MAX_SOURCE_PACKETS = 4096;
   static constexpr uint32_t SOURCE_PACKETS_PER_PAGE = 128;
+  static bool hasRootContent(const ndn::Data& data);
   static constexpr uint32_t pageCountFor(uint32_t sourceCount)
   {
     return sourceCount <= SOURCE_PACKETS_PER_PAGE ? 0 :

@@ -3,6 +3,7 @@
 
 #include "ControllerVersion.hpp"
 #include "HybridMessageCrypto.hpp"
+#include "segment-manifest.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -46,6 +47,20 @@ struct RequestSecurityBinding
   std::string digestHex() const;
 };
 
+struct LargeDataReference;
+
+/** Canonical partition and root scope for a request-scoped response. */
+struct RequestResponseManifestGroup
+{
+  SegmentManifestScope scope;
+  uint32_t firstSegment;
+  uint32_t sourceCount;
+};
+
+std::optional<RequestResponseManifestGroup>
+getRequestResponseManifestGroup(const LargeDataReference& reference,
+                                const RequestSecurityBinding& binding, uint32_t group);
+
 /** Fresh request-scoped keys.  The Provider consumes the bundle once. */
 struct RequestKeyBundle
 {
@@ -80,10 +95,20 @@ struct RequestInputOwner
 };
 
 /** N5 request-scoped input prefix:
- *  `<User>/NDNSF-DI/input/request/<RequestId>/attempt/<A>/recipient/NameComponent(<Provider>)/rep/<R>/v=0`. */
+ *  `<User>/NDNSF-DI/input/request/<RequestId>/attempt/<A>/recipient/NameComponent(<Provider>)/rep/<R>/v=<V>`.
+ *  V1 reserves the exact name for a single input or for the signed segment index. */
 ndn::Name makeRequestScopedInputName(const RequestInputOwner& owner,
                                      const RequestSecurityBinding& binding,
-                                     const std::string& publicRequestId = {});
+                                     const std::string& publicRequestId = {},
+                                     bool manifestRequired = false);
+
+constexpr size_t REQUEST_INPUT_CHUNK_BYTES = 4096;
+constexpr size_t MAX_REQUEST_INPUT_BYTES =
+  REQUEST_INPUT_CHUNK_BYTES * SegmentManifestVerifier::MAX_SOURCE_PACKETS;
+constexpr size_t MAX_REQUEST_INPUT_MANIFEST_WIRE_BYTES = 32 * 1024 * 1024;
+
+SegmentManifestScope
+getRequestInputManifestScope(const RequestSecurityBinding& binding, const ndn::Name& requester);
 
 struct SelectionKeyEnvelope
 {

@@ -225,6 +225,8 @@ class RequestCapabilities : public DeploymentControlMessage
 {
 public:
     static constexpr const char* PUBLIC_REQUEST_ID_FIELD = "DI_PublicRequestId";
+    static constexpr const char* INPUT_MANIFEST_V1_FIELD = "NDNSF_InputManifestV1";
+    static constexpr const char* RESPONSE_MANIFEST_V1_FIELD = "NDNSF_ResponseManifestV1";
     RequestCapabilities();
 };
 class PeerNetworkProbe : public DeploymentControlMessage
@@ -331,6 +333,8 @@ public:
     void clearConversationContinuation();
     bool hasDeploymentIntent() const;
     bool hasRequestCapabilities() const;
+    bool requiresInputManifest() const;
+    bool requiresResponseManifest() const;
     bool hasEncryptedRequestInput() const;
     bool hasRequestSecurityBinding() const;
     bool hasUserEncryptionCertificate() const;

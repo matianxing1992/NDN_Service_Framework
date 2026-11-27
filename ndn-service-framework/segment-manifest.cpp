@@ -156,7 +156,7 @@ hasCertificateSignature(const ndn::Data& data)
 ndn::Name
 SegmentManifestScope::rootName() const
 {
-  return ndn::Name(objectPrefix).append("MANIFEST");
+  return rootAtObjectPrefix ? objectPrefix : ndn::Name(objectPrefix).append("MANIFEST");
 }
 
 ndn::Name
@@ -252,6 +252,14 @@ ManifestPublication::prepare(ndn::security::KeyChain& keyChain, const ndn::secur
   require(hasCertificateSignature(root), "segment-manifest-root-signature");
   addBytes(totalWireBytes, compactSignedWire(root), limits.maxWireBytes);
   return result;
+}
+
+bool
+SegmentManifestVerifier::hasRootContent(const ndn::Data& data)
+{
+  const auto content = data.getContent().value_bytes();
+  return content.size() >= sizeof(ROOT_MAGIC) &&
+         std::equal(std::begin(ROOT_MAGIC), std::end(ROOT_MAGIC), content.begin());
 }
 
 SegmentManifestVerifier::SegmentManifestVerifier(ValidatedManifestRoot root,

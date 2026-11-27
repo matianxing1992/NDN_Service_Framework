@@ -169,6 +169,8 @@ namespace ndn_service_framework
         size_t plaintextSize = 0;
         bool encrypted = true;
         std::string digest;
+        // Present only for a manifest-authenticated request-scoped response.
+        std::optional<uint32_t> manifestSourceSegments;
     };
 
     // C03 invocation names preserve the complete actor and service Names.

@@ -92,6 +92,92 @@ struct ExactPublicationOracle
   }
 };
 
+BOOST_AUTO_TEST_CASE(ManifestResponseReferenceBindsCanonicalSourceGeometry)
+{
+  LargeDataReference reference;
+  reference.dataName = ndn::Name("/test/provider/NDNSF/LARGE-DATA/clip").appendVersion(7);
+  reference.objectType = "ndnsf-response";
+  reference.objectId = "clip";
+  reference.keyScope = "request";
+  reference.plaintextSize = 270336075;
+  reference.digest = "sha256:" + std::string(64, 'a');
+  reference.manifestSourceSegments = 66001;
+
+  const auto payload = encodeLargeDataReferencePayload(reference);
+  const auto parsed = parseLargeDataReferencePayload(payload);
+  BOOST_REQUIRE(parsed && parsed->manifestSourceSegments);
+  BOOST_CHECK_EQUAL(*parsed->manifestSourceSegments, 66001);
+  BOOST_CHECK_EQUAL(parsed->dataName, reference.dataName);
+  BOOST_CHECK_EQUAL(parsed->plaintextSize, reference.plaintextSize);
+  BOOST_CHECK_EQUAL(parsed->digest, reference.digest);
+
+  RequestSecurityBinding binding;
+  binding.serviceName = ndn::Name("/infer/wan");
+  binding.requestId = ndn::Name("/request/7");
+  binding.attempt = 1;
+  binding.controllerVersion = ControllerVersion{1788285600123ULL, 7};
+  binding.userEncryptionCertName = ndn::Name("/test/user/KEY/key/issuer").appendVersion(1);
+  binding.providerEncryptionCertName = ndn::Name("/test/provider/KEY/key/issuer")
+                                               .appendVersion(1);
+  binding.userEncryptionCertDigest = binding.providerEncryptionCertDigest =
+    binding.selectionDigest = reference.digest;
+  binding.inputDataName = ndn::Name("/test/user/NDNSF/INPUT/video");
+  binding.segmentOrEventId = "response";
+  BOOST_REQUIRE(binding.isValid());
+
+  uint32_t next = 0;
+  for (uint32_t groupId = 0; groupId < 17; ++groupId) {
+    const auto group = getRequestResponseManifestGroup(*parsed, binding, groupId);
+    BOOST_REQUIRE(group);
+    BOOST_CHECK_EQUAL(group->firstSegment, next);
+    BOOST_CHECK_EQUAL(group->sourceCount, groupId == 16 ? 465 : 4096);
+    BOOST_CHECK_EQUAL(group->scope.producer, "/test/provider");
+    BOOST_CHECK(reference.dataName.isPrefixOf(group->scope.rootName()));
+    next += group->sourceCount;
+  }
+  BOOST_CHECK_EQUAL(next, *parsed->manifestSourceSegments);
+  BOOST_CHECK(!getRequestResponseManifestGroup(*parsed, binding, 17));
+  const auto original = getRequestResponseManifestGroup(*parsed, binding, 0);
+  BOOST_REQUIRE(original);
+  binding.attempt = 2;
+  const auto retried = getRequestResponseManifestGroup(*parsed, binding, 0);
+  BOOST_REQUIRE(retried);
+  BOOST_CHECK(original->scope.bindingDigest != retried->scope.bindingDigest);
+  binding.attempt = 1;
+
+  const auto reject = [&](std::string_view field, std::string_view replacement) {
+    std::string modified(payload.begin(), payload.end());
+    const auto position = modified.find(field);
+    BOOST_REQUIRE(position != std::string::npos);
+    modified.replace(position, field.size(), replacement);
+    BOOST_CHECK(!parseLargeDataReferencePayload(ndn::Buffer(modified.begin(), modified.end())));
+  };
+  reject("source_segments=66001\n", "");
+  reject("source_segments=66001", "source_segments=66001\nsource_segments=66001");
+  reject("source_segments=66001", "source_segments=1");
+  reject("source_segments=66001", "source_segments=66001x");
+  reject("source_segments=66001", "source_segments=4294967296");
+  reject("version=2", "version=1");
+  reject("key_scope=request\n", "");
+  reject("encrypted=1", "encrypted=0");
+
+  reference.manifestSourceSegments = 4097;
+  const auto beforeTail = getRequestResponseManifestGroup(reference, binding, 0);
+  const auto tail = getRequestResponseManifestGroup(reference, binding, 1);
+  BOOST_REQUIRE(beforeTail && tail);
+  BOOST_CHECK_EQUAL(beforeTail->sourceCount, 4095);
+  BOOST_CHECK_EQUAL(tail->firstSegment, 4095);
+  BOOST_CHECK_EQUAL(tail->sourceCount, 2);
+  BOOST_CHECK(original->scope.bindingDigest != beforeTail->scope.bindingDigest);
+  BOOST_CHECK_NE(beforeTail->scope.rootName(), tail->scope.rootName());
+  BOOST_CHECK(!getRequestResponseManifestGroup(reference, binding, 2));
+
+  reference.manifestSourceSegments.reset();
+  const auto legacy = parseLargeDataReferencePayload(encodeLargeDataReferencePayload(reference));
+  BOOST_REQUIRE(legacy);
+  BOOST_CHECK(!legacy->manifestSourceSegments);
+}
+
 BOOST_AUTO_TEST_CASE(ManifestOriginalsAnswerOrdinaryAndPendingDigestInterests)
 {
   BootstrapProfile profile;

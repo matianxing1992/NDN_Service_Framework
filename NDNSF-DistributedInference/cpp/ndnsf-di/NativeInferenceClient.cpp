@@ -3084,6 +3084,12 @@ beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& operat
       };
       ndn_service_framework::RequestCapabilities capabilities;
       capabilities.setField("NDNSF_DATA_V1", "required");
+      if (operation->options.requireTensorSegmentManifests) {
+        capabilities.setField(
+          ndn_service_framework::RequestCapabilities::INPUT_MANIFEST_V1_FIELD, "required");
+        capabilities.setField(
+          ndn_service_framework::RequestCapabilities::RESPONSE_MANIFEST_V1_FIELD, "required");
+      }
       if (!operation->options.generation || !operation->options.generation->enabled) {
         capabilities.setField(NATIVE_PROVIDER_TENSOR_TRANSPORT_V1_FIELD, "optional");
         capabilities.setField(NATIVE_PROVIDER_SEGMENT_MANIFEST_V1_FIELD, "optional");

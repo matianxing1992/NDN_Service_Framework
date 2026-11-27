@@ -144,13 +144,22 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
                              const std::string& originalInput = "",
                              bool explicitDiscovery = true,
                              std::size_t dropInputInterests = 0,
-                             LateInputAfterDestroy lateInput = LateInputAfterDestroy::None)
+                             LateInputAfterDestroy lateInput = LateInputAfterDestroy::None,
+                             bool signedInput = false,
+                             bool damageInputRoot = false)
 {
   test::BootstrapProfile profile;
   profile.providerCount = 2;
   test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
-  auto scope = environment.beginRequest("request-scoped-selection");
+  test::FaultProfile faults;
+  if (damageInputRoot) {
+    faults.dropDataPredicate = [](const ndn::Data& data) {
+      return SegmentManifestVerifier::hasRootContent(data) &&
+             data.getName().toUri().find("/NDNSF-DI/input/request/") != std::string::npos;
+    };
+  }
+  auto scope = environment.beginRequest("request-scoped-selection", faults);
 
   const auto serviceName = environment.profile().serviceName;
   const auto requesterName = environment.user().getName();
@@ -466,6 +475,10 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   std::optional<ndn::Data> capturedInputData;
   std::vector<ndn::Data> capturedInputSegments;
   std::size_t largestInputDataWire = 0;
+  std::set<ndn::Name> signedInputRoots;
+  std::set<ndn::Name> signedInputPages;
+  bool injectedDamagedRoot = false;
+  std::string inputFailure;
   auto inputObserver = environment.userFace().onSendData.connect(
       [&] (const ndn::Data& data) {
         // N5 input row: <User>/NDNSF-DI/input/request/<RequestId>/attempt/<A>/recipient/.../rep/<R>/v=0
@@ -473,28 +486,57 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
         if (uri.find("/NDNSF-DI/input/request/") == std::string::npos) {
           return;
         }
-        AeadEnvelope envelope;
-        bool decoded = false;
-        try {
-          const auto content = data.getContent();
-          auto [ok, block] = ndn::Block::fromBuffer(
-              ndn::span<const uint8_t>(content.value(), content.value_size()));
-          decoded = ok && envelope.wireDecode(block);
+        if (signedInput && SegmentManifestVerifier::hasRootContent(data)) {
+          BOOST_CHECK(data.getSignatureInfo().hasKeyLocator());
+          signedInputRoots.insert(data.getFullName());
         }
-        catch (const std::exception&) {
-          decoded = false;
+        else if (signedInput && data.getName().size() >= 2 &&
+                 data.getName().at(-2).toUri() == "PAGE") {
+          BOOST_CHECK_EQUAL(data.getSignatureType(), ndn::tlv::DigestSha256);
+          signedInputPages.insert(data.getFullName());
         }
-        inputDataWasOpaque = decoded && !envelope.ciphertext.empty();
-        if (decoded) {
-          largestInputDataWire = std::max(largestInputDataWire,
-                                          data.wireEncode().size());
-          if (data.getName().size() > 0 &&
-              data.getName().at(-1).isSegment()) {
-            capturedInputSegments.push_back(data);
+        else {
+          AeadEnvelope envelope;
+          bool decoded = false;
+          try {
+            const auto content = data.getContent();
+            auto [ok, block] = ndn::Block::fromBuffer(
+                ndn::span<const uint8_t>(content.value(), content.value_size()));
+            decoded = ok && envelope.wireDecode(block);
           }
-          else {
-            capturedInputData = data;
+          catch (const std::exception&) {
+            decoded = false;
           }
+          inputDataWasOpaque = decoded && !envelope.ciphertext.empty();
+          if (decoded) {
+            largestInputDataWire = std::max(largestInputDataWire,
+                                            data.wireEncode().size());
+            if (data.getName().size() > 0 &&
+                data.getName().at(-1).isSegment()) {
+              capturedInputSegments.push_back(data);
+            }
+            else {
+              capturedInputData = data;
+            }
+          }
+        }
+        if (signedInput && selectedProviderIndex.load() < environment.providerCount()) {
+          auto& destination = environment.providerFace(selectedProviderIndex.load());
+          if (damageInputRoot && SegmentManifestVerifier::hasRootContent(data)) {
+            auto changed = data;
+            const auto content = data.getContent().value_bytes();
+            ndn::Buffer mutated(content.begin(), content.end());
+            mutated.back() ^= 1;
+            changed.setContent(std::move(mutated));
+            injectedDamagedRoot = true;
+            destination.receive(changed);
+            return;
+          }
+          if (!data.getName().empty() && data.getName().at(-1).isSegment()) {
+            BOOST_CHECK_EQUAL(data.getSignatureType(), ndn::tlv::DigestSha256);
+            ++inputSegmentsDelivered;
+          }
+          destination.receive(data);
         }
       });
 
@@ -508,6 +550,19 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   for (size_t index = 0; index < environment.providerCount(); ++index) {
     inputFetchRelays.emplace_back(environment.providerFace(index).onSendInterest.connect(
         [&, index] (const ndn::Interest& interest) {
+          if (signedInput && requesterName.isPrefixOf(interest.getName()) &&
+              interest.getName().toUri().find("/NDNSF-DI/input/request/") != std::string::npos) {
+            BOOST_CHECK(!interest.getCanBePrefix());
+            if (interest.getName().at(-1).isVersion()) {
+              ++initialInputInterests;
+            }
+            else {
+              BOOST_CHECK(interest.getName().at(-1).isImplicitSha256Digest());
+              ++inputExactSegmentInterests;
+            }
+            environment.user().onInterest(ndn::InterestFilter(requesterName), interest);
+            return;
+          }
           const bool initialInput =
               (capturedInputData && interest.getName() == capturedInputData->getName()) ||
               (!capturedInputSegments.empty() && interest.getName() ==
@@ -579,6 +634,7 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
 
   RequestCapabilities capabilities;
   capabilities.setField("RequestScopedConfidentialityV1", "required");
+  if (signedInput) capabilities.setField(RequestCapabilities::INPUT_MANIFEST_V1_FIELD, "required");
   RequestMessage request;
   request.setRequestCapabilities(capabilities);
   ndn::Buffer input(reinterpret_cast<const uint8_t*>(inputText.data()), inputText.size());
@@ -597,6 +653,7 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
       [&] (const ResponseMessage& response) {
         ++responseCallbackCount;
         responseFailed = !response.getStatus();
+        if (responseFailed && damageInputRoot) inputFailure = response.getErrorInfo();
         const auto payload = response.getPayload();
         responseReceived = response.getStatus() &&
                            std::string(reinterpret_cast<const char*>(payload.data()),
@@ -609,6 +666,22 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
     environment.pumpUntil([&] {
       return responseReceived || responseFailed || requestTimedOut || heldInputInterest.has_value();
     });
+  }
+
+  if (damageInputRoot) {
+    BOOST_REQUIRE(injectedDamagedRoot);
+    BOOST_CHECK(responseFailed);
+    BOOST_CHECK(!requestTimedOut);
+    BOOST_CHECK_EQUAL(responseCallbackCount.load(), 1U);
+    BOOST_CHECK_EQUAL(inputFailure,
+                      "request-scoped input unavailable: signed segment manifest root was rejected");
+    BOOST_CHECK_EQUAL(signedInputRoots.size(), 1U);
+    BOOST_CHECK_EQUAL(initialInputInterests.load(), 1U);
+    BOOST_CHECK_EQUAL(inputExactSegmentInterests.load(), 0U);
+    for (const auto& count : requestExecutions) BOOST_CHECK_EQUAL(count.load(), 0U);
+    environment.updateRequestResidue(scope, {});
+    environment.resetRequest(scope);
+    return;
   }
 
   if (lateInput != LateInputAfterDestroy::None) {
@@ -690,8 +763,18 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
     BOOST_CHECK_EQUAL(segmentNumbers.size(), expectedSegments);
     BOOST_CHECK(!capturedInputData.has_value());
     BOOST_CHECK_LE(largestInputDataWire, 8800U);
-    BOOST_CHECK_GE(inputPrefixInterests.load(), 1U);
-    BOOST_CHECK_GE(inputExactSegmentInterests.load(), expectedSegments - 1);
+    if (signedInput) {
+      const auto pages = SegmentManifestVerifier::pageCountFor(expectedSegments);
+      BOOST_CHECK_EQUAL(signedInputRoots.size(), 1U);
+      BOOST_CHECK_EQUAL(signedInputPages.size(), pages);
+      BOOST_CHECK_EQUAL(initialInputInterests.load(), 1U);
+      BOOST_CHECK_EQUAL(inputPrefixInterests.load(), 0U);
+      BOOST_CHECK_EQUAL(inputExactSegmentInterests.load(), expectedSegments + pages);
+    }
+    else {
+      BOOST_CHECK_GE(inputPrefixInterests.load(), 1U);
+      BOOST_CHECK_GE(inputExactSegmentInterests.load(), expectedSegments - 1);
+    }
     BOOST_CHECK_GE(inputSegmentsDelivered.load(), expectedSegments);
   }
   BOOST_CHECK(wrongProviderRejected);
@@ -766,6 +849,18 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
 BOOST_AUTO_TEST_CASE(SelectedProviderReceivesExactEncryptedInputOnly)
 {
   runRequestScopedResponseCase(true, false, false);
+}
+
+BOOST_AUTO_TEST_CASE(SelectedProviderAcquiresSignedInputIndexAndOriginalSegments)
+{
+  runRequestScopedResponseCase(false, false, false, 128 * 4096 + 17, "", "", true, 0,
+                               LateInputAfterDestroy::None, true);
+}
+
+BOOST_AUTO_TEST_CASE(SelectedProviderRejectsChangedInputRootBeforeRequestingMembers)
+{
+  runRequestScopedResponseCase(false, false, false, 8193, "", "", true, 0,
+                               LateInputAfterDestroy::None, true, true);
 }
 
 BOOST_AUTO_TEST_CASE(SelectedProviderRetriesLostInitialInputInterest)

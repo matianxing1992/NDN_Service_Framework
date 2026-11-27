@@ -306,6 +306,7 @@ namespace ndn_service_framework{
 
     using Timeout_Callback = std::function<void(const std::string & reason)>;
 
+    namespace detail { class SegmentManifestFetch; }
     namespace test { struct LargeResponseFetchOracle; }
 
     class ServiceUser
@@ -1671,6 +1672,7 @@ namespace ndn_service_framework{
               void stop();
               bool terminal = false;
               std::shared_ptr<ndn::SegmentFetcher> fetcher;
+              std::shared_ptr<detail::SegmentManifestFetch> manifestFetcher;
               ndn::signal::ScopedConnection onValidated;
               ndn::signal::ScopedConnection onData;
               ndn::signal::ScopedConnection onComplete;

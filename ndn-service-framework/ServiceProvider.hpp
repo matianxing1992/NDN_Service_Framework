@@ -55,6 +55,7 @@ struct Spec226RecoveryOracle;
 }
 
 namespace ndn_service_framework{
+    namespace detail { class SegmentManifestFetch; }
     class VerifiedExactDataFetchOperation;
     class VerifiedInputObject;
     class AdmittedInputSet;
@@ -2748,7 +2749,8 @@ namespace ndn_service_framework{
                 RequestSecurityBinding binding, size_t thresholdBytes,
                 ndn::time::milliseconds freshness,
                 std::function<bool()> mayCommit = {},
-                std::function<void(LargeDataReferenceResponseResult)> onReady = {});
+                std::function<void(LargeDataReferenceResponseResult)> onReady = {},
+                bool requireManifest = false);
             void postRequestScopedResponseBatch(std::function<bool()> batch);
             void fetchRequestScopedInputAndDispatch(
                 const ndn::Name& requesterName,
@@ -2924,10 +2926,12 @@ namespace ndn_service_framework{
             void retainExactPackets(std::weak_ptr<RetainedPackets>& request,
                 std::chrono::steady_clock::time_point deadline, std::uint64_t diskLimit,
                 const std::vector<std::shared_ptr<const ndn::Data>>& originals,
-                const std::function<bool()>& current);
+                const std::function<bool()>& current, bool visible = true);
             bool retirePacketRetention(const std::shared_ptr<RetainedPackets>& request);
             void scheduleRetainedPacketExpiry(
-                const std::shared_ptr<RetainedPackets>& request);
+                const std::shared_ptr<RetainedPackets>& request,
+                std::chrono::steady_clock::time_point limit =
+                    std::chrono::steady_clock::time_point::max());
             std::shared_ptr<RetainedPackets> reserveSegmentedResponse(
                 const ndn::Name& prefix, std::uint64_t segmentCount,
                 std::chrono::steady_clock::time_point deadline);
@@ -3334,6 +3338,7 @@ namespace ndn_service_framework{
                 bool inputClaimed = false;
                 bool inputNestedInSelection = false;
                 bool inputNestedInRequest = false;
+                std::shared_ptr<detail::SegmentManifestFetch> inputManifestFetch{};
             };
             // One state entry is created only after a Selection envelope is
             // authenticated and consumed.  It is retained until the

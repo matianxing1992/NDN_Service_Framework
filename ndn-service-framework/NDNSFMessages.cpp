@@ -660,6 +660,19 @@ void RequestMessage::clearConversationContinuation() {
 }
 bool RequestMessage::hasDeploymentIntent() const { return deploymentIntent_.has_value(); }
 bool RequestMessage::hasRequestCapabilities() const { return requestCapabilities_.has_value(); }
+bool RequestMessage::requiresInputManifest() const
+{
+  const auto field = RequestCapabilities::INPUT_MANIFEST_V1_FIELD;
+  return requestCapabilities_ && requestCapabilities_->hasField(field) &&
+         requestCapabilities_->getField(field) == "required";
+}
+
+bool RequestMessage::requiresResponseManifest() const
+{
+  const auto field = RequestCapabilities::RESPONSE_MANIFEST_V1_FIELD;
+  return requestCapabilities_ && requestCapabilities_->hasField(field) &&
+         requestCapabilities_->getField(field) == "required";
+}
 bool RequestMessage::hasEncryptedRequestInput() const { return encryptedRequestInput_.has_value(); }
 bool RequestMessage::hasRequestSecurityBinding() const { return requestSecurityBinding_.has_value(); }
 bool RequestMessage::hasUserEncryptionCertificate() const {

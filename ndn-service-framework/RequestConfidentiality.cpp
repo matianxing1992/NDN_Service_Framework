@@ -1,5 +1,6 @@
 #include "RequestConfidentiality.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "utils.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -242,6 +243,51 @@ setFailure(RequestCryptoFailure* failure, RequestCryptoFailure value)
 
 } // namespace
 
+std::optional<RequestResponseManifestGroup>
+getRequestResponseManifestGroup(const LargeDataReference& reference,
+                                const RequestSecurityBinding& binding, uint32_t group)
+{
+  if (!reference.manifestSourceSegments || !binding.isValid()) {
+    throw std::invalid_argument("request response manifest requires response geometry and binding");
+  }
+  const auto referenceWire = encodeLargeDataReferencePayload(reference);
+  const auto producer = ndn::security::extractIdentityFromCertName(
+    binding.providerEncryptionCertName);
+  if (!producer.isPrefixOf(reference.dataName) || producer.size() >= reference.dataName.size()) {
+    throw std::invalid_argument("request response manifest Producer name mismatch");
+  }
+  const auto total = *reference.manifestSourceSegments;
+  constexpr auto GROUP_SIZE = SegmentManifestVerifier::MAX_SOURCE_PACKETS;
+  const auto offset = static_cast<uint64_t>(group) * GROUP_SIZE;
+  if (offset >= total) {
+    return std::nullopt;
+  }
+  auto first = static_cast<uint32_t>(offset);
+  auto count = std::min(GROUP_SIZE, total - first);
+  // A final singleton borrows its predecessor's last segment.
+  if (count == 1) {
+    --first;
+    ++count;
+  }
+  else if (total - first == GROUP_SIZE + 1) {
+    --count;
+  }
+  auto responseBinding = binding;
+  responseBinding.segmentOrEventId = "response";
+  constexpr std::string_view DOMAIN = "ndnsf/request-response/manifest/v1";
+  ndn::Buffer transcript(DOMAIN.begin(), DOMAIN.end());
+  const auto invocationDigest = sha256(responseBinding.canonicalAad());
+  const auto referenceDigest = sha256(referenceWire);
+  transcript.insert(transcript.end(), invocationDigest.begin(), invocationDigest.end());
+  transcript.insert(transcript.end(), referenceDigest.begin(), referenceDigest.end());
+  const auto commitment = sha256(transcript);
+  SegmentManifestScope scope;
+  scope.producer = producer;
+  scope.objectPrefix = ndn::Name(reference.dataName).append("MANIFEST-GROUP").appendSegment(group);
+  std::copy(commitment.begin(), commitment.end(), scope.bindingDigest.begin());
+  return RequestResponseManifestGroup{std::move(scope), first, count};
+}
+
 std::string
 computeRequestInputRepresentationId(const RequestSecurityBinding& binding,
                                     const RequestInputOwner& owner,
@@ -278,7 +324,7 @@ computeRequestInputRepresentationId(const RequestSecurityBinding& binding,
 ndn::Name
 makeRequestScopedInputName(const RequestInputOwner& owner,
                            const RequestSecurityBinding& binding,
-                           const std::string& publicRequestId)
+                           const std::string& publicRequestId, bool manifestRequired)
 {
   if (owner.user.empty() || owner.provider.empty() || binding.serviceName.empty() ||
       binding.requestId.empty() || binding.attempt == 0)
@@ -294,10 +340,30 @@ makeRequestScopedInputName(const RequestInputOwner& owner,
     .append("attempt").append(makeNamingDecimalComponent(binding.attempt))
     .append("recipient").append(makeReversibleNameComponent(owner.provider))
     .append("rep").append(makeNamingDigestComponent(representation))
-    .appendVersion(0);
+    .appendVersion(manifestRequired ? 1 : 0);
   checkNamingNameSize(ndn::Name(name).appendSegment(
     std::numeric_limits<std::uint64_t>::max()));
   return name;
+}
+
+SegmentManifestScope
+getRequestInputManifestScope(const RequestSecurityBinding& binding, const ndn::Name& requester)
+{
+  if (!binding.isValid() || requester.empty() || !requester.isPrefixOf(binding.inputDataName) ||
+      binding.inputDataName.size() <= requester.size() ||
+      binding.inputDataName[-1] != ndn::name::Component::fromVersion(1) ||
+      ndn::security::extractIdentityFromCertName(binding.userEncryptionCertName) != requester)
+    throw std::invalid_argument("request input manifest Producer or binding mismatch");
+  auto inputBinding = binding;
+  inputBinding.segmentOrEventId = "request-input";
+  constexpr std::string_view DOMAIN = "ndnsf/request-input/manifest/v1";
+  ndn::Buffer transcript(DOMAIN.begin(), DOMAIN.end());
+  const auto invocationDigest = sha256(inputBinding.canonicalAad());
+  transcript.insert(transcript.end(), invocationDigest.begin(), invocationDigest.end());
+  const auto commitment = sha256(transcript);
+  SegmentManifestScope scope{requester, binding.inputDataName, {}, true};
+  std::copy(commitment.begin(), commitment.end(), scope.bindingDigest.begin());
+  return scope;
 }
 
 bool
