@@ -51,6 +51,9 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     assert "examples/spec220-onnx-reference-oracle.cpp" in names
     assert "examples/spec220-onnx-reference-oracle.hpp" in names
     assert "tests/fixtures/spec220/ort-required-operators.cpp" in names
+    assert "examples/di-wan-checkpoint-oracle.cpp" in names
+    assert "tests/fixtures/wan-video/write-wan-video-fixture.cpp" in names
+    assert "tests/fixtures/wan-video/wan-video-fixture.cpp" in names
     assert "NDNSF-DistributedRepo/wscript" in names
     assert "libndn-service-framework.pc.in" in names
     assert "packaging/ndnsf-di-container/jobs/spec175/workload.json" in names
@@ -116,6 +119,8 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     template = definition.read_text()
     assert "base / 'bin/multiturn-oracle', runtime / 'bin/multiturn-oracle'" in template
     assert "spec190-multiturn-oracle" not in template
+    assert "di-prepare-wan-checkpoint,di-wan-checkpoint-oracle,di-wan-video-oracle" in template
+    assert "test -x /opt/ndnsf-waf-dest/opt/ndnsf-di/current/bin/di-wan-checkpoint-oracle" in template
 
 
 def test_relocated_export_runs_actual_installer_and_locked_patch_reader(tmp_path):

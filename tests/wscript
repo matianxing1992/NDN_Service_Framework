@@ -138,6 +138,16 @@ def build(bld):
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME',
                     cxxflags=['-std=c++17', '-O0', '-g0'], defines=['HAVE_TESTS'],
                     rpath=[bld.env.LIBDIR], install_path='${PREFIX}/libexec/ndnsf-tests')
+        bld.program(target='../wan-checkpoint-oracle-contract',
+                    name='wan-checkpoint-oracle-contract',
+                    source=['main.cpp', 'integration-tests/wan-checkpoint-oracle.t.cpp',
+                            'fixtures/wan-video/wan-video-fixture.cpp'],
+                    includes=['..', '../ndn-service-framework'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
+                        'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME '
+                        'ndnsf-test-roster',
+                    cxxflags=['-std=c++17', '-O0', '-g0'], defines=['HAVE_TESTS'],
+                    rpath=[bld.env.LIBDIR], install_path='${PREFIX}/libexec/ndnsf-tests')
         # Run only codec cases in isolated scratch after installing the normal DI library.
         # The executable owns the instrumented production codec; other DI code is uninstrumented.
         bld.program(target='../tensor-types-asan', name='tensor-types-asan',

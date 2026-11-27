@@ -60,6 +60,10 @@ makeCatalogTemplate(const NativeModelDescriptor& descriptor,
                     const std::string& artifactRoot, const std::string& serviceName,
                     const std::map<std::string, NativeRoleResourceRequirement>& resources);
 
+/** Write an exact Add graph and independent raw values for the checkpoint CLI. */
+NativeJson
+writeWanCheckpointOracleFixture(const std::filesystem::path& root);
+
 /** Write the same three tiny canonical graphs for TP, PP and both Hybrid layouts.
  * Return the fixture identity, component catalogs and the per-mode role groups.
  */

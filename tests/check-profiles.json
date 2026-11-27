@@ -68,6 +68,7 @@
     "tests/integration-tests/request-scoped-response-confidentiality.t.cpp": "core",
     "tests/integration-tests/request-scoped-selection.t.cpp": "core",
     "tests/integration-tests/exact-data-wire.t.cpp": "core",
+    "tests/integration-tests/wan-checkpoint-oracle.t.cpp": "di",
     "tests/integration-tests/exact-tensor-transport.t.cpp": "di",
     "tests/integration-tests/bounded-large-data-publisher.t.cpp": "core",
     "tests/integration-tests/model-preparation-publication.t.cpp": "di",
@@ -439,6 +440,16 @@
           }
         },
         {
+          "target": "wan-checkpoint-oracle-contract",
+          "requiresComponents": ["di"],
+          "facilities": ["wan-checkpoint-oracle"],
+          "selector": {
+            "include": ["*"],
+            "excludeSuites": ["WanCheckpointOracleCli/CudaUnavailableBackendDoesNotFallback",
+                              "WanCheckpointOracleCli/CudaExecutesWithCurrentProfile"]
+          }
+        },
+        {
           "target": "uav-tracking-main-drone-tests",
           "requiresComponents": ["uav"],
           "selector": {"include": ["*"]}
@@ -449,6 +460,19 @@
           "selector": {"include": ["*"]}
         }
       ]
+    },
+    "wan-checkpoint-oracle": {
+      "description": "Tiny native checkpoint CLI, identity rejection and exclusive diagnostic outputs.",
+      "targets": [{
+        "target": "wan-checkpoint-oracle-contract",
+        "requiresComponents": ["di"],
+        "facilities": ["wan-checkpoint-oracle"],
+        "selector": {
+          "include": ["*"],
+          "excludeSuites": ["WanCheckpointOracleCli/CudaUnavailableBackendDoesNotFallback",
+                            "WanCheckpointOracleCli/CudaExecutesWithCurrentProfile"]
+        }
+      }]
     },
     "migration": {
       "description": "Offline Repo migration CLI, replay, native parity and source immutability.",

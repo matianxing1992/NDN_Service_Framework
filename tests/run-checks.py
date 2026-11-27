@@ -77,6 +77,9 @@ def verify_installed_files(prefix, roster, profiles):
     if any('identity-check' in row.get('facilities', [])
            for profile in profiles for row in roster['profiles'][profile]['targets']):
         required.add(prefix / 'bin/ndnsf-identity-check')
+    if any('wan-checkpoint-oracle' in row.get('facilities', [])
+           for profile in profiles for row in roster['profiles'][profile]['targets']):
+        required.add(prefix / 'bin/di-wan-checkpoint-oracle')
     if any('repo-owner-delete' in row.get('facilities', [])
            for profile in profiles for row in roster['profiles'][profile]['targets']):
         required.add(prefix / 'bin/ndnsf-repo-owner-delete')
@@ -215,6 +218,12 @@ def target_environment(target, environ, prefix, build_root, routine=False, compo
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise ValueError('IDENTITY_CHECK_TEST_INPUT_MISSING: ' + str(binary))
         result['NDNSF_IDENTITY_CHECK_EXECUTABLE'] = str(binary)
+    if 'wan-checkpoint-oracle' in target.get('facilities', []):
+        binary = (prefix / 'bin/di-wan-checkpoint-oracle' if prefix is not None else
+                  build_root / 'di-wan-checkpoint-oracle')
+        if not binary.is_file() or not os.access(binary, os.X_OK):
+            raise ValueError('WAN_CHECKPOINT_ORACLE_TEST_INPUT_MISSING: ' + str(binary))
+        result['NDNSF_WAN_CHECKPOINT_ORACLE'] = str(binary)
     if 'gpu-query-fixtures' in target.get('facilities', []):
         root, files = gpu_query_files(prefix, build_root)
         missing = [str(path) for path in files if not path.is_file()]
@@ -234,7 +243,7 @@ def check_facilities(roster, profiles, environ, prefix=None, build_root=None):
         for target in roster['profiles'][profile]['targets']:
             for facility in target.get('facilities', []):
                 if facility in ('gpu-query-fixtures', 'identity-check', 'repo-owner-delete',
-                                'repo-legacy-import'):
+                                'repo-legacy-import', 'wan-checkpoint-oracle'):
                     try:
                         target_environment(target, environ, prefix, build_root)
                     except (OSError, ValueError) as error:

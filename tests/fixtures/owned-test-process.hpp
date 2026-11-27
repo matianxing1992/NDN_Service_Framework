@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <fcntl.h>
 #include <filesystem>
 #include <map>
 #include <spawn.h>
@@ -21,7 +22,8 @@ namespace ndn_service_framework::test {
 inline int
 runOwnedTestProcess(const std::filesystem::path& executable, std::vector<std::string> arguments,
                     const std::map<std::string, std::string>& overrides,
-                    std::chrono::milliseconds budget)
+                    std::chrono::milliseconds budget,
+                    const std::filesystem::path& output = {})
 {
   if (arguments.empty() || budget <= std::chrono::milliseconds::zero())
     throw std::invalid_argument("invalid native child-process arguments or budget");
@@ -40,9 +42,20 @@ runOwnedTestProcess(const std::filesystem::path& executable, std::vector<std::st
     envp.push_back(value.data());
   argv.push_back(nullptr);
   envp.push_back(nullptr);
+  posix_spawn_file_actions_t actions;
+  auto error = ::posix_spawn_file_actions_init(&actions);
+  if (error != 0)
+    throw std::runtime_error("cannot initialize native child-process file actions");
+  if (!output.empty()) {
+    error = ::posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, output.c_str(),
+                                              O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (error == 0)
+      error = ::posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO);
+  }
   pid_t child = -1;
-  const auto error = ::posix_spawn(&child, executable.c_str(), nullptr, nullptr,
-                                  argv.data(), envp.data());
+  if (error == 0)
+    error = ::posix_spawn(&child, executable.c_str(), &actions, nullptr, argv.data(), envp.data());
+  ::posix_spawn_file_actions_destroy(&actions);
   if (error != 0)
     throw std::runtime_error("cannot spawn native test process: " + std::to_string(error));
   const auto deadline = std::chrono::steady_clock::now() + budget;

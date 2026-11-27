@@ -15,6 +15,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -23,6 +24,18 @@ namespace {
 
 using namespace ndnsf::di;
 namespace fs = std::filesystem;
+
+void
+writeExclusive(const fs::path& path, const void* data, std::size_t bytes)
+{
+  std::unique_ptr<std::FILE, decltype(&std::fclose)> file(
+    std::fopen(path.c_str(), "wbx"), &std::fclose);
+  if (!file) throw std::runtime_error("checkpoint oracle output cannot be exclusively created");
+  if (std::fwrite(data, 1, bytes, file.get()) != bytes || std::fflush(file.get()) != 0)
+    throw std::runtime_error("checkpoint oracle output write failed");
+  if (std::fclose(file.release()) != 0)
+    throw std::runtime_error("checkpoint oracle output close failed");
+}
 
 std::vector<std::uint8_t>
 readFile(const fs::path& path, std::uint64_t size)
@@ -106,7 +119,7 @@ prepareInitialLatent(const fs::path& configuration, const fs::path& output)
 }
 
 void
-validate(const fs::path& configuration)
+validate(const fs::path& configuration, const std::optional<fs::path>& cudaOutput = std::nullopt)
 {
   const auto configurationBytes = fs::file_size(configuration);
   if (configurationBytes > (1U << 20))
@@ -172,11 +185,68 @@ validate(const fs::path& configuration)
                                  tensorBytes(shape));
   if (nativePlanningDigest(expected.data(), expected.size()) != reference.at("digest"))
     throw std::runtime_error("checkpoint oracle reference identity differs");
+  std::string graphDigest;
+  if (cudaOutput) {
+    const auto graph = readFile(spec.path, fs::file_size(spec.path));
+    graphDigest = nativePlanningDigest(graph.data(), graph.size());
+    if (config.at("model_graph_digest") != graphDigest)
+      throw std::runtime_error("checkpoint oracle model graph identity differs");
+    const auto configurationDigest = nativePlanningDigest(bytes.data(), bytes.size());
+    if (!fs::create_directory(*cudaOutput))
+      throw std::invalid_argument("checkpoint oracle CUDA output directory already exists");
+    fs::permissions(*cudaOutput, fs::perms::owner_all, fs::perm_options::replace);
+    spec.backend = "onnxruntime-cuda";
+    spec.metadata["executionProvider"] = "cuda";
+    spec.metadata["allowCpuFallback"] = "false";
+    spec.metadata["providerProfilePrefix"] = (*cudaOutput / "ort-profile").string();
+    spec.metadata["profileAfterRequest"] = "true";
+    spec.metadata["evidence.providerName"] = "/wan/checkpoint-oracle";
+    spec.metadata["evidence.providerBootId"] = configurationDigest.substr(7);
+    spec.metadata["evidence.modelDigest"] = graphDigest;
+    spec.metadata["evidence.artifactDigest"] = graphDigest;
+    spec.metadata["evidence.planDigest"] = configurationDigest;
+    spec.metadata["evidence.epoch"] = "1";
+    spec.metadata["evidence.createdAtMs"] = std::to_string(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    context.requestId = "/wan/checkpoint-oracle/" + configurationDigest.substr(7);
+    context.providerBootId = configurationDigest.substr(7);
+    context.attemptEpoch = 1;
+    context.inferenceEpoch = 1;
+  }
   const auto creationStarted = std::chrono::steady_clock::now();
   const auto runner = factory.create(spec);
   const auto created = std::chrono::steady_clock::now();
   const auto output = runner->run(context);
   const auto executed = std::chrono::steady_clock::now();
+  if (cudaOutput) {
+    auto evidence = runner->executionEvidenceSnapshot();
+    const auto metrics = runner->runtimeMetricsSnapshot();
+    if (!evidence || !metrics || !metrics->lastBackendExecution ||
+        !metrics->lastBackendExecution->completed ||
+        !metrics->lastBackendExecution->matches(context) ||
+        evidence->runnerKind != RunnerKind::OnnxRuntimeCuda ||
+        evidence->deviceKind != "cuda" || evidence->gpuUuid.empty() ||
+        evidence->cpuFallbackUsed || evidence->providerProfilePath.empty() ||
+        evidence->profileRequestId != context.requestId ||
+        evidence->profileAttemptEpoch != context.attemptEpoch)
+      throw std::runtime_error("checkpoint oracle lacks current CUDA execution evidence");
+    const auto& assignments = evidence->getNodeProviderAssignments();
+    if (std::none_of(assignments.begin(), assignments.end(), [](const auto& row) {
+          return row.modelNode && row.provider == "CUDAExecutionProvider";
+        }) || std::any_of(assignments.begin(), assignments.end(), [](const auto& row) {
+          return row.modelNode && row.provider != "CUDAExecutionProvider";
+        }))
+      throw std::runtime_error("checkpoint oracle model computation did not stay on CUDA");
+    bindExecutionObservation(*evidence, context.requestId, context.attemptEpoch, false);
+    const auto receipt = nativeCanonicalJson(NativeJson{
+      {"scope", "standalone native ONNX diagnostic; not distributed qualification"},
+      {"model_graph_digest", graphDigest},
+      {"execution_evidence", nativeParseJson(executionEvidenceToJson(*evidence))}});
+    writeExclusive(*cudaOutput / "evidence.json", receipt.data(), receipt.size());
+    std::cout << "WAN_CHECKPOINT_CUDA gpu=" << evidence->gpuUuid
+              << " evidence=" << (*cudaOutput / "evidence.json") << '\n';
+  }
   if (output.size() != 1 || output.count("result") != 1)
     throw std::runtime_error("checkpoint oracle expected one output bundle");
   const auto tensors = decodeTensorBundleViews(output.at("result"));
@@ -184,6 +254,10 @@ validate(const fs::path& configuration)
       tensors.front().elementType != TensorElementType::Float32 ||
       tensors.front().shape != shape || tensors.front().payload.size() != expected.size())
     throw std::runtime_error("checkpoint oracle incomplete output");
+  if (cudaOutput) {
+    const auto& actual = tensors.front().payload;
+    writeExclusive(*cudaOutput / "actual.f32le", actual.data(), actual.size());
+  }
   double maximum = 0;
   std::size_t failures = 0;
   for (std::size_t at = 0; at < expected.size(); at += sizeof(float)) {
@@ -209,11 +283,23 @@ validate(const fs::path& configuration)
 int
 main(int argc, char** argv)
 try {
+  constexpr auto USAGE = "usage: di-wan-checkpoint-oracle CONFIG.json\n"
+    "       di-wan-checkpoint-oracle --initial-latent WORKLOAD.json OUTPUT.raw\n"
+    "       di-wan-checkpoint-oracle --cuda CONFIG.json NEW_OUTPUT_DIR\n"
+    "CUDA requires model_graph_digest and saves the current profile, evidence and raw output.\n";
+  if (argc == 2 && std::string(argv[1]) == "--help") {
+    std::cout << USAGE;
+    return 0;
+  }
   if (argc == 4 && std::string(argv[1]) == "--initial-latent") {
     prepareInitialLatent(fs::absolute(argv[2]), fs::absolute(argv[3]));
     return 0;
   }
-  if (argc != 2) throw std::invalid_argument("usage: di-wan-checkpoint-oracle CONFIG.json");
+  if (argc == 4 && std::string(argv[1]) == "--cuda") {
+    validate(fs::absolute(argv[2]), fs::absolute(argv[3]));
+    return 0;
+  }
+  if (argc != 2) throw std::invalid_argument(USAGE);
   validate(fs::absolute(argv[1]));
   return 0;
 }

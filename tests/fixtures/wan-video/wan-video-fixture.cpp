@@ -537,6 +537,61 @@ makeDitCheckpointWeights()
 }
 
 NativeJson
+writeWanCheckpointOracleFixture(const std::filesystem::path& root)
+{
+  if (!std::filesystem::create_directory(root))
+    throw std::invalid_argument("checkpoint oracle fixture requires a fresh output directory");
+  onnx::ModelProto model;
+  model.set_ir_version(9);
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  graph.set_name("checkpoint-oracle-exact-add");
+  const auto port = [](onnx::ValueInfoProto& value, const char* name) {
+    value.set_name(name);
+    auto* tensor = value.mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    tensor->mutable_shape()->add_dim()->set_dim_value(3);
+  };
+  port(*graph.add_input(), "input");
+  port(*graph.add_output(), "output");
+  auto* bias = graph.add_initializer();
+  *bias = floatTensor({1}, {1.0F});
+  bias->set_name("bias");
+  auto* add = graph.add_node();
+  add->set_name("exact-add");
+  add->set_op_type("Add");
+  add->add_input("input");
+  add->add_input("bias");
+  add->add_output("output");
+  const auto write = [&](const char* name, const void* data, std::size_t bytes) {
+    std::ofstream stream(root / name, std::ios::binary);
+    stream.exceptions(std::ios::badbit | std::ios::failbit);
+    stream.write(static_cast<const char*>(data), bytes);
+    stream.close();
+  };
+  const auto modelBytes = model.SerializeAsString();
+  const std::array<float, 3> input{-2.0F, 0.0F, 3.5F};
+  const std::array<float, 3> reference{-1.0F, 1.0F, 4.5F};
+  write("model.onnx", modelBytes.data(), modelBytes.size());
+  write("input.raw", input.data(), sizeof(input));
+  write("reference.raw", reference.data(), sizeof(reference));
+  const auto digest = [](const void* data, std::size_t bytes) {
+    return nativePlanningDigest(static_cast<const std::uint8_t*>(data), bytes);
+  };
+  const NativeJson config{{"schema", "ndnsf-di-wan-checkpoint-oracle-v1"},
+    {"model_file", "model.onnx"},
+    {"model_graph_digest", digest(modelBytes.data(), modelBytes.size())},
+    {"absolute_tolerance", 0.0}, {"relative_tolerance", 0.0},
+    {"inputs", NativeJson::array({{{"name", "input"}, {"shape", {3}},
+      {"file", "input.raw"}, {"digest", digest(input.data(), sizeof(input))}}})},
+    {"reference", {{"name", "output"}, {"shape", {3}},
+      {"file", "reference.raw"}, {"digest", digest(reference.data(), sizeof(reference))}}}};
+  const auto json = nativeCanonicalJson(config);
+  write("oracle.json", json.data(), json.size());
+  return config;
+}
+
+NativeJson
 writeWanVideoFixture(const std::filesystem::path& destination, const ndn::Name& requester,
                      const ndn::Name& service, const std::string& protectionEpoch, bool tileDit)
 {
