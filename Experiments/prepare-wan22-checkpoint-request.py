@@ -106,6 +106,26 @@ def make_request(args):
                            workspace_bytes=32 << 30, kv_bytes=0, activation_bytes=2 << 30,
                            transient_bytes=4 << 30, safety_margin=1.0)
                  for stage in stages for role in stage['roles']}
+    resource_file = getattr(args, 'resources_by_role', None)
+    if resource_file is not None:
+        configured = json.loads(resource_file.read_text())
+        if not isinstance(configured, dict) or set(configured) != set(resources):
+            raise ValueError('resource budgets must cover exactly the generated roles')
+        for role, budget in configured.items():
+            if not isinstance(budget, dict) or set(budget) != set(resources[role]):
+                raise ValueError('resource budget fields are incomplete for ' + role)
+            if budget['backends'] != ['onnxruntime']:
+                raise ValueError('resource budget backend must be onnxruntime')
+            for field in ('weight_bytes', 'workspace_bytes', 'kv_bytes',
+                          'activation_bytes', 'transient_bytes'):
+                value = budget[field]
+                if type(value) is not int or value < 0:
+                    raise ValueError('resource budget bytes must be nonnegative integers')
+            margin = budget['safety_margin']
+            if type(margin) not in (int, float) or not math.isfinite(margin) or margin < 1:
+                raise ValueError('resource budget safety margin must be finite and at least one')
+        resources = configured
+        preparation = digest(dict(preparation=preparation, resources_by_role=resources))
     namespace = args.requester_prefix.rstrip('/')
     if not namespace.startswith('/') or namespace == '':
         raise ValueError('requester prefix must be an absolute Producer name')
@@ -142,6 +162,8 @@ def main():
     parser.add_argument('--requester-prefix', required=True)
     parser.add_argument('--service', required=True)
     parser.add_argument('--epoch', default='epoch-1')
+    parser.add_argument('--resources-by-role', type=Path,
+                        help='JSON resource budgets covering exactly this component and layout')
     args = parser.parse_args()
     request = make_request(args)
     with args.output.open('x') as output:
