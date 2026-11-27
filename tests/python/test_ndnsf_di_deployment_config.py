@@ -6000,6 +6000,11 @@ def test_host_audit_correlates_real_pid_namespace_and_refuses_unknown(node_conta
     config, container, frozen, _, run = node_container
     assert run('--actor', 'p0').returncode == 0
     module = importlib.import_module('_spec217_ops.allocation')
+
+    def unexpected_external_probe(*args, **kwargs):
+        pytest.fail('ordinary inference process audit must not launch an NFD cache probe')
+
+    monkeypatch.setattr(module.subprocess, 'run', unexpected_external_probe)
     args = _role_args(config, frozen, actor='p0', timeout=5)
     args.audit_node = config['nodes'][0]['id']
     args.observe_role = 'p0'

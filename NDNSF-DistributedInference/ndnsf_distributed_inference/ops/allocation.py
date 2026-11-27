@@ -152,6 +152,29 @@ def _native_match(proof, receipt, role):
                     r'(?:^|/)step[_-]' + re.escape(receipt['step_id']) + r'(?:/|\.|$)', proof['cgroup']))
 
 
+def _observe_nfd_cs(config, node):
+    transport = 'unix://' + str(node['nfd']['socket'])
+    native = shutil.which('nfdc')
+    command = [native or '/usr/local/bin/nfdc']
+    if native is None and config['platform'].get('kind') == 'slurm-apptainer':
+        apptainer = config['platform'].get('apptainer')
+        image = config['platform'].get('sif')
+        if apptainer and image:
+            socket_dir = str(Path(node['nfd']['socket']).parent)
+            command = [str(apptainer), 'exec', '--cleanenv',
+                       '--bind', socket_dir + ':' + socket_dir,
+                       '--env', 'NDN_CLIENT_TRANSPORT=' + transport,
+                       str(image), '/opt/ndnsf-di/current/bin/nfdc']
+    try:
+        probe = subprocess.run(command + ['cs', 'info'], check=True,
+                               capture_output=True, text=True,
+                               env={**os.environ, 'NDN_CLIENT_TRANSPORT': transport}, timeout=15)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {'error': str(error)}
+    return {key: int(match[1]) for key in ('capacity', 'nEntries')
+            if (match := re.search(key + r'=([0-9]+)', probe.stdout))}
+
+
 def audit_node(args, config):
     """Observe host processes without trusting namespace-local ZERO or signalling."""
     node = next(node for node in config['nodes'] if node['id'] == args.audit_node)
@@ -171,35 +194,9 @@ def audit_node(args, config):
                   release_sha256=args.release_sha256, job_id=job, host=socket.gethostname(),
                   observed_at=time.time(), status='UNKNOWN', cleanup_scope='HOST_UID_JOB',
                   processes=[], errors=[])
-    # The NFD content store must stay disabled and empty: every read in this
-    # benchmark must come from the Repo, not from a forwarder cache.
-    transport = 'unix://' + str(node['nfd']['socket'])
-    nfdc = shutil.which('nfdc')
-    socket_dir = str(Path(node['nfd']['socket']).parent)
-    if nfdc is None and config['platform'].get('kind') == 'slurm-apptainer':
-        apptainer = config['platform'].get('apptainer')
-        image = config['platform'].get('sif')
-        if apptainer and image:
-            # Compute nodes are container-only: probe the managed NFD through the
-            # image's installed nfdc while binding the host socket directory.
-            nfdc = [str(apptainer), 'exec', '--cleanenv',
-                    '--bind', socket_dir + ':' + socket_dir,
-                    str(image), '/opt/ndnsf-di/current/bin/nfdc']
-    if nfdc is None:
-        nfdc = '/usr/local/bin/nfdc'
-    cs = {}
-    try:
-        probe = subprocess.run(([nfdc] if isinstance(nfdc, str) else nfdc) + ['cs', 'info'],
-                               capture_output=True, text=True,
-                               env={**os.environ, 'NDN_CLIENT_TRANSPORT': transport},
-                               timeout=15)
-        for key in ('capacity', 'nEntries'):
-            match = re.search(key + r'=([0-9]+)', probe.stdout)
-            if match:
-                cs[key] = int(match.group(1))
-    except (OSError, subprocess.SubprocessError) as error:
-        cs['error'] = str(error)
-    result['cs'] = cs
+    if (config.get('operation') == 'repo-benchmark' and
+            args.observe_role == management_role_id('nfd', node['id'])):
+        result['cs'] = _observe_nfd_cs(config, node)
     if target_job is not None:
         result.update(auditor_job_id=auditor_job, recovery_id=recovery_id)
     deadline = time.monotonic() + args.timeout
