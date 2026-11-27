@@ -91,6 +91,7 @@ void
 readInitializer(CodedInputStream& input, onnx::TensorProto& tensor, int& budget)
 {
   const auto limit = input.PushLimit(readLength(input));
+  bool retainIntegerData = true;
   while (input.BytesUntilLimit() > 0) {
     const auto tag = input.ReadTag();
     require(tag != 0);
@@ -132,22 +133,36 @@ readInitializer(CodedInputStream& input, onnx::TensorProto& tensor, int& budget)
     else if ((field == onnx::TensorProto::kInt64DataFieldNumber ||
               field == onnx::TensorProto::kInt32DataFieldNumber) && (wire == 0 || wire == 2)) {
       auto readInteger = [&] {
+        if (tensor.int64_data_size() + tensor.int32_data_size() >= MAX_TENSOR_ELEMENTS ||
+            budget < 8) {
+          retainIntegerData = false;
+          return;
+        }
         std::uint64_t value = 0;
-        require(tensor.int64_data_size() + tensor.int32_data_size() < MAX_TENSOR_ELEMENTS);
-        require(budget >= 8 && input.ReadVarint64(&value));
+        require(input.ReadVarint64(&value));
         budget -= 8;
         if (field == onnx::TensorProto::kInt64DataFieldNumber)
           tensor.add_int64_data(static_cast<std::int64_t>(value));
         else tensor.add_int32_data(static_cast<std::int32_t>(value));
       };
-      if (wire == 0) readInteger();
+      if (wire == 0) {
+        if (retainIntegerData) readInteger();
+        if (!retainIntegerData) skipField(input, tag);
+      }
       else {
         const auto packed = input.PushLimit(readLength(input));
-        while (input.BytesUntilLimit() > 0) readInteger();
+        while (retainIntegerData && input.BytesUntilLimit() > 0) readInteger();
+        require(input.Skip(input.BytesUntilLimit()));
         input.PopLimit(packed);
       }
     }
     else skipField(input, tag);
+  }
+  if (!retainIntegerData) {
+    // Keep the tensor header, but never classify a truncated payload as a literal.
+    tensor.clear_int64_data();
+    tensor.clear_int32_data();
+    tensor.clear_raw_data();
   }
   input.PopLimit(limit);
 }
@@ -471,6 +486,22 @@ classify(onnx::ModelProto& model)
   return result;
 }
 
+bool
+hasFp32SpatialVideoConvolution(const onnx::GraphProto& graph)
+{
+  std::set<std::string> spatialKernels;
+  for (const auto& kernel : graph.initializer()) {
+    if (kernel.data_type() == onnx::TensorProto::FLOAT && kernel.dims_size() == 5 &&
+        kernel.dims(2) == 1 && kernel.dims(3) == 3 && kernel.dims(4) == 3) {
+      spatialKernels.insert(kernel.name());
+    }
+  }
+  return std::any_of(graph.node().begin(), graph.node().end(), [&] (const auto& node) {
+    return isStandardOperator(node) && node.op_type() == "Conv" && node.input_size() >= 2 &&
+           spatialKernels.count(node.input(1)) != 0;
+  });
+}
+
 } // namespace
 
 OnnxRuntimeGraphMetadata
@@ -502,6 +533,7 @@ inspectOnnxRuntimeGraphMetadata(const std::string& modelPath, bool collectHostMe
       }
     }
     result.attentionWarmupLengthInputs = warmupInputs;
+    result.hasFp32SpatialVideoConvolution = hasFp32SpatialVideoConvolution(model.graph());
   }
   catch (const std::exception&) {
     // Unsupported graphs retain the original strict CPU-fallback rejection.
@@ -518,7 +550,8 @@ void
 verifyOnnxRuntimeGraphMetadataSource(const std::string& modelPath,
                                     const OnnxRuntimeGraphMetadata& metadata)
 {
-  if (metadata.hostMetadataNodes.empty() && metadata.attentionWarmupLengthInputs.empty()) return;
+  if (metadata.hostMetadataNodes.empty() && metadata.attentionWarmupLengthInputs.empty() &&
+      !metadata.hasFp32SpatialVideoConvolution) return;
   struct stat status{};
   if (stat(modelPath.c_str(), &status) != 0 || !S_ISREG(status.st_mode) ||
       fileStamp(status) != metadata.sourceFileStamp)

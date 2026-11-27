@@ -1305,6 +1305,52 @@ BOOST_AUTO_TEST_CASE(OrtProfileRecordsEveryModelNodeProviderAndGpuUuid)
   std::filesystem::remove(path);
 }
 
+BOOST_AUTO_TEST_CASE(GraphMetadataDetectsBoundFp32SpatialVideoConv)
+{
+  GraphMetadataFixture fixture;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(18);
+  auto& graph = *model.mutable_graph();
+  auto* input = graph.add_input();
+  input->set_name("frames");
+  auto* tensor = input->mutable_type()->mutable_tensor_type();
+  tensor->set_elem_type(onnx::TensorProto::FLOAT);
+  for (const auto dim : {1, 2, 4, 8, 8}) tensor->mutable_shape()->add_dim()->set_dim_value(dim);
+  // Wan VAE also contains literal channel index tables above the metadata limit.
+  auto* indices = graph.add_initializer();
+  indices->set_name("shortcut-indices");
+  indices->set_data_type(onnx::TensorProto::INT64);
+  indices->add_dims(65);
+  for (int i = 0; i < 65; ++i) indices->add_int64_data(i);
+  auto* weight = graph.add_initializer();
+  weight->set_name("spatial-video-weight");
+  weight->set_data_type(onnx::TensorProto::FLOAT);
+  for (const auto dim : {2, 2, 1, 3, 3}) weight->add_dims(dim);
+  weight->set_raw_data(std::string(36 * sizeof(float), '\0'));
+  auto inspect = [&] {
+    return detail::inspectOnnxRuntimeGraphMetadata(fixture.write(model), false);
+  };
+  BOOST_CHECK(!inspect().hasFp32SpatialVideoConvolution);
+
+  auto* conv = graph.add_node();
+  conv->set_name("spatial-video-conv");
+  conv->set_op_type("Conv");
+  conv->add_input(input->name());
+  conv->add_input(weight->name());
+  conv->add_output("filtered");
+  const auto metadata = inspect();
+  BOOST_REQUIRE(metadata.hasFp32SpatialVideoConvolution);
+  const auto modelPath = (fixture.directory / "model.onnx").string();
+  BOOST_CHECK_NO_THROW(detail::verifyOnnxRuntimeGraphMetadataSource(modelPath, metadata));
+
+  weight->set_dims(2, 3);
+  weight->set_raw_data(std::string(108 * sizeof(float), '\0'));
+  BOOST_CHECK(!inspect().hasFp32SpatialVideoConvolution);
+  BOOST_CHECK_THROW(detail::verifyOnnxRuntimeGraphMetadataSource(modelPath, metadata),
+                    std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(GraphMetadataComesFromStructuralUsesAndFailsClosed)
 {
   GraphMetadataFixture fixture;

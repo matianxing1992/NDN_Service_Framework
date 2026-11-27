@@ -20,6 +20,8 @@ struct OnnxRuntimeGraphMetadata
   std::map<std::string, std::string> modelNodeAliases;
   /** Exact GQA v1 scalar graph inputs; seed only local one-token warmup. */
   std::set<std::string> attentionWarmupLengthInputs;
+  /** A standard Conv binds a static FP32 [O,I,1,3,3] kernel. */
+  bool hasFp32SpatialVideoConvolution = false;
   std::array<std::uint64_t, 7> sourceFileStamp{};
 };
 

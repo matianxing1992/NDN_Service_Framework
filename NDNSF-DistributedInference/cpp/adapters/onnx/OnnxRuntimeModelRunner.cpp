@@ -580,9 +580,12 @@ makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
     std::unique_ptr<OrtCUDAProviderOptionsV2, decltype(api.ReleaseCUDAProviderOptions)>
       cudaOptions(rawOptions, api.ReleaseCUDAProviderOptions);
     const auto device = std::to_string(deviceId);
-    const char* keys[] = {"device_id", "use_tf32"};
-    const char* values[] = {device.c_str(), "0"};
-    Ort::ThrowOnError(api.UpdateCUDAProviderOptions(cudaOptions.get(), keys, values, 2));
+    // The cuDNN Frontend heuristic can retry a spatial video Conv in TF32
+    // after rejecting its FP32 plans. The DEFAULT search qualified this case.
+    const char* keys[] = {"device_id", "use_tf32", "cudnn_conv_algo_search"};
+    const char* values[] = {device.c_str(), "0", "DEFAULT"};
+    const std::size_t optionCount = graphMetadata.hasFp32SpatialVideoConvolution ? 3 : 2;
+    Ort::ThrowOnError(api.UpdateCUDAProviderOptions(cudaOptions.get(), keys, values, optionCount));
     options.AppendExecutionProvider_CUDA_V2(*cudaOptions);
     if (!runnerMetadataBool(spec, {"allowCpuFallback", "allow_cpu_fallback"}) &&
         graphMetadata.hostMetadataNodes.empty()) {
