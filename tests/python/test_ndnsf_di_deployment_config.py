@@ -2783,12 +2783,16 @@ def test_diagnostic_log_filter_rejects_invalid_values(ops, tmp_path, monkeypatch
         cluster._environment(tmp_path, tmp_path/'nfd.sock', 'repo', state)
 
 
-def test_provider_native_launch_passes_exact_transport_parameters(ops, deployment):
+@pytest.mark.parametrize('runner_entries', [0, 1])
+def test_provider_native_launch_passes_cache_and_exact_transport_parameters(
+        ops, deployment, runner_entries):
     parser, _ = ops
     base, config = deployment
     (base / 'trust-root-registry-v1.json').write_text('{}')
     (base / 'recipients.json').write_text(json.dumps({'/test/p1': 'key.pem'}))
     config['actors'][-1]['parameters'] = {
+        'artifact-cache-entries': 2,
+        'runner-cache-entries': runner_entries,
         'exact-packet-disk-mib': 1024,
         'tensor-segment-bytes': 7600,
         'grant-authority-public-key': 'key.pem', 'recipient-key-map': 'recipients.json'}
@@ -2798,6 +2802,8 @@ def test_provider_native_launch_passes_exact_transport_parameters(ops, deploymen
     directory.mkdir()
     state = {'boot_id': uuid.uuid4().hex, 'configuration_sha256': 'a' * 64}
     argv, _ = cluster._native_launch(native, native['actors'][-1], directory, state)
+    assert argv[argv.index('--artifact-cache-entries') + 1] == '2'
+    assert argv[argv.index('--runner-cache-entries') + 1] == str(runner_entries)
     assert argv[argv.index('--exact-packet-disk-mib') + 1] == '1024'
     assert argv[argv.index('--tensor-segment-bytes') + 1] == '7600'
     assert '--enable-segment-manifest' not in argv
@@ -6611,6 +6617,12 @@ def test_slurm_quota_failure_after_submission_still_closes_the_same_job(
     (lambda c: c["actors"][-1].update(parameters={"repo-fetch-timeout-ms": True}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"repo-fetch-timeout-ms": 2147483648}), "native signed int"),
     (lambda c: c["actors"][-1].update(parameters={"assembly-timeout-ms": 0}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"artifact-cache-entries": 0}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"artifact-cache-entries": True}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"artifact-cache-entries": 2147483648}), "native signed int entry"),
+    (lambda c: c["actors"][-1].update(parameters={"runner-cache-entries": -1}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"runner-cache-entries": True}), "expected integer"),
+    (lambda c: c["actors"][-1].update(parameters={"runner-cache-entries": 2147483648}), "native signed int entry"),
     (lambda c: c["actors"][-1].update(parameters={"artifact-cache-max-mib": 0}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"artifact-cache-max-mib": True}), "expected integer"),
     (lambda c: c["actors"][-1].update(parameters={"artifact-cache-max-mib": -1}), "expected integer"),

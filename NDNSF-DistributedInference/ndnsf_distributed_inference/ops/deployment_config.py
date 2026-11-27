@@ -772,7 +772,9 @@ def _translate_native(config, by_kind, resolve):
             _object(parameters, "provider.parameters", {
                 "roles", "selection-offer-key-file", "offer-backend", "offer-can-provision",
                 "offer-has-model", "permission-wait-ms", "workers", "handler-threads", "ack-threads",
-                "artifact-cache-dir", "artifact-cache-max-mib", "exact-packet-disk-mib",
+                "artifact-cache-dir", "artifact-cache-entries", "artifact-cache-max-mib",
+                "runner-cache-entries",
+                "exact-packet-disk-mib",
                 "tensor-segment-bytes",
                 "statistics-file",
                 "cache-compatibility-source-dir",
@@ -828,14 +830,20 @@ def _translate_native(config, by_kind, resolve):
                     _fail(field, "requires complete KV mode and a tensor name of at most 1024 bytes")
             for key in ("permission-wait-ms", "workers", "handler-threads", "ack-threads",
                         "admission-lease-ttl-ms", "repo-fetch-timeout-ms", "conversation-retention-ms",
-                        "assembly-timeout-ms", "artifact-cache-max-mib", "exact-packet-disk-mib",
-                        "tensor-segment-bytes"):
+                        "assembly-timeout-ms", "artifact-cache-entries", "artifact-cache-max-mib",
+                        "exact-packet-disk-mib", "tensor-segment-bytes"):
                 if key in parameters:
                     _integer(parameters[key], "provider.parameters." + key)
+            if "runner-cache-entries" in parameters:
+                _integer(parameters["runner-cache-entries"],
+                         "provider.parameters.runner-cache-entries", minimum=0)
             if parameters.get("repo-fetch-timeout-ms", 1) > 2147483647:
                 _fail("provider.parameters.repo-fetch-timeout-ms", "exceeds native signed int timeout")
             if parameters.get("artifact-cache-max-mib", 1) > 2147483647:
                 _fail("provider.parameters.artifact-cache-max-mib", "exceeds native signed int MiB limit")
+            for key in ("artifact-cache-entries", "runner-cache-entries"):
+                if parameters.get(key, 1) > 2147483647:
+                    _fail("provider.parameters." + key, "exceeds native signed int entry limit")
             if parameters.get("exact-packet-disk-mib", 1) > 131072:
                 _fail("provider.parameters.exact-packet-disk-mib", "exceeds native disk ceiling")
             if parameters.get("tensor-segment-bytes", 1) > 8800:

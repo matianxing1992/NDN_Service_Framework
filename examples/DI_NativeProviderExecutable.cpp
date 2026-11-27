@@ -220,6 +220,7 @@ struct Options
   // holds its role template until the session ends. The default suits a few
   // requests; a longer session raises this explicitly.
   int artifactCacheEntries = 8;
+  int runnerCacheEntries = 8;
   std::string cacheCompatibilitySourceDir;
   // Deployment-local standalone tokenizer.  It is deliberately configured
   // outside the Selection wire contract and bound to the authenticated
@@ -840,6 +841,10 @@ parseArgs(int argc, char** argv)
       const auto value = readValue();
       options.artifactCacheEntries = parsePositiveInt(value, arg);
     }
+    else if (arg == "--runner-cache-entries") {
+      const auto value = readValue();
+      options.runnerCacheEntries = value == "0" ? 0 : parsePositiveInt(value, arg);
+    }
     else if (arg == "--artifact-cache-max-mib") {
       const auto value = readValue();
       if (value.empty() || !std::all_of(value.begin(), value.end(), [] (unsigned char c) {
@@ -1276,6 +1281,7 @@ printUsage(const char* program)
     << "[--exact-packet-disk-mib <positive-MiB>] "
     << "[--tensor-segment-bytes <positive-bytes>] "
     << "[--artifact-cache-entries <positive-count>] "
+    << "[--runner-cache-entries <count>] "
     << "[--cache-compatibility-source-dir <verified-cache-dir>] "
     << "[--tokenizer-json <path>] "
     << "[--statistics-file <jsonl-path>] [--sample-kv-state-values | --capture-complete-kv-state] "
@@ -1455,12 +1461,17 @@ main(int argc, char** argv)
     // The standalone Provider creates one runner per authenticated Selection.
     // Keep the ORT session cache owner-local but shared by every runner made
     // by this Provider, so resident sessions can be reused across turns.
-    auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
-    auto runnerReuseCache = std::make_shared<NativeProviderRunnerReuseCache>(
-      8, NativeProviderRunnerReuseCache::OutputBinding::RoleContract);
+    std::shared_ptr<OnnxRuntimeSessionCache> sessionCache;
+    std::shared_ptr<NativeProviderRunnerReuseCache> runnerReuseCache;
+    if (options.runnerCacheEntries > 0) {
+      sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+      runnerReuseCache = std::make_shared<NativeProviderRunnerReuseCache>(
+        static_cast<std::size_t>(options.runnerCacheEntries),
+        NativeProviderRunnerReuseCache::OutputBinding::RoleContract);
+    }
     auto protectedResidentAuthority = makeProtectedResidentAuthority(
       sessionCache, runnerReuseCache);
-    runnerReuseCache->setAuthority(protectedResidentAuthority);
+    if (runnerReuseCache) runnerReuseCache->setAuthority(protectedResidentAuthority);
     auto protectedPlaintextCache = std::make_shared<NativeProtectedPlaintextCache>(
       options.artifactCacheDir, 8);
     auto persistentRecipeResidencyIndex =
@@ -2244,28 +2255,30 @@ main(int argc, char** argv)
             config.localProviderName = options.providerName;
             config.providerBootId = providerBootId;
             config.protectedResidentAuthority = protectedResidentAuthority;
-            config.runnerReuseLookup =
-              [runnerReuseCache, providerName = options.providerName, providerBootId](
-                const NativeSelectionProjectionV3& projection,
-                const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
-                return runnerReuseCache->lookup(
-                  projection, providerName, providerBootId, protectedRuntime);
-              };
-            config.runnerReusePublisher =
-              [runnerReuseCache, providerName = options.providerName, providerBootId](
-                const NativeSelectionProjectionV3& projection,
-                const std::shared_ptr<ProtectedRuntime>& protectedRuntime,
-                const std::shared_ptr<NativeModelRunner>& runner) {
-                runnerReuseCache->publish(
-                  projection, providerName, providerBootId, protectedRuntime, runner);
-              };
-            config.runnerReusePublisherFactory =
-              [runnerReuseCache, providerName = options.providerName, providerBootId](
-                const NativeSelectionProjectionV3& projection,
-                const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
-                return runnerReuseCache->bindPublisher(
-                  projection, providerName, providerBootId, protectedRuntime);
-              };
+            if (runnerReuseCache) {
+              config.runnerReuseLookup =
+                [runnerReuseCache, providerName = options.providerName, providerBootId](
+                  const NativeSelectionProjectionV3& projection,
+                  const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
+                  return runnerReuseCache->lookup(
+                    projection, providerName, providerBootId, protectedRuntime);
+                };
+              config.runnerReusePublisher =
+                [runnerReuseCache, providerName = options.providerName, providerBootId](
+                  const NativeSelectionProjectionV3& projection,
+                  const std::shared_ptr<ProtectedRuntime>& protectedRuntime,
+                  const std::shared_ptr<NativeModelRunner>& runner) {
+                  runnerReuseCache->publish(
+                    projection, providerName, providerBootId, protectedRuntime, runner);
+                };
+              config.runnerReusePublisherFactory =
+                [runnerReuseCache, providerName = options.providerName, providerBootId](
+                  const NativeSelectionProjectionV3& projection,
+                  const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
+                  return runnerReuseCache->bindPublisher(
+                    projection, providerName, providerBootId, protectedRuntime);
+                };
+            }
             installNativeProtectedGrantFactory(config);
             config.planDigest = sha256File(options.planPath);
             if (const auto* mutation = std::getenv("SPEC180_YN_MUTATION")) {
@@ -2776,10 +2789,10 @@ main(int argc, char** argv)
         nativeRegistration = {};
         providerHost.reset();
         protectedResidentAuthority->retireAll();
-        runnerReuseCache->clear();
-        sessionCache->close();
-        const bool sessionsDrained = sessionCache->drain(
-          std::chrono::milliseconds(5000));
+        if (runnerReuseCache) runnerReuseCache->clear();
+        if (sessionCache) sessionCache->close();
+        const bool sessionsDrained = !sessionCache ||
+          sessionCache->drain(std::chrono::milliseconds(5000));
         const bool residentsDrained = protectedResidentAuthority->drain(
           std::chrono::milliseconds(5000));
         protectedPlaintextCache->stop();
