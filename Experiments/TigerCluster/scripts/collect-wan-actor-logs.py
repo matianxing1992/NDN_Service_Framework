@@ -1,4 +1,4 @@
-"""Copy original stopped Slurm actor logs into a private verification view."""
+"""Copy stopped Slurm actor logs and node-local Provider statistics."""
 import hashlib
 import io
 import json
@@ -59,6 +59,13 @@ def stopped_roles(closeout):
         logical = f"actors/{actor_id}/runtime/{deployment}/{actor_id}.log"
         assert not (evidence / logical).exists()
         roles[actor_id] = dict(host=host, path=str(actual), member=logical)
+        if actor["kind"] == "provider":
+            statistics = log_root / "statistics" / (actor_id + "-statistics.jsonl")
+            if actor["parameters"].get("statistics-file") == str(statistics):
+                logical = f"actors/{actor_id}/runtime/{deployment}/{statistics.name}"
+                assert not (evidence / logical).exists()
+                roles[actor_id + ".statistics"] = dict(
+                    host=host, path=str(statistics), member=logical)
     return evidence, dict(boot=boot, job=job, config=allocation["configuration_sha256"]), roles
 
 
