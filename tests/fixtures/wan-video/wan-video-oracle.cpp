@@ -1,8 +1,10 @@
 #include "wan-video-reference.hpp"
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "examples/deployment-evidence-oracle.hpp"
 
 #include <ndn-cxx/name.hpp>
 
@@ -71,7 +73,7 @@ using RequestRows = std::map<std::string, std::map<std::string, NativeJson>>;
 
 struct ProviderTrace
 {
-  bool cpuSession = false;
+  bool expectedSession = false;
   std::set<std::pair<std::string, std::string>> calls;
   // Session, producing role and consuming role -> matching original DATA_V1 names.
   using EdgeNames = std::map<std::array<std::string, 3>, std::set<std::string>>;
@@ -86,7 +88,8 @@ struct DeploymentEvidence
 };
 
 ProviderTrace
-readProviderTrace(const fs::path& path, const ndn::Name& producer, std::size_t byteLimit)
+readProviderTrace(const fs::path& path, const ndn::Name& producer, std::size_t byteLimit,
+                  bool cuda)
 {
   require(fs::file_size(path) <= byteLimit, "Provider timing exceeds fixture budget");
   ProviderTrace result;
@@ -99,7 +102,8 @@ readProviderTrace(const fs::path& path, const ndn::Name& producer, std::size_t b
     constexpr std::string_view CALL = "NDNSF_DI_ONNX_TIMING ";
     constexpr std::string_view OBJECT = "NDNSF_DI_DEPENDENCY_OBJECT ";
     if (const auto at = line.find(LOAD); at != std::string_view::npos) {
-      result.cpuSession |= line.find(" provider=cpu ", at) != std::string_view::npos;
+      result.expectedSession |= line.find(cuda ? " provider=cuda " : " provider=cpu ", at) !=
+                                std::string_view::npos;
       continue;
     }
     const auto call = line.find(CALL);
@@ -131,15 +135,153 @@ readProviderTrace(const fs::path& path, const ndn::Name& producer, std::size_t b
     }
   }
   require(log.eof() && !log.bad(), "Provider timing log read failed or has an oversized row");
-  require(result.cpuSession && !result.calls.empty(), "missing real CPU ORT calls");
+  require(result.expectedSession && !result.calls.empty(), "missing actual ORT session or calls");
+  return result;
+}
+
+void
+verifyCudaRequest(const NativeJson& row, const NativeJson& process,
+                  const std::string& uuid, const std::string& visibility,
+                  const std::set<std::pair<std::string, std::string>>& admittedRequests)
+{
+  require(!row.at("finalExecutionEvidence").is_null(), "missing CUDA request evidence");
+  const auto evidence = executionEvidenceFromJson(row.at("finalExecutionEvidence").dump());
+  const auto role = row.at("role").get<std::string>();
+  const auto artifact = evidence.artifactDigests.find(role);
+  require(evidence.runnerKind == RunnerKind::OnnxRuntimeCuda && evidence.deviceKind == "cuda" &&
+          evidence.deviceId == "0" && evidence.realCompute && !evidence.cpuFallbackUsed &&
+          evidence.loadCompleted && evidence.warmupCompleted && evidence.executionCompleted &&
+          !evidence.exactForwardCacheHit && evidence.gpuUuid == uuid &&
+          evidence.gpuIdentitySource == "cuda-runtime-pci+driver-uuid" &&
+          evidence.gpuUuids == std::vector<std::string>{uuid} &&
+          evidence.cudaVisibleDevices == visibility && evidence.processId == process.at("pid") &&
+          evidence.requestId == row.at("requestId") && evidence.attemptEpoch == 1 &&
+          evidence.providerName == row.at("provider") &&
+          evidence.providerBootId == row.at("providerBootId") &&
+          evidence.planDigest == row.at("planDigest") &&
+          evidence.modelDigest == row.at("admittedModelDigest") &&
+          evidence.roles == std::vector<std::string>{role} &&
+          artifact != evidence.artifactDigests.end() &&
+          artifact->second == row.at("admittedArtifactDigest"),
+          "CUDA request, device or artifact evidence mismatch");
+
+  const auto entries = row.at("sealedComputeEntries").get<std::vector<std::string>>();
+  const std::set<std::string> expected(entries.begin(), entries.end());
+  std::set<std::string> profiles, calls, kernels;
+  require(!expected.empty() && expected.size() == entries.size(), "missing sealed CUDA entries");
+  for (const auto& profile : evidence.entryProfiles) {
+    require(profile.attemptEpoch == 1 &&
+            admittedRequests.count({profile.requestId, artifact->second}) != 0 &&
+            profiles.insert(profile.entryId).second, "CUDA profile request or entry mismatch");
+  }
+  for (const auto& metrics : row.at("runtimeMetrics")) {
+    for (const auto& step : metrics.at("stepBackendExecutions")) {
+      if (step.at("operation") != "CALL_SUBGRAPH") continue;
+      require(step.at("completed") == true, "incomplete CUDA entry call");
+      calls.insert(step.at("entryId").get<std::string>());
+    }
+  }
+  for (const auto& node : evidence.getNodeProviderAssignments()) {
+    if (!node.modelNode) continue;
+    require(!node.nodeName.empty() && node.provider == "CUDAExecutionProvider",
+            "model node executed outside CUDA EP");
+    kernels.insert(node.role);
+  }
+  require(profiles == expected && calls == expected && kernels == expected,
+          "incomplete sealed CUDA entry evidence");
+}
+
+void
+readProviderStatistics(DeploymentEvidence& result, const fs::path& statistics,
+                       const std::string& provider, const NativeJson& launch,
+                       std::size_t byteLimit, const std::string& uuid = "",
+                       const std::string& visibility = "")
+{
+  require(fs::file_size(statistics) <= byteLimit, "Provider statistics exceed fixture budget");
+  std::ifstream stats(statistics);
+  require(bool(stats), "missing Provider runtime statistics");
+  std::vector<char> rowBuffer(MAX_EVIDENCE_ROW_BYTES + 1);
+  std::set<std::pair<std::string, std::string>> admittedRequests;
+  while (stats.getline(rowBuffer.data(), rowBuffer.size())) {
+    const auto rowLength = static_cast<std::size_t>(stats.gcount()) - (stats.eof() ? 0 : 1);
+    const auto row = nativeParseJson(std::string(rowBuffer.data(), rowLength));
+    require(row.at("schema") == "ndnsf-di-native-request-statistics-v1" &&
+            row.at("provider") == provider && row.at("providerBootId") == launch.at("native_boot_id"),
+            "Provider statistics identity");
+    if (row.at("type") != "request") continue;
+    const auto request = row.at("requestId").get<std::string>();
+    const auto artifact = row.at("admittedArtifactDigest").get<std::string>();
+    require(!request.empty() && row.at("completionAdmitted") == true &&
+            row.at("failureReason").is_null() && row.at("attemptEpoch") == 1 &&
+            !artifact.empty() && row.at("role").is_string() && row.at("planDigest").is_string() &&
+            result.requests[request].emplace(provider, NativeJson{
+              {"role", row.at("role")}, {"planDigest", row.at("planDigest")}}).second,
+            "Provider completion or artifact binding");
+    admittedRequests.emplace(request, artifact);
+    if (!uuid.empty()) {
+      verifyCudaRequest(row, launch.at(launch.contains("namespace_proof") ?
+                                      "namespace_proof" : "proof"),
+                        uuid, visibility, admittedRequests);
+    }
+  }
+  require(stats.eof() && !stats.bad(), "Provider statistics read failed or has an oversized row");
+  require(!admittedRequests.empty(), "missing Provider runtime statistics");
+}
+
+DeploymentEvidence
+readSlurmDeployment(const NativeJson& state, const NativeJson& config, const fs::path& root,
+                    std::size_t logByteLimit, std::size_t statisticsByteLimit,
+                    bool requireDistinctGpuNodes)
+{
+  const auto boot = state.at("boot_id").get<std::string>();
+  const auto digest = state.at("configuration_sha256").get<std::string>();
+  require(state.at("schema") == "ndnsf-di-host-operation-v1" && state.at("status") == "STOPPED" &&
+          state.at("execution") == "COMPLETE" && state.at("external_references").empty() &&
+          state.at("failure").is_null() && state.at("deployment_id") == config.at("deployment_id") &&
+          digest == nativePlanningDigest(nativeCanonicalJson(config)).substr(7),
+          "invalid Slurm allocation state");
+  oracle::readPrivateJson(root / "allocation.json");
+  oracle::readPrivateJson(root / "configuration.json");
+  oracle::validateDeploymentGroups(state, boot, digest, true);
+  const auto receipts = oracle::validateAllocation(root, state, config, boot, digest);
+  DeploymentEvidence result;
+  std::set<std::string> nodes, devices;
+  for (const auto& actor : config.at("actors")) {
+    require(actor.at("kind") != "repo", "unexpected Repo in Wan deployment");
+    if (actor.at("kind") != "provider") continue;
+    const auto id = actor.at("id").get<std::string>();
+    const auto provider = actor.at("identity").get<std::string>();
+    const auto& receipt = receipts.at(id);
+    const auto uuid = oracle::validateGpuAdmission(root, state, config, actor, receipt);
+    require(!requireDistinctGpuNodes || nodes.insert(actor.at("node").get<std::string>()).second,
+            "Wan checkpoint Providers require distinct nodes");
+    require(uuid.size() == 1 && devices.insert(uuid.front()).second,
+            "Wan Providers require distinct devices");
+    const auto launches = receipt.at("launches");
+    const auto launch = std::find_if(launches.begin(), launches.end(),
+                                     [&] (const auto& row) { return row.at("id") == id; });
+    require(launch != launches.end() && launch->at("native_identity") == provider,
+            "missing Slurm native Provider launch");
+    const auto runtime = root / "actors" / id / "runtime" / config.at("deployment_id").get<std::string>();
+    const auto statistics = actor.at("parameters").value(
+      "statistics-file", (runtime / (id + "-statistics.jsonl")).string());
+    readProviderStatistics(result, statistics, provider, *launch, statisticsByteLimit, uuid.front(),
+                           receipt.at("gpu_visibility").get<std::string>());
+    result.traces.emplace(provider, readProviderTrace(runtime / (id + ".log"),
+                                                    ndn::Name(provider), logByteLimit, true));
+  }
   return result;
 }
 
 DeploymentEvidence
 readDeployment(const NativeJson& state, const NativeJson& configuration, const fs::path& root,
                std::size_t logByteLimit = 64 * MIB,
-               std::size_t statisticsByteLimit = 8 * MIB)
+               std::size_t statisticsByteLimit = 8 * MIB, bool requireDistinctGpuNodes = true)
 {
+  if (configuration.at("platform").at("kind") == "slurm-apptainer") {
+    return readSlurmDeployment(state, configuration, root, logByteLimit, statisticsByteLimit,
+                               requireDistinctGpuNodes);
+  }
   const auto boot = state.at("boot_id");
   const auto digest = state.at("configuration_sha256");
   require(state.at("schema") == "ndnsf-di-host-operation-v1" &&
@@ -223,33 +365,10 @@ readDeployment(const NativeJson& state, const NativeJson& configuration, const f
     require(exe == prefix / "bin/di-native-provider" && launch.at("native_identity") == provider &&
             providerNamespaces.insert(namespaces.at(node)).second && routed.count(provider) &&
             routed.count(provider + "/KEY"), "Provider identity, route or executable");
-    const auto bootId = launch.at("native_boot_id");
-    const auto path = root / (id + "-statistics.jsonl");
-    require(fs::file_size(path) <= statisticsByteLimit, "Provider statistics exceed fixture budget");
-    std::ifstream stats(path);
-    std::string line;
-    std::size_t completed = 0;
-    while (std::getline(stats, line)) {
-      require(line.size() <= MAX_EVIDENCE_ROW_BYTES,
-              "Provider statistics row exceeds fixture budget");
-      const auto row = nativeParseJson(line);
-      require(row.at("schema") == "ndnsf-di-native-request-statistics-v1" &&
-              row.at("provider") == provider && row.at("providerBootId") == bootId,
-              "Provider statistics identity");
-      if (row.at("type") != "request") continue;
-      const auto request = row.at("requestId").get<std::string>();
-      require(!request.empty() && row.at("completionAdmitted") == true &&
-              row.at("failureReason").is_null() && row.at("attemptEpoch") == 1 &&
-              !row.at("admittedArtifactDigest").get<std::string>().empty() &&
-              row.at("role").is_string() && row.at("planDigest").is_string() &&
-        result.requests[request].emplace(provider, NativeJson{
-          {"role", row.at("role")}, {"planDigest", row.at("planDigest")}}).second,
-              "Provider completion or artifact binding");
-      ++completed;
-    }
-    require(stats.eof() && completed > 0, "missing Provider runtime statistics");
+    readProviderStatistics(result, root / (id + "-statistics.jsonl"), provider, launch,
+                           statisticsByteLimit);
     result.traces.emplace(provider, readProviderTrace(root / (id + ".log"), ndn::Name(provider),
-                                                    logByteLimit));
+                                                    logByteLimit, false));
   }
   require(launches.size() == configuration.at("actors").size() + namespaces.size(),
           "unexpected actor launches");
@@ -454,9 +573,11 @@ validateCheckpoint(const fs::path& operation, const fs::path& referenceFile,
           reference.at("relative_tolerance") == 2e-4, "checkpoint reference criterion");
   const auto& generation = reference.at("generation");
   const auto shape = generation.at("latent_shape").get<std::array<std::int64_t, 4>>();
+  const bool compactGeometry = shape[2] >= 2 && shape[2] <= 20 && shape[2] % 2 == 0 &&
+                               shape[3] >= 2 && shape[3] <= 20 && shape[3] % 2 == 0;
+  const bool qualityGeometry = shape[1] == 7 && shape[2] == 44 && shape[3] == 80;
   require(shape[0] == 48 && shape[1] > 0 && shape[1] <= 91 &&
-          shape[2] >= 2 && shape[2] <= 20 && shape[2] % 2 == 0 &&
-          shape[3] >= 2 && shape[3] <= 20 && shape[3] % 2 == 0 &&
+          (compactGeometry || qualityGeometry) &&
           generation.at("vae_spatial_stride") == 16 && generation.at("text_width") == 4096 &&
           generation.at("frames_per_second") == 24 && generation.at("shift") == 5 &&
           generation.at("guidance") == 5, "checkpoint geometry or sampler profile");
@@ -477,9 +598,11 @@ validateCheckpoint(const fs::path& operation, const fs::path& referenceFile,
           "nonfinite frozen initial input");
   const auto state = readJson(operation);
   const auto root = operation.parent_path();
-  require(fs::equivalent(root, state.at("evidence_root").get<std::string>()),
-          "unexpected operation evidence root");
   const auto config = readJson(root / "configuration.json");
+  const bool slurm = config.at("platform").at("kind") == "slurm-apptainer";
+  require(slurm ? operation.filename() == "allocation.json" :
+          fs::equivalent(root, state.at("evidence_root").get<std::string>()),
+          "unexpected operation evidence root");
   const auto& requester = config.at("requester");
   require(requester.at("test_only") == true && requester.at("test_wan_fixture_trace") == true,
           "checkpoint trace profile");
@@ -490,9 +613,14 @@ validateCheckpoint(const fs::path& operation, const fs::path& referenceFile,
   require(deployment.compare(0, 10, "wan-video-") == 0 &&
           workload.at("mode") == deployment.substr(10), "checkpoint layout binding");
   const auto storageLimit = config.at("storage").at("max_bytes").get<std::size_t>();
-  require(storageLimit > 0 && state.at("storage_bytes").get<std::size_t>() <= storageLimit,
+  require(storageLimit > 0 &&
+          (slurm || state.at("storage_bytes").get<std::size_t>() <= storageLimit),
           "checkpoint evidence exceeds deployment storage budget");
-  auto observed = readDeployment(state, config, root, storageLimit, 2ULL << 30);
+  // One readiness record, two text requests, two requests per denoising step,
+  // and one decode. Keep the file budget tied to the frozen trajectory.
+  const auto statisticsLimit = std::min(storageLimit,
+    (4 + 2 * steps) * (MAX_EVIDENCE_ROW_BYTES + 1));
+  auto observed = readDeployment(state, config, root, storageLimit, statisticsLimit);
   const auto& mode = workload.at("modes").at(deployment.substr(10));
   const auto& placement = requester.at("fixed_placement").at("role_providers");
   const fs::path clip = options.at("output_directory").get<std::string>();
@@ -581,10 +709,14 @@ validate(const fs::path& operation, const fs::path& fixtureFile)
 {
   const auto state = readJson(operation);
   const auto root = operation.parent_path();
-  require(fs::equivalent(root, state.at("evidence_root").get<std::string>()),
-          "unexpected operation evidence root");
   const auto config = readJson(root / "configuration.json");
-  auto observed = readDeployment(state, config, root);
+  const bool slurm = config.at("platform").at("kind") == "slurm-apptainer";
+  require(slurm ? operation.filename() == "allocation.json" :
+          fs::equivalent(root, state.at("evidence_root").get<std::string>()),
+          "unexpected operation evidence root");
+  // A tiny diagnostic can use different devices in the same allocation node.
+  // The checkpoint entry point above keeps the distinct-node requirement.
+  auto observed = readDeployment(state, config, root, 64 * MIB, 8 * MIB, false);
   const auto& requester = config.at("requester");
   const auto& options = requester.at("wan_generation");
   const auto fixtureInput = readJson(fixtureFile);

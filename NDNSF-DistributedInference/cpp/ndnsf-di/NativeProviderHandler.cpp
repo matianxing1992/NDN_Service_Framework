@@ -5423,6 +5423,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               *config.executionEvidenceObserver) {
             (*config.executionEvidenceObserver)(*result.executionEvidence);
           }
+          if (requestStatistics && selectionProjection && localRoles.size() == 1 &&
+              result.executionEvidence &&
+              result.executionEvidence->runnerKind == RunnerKind::OnnxRuntimeCuda) {
+            auto evidence = *result.executionEvidence;
+            if (evidence.planDigest.empty()) {
+              evidence.planDigest = selectionProjection->planDigest;
+            }
+            requestStatistics->finalExecutionEvidence = std::move(evidence);
+            if (result.runtimeMetrics) {
+              requestStatistics->runtimeMetrics.push_back({
+                executedRoleSpec.role, executedRoleSpec.inferenceEpoch, *result.runtimeMetrics,
+                result.stepBackendTimings, result.outputTimings});
+            }
+          }
           if (kvBinding && config.kvStateStore) {
             auto kvOutput = result.outputsByScope.find(config.kvOutputScope);
             if (kvOutput == result.outputsByScope.end()) {
