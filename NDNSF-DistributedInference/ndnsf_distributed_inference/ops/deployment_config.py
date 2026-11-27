@@ -459,8 +459,11 @@ def load_deployment(path, *, prepare_only=False):
     for key in model:
         model[key] = resolve(model[key], "model." + key, exists=True)
     storage = _object(config["storage"], "storage", {
-        "state_root", "evidence_root", "scratch_root", "cache_root", "repo_root", "max_bytes"},
+        "state_root", "evidence_root", "scratch_root", "cache_root", "repo_root", "max_bytes",
+        "actor_log_root"},
         {"state_root", "evidence_root", "scratch_root", "cache_root", "repo_root", "max_bytes"})
+    if local and "actor_log_root" in storage:
+        _fail("storage.actor_log_root", "requires slurm-apptainer")
     _integer(storage["max_bytes"], "storage.max_bytes")
     roots = []
     for key in storage.keys() - {"max_bytes"}:
@@ -672,6 +675,8 @@ def load_deployment(path, *, prepare_only=False):
                 _fail("node.gpu_devices", "exceeds scheduler GPU reservation per node")
 
     writes = _translate_native(config, by_kind, resolve)
+    if "actor_log_root" in storage:
+        writes.append((storage["actor_log_root"], True, "storage.actor_log_root"))
     protected_roots = [Path(release["prefix"])] + [
         Path(actor["credential_home"]) for actor in actors.values() if not actor["external"]]
     if "controller_recovery_checkpoint" in security:

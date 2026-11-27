@@ -21,7 +21,7 @@ from .allocation_topology import deployment_management_commands
 from .container import (gpu_slots, load_frozen, load_gpu_allocation, management_role_id,
                         read_gpu_probe, step_visibility)
 from .deployment_config import (REPO_MANIFEST_BENCHMARK_OPTIONS, _check_installed_files,
-                                _name, _read_json)
+                                _identifier, _name, _read_json)
 from .processes import write_json
 
 
@@ -326,6 +326,8 @@ def run_role(args):
     role_id = actor['id'] if actor else management_role_id(args.management, node_id)
     kind = actor['kind'] if actor else args.management
     phase_id = getattr(args, 'phase_id', None)
+    if phase_id is not None:
+        phase_id = _identifier(phase_id, 'phase_id')
     bindings = {'NDNSF_DEPLOYMENT_ACTOR_ID': role_id, 'NDNSF_DEPLOYMENT_BOOT_ID': args.boot_id,
                 'NDNSF_DEPLOYMENT_CONFIG_SHA256': args.configuration_sha256}
     expected_bindings = dict(bindings)
@@ -527,8 +529,16 @@ def run_role(args):
                 path.write_text(cluster._nfd_config(node['nfd']['socket'], node['nfd']['port']))
                 argv = [executable, '--config', str(path)]
             if kind != 'nfdc':
+                launch_options = {'launcher': launch_native} if host_container else {}
+                if actor and 'actor_log_root' in config['storage']:
+                    log_root = (Path(config['storage']['actor_log_root']) / config['deployment_id'] /
+                                args.boot_id / node_id / role_id)
+                    if phase_id:
+                        log_root = log_root / 'phases' / phase_id
+                    cluster._private_directory(log_root)
+                    launch_options['log_root'] = log_root
                 child, row = cluster._spawn(state, root, role_id, kind, argv, env, guard,
-                                            **({'launcher': launch_native} if host_container else {}))
+                                            **launch_options)
             if kind == 'requester':
                 state['requester'] = {'completion': 'RUNNING', 'exit_code': None}
                 # Requester is a finite command, not a serving actor. Its native

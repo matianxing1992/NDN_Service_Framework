@@ -436,20 +436,27 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
 
 
 def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
-           network_namespace=None, cpu_affinity=None, separate_stderr=False):
+           network_namespace=None, cpu_affinity=None, separate_stderr=False, log_root=None):
+    log_directory = Path(state['evidence_root']) if log_root is None else log_root
     row = {'id': actor_id, 'kind': kind, 'argv': argv, 'expected_exe': str(Path(argv[0]).resolve()),
            'bindings': {key: env[key] for key in (
                'NDNSF_DEPLOYMENT_ACTOR_ID', 'NDNSF_DEPLOYMENT_BOOT_ID',
                'NDNSF_DEPLOYMENT_CONFIG_SHA256')},
-           'log': str(Path(state['evidence_root']) / (actor_id + '.log'))}
+           'log': str(log_directory / (actor_id + '.log'))}
     if separate_stderr:
-        row['stderr_log'] = str(Path(state['evidence_root']) / (actor_id + '.stderr.log'))
+        row['stderr_log'] = str(log_directory / (actor_id + '.stderr.log'))
     state['launches'].append(row)
     write_json(root / 'state.json', state)  # durable launch intent precedes Popen
     with contextlib.ExitStack() as streams:
-        log = streams.enter_context(open(row['log'], 'wb'))
-        stderr = (streams.enter_context(open(row['stderr_log'], 'wb')) if separate_stderr
-                  else subprocess.STDOUT)
+        try:
+            mode = 'wb' if log_root is None else 'xb'
+            log = streams.enter_context(open(row['log'], mode))
+            stderr = (streams.enter_context(open(row['stderr_log'], mode)) if separate_stderr
+                      else subprocess.STDOUT)
+        except OSError:
+            row['spawn_failed'] = True
+            write_json(root / 'state.json', state)
+            raise
         try:
             guard()
         except BaseException:

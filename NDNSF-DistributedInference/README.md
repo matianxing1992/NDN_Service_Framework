@@ -3563,6 +3563,13 @@ the compatibility aggregate. Install `ndnsf-di-ops[app]` when using the legacy
 App commands. The full-stack and compatibility installations already include App.
 These host packaging choices do not require rebuilding the runtime SIF.
 
+On Slurm, `storage.actor_log_root` can place managed actor logs in a private
+directory on the actor's node. Use an absolute directory disjoint from the
+other storage roots. Launch receipts record the exact log paths alongside
+each role's node, job and boot identity. Deployment state and statistics
+retain their configured paths. Collect the original logs from their owning
+nodes after shutdown to run any post-run checks that consume them.
+
 An owned Repo actor may set `parameters: {"request-timeout-ms": 30000}` to pass the
 existing native Repo operation budget explicitly. It must exceed the native250ms ACK interval
 and fit a signed32-bit integer; omission keeps the native5000ms default. Size this budget for

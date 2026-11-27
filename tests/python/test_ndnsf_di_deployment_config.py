@@ -3910,6 +3910,28 @@ def test_tiger_credential_home_cannot_alias_a_nested_linux_path(ops, deployment)
         parser.load_deployment(write_config(root, config))
 
 
+@pytest.mark.parametrize(('platform', 'path', 'error'), [
+    ('host', '/var/tmp/test-actor-logs', 'requires slurm-apptainer'),
+    ('slurm', 'actor-logs', 'node/runtime path must be absolute'),
+    ('slurm', '/remote/evidence_root/logs', 'storage roots must be disjoint'),
+    ('slurm', '/remote/credentials', 'output overlaps installed runtime or credentials'),
+    ('slurm', '/var/tmp/test-actor-logs', None),
+])
+def test_actor_log_root_is_an_explicit_disjoint_slurm_runtime_path(ops, deployment,
+                                                                  platform, path, error):
+    parser, _ = ops
+    root, config = deployment
+    if platform == 'slurm':
+        _tiger_config(root, config)
+    config['storage']['actor_log_root'] = path
+    source = write_config(root, config)
+    if error:
+        with pytest.raises(parser.DeploymentConfigError, match=error):
+            parser.load_deployment(source)
+    else:
+        assert parser.load_deployment(source)['storage']['actor_log_root'] == path
+
+
 @pytest.fixture
 def node_container(ops, deployment):
     parser, _ = ops
@@ -5177,10 +5199,15 @@ def _role_environment(monkeypatch, args, role_id):
                                  'timeout', 'identity-fail', 'residual-worker', 'cancel-ready',
                                  'cancel-pre-ready', 'cancel-requester', 'stale-cancel',
                                  'malformed-cancel', 'provider-withdrawn', 'withdrawal-wrong-boot',
-                                 'cancel-crash'])
+                                 'cancel-crash', 'withdrawal-local-logs'])
 def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_container, monkeypatch, mode):
     config, container, frozen, _, run = node_container
     node = importlib.import_module('_spec217_ops.node')
+    local_log_root = None
+    if mode == 'withdrawal-local-logs':
+        mode = 'provider-withdrawn'
+        local_log_root = frozen.parent.parent / 'local-actor-logs'
+        config['storage']['actor_log_root'] = str(local_log_root)
     monkeypatch.setattr(node, '_CANCEL_CHECK_INTERVAL', 0.01)
     cancel_checks = []
     if mode == 'timeout':
@@ -5203,6 +5230,8 @@ def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_conta
                                'provider-withdrawn', 'withdrawal-wrong-boot', 'cancel-crash') else 'requester')
     assert run('--actor', actor_id).returncode == 0
     args = _role_args(config, frozen, actor=actor_id, timeout=0.4)
+    if local_log_root is not None:
+        args.phase_id = 'trace-phase'
     args.timing = mode == 'complete'
     _role_environment(monkeypatch, args, actor_id)
     original = container.cluster._native_launch
@@ -5304,6 +5333,18 @@ def test_inner_owner_tracks_real_child_readiness_terminal_and_cleanup(node_conta
         if mode == 'timeout':
             assert len(cancel_checks) == 1
     receipt = frozen.parent / 'actors' / actor_id / 'receipt.json'
+    if local_log_root is not None:
+        receipt = receipt.parent / 'phases' / args.phase_id / receipt.name
+        runtime = receipt.parent / 'runtime' / config['deployment_id']
+        log = (local_log_root / config['deployment_id'] / args.boot_id / config['nodes'][0]['id'] /
+               actor_id / 'phases' / args.phase_id / (actor_id + '.log'))
+        assert json.loads(receipt.read_bytes())['launches'][-1]['log'] == str(log)
+        assert not (runtime / log.name).exists()
+        assert (runtime / 'state.json').is_file()
+        assert log.parent.stat().st_mode & 0o777 == 0o700
+        assert [json.loads(line)['event'] for line in log.read_text().splitlines()] == [
+            'NDNSF_DEPLOYMENT_READY', 'NDNSF_DEPLOYMENT_WITHDRAWN']
+        assert Path(result['launches'][0]['log']).parent == runtime
     before = receipt.read_bytes()
     with pytest.raises(container.cluster.ClusterError, match='NATIVE_ROLE_ALREADY_ENTERED'):
         node.run_role(args)
