@@ -1,6 +1,7 @@
 """Host observer contracts only; these fixtures do not attest CUDA execution."""
 
 import hashlib
+import gzip
 import importlib.util
 import json
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.fixture(params=["wan-video-pp", "wan-video-pp-tp", "wan-video-tp-pp"])
+@pytest.fixture(params=["wan-video-single", "wan-video-pp", "wan-video-pp-tp", "wan-video-tp-pp"])
 def observer(tmp_path, monkeypatch, request):
     path = (Path(__file__).resolve().parents[2] / 'Experiments/TigerCluster/scripts' /
             'capture-wan-profiles.py')
@@ -128,3 +129,69 @@ def test_host_cli_arguments_capture_and_verify_the_same_archive(observer, monkey
     module.main()
     receipt = json.loads((root / 'provider-1-profile-verification.json').read_bytes())
     assert receipt['profiles'] == 1 and receipt['profile_json_validated']
+
+
+def test_compressed_cli_preserves_raw_identity_and_defers_json_validation(observer, monkeypatch):
+    module, root, source, output, _ = observer
+    payload = json.dumps([{'fixture': 'closed bytes only ' * 300}]).encode()
+    profile = source / 'ort-profile-compressed.json'
+    profile.write_bytes(payload)
+    args = ['capture-wan-profiles.py', str(root), '--timeout', '1', '--compress',
+            '--max-bytes', str(len(payload)), '--max-stored-bytes', '512']
+    monkeypatch.setattr(sys, 'argv', args)
+    loads = module.json.loads
+
+    def control_only(wire, *a, **kw):
+        assert wire != payload, 'compressed live observer decoded the profile'
+        return loads(wire, *a, **kw)
+
+    monkeypatch.setattr(module.json, 'loads', control_only)
+    module.main()
+    archived = output / (profile.name + '.gz')
+    assert gzip.decompress(archived.read_bytes()) == payload
+    row, = map(loads, (root / 'provider-1-profiles.jsonl').read_text().splitlines())
+    assert row['bytes'] == len(payload) and row['stored_bytes'] == archived.stat().st_size
+    assert row['sha256'] == hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(module.json, 'loads', loads)
+    monkeypatch.setattr(sys, 'argv', args + ['--verify-only'])
+    module.main()
+    receipt = loads((root / 'provider-1-profile-verification.json').read_text())
+    assert receipt['bytes'] == len(payload) and receipt['stored_bytes'] <= 512
+    assert receipt['profile_json_validated']
+
+
+def test_compressed_storage_overflow_removes_only_its_partial_output(observer):
+    module, root, source, output, _ = observer
+    (source / 'ort-profile-capacity.json').write_bytes(b'[0]')
+    output.parent.mkdir(parents=True)
+    canary = output.parent / 'existing'
+    canary.write_bytes(b'keep')
+    with pytest.raises(ValueError, match='storage capacity exceeded'):
+        module.capture(root, timeout=1, compress=True, max_stored_bytes=1)
+    assert not list(output.iterdir()) and canary.read_bytes() == b'keep'
+    assert not (root / 'provider-1-profiles.jsonl').read_text()
+
+
+def test_compressed_archive_requires_explicit_mode_and_bounded_expansion(observer):
+    module, root, source, output, _ = observer
+    profile = source / 'ort-profile-expansion.json'
+    profile.write_bytes(b'[0,0,0]')
+    module.capture(root, timeout=1, compress=True)
+    with pytest.raises(ValueError, match='compression differs'):
+        module.verify(root)
+    index = root / 'provider-1-profiles.jsonl'
+    row = json.loads(index.read_text())
+    row['bytes'] = 2
+    index.write_text(json.dumps(row) + '\n')
+    with pytest.raises(ValueError, match='uncompressed size differs'):
+        module.verify(root, compress=True)
+    assert not (root / 'provider-1-profile-verification.json').exists()
+
+
+def test_compressed_malformed_profile_fails_post_run_validation(observer):
+    module, root, source, _, _ = observer
+    (source / 'ort-profile-invalid.json').write_bytes(b'[]]')
+    assert module.capture(root, timeout=1, compress=True)['profiles'] == 1
+    with pytest.raises(json.JSONDecodeError):
+        module.verify(root, compress=True)
+    assert not (root / 'provider-1-profile-verification.json').exists()
