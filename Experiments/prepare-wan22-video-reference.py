@@ -23,6 +23,7 @@ HERE = Path(__file__).resolve().parent
 DRIVER_SHA256 = '228f2fabf23014ed41ec6b8cd713d5be7371bb558501c71a62a0258b491a877b'
 DRIVER_BYTES = 24031
 DIT_FP64_DIAGNOSTIC = 'fp64-linear-sdpa-fp32-output'
+DIT_UNFUSED_DIAGNOSTIC = 'fp32-unfused-linear'
 
 
 @contextmanager
@@ -46,6 +47,25 @@ def precise_dit_diagnostic():
     finally:
         functional.linear = linear
         functional.scaled_dot_product_attention = attention
+
+
+@contextmanager
+def unfused_dit_diagnostic():
+    functional = torch.nn.functional
+    linear = functional.linear
+
+    def unfused_linear(value, weight, bias=None):
+        if (value.dtype != torch.float32 or weight.dtype != torch.float32 or
+                (bias is not None and bias.dtype != torch.float32)):
+            raise ValueError('unfused linear diagnostic requires FP32 inputs and parameters')
+        result = torch.matmul(value, weight.transpose(-2, -1))
+        return result if bias is None else result + bias
+
+    functional.linear = unfused_linear
+    try:
+        yield
+    finally:
+        functional.linear = linear
 
 
 def module_at(name, path):
@@ -116,12 +136,16 @@ def main():
     parser.add_argument('--native-clip', type=Path,
                         help='condition each official stage on the actual captured inputs')
     parser.add_argument('--device', choices=('cpu', 'cuda'), default='cpu')
-    parser.add_argument('--dit-fp64-diagnostic', action='store_true',
-                        help='replay CUDA DiT linear and SDPA in FP64 with FP32 outputs')
+    diagnostics = parser.add_mutually_exclusive_group()
+    diagnostics.add_argument('--dit-fp64-diagnostic', action='store_true',
+                             help='replay CUDA DiT linear and SDPA in FP64 with FP32 outputs')
+    diagnostics.add_argument('--dit-unfused-linear-diagnostic', action='store_true',
+                             help='replay CUDA DiT linear as separate FP32 matmul and bias add')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    if args.dit_fp64_diagnostic and (args.device != 'cuda' or args.native_clip is None):
-        parser.error('--dit-fp64-diagnostic requires --device cuda and --native-clip')
+    if ((args.dit_fp64_diagnostic or args.dit_unfused_linear_diagnostic) and
+            (args.device != 'cuda' or args.native_clip is None)):
+        parser.error('DiT arithmetic diagnostics require --device cuda and --native-clip')
     if args.output.exists():
         raise FileExistsError(args.output)
     device = torch.device('cpu')
@@ -268,6 +292,8 @@ def main():
         num_train_timesteps=1000, shift=1, use_dynamic_shifting=False)
     scheduler.set_timesteps(generation['steps'], device=device, shift=generation['shift'])
     dit_precision = precise_dit_diagnostic if args.dit_fp64_diagnostic else nullcontext
+    if args.dit_unfused_linear_diagnostic:
+        dit_precision = unfused_dit_diagnostic
     with torch.inference_mode():
         for index, timestep in enumerate(scheduler.timesteps):
             predictions = []
@@ -308,6 +334,8 @@ def main():
         result['provenance']['cuda_adaptation'] = cuda_provenance
         if args.dit_fp64_diagnostic:
             result['provenance']['dit_precision_diagnostic'] = DIT_FP64_DIAGNOSTIC
+        elif args.dit_unfused_linear_diagnostic:
+            result['provenance']['dit_precision_diagnostic'] = DIT_UNFUSED_DIAGNOSTIC
     else:
         result['provenance']['cpu_adaptation'] = (
             'FP32 source networks, SDPA MATH, frozen C++ initial input, pad128')
