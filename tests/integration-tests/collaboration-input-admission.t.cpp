@@ -58,6 +58,7 @@ struct AdmissionObservations
   std::atomic<size_t> rootInterests{0};
   std::atomic<size_t> signedInputRoots{0};
   std::atomic<size_t> signedInputMembers{0};
+  std::atomic<size_t> signedInputPages{0};
   std::atomic<size_t> legacyInputSegments{0};
   std::atomic<size_t> producerLocationHints{0};
   std::atomic<size_t> selectedRoleLocationHints{0};
@@ -335,11 +336,12 @@ void runAuthorizedLocationRotationCase(bool authorizedObject = false)
 }
 
 void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertiseLarge = false,
-                      bool signedInput = false)
+                      size_t signedInputBytes = 0)
 {
+  const bool signedInput = signedInputBytes != 0;
   auto observed = std::make_shared<AdmissionObservations>();
   auto payload = std::make_shared<ndn::Buffer>(
-    signedInput ? 14000 :
+    signedInput ? signedInputBytes :
     inBandXor && mode == AdmissionCase::ImmutableGeneric ? 24000 :
     inBandXor && mode == AdmissionCase::ReusableLarge ? 2400 : 2);
   std::fill(payload->begin(), payload->end(), 3);
@@ -423,6 +425,8 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertise
         }
         else if (name.at(-1).isImplicitSha256Digest()) {
           ++observed->signedInputMembers;
+          if (name.size() >= 3 && name.at(-3) == ndn::name::Component("PAGE"))
+            ++observed->signedInputPages;
           BOOST_CHECK(!interest.getCanBePrefix());
         }
         else {
@@ -670,8 +674,8 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertise
         input.producerRole.clear();
         input.encoding = InputObjectEncoding::ImmutableProtected;
         input.digestKind = InputDigestKind::PlaintextSha256;
-        input.maxBytes = 64 * 1024;
-        input.maxPackets = 32;
+        input.maxBytes = immutablePayload->size() > 64 * 1024 ? 2 * 1024 * 1024 : 64 * 1024;
+        input.maxPackets = immutablePayload->size() > 64 * 1024 ? 512 : 32;
       }
       if (mode == AdmissionCase::ImmutableGeneric) {
         context.allowData("input", ndn::Name("/immutable-ref"));
@@ -1020,7 +1024,11 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false, bool advertise
   BOOST_CHECK(!observed->timedOut);
   if (signedInput) {
     BOOST_CHECK_EQUAL(observed->signedInputRoots.load(), 2);
-    BOOST_CHECK_EQUAL(observed->signedInputMembers.load(), 6);
+    // The pinned 7,000-byte publication framing gives 3 or 150 sources.
+    // Both the direct fetch and generic admission must retrieve every member.
+    const bool paged = signedInputBytes == 1024 * 1024;
+    BOOST_CHECK_EQUAL(observed->signedInputMembers.load(), paged ? 304 : 6);
+    BOOST_CHECK_EQUAL(observed->signedInputPages.load(), paged ? 4 : 0);
     BOOST_CHECK_EQUAL(observed->legacyInputSegments.load(), 0);
   }
   if (inBandXor) {
@@ -1416,7 +1424,11 @@ BOOST_AUTO_TEST_CASE(RegistrationClosureInvalidatesInputsBeforeCompute) { runAdm
 BOOST_AUTO_TEST_CASE(CanonicalManifestAdmitsAuthorizedObjectFromUnselectedProducer) { runAdmissionCase(AdmissionCase::CanonicalManifest); }
 BOOST_AUTO_TEST_CASE(SignedInputManifestAdmitsProtectedMultiSegmentUpload)
 {
-  runAdmissionCase(AdmissionCase::CanonicalManifest, false, false, true);
+  runAdmissionCase(AdmissionCase::CanonicalManifest, false, false, 14000);
+}
+BOOST_AUTO_TEST_CASE(SignedInputManifestAdmitsPagedProtectedUpload)
+{
+  runAdmissionCase(AdmissionCase::CanonicalManifest, false, false, 1024 * 1024);
 }
 BOOST_AUTO_TEST_CASE(OriginalSignatureFailureHasStableAdmissionReason) { runAdmissionCase(AdmissionCase::BadOriginalSignature); }
 BOOST_AUTO_TEST_CASE(ResolvedCredentialCannotChangeItsReadScope) { runAdmissionCase(AdmissionCase::ScopeCredentialMismatch); }
