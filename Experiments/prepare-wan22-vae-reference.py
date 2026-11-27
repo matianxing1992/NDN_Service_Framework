@@ -25,7 +25,7 @@ def verify(path, row):
         raise ValueError('source digest mismatch: ' + str(path))
 
 
-def load_vae_model(root, recipe):
+def load_vae_model(root, recipe, device='cpu'):
     source = root / 'vae2_2-reference.py'
     verify(source, recipe['vae_reference'])
     checkpoint = root / 'Wan2.2_VAE.pth'
@@ -36,11 +36,12 @@ def load_vae_model(root, recipe):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     model = module._video_vae(pretrained_path=str(checkpoint), z_dim=48, dim=160, dec_dim=256,
-                              dim_mult=[1, 2, 4, 4], temperal_downsample=[False, True, True])
+                              dim_mult=[1, 2, 4, 4], temperal_downsample=[False, True, True],
+                              device=device)
     model.eval().requires_grad_(False)
     normalization = recipe['vae_normalization']
-    scale = [torch.tensor(normalization['latent_mean'], dtype=torch.float32),
-             1 / torch.tensor(normalization['latent_std'], dtype=torch.float32)]
+    scale = [torch.tensor(normalization['latent_mean'], dtype=torch.float32, device=device),
+             1 / torch.tensor(normalization['latent_std'], dtype=torch.float32, device=device)]
     return model, scale
 
 

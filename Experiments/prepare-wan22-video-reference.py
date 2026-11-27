@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Prepare an opt-in CPU trajectory oracle from official Wan2.2 networks and UniPC."""
+"""Prepare a trajectory oracle from official Wan2.2 networks and UniPC."""
 
 import argparse
+from contextlib import contextmanager, nullcontext
 import gc
 import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import os
 from pathlib import Path
 import struct
 import time
@@ -20,6 +22,30 @@ from tokenizers import Tokenizer
 HERE = Path(__file__).resolve().parent
 DRIVER_SHA256 = '228f2fabf23014ed41ec6b8cd713d5be7371bb558501c71a62a0258b491a877b'
 DRIVER_BYTES = 24031
+DIT_FP64_DIAGNOSTIC = 'fp64-linear-sdpa-fp32-output'
+
+
+@contextmanager
+def precise_dit_diagnostic():
+    functional = torch.nn.functional
+    linear = functional.linear
+    attention = functional.scaled_dot_product_attention
+
+    def precise_linear(value, weight, bias=None):
+        return linear(value.double(), weight.double(),
+                      None if bias is None else bias.double()).to(value.dtype)
+
+    def precise_attention(query, key, value, *args, **kwargs):
+        return attention(query.double(), key.double(), value.double(),
+                         *args, **kwargs).to(query.dtype)
+
+    functional.linear = precise_linear
+    functional.scaled_dot_product_attention = precise_attention
+    try:
+        yield
+    finally:
+        functional.linear = linear
+        functional.scaled_dot_product_attention = attention
 
 
 def module_at(name, path):
@@ -89,10 +115,31 @@ def main():
     parser.add_argument('--initial-receipt', type=Path, required=True)
     parser.add_argument('--native-clip', type=Path,
                         help='condition each official stage on the actual captured inputs')
+    parser.add_argument('--device', choices=('cpu', 'cuda'), default='cpu')
+    parser.add_argument('--dit-fp64-diagnostic', action='store_true',
+                        help='replay CUDA DiT linear and SDPA in FP64 with FP32 outputs')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    if args.dit_fp64_diagnostic and (args.device != 'cuda' or args.native_clip is None):
+        parser.error('--dit-fp64-diagnostic requires --device cuda and --native-clip')
     if args.output.exists():
         raise FileExistsError(args.output)
+    device = torch.device('cpu')
+    cuda_provenance = {}
+    if args.device == 'cuda':
+        workspace = os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+        if workspace not in (':4096:8', ':16:8'):
+            raise ValueError('CUDA reference requires a deterministic cuBLAS workspace')
+        if not torch.cuda.is_available():
+            raise ValueError('the selected CUDA reference device is unavailable')
+        device = torch.device('cuda', torch.cuda.current_device())
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        cuda_provenance = dict(device=str(device), name=torch.cuda.get_device_name(device),
+                               visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES'),
+                               torch_version=torch.__version__, cuda_version=torch.version.cuda,
+                               cudnn_version=torch.backends.cudnn.version(), allow_tf32=False,
+                               attention='SDPA MATH', cublas_workspace_config=workspace)
     driver_wire = Path(__file__).read_bytes()
     workload = read_json(args.workload)
     workload_digest = sha256(args.workload.read_bytes())
@@ -102,13 +149,15 @@ def main():
     shape = generation['latent_shape']
     if (not isinstance(shape, list) or len(shape) != 4 or
             any(type(value) is not int for value in shape) or shape[0] != 48 or
-            not 1 <= shape[1] <= 91 or any(not 2 <= value <= 20 or value % 2 for value in shape[2:]) or
+            not 1 <= shape[1] <= 91 or
+            (shape[1:] != [7, 44, 80] and
+             any(not 2 <= value <= 20 or value % 2 for value in shape[2:])) or
             type(generation['steps']) is not int or not 1 <= generation['steps'] <= 50 or
             generation['shift'] != 5 or generation['guidance'] != 5 or
             generation['vae_spatial_stride'] != 16 or generation['text_width'] != 4096 or
             generation['frames_per_second'] != 24 or generation['tokenizer']['slots'] != 512 or
             type(generation['seed']) is not int or not 0 <= generation['seed'] < 1 << 64):
-        raise ValueError('workload differs from the bounded Wan2.2 CPU reference profile')
+        raise ValueError('workload differs from the bounded Wan2.2 reference profile')
     tokens = shape[1] * (shape[2] // 2) * (shape[3] // 2)
     padded = (tokens + 127) // 128 * 128
     if generation['padded_video_tokens'] != padded:
@@ -126,6 +175,7 @@ def main():
     sample = torch.from_numpy(np.frombuffer(initial, dtype='<f4').copy()).reshape(expected_shape)
     if not torch.isfinite(sample).all():
         raise ValueError('initial latent contains nonfinite values')
+    sample = sample.to(device)
     capture = (CapturedClip(args.native_clip, receipt['digest'], generation['steps'])
                if args.native_clip is not None else None)
     network, network_wire = module_at('wan22_reference_network',
@@ -184,14 +234,14 @@ def main():
 
     def record(phase, name, tensor, expected, **binding):
         nonlocal remaining
-        if (tensor.dtype != torch.float32 or list(tensor.shape) != expected or
+        if (tensor.device != device or tensor.dtype != torch.float32 or list(tensor.shape) != expected or
                 not torch.isfinite(tensor).all()):
             raise ValueError('source returned incomplete or nonfinite tensor: ' + phase)
         size = tensor.numel() * tensor.element_size()
         if size > min(512 << 20, remaining):
             raise ValueError('trajectory reference exceeds its byte budget')
         remaining -= size
-        wire = tensor.detach().contiguous().numpy().astype('<f4', copy=False).tobytes()
+        wire = tensor.detach().cpu().contiguous().numpy().astype('<f4', copy=False).tobytes()
         filename = str(len(rows)) + '.f32'
         with (args.output / filename).open('xb') as output:
             output.write(wire)
@@ -199,29 +249,31 @@ def main():
                          file=filename, digest=sha256(wire), **binding))
         print(phase, 'bytes=' + str(size), 'wall_s=' + str(time.monotonic() - started), flush=True)
         return (tensor if capture is None else
-                capture.tensor(len(rows) - 1, phase, name, expected, binding))
+                capture.tensor(len(rows) - 1, phase, name, expected, binding).to(device))
 
     branches = ('positive', 'negative')
     contexts = []
-    model = network.load_umt5_model(root, recipe)
+    model = network.load_umt5_model(root, recipe, device)
     with torch.inference_mode():
         for branch, entry in zip(branches, inputs):
-            ids = torch.tensor([entry['ids']], dtype=torch.int64)
-            mask = torch.arange(512)[None, :] < entry['valid_tokens']
+            ids = torch.tensor([entry['ids']], dtype=torch.int64, device=device)
+            mask = torch.arange(512, device=device)[None, :] < entry['valid_tokens']
             context = model(ids, mask)[:, :entry['valid_tokens']].contiguous()
             contexts.append(record('text/' + branch, 'text-context', context,
                                    [1, entry['valid_tokens'], 4096]))
     del model
     gc.collect()
-    model = network.load_dit_model(root, recipe)
+    model = network.load_dit_model(root, recipe, device)
     scheduler = solver.FlowUniPCMultistepScheduler(
         num_train_timesteps=1000, shift=1, use_dynamic_shifting=False)
-    scheduler.set_timesteps(generation['steps'], device='cpu', shift=generation['shift'])
+    scheduler.set_timesteps(generation['steps'], device=device, shift=generation['shift'])
+    dit_precision = precise_dit_diagnostic if args.dit_fp64_diagnostic else nullcontext
     with torch.inference_mode():
         for index, timestep in enumerate(scheduler.timesteps):
             predictions = []
             for branch, context in zip(branches, contexts):
-                prediction = model([sample[0]], timestep.reshape(1), [context[0]], padded)[0][None]
+                with dit_precision():
+                    prediction = model([sample[0]], timestep.reshape(1), [context[0]], padded)[0][None]
                 predictions.append(record('denoise/' + str(index) + '/' + branch,
                                           'prediction', prediction, expected_shape))
             flow = predictions[1] + generation['guidance'] * (predictions[0] - predictions[1])
@@ -232,7 +284,7 @@ def main():
                             corrector_order=corrector_order)
     del model, scheduler, predictions, flow
     gc.collect()
-    model, scale = vae.load_vae_model(root, recipe)
+    model, scale = vae.load_vae_model(root, recipe, device)
     rgb_shape = [1, 3, 4 * (shape[1] - 1) + 1, shape[2] * 16, shape[3] * 16]
     with torch.inference_mode():
         decoded = model.decode(sample, scale).float()
@@ -250,9 +302,15 @@ def main():
                       vae_driver_digest=sha256(vae_wire), sampler_driver_digest=sha256(sampler_wire),
                       sampler=dict(url=sampler.SOURCE_URL, sha256=sampler.SOURCE_SHA256),
                       generation_driver=dict(revision=sampler.REVISION, sha256=DRIVER_SHA256),
-                      cpu_adaptation='FP32 source networks, SDPA MATH, frozen C++ initial input, pad128',
                       wall_seconds=time.monotonic() - started,
                       cpu_seconds=time.process_time() - cpu_started))
+    if cuda_provenance:
+        result['provenance']['cuda_adaptation'] = cuda_provenance
+        if args.dit_fp64_diagnostic:
+            result['provenance']['dit_precision_diagnostic'] = DIT_FP64_DIAGNOSTIC
+    else:
+        result['provenance']['cpu_adaptation'] = (
+            'FP32 source networks, SDPA MATH, frozen C++ initial input, pad128')
     if capture is not None:
         result['schema'] = 'ndnsf-di-wan22-conditioned-trajectory-reference-v1'
         result['native_clip_manifest_digest'] = capture.digest

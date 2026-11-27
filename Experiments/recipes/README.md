@@ -353,7 +353,7 @@ decoder and `frames_per_second=24` for the 5B profile. Existing generation
 configurations default to stride 8. Output shape and Response byte admission
 use the selected stride before submitting the first inference request.
 
-## Wan2.2 TI2V 5B CPU experiment inputs
+## Wan2.2 TI2V 5B experiment inputs
 
 `wan2.2-ti2v-5b-metadata.json` pins the original DiT shards, UMT5, VAE,
 tokenizer, VAE normalization and independent VAE source revision. Download the
@@ -390,16 +390,17 @@ At 24 fps, these 25 frames play for about 1.04 seconds. For the original
 pass the same geometry to the workload generator. At 361 frames, 320×320 fits
 the complete FP32 Response bound and 1280×704 exceeds it.
 
-After a real MiniNDN clip completes, create a reference from the official CPU
-models using the inputs recorded at each stage. The output binds that clip
-manifest and the workload. The native oracle checks all stages, actual role
-placement, NDN delivery, and the RGB24 file with the same FP32 tolerance as the
-closed-loop comparison. Keep the closed-loop reference and its original result
-using the existing `--reference` invocation.
+After a Tiger clip completes, use a Slurm GPU allocation to run the independent
+PyTorch reference on the recorded stage inputs. Use the pinned Python 3.11
+reference dependencies and the PyTorch 2.6.0 CUDA wheel in the host environment.
+The output binds the clip manifest and the workload. The native oracle checks
+all stages, actual role placement, NDN delivery, and the RGB24 file with the
+same FP32 tolerance as the closed-loop comparison. Keep the closed-loop
+reference and its original result using the existing `--reference` invocation.
 
 ```sh
 "$checkpoint_python" Experiments/prepare-wan22-video-reference.py \
-  --asset-root "$asset_root" --workload "$run_root/workload.json" \
+  --device cuda --asset-root "$asset_root" --workload "$run_root/workload.json" \
   --initial-latent "$run_root/initial.raw" --initial-receipt "$run_root/initial.json" \
   --native-clip "$clip_dir" --output "$run_root/same-input-reference"
 "$prefix/bin/di-wan-video-oracle" --deployment-state "$operation_json" \
@@ -407,15 +408,15 @@ using the existing `--reference` invocation.
   --workload "$run_root/workload.json" --initial-latent "$run_root/initial.raw"
 ```
 
-For the short real-weight VAE diagnostic, prepare a separate nine-frame 32×32
-source using the same commands with `--frames 9 --width 32 --height 32` and fresh
-paths. Fetch `vae_reference.file` from its fixed source repository/revision as
+The historical real-weight CPU VAE receipt used a separate nine-frame 32×32
+source, prepared with `--frames 9 --width 32 --height 32`. To identify its inputs,
+see `vae_reference.file` from its fixed source repository/revision at
 `"$asset_root/vae2_2-reference.py"`. The host reference checks its identity,
 strictly loads the original checkpoint, and writes deterministic nonzero input
 and FP32 RGB. The installed native oracle executes the production CPU runner and
 checks every output value, shape and reference digest. It fails on missing or
-incomplete comparisons. Use the pinned checkpoint-tool environment (including
-einops); this diagnostic does not run automatically or substitute for full video.
+incomplete comparisons. The commands below document how the archived receipt
+was produced. Use the tiny MiniNDN model for current CPU correctness checks.
 
 ```sh
 "$checkpoint_python" Experiments/prepare-wan22-vae-reference.py \
@@ -424,7 +425,7 @@ einops); this diagnostic does not run automatically or substitute for full video
 "$prefix/bin/di-wan-checkpoint-oracle" "$run_root/vae-reference/oracle.json"
 ```
 
-The corresponding real DiT and UMT5 checks use the host environment from
+The corresponding historical DiT and UMT5 receipts used the host environment from
 `wan2.2-reference-tools-py311.txt`. Fetch each `network_reference.sources` file
 from its fixed repository revision to its `local_file` beneath the asset root;
 the driver verifies every source length and SHA before import. Prepare the DiT
@@ -449,9 +450,10 @@ available without enabling the test targets. Inputs support `float32`, `int64`
 and `bool`; omitted dtype retains the earlier float32 format. Input and reference
 sizes and digests are checked before creating a model session. Its
 `factory_create_s` and `execute_s` fields separate factory creation from execution.
-These explicit real-weight experiments are outside the ordinary test profiles.
+These commands describe archived CPU diagnostics. The current real-weight
+qualification uses Tiger CUDA.
 
-For a real-weight MiniNDN run, bind three prepared catalogs explicitly. Each
+The historical real-weight MiniNDN recipe binds three prepared catalogs explicitly. Each
 catalog must carry the native `preparation_facts` and match the requester
 namespace. The host generator does not recompute plans or candidate identities.
 

@@ -52,16 +52,17 @@ def source_module(root, name, omit_cuda_wrapper=False):
     return module
 
 
-def cpu_attention(q, k, v, q_lens=None, k_lens=None, dropout_p=0., softmax_scale=None,
-                  q_scale=None, causal=False, window_size=(-1, -1), **unused):
-    if q.device.type != 'cpu' or q.dtype != torch.float32 or q_lens is not None or \
+def fp32_attention(q, k, v, q_lens=None, k_lens=None, dropout_p=0., softmax_scale=None,
+                   q_scale=None, causal=False, window_size=(-1, -1), **unused):
+    if q.device.type not in ('cpu', 'cuda') or q.dtype != torch.float32 or q_lens is not None or \
             dropout_p != 0 or window_size != (-1, -1):
-        raise ValueError('unsupported CPU reference attention configuration')
+        raise ValueError('unsupported FP32 reference attention configuration')
     if q_scale is not None:
         q = q * q_scale
     mask = None
     if k_lens is not None:
-        mask = (torch.arange(k.shape[1]).unsqueeze(0) < k_lens.unsqueeze(1))[:, None, None, :]
+        positions = torch.arange(k.shape[1], device=k.device)
+        mask = (positions.unsqueeze(0) < k_lens.to(k.device).unsqueeze(1))[:, None, None, :]
     with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
         result = torch.nn.functional.scaled_dot_product_attention(
             q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
@@ -69,12 +70,12 @@ def cpu_attention(q, k, v, q_lens=None, k_lens=None, dropout_p=0., softmax_scale
     return result.transpose(1, 2).contiguous()
 
 
-def load_dit_model(root, recipe):
+def load_dit_model(root, recipe, device='cpu'):
     for row in recipe['sources']:
         if row['file'] in recipe['shards'] or row['file'] == 'config.json':
             verify(root / row['file'], row)
     module = source_module(root, 'model')
-    module.flash_attention = cpu_attention
+    module.flash_attention = fp32_attention
     original_rope = module.rope_params
 
     def cpu_rope(*args, **kwargs):
@@ -89,7 +90,7 @@ def load_dit_model(root, recipe):
         model = module.WanModel(**{key: config[key] for key in keys})
     weights = {}
     for name in recipe['shards']:
-        shard = load_file(str(root / name), device='cpu')
+        shard = load_file(str(root / name), device=str(device))
         if any(name in weights for name in shard):
             raise ValueError('duplicate reference checkpoint parameter')
         weights.update(shard)
@@ -116,7 +117,7 @@ def dit_reference(root, recipe, shape, padded_tokens):
             ('video-valid', valid)], 'prediction', result, shape, timing
 
 
-def load_umt5_model(root, recipe):
+def load_umt5_model(root, recipe, device='cpu'):
     original = next(row for row in recipe['sources']
                     if row['file'] == 'models_t5_umt5-xxl-enc-bf16.pth')
     verify(root / original['file'], original)
@@ -124,7 +125,8 @@ def load_umt5_model(root, recipe):
     model = module.umt5_xxl(encoder_only=True, return_tokenizer=False,
                             dtype=torch.float32, device='meta')
     state = torch.load(root / original['file'], map_location='cpu', mmap=True, weights_only=True)
-    model.load_state_dict({name: value.float() for name, value in state.items()},
+    model.load_state_dict({name: value.to(device=device, dtype=torch.float32)
+                           for name, value in state.items()},
                            strict=True, assign=True)
     del state
     model.eval().requires_grad_(False)
