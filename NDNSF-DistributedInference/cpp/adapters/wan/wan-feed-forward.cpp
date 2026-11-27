@@ -143,7 +143,7 @@ lowerProjection(const onnx::ModelProto& source, const WanInitializerAccess& mate
     for (const auto integer : data) value->add_int64_data(integer);
     return value->name();
   };
-  std::string contextLimit, contextWidth, batchSize;
+  std::string contextLimit, contextShape, contextAxis;
   if (textLength) {
     if (inputPort.shape.size() != 3 || std::get<std::int64_t>(inputPort.shape.front()) != 1)
       throw std::invalid_argument("Wan text embedding requires batch-one token-major ports");
@@ -157,8 +157,8 @@ lowerProjection(const onnx::ModelProto& source, const WanInitializerAccess& mate
     dynamicText = tokens == nullptr;
     if (dynamicText) {
       contextLimit = intVector("context-limit", {*textLength});
-      contextWidth = intVector("context-width", {expansion.dims(0)});
-      batchSize = intVector("context-batch", {1});
+      contextShape = intVector("context-shape", {1, *textLength, expansion.dims(0)});
+      contextAxis = intVector("context-axis", {1});
     }
     else if (*tokens < *textLength) {
       padsName = intVector("pads", {0, 0, 0, 0, *textLength - *tokens, 0});
@@ -192,22 +192,19 @@ lowerProjection(const onnx::ModelProto& source, const WanInitializerAccess& mate
         bound->set_type(onnx::AttributeProto::INT);
         bound->set_i(extent);
       }
-      emit("Sub", name + "remaining", contextLimit, name + "tokens", name + "remaining");
-      auto* joinShape = emit("Concat", name + "pad-shape", batchSize, name + "remaining",
-                             name + "pad-shape");
-      joinShape->add_input(contextWidth);
-      auto* shapeAxis = joinShape->add_attribute();
-      shapeAxis->set_name("axis");
-      shapeAxis->set_type(onnx::AttributeProto::INT);
-      shapeAxis->set_i(0);
-      // A negative extent fails rather than truncating an oversized context.
-      emit("ConstantOfShape", name + "zeros", name + "pad-shape", {}, name + "zeros");
+      emit("ConstantOfShape", name + "zeros", contextShape, {}, name + "zeros");
+      auto* tail = emit("Slice", name + "zero-tail", name + "zeros", name + "tokens",
+                        name + "tail");
+      tail->add_input(contextLimit);
+      tail->add_input(contextAxis);
       projectionInput = name + "padded";
-      auto* join = emit("Concat", name + "pad", input, name + "zeros", projectionInput);
+      auto* join = emit("Concat", name + "pad", input, name + "tail", name + "joined");
       auto* tokenAxis = join->add_attribute();
       tokenAxis->set_name("axis");
       tokenAxis->set_type(onnx::AttributeProto::INT);
       tokenAxis->set_i(1);
+      // An oversized context has an empty zero tail, so it cannot reshape to the limit.
+      emit("Reshape", name + "context-shape", name + "joined", contextShape, projectionInput);
     }
     else if (!padsName.empty()) {
       // NodeMap has a single unit per node. The initializer can serve both units.
